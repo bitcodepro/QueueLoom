@@ -1,0 +1,111 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="QueueLoom.App.App"
+             RequestedThemeVariant="Dark">
+  <Application.Resources>
+    <SolidColorBrush x:Key="AppBackgroundBrush" Color="#080E19" />
+    <SolidColorBrush x:Key="SidebarBrush" Color="#0B1422" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#101D2F" />
+    <SolidColorBrush x:Key="SurfaceRaisedBrush" Color="#15263C" />
+    <SolidColorBrush x:Key="SurfaceHoverBrush" Color="#1B304B" />
+    <SolidColorBrush x:Key="HairlineBrush" Color="#223953" />
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F3F7FC" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#91A5BD" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#2DD4BF" />
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="#49E2CF" />
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="#193A3D" />
+    <SolidColorBrush x:Key="VioletBrush" Color="#8B7CFF" />
+    <SolidColorBrush x:Key="SuccessBrush" Color="#4ADE9D" />
+    <SolidColorBrush x:Key="WarningBrush" Color="#FFB45E" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#FF6B82" />
+    <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A1C2A" />
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme />
+
+    <Style Selector="Window">
+      <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+      <Setter Property="FontSize" Value="14" />
+    </Style>
+
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+    </Style>
+
+    <Style Selector="TextBlock.eyebrow">
+      <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="LetterSpacing" Value="1.2" />
+    </Style>
+
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="18" />
+    </Style>
+
+    <Style Selector="Button">
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="14,8" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="MinHeight" Value="36" />
+    </Style>
+
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Foreground" Value="#061513" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Button.primary:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AccentHoverBrush}" />
+    </Style>
+
+    <Style Selector="Button.quiet">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+    </Style>
+    <Style Selector="Button.quiet:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+
+    <Style Selector="Button.danger">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+      <Setter Property="BorderBrush" Value="#6C2A3B" />
+      <Setter Property="BorderThickness" Value="1" />
+    </Style>
+
+    <Style Selector="TextBox, ComboBox">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="MinHeight" Value="38" />
+    </Style>
+
+    <Style Selector="ListBox">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+
+    <Style Selector="ListBoxItem">
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="10" />
+      <Setter Property="Margin" Value="0,2" />
+    </Style>
+    <Style Selector="ListBoxItem:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
+    </Style>
+    <Style Selector="ListBoxItem:selected">
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+  </Application.Styles>
+</Application>

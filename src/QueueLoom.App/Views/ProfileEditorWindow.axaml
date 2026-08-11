@@ -1,0 +1,100 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.ProfileEditorWindow"
+        x:DataType="vm:ProfileEditorViewModel"
+        Title="{Binding DialogTitle}"
+        Width="620"
+        Height="720"
+        MinWidth="540"
+        MinHeight="620"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+  <Grid RowDefinitions="Auto,*,Auto" Background="{DynamicResource AppBackgroundBrush}">
+    <Border Grid.Row="0" Padding="28,24" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+      <StackPanel Spacing="6">
+        <TextBlock Text="{Binding DialogTitle}" FontSize="24" FontWeight="SemiBold" />
+        <TextBlock Text="Connection strings never enter profile metadata or logs." Classes="muted" />
+      </StackPanel>
+    </Border>
+
+    <ScrollViewer Grid.Row="1">
+      <StackPanel Margin="28,22" Spacing="16">
+        <StackPanel Spacing="7">
+          <TextBlock Text="DISPLAY NAME" Classes="eyebrow" />
+          <TextBox Text="{Binding Name}" PlaceholderText="Payments · Dev" />
+        </StackPanel>
+
+        <Grid ColumnDefinitions="*,14,*">
+          <StackPanel Grid.Column="0" Spacing="7">
+            <TextBlock Text="ENVIRONMENT" Classes="eyebrow" />
+            <ComboBox ItemsSource="{Binding EnvironmentKinds}" SelectedItem="{Binding Environment}" />
+          </StackPanel>
+          <StackPanel Grid.Column="2" Spacing="7">
+            <TextBlock Text="ACCESS" Classes="eyebrow" />
+            <ComboBox ItemsSource="{Binding AccessModes}" SelectedItem="{Binding AccessMode}" IsEnabled="{Binding !IsProduction}" />
+          </StackPanel>
+        </Grid>
+
+        <StackPanel Spacing="7" IsVisible="{Binding IsCustomEnvironment}">
+          <TextBlock Text="CUSTOM ENVIRONMENT LABEL" Classes="eyebrow" />
+          <TextBox Text="{Binding CustomEnvironmentName}" PlaceholderText="Staging" />
+        </StackPanel>
+
+        <StackPanel Spacing="7">
+          <TextBlock Text="AUTHENTICATION" Classes="eyebrow" />
+          <ComboBox ItemsSource="{Binding AuthenticationKinds}" SelectedItem="{Binding AuthenticationKind}" />
+        </StackPanel>
+
+        <Border Classes="card" IsVisible="{Binding IsConnectionString}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Namespace SAS" FontSize="16" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ConnectionStringHint}" Classes="muted" TextWrapping="Wrap" />
+            <TextBox Text="{Binding ConnectionString}"
+                     PasswordChar="●"
+                     RevealPassword="False"
+                     PlaceholderText="Endpoint=sb://…;SharedAccessKeyName=…" />
+          </StackPanel>
+        </Border>
+
+        <Border Classes="card" IsVisible="{Binding IsEntraId}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Passwordless Entra ID" FontSize="16" FontWeight="SemiBold" />
+            <StackPanel Spacing="7">
+              <TextBlock Text="FULLY QUALIFIED NAMESPACE" Classes="eyebrow" />
+              <TextBox Text="{Binding FullyQualifiedNamespace}" PlaceholderText="contoso.servicebus.windows.net" />
+            </StackPanel>
+            <StackPanel Spacing="7">
+              <TextBlock Text="CREDENTIAL" Classes="eyebrow" />
+              <ComboBox ItemsSource="{Binding CredentialKinds}" SelectedItem="{Binding CredentialKind}" />
+            </StackPanel>
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="TENANT ID · OPTIONAL" Classes="eyebrow" />
+                <TextBox Text="{Binding TenantId}" PlaceholderText="Directory tenant" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="CLIENT ID · OPTIONAL" Classes="eyebrow" />
+                <TextBox Text="{Binding ClientId}" PlaceholderText="App / managed identity" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <Border Background="{DynamicResource DangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding IsProduction}">
+          <TextBlock Text="PROD profiles are always persisted read-only. Write access can only be unlocked temporarily in the active session."
+                     Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+        </Border>
+
+        <TextBlock Text="{Binding Error}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="2" Padding="28,18" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,1,0,0">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+        <Button Content="Cancel" Classes="quiet" Click="CancelClick" />
+        <Button Content="Save environment" Classes="primary" Click="SaveClick" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

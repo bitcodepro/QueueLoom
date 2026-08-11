@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/QueueLoom.App/QueueLoom.App.csproj" />
+    <Project Path="src/QueueLoom.Core/QueueLoom.Core.csproj" />
+    <Project Path="src/QueueLoom.Infrastructure/QueueLoom.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/QueueLoom.Tests/QueueLoom.Tests.csproj" />
+  </Folder>
+</Solution>

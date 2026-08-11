@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>QueueLoom</AssemblyName>
+    <Product>QueueLoom — Azure Service Bus Operations Console</Product>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <!-- Avalonia's documented telemetry opt-out currently reads the license store
+         before honoring the environment flag. Clearing the telemetry-only marker
+         disables that build task; it is not used by the runtime or XAML compiler. -->
+    <UsedAvaloniaProducts></UsedAvaloniaProducts>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\QueueLoom.Core\QueueLoom.Core.csproj" />
+    <ProjectReference Include="..\QueueLoom.Infrastructure\QueueLoom.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

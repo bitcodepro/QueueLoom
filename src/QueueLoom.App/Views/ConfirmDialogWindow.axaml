@@ -1,0 +1,28 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.ConfirmDialogWindow"
+        x:DataType="vm:ConfirmDialogViewModel"
+        Title="{Binding Title}"
+        Width="480"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+  <StackPanel Margin="26" Spacing="18">
+    <StackPanel Spacing="8">
+      <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" MaxWidth="420" />
+    </StackPanel>
+
+    <StackPanel Spacing="7" IsVisible="{Binding RequiresText}">
+      <TextBlock Text="{Binding RequiredTextPrompt}" Classes="eyebrow" />
+      <TextBox Text="{Binding ConfirmationText}" />
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+      <Button Content="Cancel" Classes="quiet" Click="CancelClick" IsVisible="{Binding ShowCancel}" />
+      <Button Content="Continue" Classes="primary" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" IsVisible="{Binding !IsDangerous}" />
+      <Button Content="Confirm action" Classes="danger" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" IsVisible="{Binding IsDangerous}" />
+    </StackPanel>
+  </StackPanel>
+</Window>

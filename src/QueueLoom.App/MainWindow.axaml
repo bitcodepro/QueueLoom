@@ -1,0 +1,654 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:models="using:QueueLoom.App.Models"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="QueueLoom — Azure Service Bus Operations Console"
+        Width="1360"
+        Height="780"
+        MinWidth="1024"
+        MinHeight="650"
+        WindowStartupLocation="CenterScreen">
+  <Grid ColumnDefinitions="230,*" Background="{DynamicResource AppBackgroundBrush}">
+    <!-- Navigation rail -->
+    <Border Grid.Column="0"
+            Background="{DynamicResource SidebarBrush}"
+            BorderBrush="{DynamicResource HairlineBrush}"
+            BorderThickness="0,0,1,0">
+      <Grid RowDefinitions="Auto,*,Auto">
+        <StackPanel Margin="22,24,18,18" Spacing="7">
+          <StackPanel Orientation="Horizontal" Spacing="11">
+            <Border Width="38" Height="38" CornerRadius="11" Background="{DynamicResource AccentBrush}">
+              <TextBlock Text="QL" Foreground="#061513" FontWeight="Bold" FontSize="15"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <StackPanel VerticalAlignment="Center" Spacing="0">
+              <TextBlock Text="QueueLoom" FontSize="19" FontWeight="SemiBold" />
+              <TextBlock Text="SERVICE BUS CONSOLE" Classes="eyebrow" FontSize="9" />
+            </StackPanel>
+          </StackPanel>
+        </StackPanel>
+
+        <ListBox Grid.Row="1"
+                 Margin="12,4"
+                 ItemsSource="{Binding Navigation}"
+                 SelectedItem="{Binding SelectedNavigation}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="models:NavigationItem">
+              <Grid ColumnDefinitions="32,*" Height="40">
+                <TextBlock Grid.Column="0" Text="{Binding Icon}" Classes="eyebrow"
+                           VerticalAlignment="Center" HorizontalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" FontWeight="Medium" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+        <StackPanel Grid.Row="2" Margin="18,16,18,22" Spacing="12">
+          <Border Background="#0E2030" BorderBrush="{DynamicResource HairlineBrush}"
+                  BorderThickness="1" CornerRadius="10" Padding="12">
+            <StackPanel Spacing="5">
+              <TextBlock Text="SECURE BY DEFAULT" Classes="eyebrow" Foreground="{DynamicResource AccentBrush}" />
+              <TextBlock Text="Peek-only browsing · OS vault · PROD guard"
+                         Classes="muted" FontSize="11" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+          <TextBlock Text="MIT · .NET 10 · Avalonia 12.1" Classes="muted" FontSize="10" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- Application workspace -->
+    <Grid Grid.Column="1" RowDefinitions="74,*,34">
+      <!-- Top command bar -->
+      <Border Grid.Row="0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1"
+              Background="#0A1220" Padding="22,12">
+        <Grid ColumnDefinitions="Auto,12,*,Auto">
+          <ComboBox Grid.Column="0"
+                    Width="225"
+                    ItemsSource="{Binding Profiles}"
+                    SelectedItem="{Binding SelectedProfile}"
+                    IsEnabled="{Binding !IsBusy}"
+                    PlaceholderText="Select environment">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ProfileItemViewModel">
+                <Grid ColumnDefinitions="8,10,*,Auto" MinWidth="185">
+                  <Border Grid.Column="0" Width="7" Height="7" CornerRadius="4"
+                          Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
+                  <StackPanel Grid.Column="2">
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding EnvironmentLabel}" Classes="muted" FontSize="10" />
+                  </StackPanel>
+                </Grid>
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+            <Button Content="Connect" Classes="primary" Command="{Binding ConnectCommand}" />
+            <Border Background="#101D2F" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="10,7">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <Border Width="7" Height="7" CornerRadius="4" Background="{Binding ConnectionColor}"
+                        VerticalAlignment="Center" />
+                <TextBlock Text="{Binding ConnectionLabel}" Classes="eyebrow" VerticalAlignment="Center" />
+              </StackPanel>
+            </Border>
+            <TextBlock Text="{Binding ConnectedNamespace}" Classes="muted" MaxWidth="280"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+          </StackPanel>
+
+          <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="9">
+            <Border Background="#101D2F" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="10,7" IsVisible="{Binding IsConnected}">
+              <TextBlock Text="{Binding WriteAccessLabel}" Foreground="{Binding WriteAccessColor}"
+                         Classes="eyebrow" VerticalAlignment="Center" />
+            </Border>
+            <Button Content="Unlock writes" Classes="danger" Command="{Binding UnlockWritesCommand}"
+                    IsVisible="{Binding CanUnlockWrites}" />
+            <Button Content="Scan all DLQ" Classes="quiet" Command="{Binding ScanAllEnvironmentsCommand}" />
+            <Button Content="New message" Classes="primary" Command="{Binding NewMessageCommand}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <!-- Page content -->
+      <Grid Grid.Row="1" RowDefinitions="Auto,*">
+        <Border Grid.Row="0" Margin="24,16,24,0" Padding="13,10" CornerRadius="9"
+                Background="{DynamicResource DangerSoftBrush}" BorderBrush="#6C2A3B" BorderThickness="1"
+                IsVisible="{Binding HasError}">
+          <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+        </Border>
+
+        <Grid Grid.Row="1">
+          <!-- Overview -->
+          <ScrollViewer IsVisible="{Binding IsOverviewVisible}">
+            <StackPanel Margin="26,24,26,30" Spacing="22">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="Operations overview" FontSize="28" FontWeight="SemiBold" />
+                  <TextBlock Text="One quiet view across topology, traffic and failure queues." Classes="muted" />
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding LastUpdatedText}" Classes="muted" VerticalAlignment="Bottom" />
+              </Grid>
+
+              <Grid ColumnDefinitions="*,12,*,12,*,12,*,12,*">
+                <Border Grid.Column="0" Classes="card">
+                  <StackPanel Spacing="9"><TextBlock Text="QUEUES" Classes="eyebrow"/><TextBlock Text="{Binding QueueCount}" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Namespace entities" Classes="muted"/></StackPanel>
+                </Border>
+                <Border Grid.Column="2" Classes="card">
+                  <StackPanel Spacing="9"><TextBlock Text="TOPICS" Classes="eyebrow"/><TextBlock Text="{Binding TopicCount}" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Publish destinations" Classes="muted"/></StackPanel>
+                </Border>
+                <Border Grid.Column="4" Classes="card">
+                  <StackPanel Spacing="9"><TextBlock Text="SUBSCRIPTIONS" Classes="eyebrow"/><TextBlock Text="{Binding SubscriptionCount}" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Topic consumers" Classes="muted"/></StackPanel>
+                </Border>
+                <Border Grid.Column="6" Classes="card">
+                  <StackPanel Spacing="9"><TextBlock Text="ACTIVE" Classes="eyebrow"/><TextBlock Text="{Binding ActiveMessageCount}" FontSize="30" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/><TextBlock Text="Messages available" Classes="muted"/></StackPanel>
+                </Border>
+                <Border Grid.Column="8" Classes="card" Background="#231722" BorderBrush="#633047">
+                  <StackPanel Spacing="9"><TextBlock Text="DEAD LETTERS" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}"/><TextBlock Text="{Binding DeadLetterCount}" FontSize="30" FontWeight="SemiBold" Foreground="{DynamicResource DangerBrush}"/><TextBlock Text="DLQ + transfer DLQ" Classes="muted"/></StackPanel>
+                </Border>
+              </Grid>
+
+              <Grid ColumnDefinitions="1.3*,16,*">
+                <Border Grid.Column="0" Classes="card">
+                  <StackPanel Spacing="17">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <StackPanel Spacing="4">
+                        <TextBlock Text="Current environment" FontSize="19" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding SelectedProfileName}" Classes="muted" />
+                      </StackPanel>
+                      <Border Grid.Column="1" Background="#102A2A" CornerRadius="20" Padding="12,6">
+                        <TextBlock Text="{Binding ConnectionLabel}" Classes="eyebrow" Foreground="{Binding ConnectionColor}" />
+                      </Border>
+                    </Grid>
+                    <Border Height="1" Background="{DynamicResource HairlineBrush}" />
+                    <Grid ColumnDefinitions="*,*,*">
+                      <StackPanel><TextBlock Text="Authentication" Classes="eyebrow"/><TextBlock Text="OS-backed credentials" Margin="0,5,0,0"/></StackPanel>
+                      <StackPanel Grid.Column="1"><TextBlock Text="Browse mode" Classes="eyebrow"/><TextBlock Text="Non-destructive Peek" Margin="0,5,0,0"/></StackPanel>
+                      <StackPanel Grid.Column="2"><TextBlock Text="Writes" Classes="eyebrow"/><TextBlock Text="{Binding WriteAccessLabel}" Foreground="{Binding WriteAccessColor}" Margin="0,5,0,0"/></StackPanel>
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <Button Content="Refresh topology" Classes="quiet" Command="{Binding RefreshTopologyCommand}" />
+                      <Button Content="Scan current DLQ" Classes="quiet" Command="{Binding ScanCurrentEnvironmentCommand}" />
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Classes="card" Background="#101B2B">
+                  <StackPanel Spacing="14">
+                    <TextBlock Text="Global DLQ radar" FontSize="19" FontWeight="SemiBold" />
+                    <TextBlock Text="Enumerates counters in every saved environment. It never receives, locks or changes a message."
+                               Classes="muted" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding VisibleDlqSourceCount}" FontSize="40" FontWeight="SemiBold"
+                               Foreground="{DynamicResource WarningBrush}" />
+                    <TextBlock Text="messages found by the latest scan" Classes="muted" />
+                    <Button Content="Scan all environments" Classes="primary" Command="{Binding ScanAllEnvironmentsCommand}" HorizontalAlignment="Left" />
+                  </StackPanel>
+                </Border>
+              </Grid>
+
+              <Border Classes="card">
+                <Grid ColumnDefinitions="*,Auto">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="Safety model" FontSize="17" FontWeight="SemiBold" />
+                    <TextBlock Text="Read operations use Peek. Resubmit always sends an edited copy and explicitly leaves the original in DLQ. Production write access expires automatically."
+                               Classes="muted" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <TextBlock Grid.Column="1" Text="NO RECEIVE-AND-DELETE" Classes="eyebrow"
+                             Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+
+          <!-- Explorer -->
+          <Grid IsVisible="{Binding IsExplorerVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Namespace explorer" FontSize="27" FontWeight="SemiBold" />
+                <TextBlock Text="Queues, topics, subscriptions and live runtime counters." Classes="muted" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
+                <TextBox Width="235" Text="{Binding SearchText}" PlaceholderText="Filter entities…" />
+                <Button Content="Refresh" Classes="quiet" Command="{Binding RefreshTopologyCommand}" />
+                <Button Content="Peek active" Classes="quiet" Command="{Binding BrowseSelectedActiveCommand}" />
+                <Button Content="Peek DLQ" Classes="danger" Command="{Binding BrowseSelectedDeadLettersCommand}" />
+                <Button Content="Transfer DLQ" Classes="danger" Command="{Binding BrowseSelectedTransferDeadLettersCommand}" />
+              </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="2" Classes="card" Padding="0" ClipToBounds="True">
+              <Grid RowDefinitions="44,*">
+                <Border Background="#14243A" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1" Padding="16,0">
+                  <Grid ColumnDefinitions="110,*,100,90,90,90,110">
+                    <TextBlock Text="TYPE" Classes="eyebrow" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="ENTITY" Classes="eyebrow" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="STATUS" Classes="eyebrow" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="ACTIVE" Classes="eyebrow" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                    <TextBlock Grid.Column="4" Text="DLQ" Classes="eyebrow" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                    <TextBlock Grid.Column="5" Text="TRANSFER" Classes="eyebrow" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                    <TextBlock Grid.Column="6" Text="SCHEDULED" Classes="eyebrow" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                  </Grid>
+                </Border>
+                <ListBox Grid.Row="1" ItemsSource="{Binding Entities}" SelectedItem="{Binding SelectedEntity}" Margin="6"
+                         IsEnabled="{Binding !IsBusy}">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:EntityItemViewModel">
+                      <Grid ColumnDefinitions="110,*,100,90,90,90,110" MinHeight="43">
+                        <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                          <TextBlock Text="{Binding ParentPath}" Classes="muted" FontSize="10" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" Classes="muted" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="3" Text="{Binding Active}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="4" Text="{Binding DeadLetters}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource DangerBrush}" />
+                        <TextBlock Grid.Column="5" Text="{Binding TransferDeadLetters}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource WarningBrush}" />
+                        <TextBlock Grid.Column="6" Text="{Binding Scheduled}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+            </Border>
+          </Grid>
+
+          <!-- Dead letters and message inspector -->
+          <Grid IsVisible="{Binding IsDeadLettersVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Dead letter inbox" FontSize="27" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding MessageListTitle}" Classes="muted" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
+                <Button Content="Scan current" Classes="quiet" Command="{Binding ScanCurrentEnvironmentCommand}" />
+                <Button Content="Scan every environment" Classes="primary" Command="{Binding ScanAllEnvironmentsCommand}" />
+              </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="2" ColumnDefinitions="330,14,*">
+              <Border Grid.Column="0" Classes="card" Padding="10">
+                <Grid RowDefinitions="Auto,8,*,Auto">
+                  <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="6,4">
+                    <TextBlock Text="Sources with messages / errors" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{Binding VisibleDlqSourceCount}" Foreground="{DynamicResource WarningBrush}" FontWeight="SemiBold" />
+                  </Grid>
+                  <ListBox Grid.Row="2" ItemsSource="{Binding DeadLetterSources}" SelectedItem="{Binding SelectedDlqSource}"
+                           IsEnabled="{Binding !IsBusy}">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:DlqSourceItemViewModel">
+                        <Grid ColumnDefinitions="8,10,*,Auto" MinHeight="62">
+                          <Border Grid.Column="0" Width="7" Height="7" CornerRadius="4"
+                                  Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
+                          <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="{Binding EntityPath}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                              <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow" />
+                              <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding Error}" Foreground="{DynamicResource DangerBrush}" FontSize="10"
+                                       TextTrimming="CharacterEllipsis" IsVisible="{Binding HasError}"
+                                       ToolTip.Tip="{Binding Error}" />
+                          </StackPanel>
+                          <StackPanel Grid.Column="3" VerticalAlignment="Center" HorizontalAlignment="Right"
+                                      IsVisible="{Binding !HasError}">
+                            <TextBlock Text="{Binding Count}" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource WarningBrush}" HorizontalAlignment="Right" />
+                            <TextBlock Text="{Binding Delta}" Classes="muted" FontSize="10" HorizontalAlignment="Right" />
+                          </StackPanel>
+                          <TextBlock Grid.Column="3" Text="ERROR" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}"
+                                     IsVisible="{Binding HasError}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                        </Grid>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                  <Button Grid.Row="3" Content="Peek selected source" Classes="quiet" Margin="5"
+                          Command="{Binding BrowseDlqSourceCommand}" />
+                </Grid>
+              </Border>
+
+              <Grid Grid.Column="2" RowDefinitions="0.45*,14,0.55*">
+                <Border Grid.Row="0" Classes="card" Padding="0" ClipToBounds="True">
+                  <Grid RowDefinitions="42,*">
+                    <Border Background="#14243A" Padding="14,0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+                      <Grid ColumnDefinitions="90,*,150,130">
+                        <TextBlock Text="SEQ" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="REASON" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="3" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
+                      </Grid>
+                    </Border>
+                    <ListBox Grid.Row="1" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6"
+                             IsEnabled="{Binding !IsBusy}">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:MessageItemViewModel">
+                          <Grid ColumnDefinitions="90,*,150,130" MinHeight="52">
+                            <TextBlock Text="{Binding SequenceNumber}" Classes="muted" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                              <TextBlock Text="{Binding MessageId}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                              <TextBlock Text="{Binding BodyPreview}" Classes="muted" FontSize="11" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="2" Text="{Binding DeadLetterReason}" Foreground="{DynamicResource DangerBrush}"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Grid.Column="3" Text="{Binding EnqueuedAt}" Classes="muted" VerticalAlignment="Center" />
+                          </Grid>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+                  </Grid>
+                </Border>
+
+                <Border Grid.Row="2" Classes="card" IsVisible="{Binding HasSelectedMessage}">
+                  <Grid RowDefinitions="Auto,12,*">
+                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                      <StackPanel Spacing="3">
+                        <TextBlock Text="Message inspector" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="Peeked data · no lock token acquired" Classes="muted" />
+                        <TextBlock Text="{Binding SelectedMessage.EditLimitText}" Foreground="{DynamicResource WarningBrush}"
+                                   FontSize="10" IsVisible="{Binding !SelectedMessage.CanOpenAsDraft}" />
+                      </StackPanel>
+                      <Button Grid.Column="1" Content="Open as draft" Classes="primary" Command="{Binding OpenMessageAsDraftCommand}" />
+                    </Grid>
+                    <TabControl Grid.Row="2">
+                      <TabItem Header="Body">
+                        <TextBox Text="{Binding SelectedMessage.BodyText}" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="NoWrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                      </TabItem>
+                      <TabItem Header="Properties">
+                        <TextBox Text="{Binding SelectedMessage.ApplicationPropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
+                                 FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                      </TabItem>
+                      <TabItem Header="Dead-letter reason">
+                        <StackPanel Margin="12" Spacing="10">
+                          <TextBlock Text="{Binding SelectedMessage.DeadLetterReason}" Foreground="{DynamicResource DangerBrush}" FontWeight="SemiBold" />
+                          <TextBlock Text="{Binding SelectedMessage.DeadLetterDescription}" Classes="muted" TextWrapping="Wrap" />
+                        </StackPanel>
+                      </TabItem>
+                    </TabControl>
+                  </Grid>
+                </Border>
+              </Grid>
+            </Grid>
+          </Grid>
+
+          <!-- Composer -->
+          <Grid IsVisible="{Binding IsComposerVisible}" Margin="26,22,26,24" RowDefinitions="Auto,14,*">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Message composer" FontSize="27" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding DraftOriginNotice}" Classes="muted" TextWrapping="Wrap" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Bottom">
+                <TextBlock Text="{Binding DraftSizeText}" Classes="muted" VerticalAlignment="Center" />
+                <Button Content="Send message" Classes="primary" Command="{Binding SendDraftCommand}" />
+              </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="2" ColumnDefinitions="*,14,370">
+              <Border Grid.Column="0" Classes="card" Padding="0" ClipToBounds="True">
+                <Grid RowDefinitions="48,*">
+                  <Border Background="#14243A" Padding="15,7">
+                    <Grid ColumnDefinitions="*,170">
+                      <TextBlock Text="BODY" Classes="eyebrow" VerticalAlignment="Center" />
+                      <ComboBox Grid.Column="1" ItemsSource="{Binding MessageBodyFormats}" SelectedItem="{Binding DraftBodyFormat}" />
+                    </Grid>
+                  </Border>
+                  <TextBox Grid.Row="1" Text="{Binding DraftBody}" AcceptsReturn="True" TextWrapping="NoWrap"
+                           Background="#0B1422" BorderThickness="0" CornerRadius="0" Padding="18"
+                           FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="13"
+                           ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                           ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                </Grid>
+              </Border>
+
+              <Border Grid.Column="2" Classes="card" Padding="0" ClipToBounds="True">
+                <ScrollViewer>
+                  <StackPanel Margin="18" Spacing="15">
+                    <StackPanel Spacing="7">
+                      <TextBlock Text="DESTINATION" Classes="eyebrow" />
+                      <ComboBox ItemsSource="{Binding Destinations}" SelectedItem="{Binding SelectedDestination}"
+                                IsEnabled="{Binding !IsBusy}">
+                        <ComboBox.PlaceholderText>Choose queue or topic</ComboBox.PlaceholderText>
+                        <ComboBox.ItemTemplate>
+                          <DataTemplate x:DataType="vm:DestinationItemViewModel">
+                            <Grid ColumnDefinitions="*,Auto" MinWidth="285">
+                              <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                              <TextBlock Grid.Column="1" Text="{Binding KindLabel}" Classes="eyebrow" />
+                            </Grid>
+                          </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                      </ComboBox>
+                    </StackPanel>
+
+                    <Grid ColumnDefinitions="*,10,*">
+                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="MESSAGE ID" Classes="eyebrow"/><TextBox Text="{Binding DraftMessageId}"/></StackPanel>
+                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="CORRELATION ID" Classes="eyebrow"/><TextBox Text="{Binding DraftCorrelationId}"/></StackPanel>
+                    </Grid>
+                    <Grid ColumnDefinitions="*,10,*">
+                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="SUBJECT" Classes="eyebrow"/><TextBox Text="{Binding DraftSubject}"/></StackPanel>
+                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="CONTENT TYPE" Classes="eyebrow"/><TextBox Text="{Binding DraftContentType}"/></StackPanel>
+                    </Grid>
+                    <Grid ColumnDefinitions="*,10,*">
+                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="SESSION ID" Classes="eyebrow"/><TextBox Text="{Binding DraftSessionId}"/></StackPanel>
+                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="TTL · SECONDS" Classes="eyebrow"/><TextBox Text="{Binding DraftTimeToLiveSeconds}"/></StackPanel>
+                    </Grid>
+
+                    <Expander Header="Advanced broker properties">
+                      <StackPanel Spacing="11" Margin="0,10,0,0">
+                        <Grid ColumnDefinitions="*,10,*">
+                          <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="TO" Classes="eyebrow"/><TextBox Text="{Binding DraftTo}"/></StackPanel>
+                          <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="REPLY TO" Classes="eyebrow"/><TextBox Text="{Binding DraftReplyTo}"/></StackPanel>
+                        </Grid>
+                        <Grid ColumnDefinitions="*,10,*">
+                          <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="REPLY-TO SESSION ID" Classes="eyebrow"/><TextBox Text="{Binding DraftReplyToSessionId}"/></StackPanel>
+                          <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="PARTITION KEY" Classes="eyebrow"/><TextBox Text="{Binding DraftPartitionKey}"/></StackPanel>
+                        </Grid>
+                        <StackPanel Spacing="7">
+                          <TextBlock Text="TRANSACTION PARTITION KEY" Classes="eyebrow"/>
+                          <TextBox Text="{Binding DraftTransactionPartitionKey}"/>
+                        </StackPanel>
+                        <StackPanel Spacing="7">
+                          <TextBlock Text="SCHEDULED ENQUEUE · ISO 8601" Classes="eyebrow"/>
+                          <TextBox Text="{Binding DraftScheduledEnqueueTime}" PlaceholderText="2026-08-11T14:30:00Z"/>
+                        </StackPanel>
+                        <TextBlock Text="If Session ID and Partition Key are both set, Azure requires identical values."
+                                   Classes="muted" FontSize="11" TextWrapping="Wrap" />
+                      </StackPanel>
+                    </Expander>
+
+                    <StackPanel Spacing="7">
+                      <TextBlock Text="TYPED APPLICATION PROPERTIES" Classes="eyebrow" />
+                      <TextBlock Text="Format: { property: { type: String, value: text } }" Classes="muted" FontSize="11" />
+                      <TextBox Text="{Binding DraftApplicationProperties}" AcceptsReturn="True" MinHeight="150"
+                               FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                               ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                    </StackPanel>
+
+                    <Border Background="{DynamicResource DangerSoftBrush}" CornerRadius="9" Padding="12"
+                            IsVisible="{Binding HasDraftEnvironmentMismatch}">
+                      <StackPanel Spacing="8">
+                        <TextBlock Text="Draft is pinned to another environment" Foreground="{DynamicResource DangerBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding DraftEnvironmentWarning}" Classes="muted" TextWrapping="Wrap" />
+                        <Button Content="Start a new message here" Classes="danger" Command="{Binding NewMessageCommand}" HorizontalAlignment="Left" />
+                      </StackPanel>
+                    </Border>
+
+                    <Border Background="{DynamicResource DangerSoftBrush}" CornerRadius="9" Padding="12" IsVisible="{Binding !CanWrite}">
+                      <StackPanel Spacing="8">
+                        <TextBlock Text="Write access is locked" Foreground="{DynamicResource DangerBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="Unlock writes temporarily before sending. Production always requires an explicit typed confirmation."
+                                   Classes="muted" TextWrapping="Wrap" />
+                        <Button Content="Unlock writes" Classes="danger" Command="{Binding UnlockWritesCommand}" HorizontalAlignment="Left" />
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+                </ScrollViewer>
+              </Border>
+            </Grid>
+          </Grid>
+
+          <!-- Monitor -->
+          <ScrollViewer IsVisible="{Binding IsMonitorsVisible}">
+            <StackPanel Margin="26,22,26,30" Spacing="20">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Dead letter monitors" FontSize="27" FontWeight="SemiBold" />
+                <TextBlock Text="Counter-only polling with no message locks and no body reads." Classes="muted" />
+              </StackPanel>
+
+              <Grid ColumnDefinitions="1.25*,16,*">
+                <Border Grid.Column="0" Classes="card">
+                  <StackPanel Spacing="16">
+                    <TextBlock Text="Monitor settings" FontSize="19" FontWeight="SemiBold" />
+                    <Grid ColumnDefinitions="*,14,180">
+                      <StackPanel Grid.Column="0" Spacing="7">
+                        <TextBlock Text="SCOPE" Classes="eyebrow" />
+                        <ComboBox ItemsSource="{Binding MonitorScopes}" SelectedItem="{Binding MonitorScope}"
+                                  IsEnabled="{Binding !IsMonitoring}" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="2" Spacing="7">
+                        <TextBlock Text="INTERVAL · SECONDS" Classes="eyebrow" />
+                        <TextBox Text="{Binding MonitorIntervalSeconds}" IsEnabled="{Binding !IsMonitoring}" />
+                      </StackPanel>
+                    </Grid>
+                    <Border Background="#101B2B" CornerRadius="9" Padding="12"
+                            IsVisible="{Binding IsSelectedSourceMonitorScope}">
+                      <StackPanel Spacing="8">
+                        <TextBlock Text="SINGLE-SOURCE TARGET" Classes="eyebrow" />
+                        <ComboBox ItemsSource="{Binding MonitorTargetChoices}"
+                                  SelectedItem="{Binding MonitorTargetChoice}"
+                                  IsEnabled="{Binding !IsMonitoring}" />
+                        <TextBlock Text="{Binding MonitorTargetPreview}" Classes="muted" TextWrapping="Wrap" />
+                      </StackPanel>
+                    </Border>
+                    <TextBlock Text="Minimum interval is 15 seconds. Single-source mode pins the explicit target shown above. A scan is skipped while another workspace operation is active."
+                               Classes="muted" TextWrapping="Wrap" />
+                    <Button Content="{Binding MonitorButtonLabel}" Classes="primary" Command="{Binding ToggleMonitorCommand}" HorizontalAlignment="Left" />
+                  </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Classes="card" Background="#101B2B">
+                  <StackPanel Spacing="12">
+                    <TextBlock Text="STATUS" Classes="eyebrow" />
+                    <TextBlock Text="{Binding MonitorStatus}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <Border Background="{DynamicResource DangerSoftBrush}" BorderBrush="#633047" BorderThickness="1"
+                            CornerRadius="9" Padding="12" IsVisible="{Binding HasMonitorAlert}">
+                      <TextBlock Text="{Binding MonitorAlert}" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" />
+                    </Border>
+                    <TextBlock Text="The desktop monitor runs while QueueLoom is open. Use Azure Monitor for guaranteed 24/7 alerting."
+                               Classes="muted" TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+              </Grid>
+
+              <Border Classes="card">
+                <Grid ColumnDefinitions="Auto,18,*">
+                  <Border Width="44" Height="44" CornerRadius="12" Background="{DynamicResource AccentSoftBrush}">
+                    <TextBlock Text="✓" FontSize="22" Foreground="{DynamicResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                  </Border>
+                  <StackPanel Grid.Column="2" Spacing="5">
+                    <TextBlock Text="What the monitor does" FontWeight="SemiBold" FontSize="17" />
+                    <TextBlock Text="Reads ActiveMessageCount, DeadLetterMessageCount and TransferDeadLetterMessageCount through the administration endpoint. Errors are isolated per entity and recorded without secrets or message bodies."
+                               Classes="muted" TextWrapping="Wrap" />
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+
+          <!-- Environments -->
+          <Grid IsVisible="{Binding IsEnvironmentsVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Environments" FontSize="27" FontWeight="SemiBold" />
+                <TextBlock Text="DEV, TEST and PROD metadata stays separate from operating-system-protected credentials." Classes="muted" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
+                <Button Content="Edit" Classes="quiet" Command="{Binding EditEnvironmentCommand}" />
+                <Button Content="Delete" Classes="danger" Command="{Binding DeleteEnvironmentCommand}" />
+                <Button Content="Add environment" Classes="primary" Command="{Binding AddEnvironmentCommand}" />
+              </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="2" Classes="card" Padding="10">
+              <ListBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
+                       IsEnabled="{Binding !IsBusy}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ProfileItemViewModel">
+                    <Grid ColumnDefinitions="10,14,1.2*,1.5*,1.3*,120" MinHeight="70">
+                      <Border Grid.Column="0" Width="8" Height="42" CornerRadius="4" Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
+                      <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">
+                        <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding EnvironmentLabel}" Foreground="{Binding EnvironmentColor}" Classes="eyebrow" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="3">
+                        <TextBlock Text="NAMESPACE" Classes="eyebrow" />
+                        <TextBlock Text="{Binding Namespace}" Classes="muted" TextTrimming="CharacterEllipsis" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="4" VerticalAlignment="Center" Spacing="3">
+                        <TextBlock Text="AUTHENTICATION" Classes="eyebrow" />
+                        <TextBlock Text="{Binding AuthenticationLabel}" Classes="muted" />
+                      </StackPanel>
+                      <Border Grid.Column="5" Background="#14243A" CornerRadius="20" Padding="11,6" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Grid>
+                          <TextBlock Text="READ ONLY" Classes="eyebrow" IsVisible="{Binding IsReadOnly}" />
+                          <TextBlock Text="READ / WRITE" Classes="eyebrow" Foreground="{DynamicResource WarningBrush}" IsVisible="{Binding !IsReadOnly}" />
+                        </Grid>
+                      </Border>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Border>
+          </Grid>
+
+          <!-- Activity -->
+          <Grid IsVisible="{Binding IsActivityVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+            <StackPanel Grid.Row="0" Spacing="5">
+              <TextBlock Text="Local activity" FontSize="27" FontWeight="SemiBold" />
+              <TextBlock Text="Sanitized operational metadata only — never connection strings or message bodies." Classes="muted" />
+            </StackPanel>
+            <Border Grid.Row="2" Classes="card" Padding="0" ClipToBounds="True">
+              <Grid RowDefinitions="44,*">
+                <Border Background="#14243A" Padding="16,0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+                  <Grid ColumnDefinitions="90,100,220,*">
+                    <TextBlock Text="TIME" Classes="eyebrow" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="LEVEL" Classes="eyebrow" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="ACTION" Classes="eyebrow" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="DETAILS" Classes="eyebrow" VerticalAlignment="Center" />
+                  </Grid>
+                </Border>
+                <ListBox Grid.Row="1" ItemsSource="{Binding Activity}" Margin="6">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ActivityItemViewModel">
+                      <Grid ColumnDefinitions="90,100,220,*" MinHeight="40">
+                        <TextBlock Text="{Binding Time}" Classes="muted" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding Level}" Foreground="{Binding LevelColor}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="{Binding Action}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="3" Text="{Binding Details}" Classes="muted" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+            </Border>
+          </Grid>
+        </Grid>
+      </Grid>
+
+      <!-- Status bar -->
+      <Border Grid.Row="2" Background="#090F1A" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,1,0,0" Padding="16,0">
+        <Grid ColumnDefinitions="Auto,10,*,Auto">
+          <ProgressBar Width="70" Height="3" IsIndeterminate="True" IsVisible="{Binding IsBusy}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="{Binding StatusText}" Classes="muted" FontSize="11" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="3" Text="PEEK-FIRST · SECRETS NEVER LOGGED" Classes="eyebrow" FontSize="9" VerticalAlignment="Center" />
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
