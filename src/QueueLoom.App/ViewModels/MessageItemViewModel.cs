@@ -15,9 +15,18 @@ public sealed class MessageItemViewModel
     private readonly Lazy<string> _bodyPreview;
     private readonly Lazy<string> _applicationPropertiesJson;
 
-    public MessageItemViewModel(BrowsedMessage message)
+    public MessageItemViewModel(
+        BrowsedMessage message,
+        Guid? profileId = null,
+        string? profileName = null,
+        string? environmentLabel = null,
+        string? environmentColor = null)
     {
         Message = message;
+        ProfileId = profileId;
+        ProfileName = profileName ?? string.Empty;
+        EnvironmentLabel = environmentLabel ?? string.Empty;
+        EnvironmentColor = environmentColor ?? "#91A5BD";
         _displayBody = new Lazy<EditableMessageBody>(
             () => EditableMessageBody.FromBytes(Message.Body.Span));
         _bodyPreview = new Lazy<string>(CreateBodyPreview);
@@ -25,6 +34,20 @@ public sealed class MessageItemViewModel
     }
 
     public BrowsedMessage Message { get; }
+
+    public Guid? ProfileId { get; }
+
+    public string ProfileName { get; }
+
+    public string EnvironmentLabel { get; }
+
+    public string EnvironmentColor { get; }
+
+    public string SourceDisplay => Message.Source.DisplayName;
+
+    public string SubQueueLabel => Message.SubQueue == ServiceBusSubQueue.TransferDeadLetter
+        ? "TRANSFER DLQ"
+        : "DLQ";
 
     public long SequenceNumber => Message.SequenceNumber;
 

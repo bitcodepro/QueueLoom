@@ -2,6 +2,7 @@ namespace QueueLoom.Infrastructure.Persistence;
 
 public sealed record QueueLoomPaths(
     string RootDirectory,
+    string BackupsDirectory,
     string ProfilesFile,
     string SecretsFile,
     string InstallationIdFile,
@@ -25,6 +26,7 @@ public sealed record QueueLoomPaths(
         var root = Path.GetFullPath(rootDirectory);
         return new QueueLoomPaths(
             root,
+            Path.Combine(root, "backups"),
             Path.Combine(root, "profiles.v1.json"),
             Path.Combine(root, "secrets.v1.json"),
             Path.Combine(root, "installation.id"),

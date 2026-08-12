@@ -1,6 +1,5 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:converters="using:Avalonia.Data.Converters"
         xmlns:models="using:QueueLoom.App.Models"
         xmlns:vm="using:QueueLoom.App.ViewModels"
         x:Class="QueueLoom.App.MainWindow"
@@ -46,15 +45,7 @@
           </ListBox.ItemTemplate>
         </ListBox>
 
-        <StackPanel Grid.Row="2" Margin="18,16,18,22" Spacing="12">
-          <Border Background="#0E2030" BorderBrush="{DynamicResource HairlineBrush}"
-                  BorderThickness="1" CornerRadius="10" Padding="12">
-            <StackPanel Spacing="5">
-              <TextBlock Text="SECURE BY DEFAULT" Classes="eyebrow" Foreground="{DynamicResource AccentBrush}" />
-              <TextBlock Text="Peek-only browsing · OS vault · PROD guard"
-                         Classes="muted" FontSize="11" TextWrapping="Wrap" />
-            </StackPanel>
-          </Border>
+        <StackPanel Grid.Row="2" Margin="18,16,18,22">
           <TextBlock Text="MIT · .NET 10 · Avalonia 12.1" Classes="muted" FontSize="10" />
         </StackPanel>
       </Grid>
@@ -65,9 +56,11 @@
       <!-- Top command bar -->
       <Border Grid.Row="0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1"
               Background="#0A1220" Padding="22,12">
-        <Grid ColumnDefinitions="Auto,12,*,Auto">
+        <Grid ColumnDefinitions="Auto,12,*,Auto" VerticalAlignment="Center">
           <ComboBox Grid.Column="0"
                     Width="225"
+                    Height="40"
+                    VerticalAlignment="Center"
                     ItemsSource="{Binding Profiles}"
                     SelectedItem="{Binding SelectedProfile}"
                     IsEnabled="{Binding !IsBusy}"
@@ -91,9 +84,9 @@
           </ComboBox>
 
           <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
-            <Button Content="Connect" Classes="primary" Command="{Binding ConnectCommand}" />
+            <Button Content="Connect" Classes="primary" Command="{Binding ConnectCommand}" Height="40" />
             <Border Background="#101D2F" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="10,7">
+                    CornerRadius="8" Padding="10,7" Height="40" VerticalAlignment="Center">
               <StackPanel Orientation="Horizontal" Spacing="7">
                 <Border Width="7" Height="7" CornerRadius="4" Background="{Binding ConnectionColor}"
                         VerticalAlignment="Center" />
@@ -104,16 +97,17 @@
                        TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
           </StackPanel>
 
-          <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="9">
+          <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
             <Border Background="#101D2F" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="10,7" IsVisible="{Binding IsConnected}">
+                    CornerRadius="8" Padding="10,7" Height="40" VerticalAlignment="Center"
+                    IsVisible="{Binding IsConnected}">
               <TextBlock Text="{Binding WriteAccessLabel}" Foreground="{Binding WriteAccessColor}"
                          Classes="eyebrow" VerticalAlignment="Center" />
             </Border>
             <Button Content="Unlock writes" Classes="danger" Command="{Binding UnlockWritesCommand}"
-                    IsVisible="{Binding CanUnlockWrites}" />
-            <Button Content="Scan all DLQ" Classes="quiet" Command="{Binding ScanAllEnvironmentsCommand}" />
-            <Button Content="New message" Classes="primary" Command="{Binding NewMessageCommand}" />
+                    Height="40" IsVisible="{Binding CanUnlockWrites}" />
+            <Button Content="Scan all DLQ" Classes="quiet" Command="{Binding ScanAllEnvironmentsCommand}" Height="40" />
+            <Button Content="New message" Classes="primary" Command="{Binding NewMessageCommand}" Height="40" />
           </StackPanel>
         </Grid>
       </Border>
@@ -271,7 +265,7 @@
           </Grid>
 
           <!-- Dead letters and message inspector -->
-          <Grid IsVisible="{Binding IsDeadLettersVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+          <Grid IsVisible="{Binding IsDeadLettersVisible}" Margin="26,22,26,24" RowDefinitions="Auto,12,Auto,16,*">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="5">
                 <TextBlock Text="Dead letter inbox" FontSize="27" FontWeight="SemiBold" />
@@ -283,7 +277,27 @@
               </StackPanel>
             </Grid>
 
-            <Grid Grid.Row="2" ColumnDefinitions="330,14,*">
+            <Border Grid.Row="2" Classes="card" Padding="12,10">
+              <Grid RowDefinitions="Auto,6,Auto" ColumnDefinitions="*,8,Auto,8,Auto">
+                <TextBox Grid.Column="0"
+                         Text="{Binding DeadLetterSearchQuery}"
+                         PlaceholderText="Correlation ID, Message ID, subject, body, or application property"
+                         MaxLength="1024"
+                         IsEnabled="{Binding !IsBusy}"
+                         AutomationProperties.Name="Dead-letter message search" />
+                <Button Grid.Column="2" Content="Search DLQ" Classes="primary"
+                        Command="{Binding SearchDeadLettersCommand}" />
+                <Button Grid.Column="4" Content="Clear results" Classes="quiet"
+                        Command="{Binding ClearDeadLetterSearchCommand}" />
+                <Grid Grid.Row="2" Grid.ColumnSpan="5" ColumnDefinitions="*,Auto">
+                  <TextBlock Text="{Binding DeadLetterSearchStatus}" Classes="muted" TextWrapping="Wrap" />
+                  <TextBlock Grid.Column="1" Text="Scope follows the environment filter" Classes="eyebrow"
+                             Margin="12,0,0,0" VerticalAlignment="Center" />
+                </Grid>
+              </Grid>
+            </Border>
+
+            <Grid Grid.Row="4" ColumnDefinitions="330,14,*">
               <Border Grid.Column="0" Classes="card" Padding="10">
                 <Grid RowDefinitions="Auto,8,Auto,8,*,Auto">
                   <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="6,4">
@@ -297,13 +311,14 @@
                             AutomationProperties.Name="Filter dead-letter sources by environment">
                     <ComboBox.ItemTemplate>
                       <DataTemplate x:DataType="vm:DeadLetterEnvironmentFilterItemViewModel">
-                        <Grid ColumnDefinitions="8,8,*,Auto" MinWidth="245">
+                        <Grid ColumnDefinitions="8,8,*,44" MinWidth="245" MinHeight="24">
                           <Border Width="7" Height="7" CornerRadius="4"
                                   Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
                           <TextBlock Grid.Column="2" Text="{Binding Name}" FontWeight="SemiBold"
-                                     TextTrimming="CharacterEllipsis" />
+                                     TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                           <TextBlock Grid.Column="3" Text="{Binding EnvironmentLabel}" Classes="eyebrow"
-                                     Margin="8,0,0,0" />
+                                     Margin="8,0,0,0" VerticalAlignment="Center"
+                                     HorizontalAlignment="Center" TextAlignment="Center" />
                         </Grid>
                       </DataTemplate>
                     </ComboBox.ItemTemplate>
@@ -312,33 +327,35 @@
                            IsEnabled="{Binding !IsBusy}">
                     <ListBox.ItemTemplate>
                       <DataTemplate x:DataType="vm:DlqSourceItemViewModel">
-                        <Grid ColumnDefinitions="8,10,*,Auto" MinHeight="72">
+                        <Grid ColumnDefinitions="8,10,*,12,52" MinHeight="78">
                           <Border Grid.Column="0" Width="7" Height="7" CornerRadius="4"
                                   Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
                           <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="4"
                                       ToolTip.Tip="{Binding EntityPath}">
-                            <Grid ColumnDefinitions="Auto,8,*">
-                              <Border Background="#14243A" BorderBrush="{DynamicResource HairlineBrush}"
-                                      BorderThickness="1" CornerRadius="9" Padding="7,3"
-                                      VerticalAlignment="Top">
-                                <TextBlock Text="{Binding EntityKind}" Classes="eyebrow" FontSize="9" />
-                              </Border>
-                              <Grid Grid.Column="2">
-                                <TextBlock Text="{Binding Entity.Name}" FontWeight="SemiBold"
-                                           TextTrimming="CharacterEllipsis"
-                                           IsVisible="{Binding Entity.TopicName, Converter={x:Static converters:ObjectConverters.IsNull}}" />
-                                <StackPanel Spacing="1"
-                                            IsVisible="{Binding Entity.TopicName, Converter={x:Static converters:ObjectConverters.IsNotNull}}">
-                                  <TextBlock Text="{Binding Entity.TopicName}" Classes="muted" FontSize="10"
-                                             TextTrimming="CharacterEllipsis" />
-                                  <StackPanel Orientation="Horizontal" Spacing="5" Margin="10,0,0,0">
-                                    <TextBlock Text="›" Foreground="{DynamicResource AccentBrush}" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding Entity.Name}" FontWeight="SemiBold"
-                                               TextTrimming="CharacterEllipsis" />
-                                  </StackPanel>
-                                </StackPanel>
-                              </Grid>
+                            <Grid ColumnDefinitions="Auto,8,*" IsVisible="{Binding IsQueue}">
+                              <TextBlock Text="QUEUE" Classes="eyebrow" FontSize="9"
+                                         Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+                              <TextBlock Grid.Column="2" Text="{Binding EntityName}" FontWeight="SemiBold"
+                                         TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                             </Grid>
+
+                            <StackPanel Spacing="3" IsVisible="{Binding IsSubscription}">
+                              <Grid ColumnDefinitions="Auto,7,*">
+                                <TextBlock Text="TOPIC" Classes="eyebrow" FontSize="9"
+                                           Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="2" Text="{Binding ParentTopicName}" Classes="muted" FontSize="10"
+                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                              </Grid>
+                              <Border Margin="10,0,0,0" Padding="9,2,0,2"
+                                      BorderBrush="{DynamicResource AccentBrush}" BorderThickness="2,0,0,0">
+                                <StackPanel Spacing="1">
+                                  <TextBlock Text="SUBSCRIPTION" Classes="eyebrow" FontSize="8" />
+                                  <TextBlock Text="{Binding EntityName}" FontWeight="SemiBold"
+                                             TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                              </Border>
+                            </StackPanel>
+
                             <StackPanel Orientation="Horizontal" Spacing="7">
                               <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow" />
                               <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}" />
@@ -347,19 +364,32 @@
                                        TextTrimming="CharacterEllipsis" IsVisible="{Binding HasError}"
                                        ToolTip.Tip="{Binding Error}" />
                           </StackPanel>
-                          <StackPanel Grid.Column="3" VerticalAlignment="Center" HorizontalAlignment="Right"
+                          <Border Grid.Column="3" Width="1" Background="{DynamicResource HairlineBrush}"
+                                  Margin="5,7" HorizontalAlignment="Center" />
+                          <StackPanel Grid.Column="4" VerticalAlignment="Center" HorizontalAlignment="Right"
                                       IsVisible="{Binding !HasError}">
                             <TextBlock Text="{Binding Count}" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource WarningBrush}" HorizontalAlignment="Right" />
                             <TextBlock Text="{Binding Delta}" Classes="muted" FontSize="10" HorizontalAlignment="Right" />
                           </StackPanel>
-                          <TextBlock Grid.Column="3" Text="ERROR" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}"
+                          <TextBlock Grid.Column="4" Text="ERROR" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}"
                                      IsVisible="{Binding HasError}" VerticalAlignment="Center" HorizontalAlignment="Right" />
                         </Grid>
                       </DataTemplate>
                     </ListBox.ItemTemplate>
                   </ListBox>
-                  <Button Grid.Row="5" Content="Peek selected source" Classes="quiet" Margin="5"
-                          Command="{Binding BrowseDlqSourceCommand}" />
+                  <Grid Grid.Row="5" RowDefinitions="Auto,6,Auto,6,Auto" ColumnDefinitions="*,6,*" Margin="5">
+                    <Button Grid.Row="0" Grid.ColumnSpan="3" Content="Peek selected source" Classes="quiet"
+                            Command="{Binding BrowseDlqSourceCommand}" />
+                    <Button Grid.Row="2" Grid.Column="0" Content="Backup + purge" Classes="danger"
+                            Command="{Binding PurgeSelectedDeadLettersCommand}"
+                            ToolTip.Tip="Back up each message as local JSON, then permanently delete both DLQs for the selected queue or subscription" />
+                    <Button Grid.Row="2" Grid.Column="2" Content="Topic backup + purge" Classes="danger"
+                            Command="{Binding PurgeTopicDeadLettersCommand}"
+                            ToolTip.Tip="Back up each message as local JSON, then permanently delete both DLQs for every subscription under the selected topic" />
+                    <Button Grid.Row="4" Grid.ColumnSpan="3" Content="Environment backup + purge" Classes="danger"
+                            Command="{Binding PurgeEnvironmentDeadLettersCommand}"
+                            ToolTip.Tip="Back up each message as local JSON, then permanently delete both DLQs from every queue and subscription in the selected environment" />
+                  </Grid>
                 </Grid>
               </Border>
 
@@ -367,26 +397,40 @@
                 <Border Grid.Row="0" Classes="card" Padding="0" ClipToBounds="True">
                   <Grid RowDefinitions="42,*">
                     <Border Background="#14243A" Padding="14,0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
-                      <Grid ColumnDefinitions="90,*,150,130">
+                      <Grid ColumnDefinitions="72,82,170,*,120,130">
                         <TextBlock Text="SEQ" Classes="eyebrow" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="2" Text="REASON" Classes="eyebrow" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="3" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="ENV" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="SOURCE" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="3" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="4" Text="REASON" Classes="eyebrow" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="5" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
                       </Grid>
                     </Border>
                     <ListBox Grid.Row="1" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6"
                              IsEnabled="{Binding !IsBusy}">
                       <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:MessageItemViewModel">
-                          <Grid ColumnDefinitions="90,*,150,130" MinHeight="52">
+                          <Grid ColumnDefinitions="72,82,170,*,120,130" MinHeight="62">
                             <TextBlock Text="{Binding SequenceNumber}" Classes="muted" VerticalAlignment="Center" />
-                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                              <Border Width="7" Height="7" CornerRadius="4" Background="{Binding EnvironmentColor}"
+                                      HorizontalAlignment="Left" />
+                              <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow"
+                                         TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2">
+                              <TextBlock Text="{Binding SourceDisplay}" FontWeight="SemiBold"
+                                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceDisplay}" />
+                              <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow"
+                                         Foreground="{DynamicResource DangerBrush}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="2">
                               <TextBlock Text="{Binding MessageId}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                               <TextBlock Text="{Binding BodyPreview}" Classes="muted" FontSize="11" TextTrimming="CharacterEllipsis" />
                             </StackPanel>
-                            <TextBlock Grid.Column="2" Text="{Binding DeadLetterReason}" Foreground="{DynamicResource DangerBrush}"
+                            <TextBlock Grid.Column="4" Text="{Binding DeadLetterReason}" Foreground="{DynamicResource DangerBrush}"
                                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Grid.Column="3" Text="{Binding EnqueuedAt}" Classes="muted" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="5" Text="{Binding EnqueuedAt}" Classes="muted" VerticalAlignment="Center" />
                           </Grid>
                         </DataTemplate>
                       </ListBox.ItemTemplate>
@@ -400,6 +444,8 @@
                       <StackPanel Spacing="3">
                         <TextBlock Text="Message inspector" FontSize="18" FontWeight="SemiBold" />
                         <TextBlock Text="Peeked data · no lock token acquired" Classes="muted" />
+                        <TextBlock Text="{Binding SelectedMessage.CorrelationId, StringFormat='Correlation ID: {0}'}"
+                                   Classes="muted" TextWrapping="Wrap" />
                         <TextBlock Text="{Binding SelectedMessage.EditLimitText}" Foreground="{DynamicResource WarningBrush}"
                                    FontSize="10" IsVisible="{Binding !SelectedMessage.CanOpenAsDraft}" />
                       </StackPanel>

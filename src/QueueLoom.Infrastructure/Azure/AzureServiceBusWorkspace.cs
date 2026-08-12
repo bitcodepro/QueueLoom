@@ -7,6 +7,7 @@ using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Azure;
 
@@ -16,6 +17,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
     private const int MonitorConcurrency = 6;
 
     private readonly ISecretVault _secretVault;
+    private readonly DeadLetterJsonBackupStore _backupStore;
     private readonly TimeProvider _timeProvider;
     private readonly AsyncOperationGate _operationGate = new();
     private readonly SemaphoreSlim _topologyGate = new(1, 1);
@@ -29,11 +31,15 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
     private WorkspaceConnectionState _connectionState;
     private bool _disposed;
 
-    public AzureServiceBusWorkspace(ISecretVault secretVault, TimeProvider? timeProvider = null)
+    public AzureServiceBusWorkspace(
+        ISecretVault secretVault,
+        TimeProvider? timeProvider = null,
+        DeadLetterJsonBackupStore? backupStore = null)
     {
         ArgumentNullException.ThrowIfNull(secretVault);
         _secretVault = secretVault;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _backupStore = backupStore ?? new DeadLetterJsonBackupStore(QueueLoomPaths.CreateDefault());
     }
 
     public WorkspaceConnectionState ConnectionState => _connectionState;
@@ -250,6 +256,147 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             .ToArray());
     }
 
+    public async Task<DeadLetterSearchResult> SearchDeadLettersAsync(
+        DeadLetterSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
+
+        var profile = GetConnectedProfile();
+        var startedAt = _timeProvider.GetUtcNow();
+        var sourceResults = new List<DeadLetterSearchSourceResult>(
+            request.Sources.Count * request.SubQueues.Count);
+        var totalMatches = 0;
+        var resultLimitReached = false;
+
+        foreach (var source in request.Sources)
+        {
+            foreach (var subQueue in request.SubQueues)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (resultLimitReached)
+                {
+                    break;
+                }
+
+                var result = await SearchSubQueueAsync(
+                        source,
+                        subQueue,
+                        request,
+                        request.MaximumResults - totalMatches,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                sourceResults.Add(result);
+                totalMatches = checked(totalMatches + result.Matches.Count);
+                resultLimitReached = totalMatches >= request.MaximumResults;
+            }
+
+            if (resultLimitReached)
+            {
+                break;
+            }
+        }
+
+        return new DeadLetterSearchResult(
+            profile.Id,
+            startedAt,
+            _timeProvider.GetUtcNow(),
+            sourceResults,
+            resultLimitReached);
+    }
+
+    private async Task<DeadLetterSearchSourceResult> SearchSubQueueAsync(
+        ServiceBusEntityReference source,
+        ServiceBusSubQueue subQueue,
+        DeadLetterSearchRequest request,
+        int remainingResultCapacity,
+        CancellationToken cancellationToken)
+    {
+        var matches = new List<BrowsedMessage>();
+        var scanned = 0;
+        try
+        {
+            var options = new ServiceBusReceiverOptions
+            {
+                ReceiveMode = ServiceBusReceiveMode.PeekLock,
+                PrefetchCount = 0,
+                SubQueue = subQueue switch
+                {
+                    ServiceBusSubQueue.DeadLetter => SubQueue.DeadLetter,
+                    ServiceBusSubQueue.TransferDeadLetter => SubQueue.TransferDeadLetter,
+                    _ => throw new ArgumentOutOfRangeException(nameof(subQueue), subQueue, "Unsupported search subqueue.")
+                }
+            };
+
+            await using var receiver = source.Kind switch
+            {
+                ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(source.Name, options),
+                ServiceBusEntityKind.Subscription => GetMessagingClient().CreateReceiver(
+                    source.TopicName!,
+                    source.Name,
+                    options),
+                _ => throw new ArgumentException("Only queues and subscriptions can be searched.", nameof(source))
+            };
+
+            long? fromSequenceNumber = null;
+            while (scanned < request.MaximumMessagesPerSubQueue && matches.Count < remainingResultCapacity)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var batchSize = Math.Min(request.BatchSize, request.MaximumMessagesPerSubQueue - scanned);
+                var messages = await receiver.PeekMessagesAsync(
+                        batchSize,
+                        fromSequenceNumber,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (messages.Count == 0)
+                {
+                    break;
+                }
+
+                scanned = checked(scanned + messages.Count);
+                foreach (var azureMessage in messages)
+                {
+                    var message = AzureMessageMapper.FromAzure(azureMessage, source, subQueue);
+                    if (DeadLetterSearchMatcher.IsMatch(message, request.Query))
+                    {
+                        matches.Add(message);
+                        if (matches.Count >= remainingResultCapacity)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                var lastSequenceNumber = messages.Max(message => message.SequenceNumber);
+                if (lastSequenceNumber == long.MaxValue ||
+                    (fromSequenceNumber.HasValue && lastSequenceNumber < fromSequenceNumber.Value))
+                {
+                    break;
+                }
+                fromSequenceNumber = lastSequenceNumber + 1;
+            }
+
+            return new DeadLetterSearchSourceResult(
+                source,
+                subQueue,
+                scanned,
+                Array.AsReadOnly(matches.ToArray()),
+                scanned >= request.MaximumMessagesPerSubQueue);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return new DeadLetterSearchSourceResult(
+                source,
+                subQueue,
+                scanned,
+                Array.AsReadOnly(matches.ToArray()),
+                Error: exception.GetBaseException().Message);
+        }
+    }
+
     public async Task SendMessageAsync(
         SendMessageRequest request,
         CancellationToken cancellationToken = default)
@@ -287,6 +434,125 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         }
 
         return SendMessageAsync(new SendMessageRequest(request.Destination, request.Message), cancellationToken);
+    }
+
+    public async Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
+        DeadLetterPurgeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
+        EnsureWriteAllowed();
+
+        var profile = GetConnectedProfile();
+        var startedAt = _timeProvider.GetUtcNow();
+        var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
+            .ConfigureAwait(false);
+        var results = new List<DeadLetterPurgeSourceResult>(
+            request.Sources.Count * request.SubQueues.Count);
+
+        foreach (var source in request.Sources)
+        {
+            foreach (var subQueue in request.SubQueues)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                results.Add(await PurgeSubQueueAsync(
+                        source,
+                        subQueue,
+                        request.BatchSize,
+                        request.MaximumMessagesPerSubQueue,
+                        backupSession,
+                        cancellationToken)
+                    .ConfigureAwait(false));
+            }
+        }
+
+        _cachedTopology = null;
+        foreach (var result in results.Where(result => result.IsSuccessful))
+        {
+            _previousDeadLetterCounts[$"{result.Source.Path}|{result.SubQueue}"] = 0;
+        }
+
+        return new DeadLetterPurgeResult(
+            profile.Id,
+            startedAt,
+            _timeProvider.GetUtcNow(),
+            results,
+            backupSession.RootDirectory);
+    }
+
+    private async Task<DeadLetterPurgeSourceResult> PurgeSubQueueAsync(
+        ServiceBusEntityReference source,
+        ServiceBusSubQueue subQueue,
+        int batchSize,
+        int maximumMessages,
+        DeadLetterJsonBackupSession backupSession,
+        CancellationToken cancellationToken)
+    {
+        var options = new ServiceBusReceiverOptions
+        {
+            ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            PrefetchCount = 0,
+            SubQueue = subQueue switch
+            {
+                ServiceBusSubQueue.DeadLetter => SubQueue.DeadLetter,
+                ServiceBusSubQueue.TransferDeadLetter => SubQueue.TransferDeadLetter,
+                _ => throw new ArgumentOutOfRangeException(nameof(subQueue), subQueue, "Unsupported purge subqueue.")
+            }
+        };
+
+        long deleted = 0;
+        try
+        {
+            await using var receiver = source.Kind switch
+            {
+                ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(source.Name, options),
+                ServiceBusEntityKind.Subscription => GetMessagingClient().CreateReceiver(
+                    source.TopicName!,
+                    source.Name,
+                    options),
+                _ => throw new ArgumentException(
+                    "Only queues and subscriptions can have dead letters purged.",
+                    nameof(source))
+            };
+
+            while (deleted < maximumMessages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var remaining = maximumMessages - deleted;
+                var receiveCount = (int)Math.Min(batchSize, remaining);
+                var messages = await receiver.ReceiveMessagesAsync(
+                        receiveCount,
+                        TimeSpan.FromMilliseconds(500),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (messages.Count == 0)
+                {
+                    return new DeadLetterPurgeSourceResult(source, subQueue, deleted);
+                }
+
+                foreach (var message in messages)
+                {
+                    await backupSession.BackupAsync(message, source, subQueue, cancellationToken)
+                        .ConfigureAwait(false);
+                    await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
+                    deleted++;
+                }
+            }
+
+            return new DeadLetterPurgeSourceResult(
+                source,
+                subQueue,
+                deleted,
+                Error: $"Safety limit of {maximumMessages:N0} messages was reached.",
+                LimitReached: true);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return new DeadLetterPurgeSourceResult(source, subQueue, deleted, exception.Message);
+        }
     }
 
     public async Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(

@@ -4,21 +4,21 @@ QueueLoom is a cross-platform desktop client for inspecting and operating Azure 
 
 Built with .NET 10 and Avalonia UI 12.1.1. Licensed under the [MIT License](LICENSE).
 
-> **Status:** QueueLoom 0.1.1 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
+> **Status:** QueueLoom 0.2.0 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
 
 ## Download
 
-- [QueueLoom 0.1.1 for Windows 11 x64](../../releases/download/v0.1.1/QueueLoom-0.1.1-windows-11-x64-self-contained.zip)
-- [SHA-256 checksum](../../releases/download/v0.1.1/QueueLoom-0.1.1-windows-11-x64-self-contained.zip.sha256)
-- [Release notes](../../releases/tag/v0.1.1)
+- [QueueLoom 0.2.0 for Windows 11 x64](../../releases/download/v0.2.0/QueueLoom-0.2.0-windows-11-x64-self-contained.zip)
+- [SHA-256 checksum](../../releases/download/v0.2.0/QueueLoom-0.2.0-windows-11-x64-self-contained.zip.sha256)
+- [Release notes](../../releases/tag/v0.2.0)
 
 The Windows package is self-contained and does not require a separate .NET installation. It is not Authenticode-signed, so Windows may show an unknown-publisher warning.
 
 Verify the downloaded archive in PowerShell:
 
 ```powershell
-(Get-FileHash .\QueueLoom-0.1.1-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-Get-Content .\QueueLoom-0.1.1-windows-11-x64-self-contained.zip.sha256
+(Get-FileHash .\QueueLoom-0.2.0-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\QueueLoom-0.2.0-windows-11-x64-self-contained.zip.sha256
 ```
 
 ## Features
@@ -29,6 +29,8 @@ Get-Content .\QueueLoom-0.1.1-windows-11-x64-self-contained.zip.sha256
 - Browse queues, topics, and subscriptions with runtime message counters.
 - Peek active, dead-letter, and transfer dead-letter messages without settling them.
 - Scan dead-letter counts in one entity or every saved environment, then filter global results by environment.
+- Search dead letters across the selected environment scope by Correlation ID, Message ID, subject, body, or application property and view matches as an oldest-first timeline.
+- Back up messages as full local JSON files and then purge both DLQs for one queue/subscription, every subscription under a topic, or one connected environment.
 - Compose new messages with text, JSON, or Base64 bodies and typed application properties.
 - Open a peeked message as an editable draft and send a copy to a queue or topic.
 - Monitor dead-letter counts on a timer from 15 seconds to 24 hours.
@@ -38,10 +40,13 @@ Get-Content .\QueueLoom-0.1.1-windows-11-x64-self-contained.zip.sha256
 
 - Connection strings are kept outside environment profiles and encrypted with AES-256-GCM.
 - The random encryption key is protected by Windows DPAPI, macOS Keychain, or Linux Secret Service. It is not stored in the source code.
-- Production profiles are saved as read-only. Sending requires a temporary 10-minute unlock and explicit confirmation.
+- Production profiles are saved as read-only. Sending or purging requires a temporary 10-minute write unlock.
 - Peek does not settle messages. Resubmitting a dead-letter message sends a new copy and leaves the original in the DLQ.
 - The inspector retains at most 1 MiB of a peeked body, and truncated messages cannot be opened as editable drafts.
-- QueueLoom does not purge, complete, defer, or automatically remove messages.
+- DLQ search is a bounded client-side peek: it inspects up to 2,000 messages per subqueue, returns up to 500 matches, and clearly marks incomplete results.
+- Purge starts immediately when a backup-and-purge button is clicked. Each message is settled only after its complete JSON backup has been written successfully.
+- Backups are stored under the operating system's local application-data directory in `QueueLoom/backups`, grouped by UTC date, environment, entity, and DLQ type.
+- Backup JSON files contain full message bodies and properties in plain text/Base64. Protect and remove them according to your data-retention policy.
 
 These safeguards do not replace Azure RBAC or SAS permissions. Use least-privilege credentials and review every destination before sending.
 
@@ -85,7 +90,7 @@ dotnet run --project src/QueueLoom.App/QueueLoom.App.csproj
 - Monitoring runs only while the desktop application is open.
 - There are no desktop notifications, automatic updates, or persistent audit history.
 - QueueLoom cannot create, edit, or delete queues, topics, or subscriptions.
-- Message settlement and destructive DLQ move operations are not implemented.
+- Automatic restore from local purge backups is not implemented; backup JSON files can be inspected or used to reconstruct messages manually.
 - Session, partitioning, and duplicate-detection scenarios require environment-specific testing.
 
 ## License

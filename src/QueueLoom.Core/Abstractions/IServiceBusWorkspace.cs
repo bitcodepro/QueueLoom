@@ -22,12 +22,20 @@ public interface IServiceBusWorkspace : IAsyncDisposable
         BrowseMessagesRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<DeadLetterSearchResult> SearchDeadLettersAsync(
+        DeadLetterSearchRequest request,
+        CancellationToken cancellationToken = default);
+
     Task SendMessageAsync(
         SendMessageRequest request,
         CancellationToken cancellationToken = default);
 
     Task ResubmitDeadLetterAsync(
         ResubmitDeadLetterRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
+        DeadLetterPurgeRequest request,
         CancellationToken cancellationToken = default);
 
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
