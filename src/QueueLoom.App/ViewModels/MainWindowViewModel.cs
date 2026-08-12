@@ -40,7 +40,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private ProfileItemViewModel? _selectedProfile;
     private ServiceBusProfile? _connectedProfile;
     private EntityItemViewModel? _selectedEntity;
+    private DeadLetterEnvironmentFilterItemViewModel? _selectedDeadLetterEnvironmentFilter;
     private DlqSourceItemViewModel? _selectedDlqSource;
+    private Guid? _preferredDlqSourceProfileId;
+    private ServiceBusEntityReference? _preferredDlqSourceEntity;
+    private ServiceBusSubQueue? _preferredDlqSourceSubQueue;
     private MessageItemViewModel? _selectedMessage;
     private DestinationItemViewModel? _selectedDestination;
     private BrowsedMessage? _draftSourceMessage;
@@ -160,6 +164,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         UnlockWritesCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Unlocking writes", UnlockWritesAsync, token),
             () => !IsBusy && IsConnected && !CanWrite);
+
+        RefreshDeadLetterEnvironmentFilters();
     }
 
     public IReadOnlyList<NavigationItem> Navigation { get; }
@@ -169,6 +175,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<EntityItemViewModel> Entities { get; } = [];
 
     public ObservableCollection<DlqSourceItemViewModel> DeadLetterSources { get; } = [];
+
+    public ObservableCollection<DlqSourceItemViewModel> FilteredDeadLetterSources { get; } = [];
+
+    public ObservableCollection<DeadLetterEnvironmentFilterItemViewModel> DeadLetterEnvironmentFilters { get; } = [];
 
     public ObservableCollection<MessageItemViewModel> Messages { get; } = [];
 
@@ -237,6 +247,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 OnPropertyChanged(nameof(HasSelectedProfile));
                 OnPropertyChanged(nameof(SelectedProfileName));
+                OnPropertyChanged(nameof(IsSelectedProfileConnected));
                 NotifyCommandStates();
             }
         }
@@ -245,6 +256,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public bool HasSelectedProfile => SelectedProfile is not null;
 
     public string SelectedProfileName => SelectedProfile?.Name ?? "No environment selected";
+
+    public bool IsSelectedProfileConnected => SelectedProfile?.IsConnected == true;
+
+    public DeadLetterEnvironmentFilterItemViewModel? SelectedDeadLetterEnvironmentFilter
+    {
+        get => _selectedDeadLetterEnvironmentFilter;
+        set
+        {
+            if (value is not null && SetProperty(ref _selectedDeadLetterEnvironmentFilter, value))
+            {
+                ApplyDeadLetterEnvironmentFilter();
+            }
+        }
+    }
 
     public EntityItemViewModel? SelectedEntity
     {
@@ -269,6 +294,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref _selectedDlqSource, value))
             {
+                if (value is not null)
+                {
+                    _preferredDlqSourceProfileId = value.ProfileId;
+                    _preferredDlqSourceEntity = value.Entity;
+                    _preferredDlqSourceSubQueue = value.Snapshot.SubQueue;
+                }
                 OnPropertyChanged(nameof(HasSelectedDlqSource));
                 OnPropertyChanged(nameof(MonitorTargetPreview));
                 NotifyCommandStates();
@@ -339,7 +370,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsConnected => _workspace.ConnectionState == WorkspaceConnectionState.Connected;
 
-    public string ConnectionLabel => IsConnected ? "CONNECTED" : "OFFLINE";
+    public Guid? ConnectedProfileId => IsConnected ? _workspace.ConnectedProfileId : null;
+
+    public string ConnectedProfileName => IsConnected
+        ? _connectedProfile?.Name ?? "Connected environment"
+        : "No environment connected";
+
+    public string ConnectionLabel => IsConnected
+        ? $"CONNECTED · {_connectedProfile?.Name ?? "environment"}"
+        : "OFFLINE";
 
     public string ConnectionColor => IsConnected ? "#4ADE9D" : "#91A5BD";
 
@@ -387,7 +426,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public long ActiveMessageCount => _topology?.AggregateMessageCounts.Active ?? 0;
     public long DeadLetterCount => (_topology?.AggregateMessageCounts.DeadLetter ?? 0)
                                    + (_topology?.AggregateMessageCounts.TransferDeadLetter ?? 0);
-    public long VisibleDlqSourceCount => DeadLetterSources.Sum(source => source.Count);
+    public long GlobalDlqSourceCount => DeadLetterSources.Sum(source => source.Count);
+
+    public long VisibleDlqSourceCount => FilteredDeadLetterSources.Sum(source => source.Count);
+
+    public int VisibleDlqSourceRowCount => FilteredDeadLetterSources.Count;
 
     public bool IsMonitoring
     {
@@ -718,6 +761,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             Profiles.Add(new ProfileItemViewModel(profile));
         }
         SelectedProfile = Profiles.FirstOrDefault(item => item.Id == selectedId) ?? Profiles.FirstOrDefault();
+        UpdateProfileConnectionStates();
+        RefreshDeadLetterEnvironmentFilters();
         NotifyCommandStates();
     }
 
@@ -856,6 +901,51 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             : Entities.FirstOrDefault(item => item.Reference == selection) ?? Entities.FirstOrDefault();
     }
 
+    private void RefreshDeadLetterEnvironmentFilters()
+    {
+        var selectedProfileId = SelectedDeadLetterEnvironmentFilter?.ProfileId;
+
+        DeadLetterEnvironmentFilters.Clear();
+        DeadLetterEnvironmentFilters.Add(new DeadLetterEnvironmentFilterItemViewModel(
+            null,
+            "All environments",
+            "ALL",
+            "#91A5BD"));
+        foreach (var profile in Profiles)
+        {
+            DeadLetterEnvironmentFilters.Add(new DeadLetterEnvironmentFilterItemViewModel(
+                profile.Id,
+                profile.Name,
+                profile.EnvironmentLabel,
+                profile.EnvironmentColor));
+        }
+
+        SelectedDeadLetterEnvironmentFilter = DeadLetterEnvironmentFilters
+            .FirstOrDefault(filter => filter.ProfileId == selectedProfileId)
+            ?? DeadLetterEnvironmentFilters[0];
+    }
+
+    private void ApplyDeadLetterEnvironmentFilter()
+    {
+        var filter = SelectedDeadLetterEnvironmentFilter;
+        FilteredDeadLetterSources.Clear();
+        foreach (var source in DeadLetterSources.Where(source => filter?.Matches(source) != false))
+        {
+            FilteredDeadLetterSources.Add(source);
+        }
+
+        SelectedDlqSource = _preferredDlqSourceProfileId.HasValue &&
+                            _preferredDlqSourceEntity is not null &&
+                            _preferredDlqSourceSubQueue.HasValue
+            ? FilteredDeadLetterSources.FirstOrDefault(item =>
+                item.ProfileId == _preferredDlqSourceProfileId.Value &&
+                item.Entity == _preferredDlqSourceEntity &&
+                item.Snapshot.SubQueue == _preferredDlqSourceSubQueue.Value)
+            : null;
+        OnPropertyChanged(nameof(VisibleDlqSourceCount));
+        OnPropertyChanged(nameof(VisibleDlqSourceRowCount));
+    }
+
     private async Task ScanCurrentEnvironmentAsync(CancellationToken cancellationToken)
     {
         var profile = GetConnectedProfileItem();
@@ -888,6 +978,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var connectedProfileBeforeScan = _connectedProfile;
         _lastDlqMeasurements.Clear();
         DeadLetterSources.Clear();
+        ApplyDeadLetterEnvironmentFilter();
         var preferredProfileId = connectedProfileBeforeScan?.Id ?? SelectedProfile?.Id;
         var scanFailures = 0;
         var successfulEnvironments = 0;
@@ -1053,10 +1144,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ServiceBusEntityReference? selectedEntity,
         ServiceBusSubQueue? selectedSubQueue)
     {
+        if (selectedProfileId.HasValue && selectedEntity is not null && selectedSubQueue.HasValue)
+        {
+            _preferredDlqSourceProfileId = selectedProfileId;
+            _preferredDlqSourceEntity = selectedEntity;
+            _preferredDlqSourceSubQueue = selectedSubQueue;
+        }
+
         var sorted = DeadLetterSources
-            .OrderByDescending(item => item.Count)
-            .ThenBy(item => item.ProfileName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.EntityPath, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(item => item.ProfileName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.EnvironmentLabel, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.IsSubscription)
+            .ThenBy(item => item.ParentTopicName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.EntityName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Snapshot.SubQueue)
             .ToArray();
         DeadLetterSources.Clear();
         foreach (var item in sorted)
@@ -1064,12 +1165,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             DeadLetterSources.Add(item);
         }
 
-        SelectedDlqSource = selectedProfileId.HasValue && selectedEntity is not null && selectedSubQueue.HasValue
-            ? DeadLetterSources.FirstOrDefault(item =>
-                item.ProfileId == selectedProfileId.Value &&
-                item.Entity == selectedEntity &&
-                item.Snapshot.SubQueue == selectedSubQueue.Value)
-            : null;
+        ApplyDeadLetterEnvironmentFilter();
     }
 
     private Task BrowseSelectedEntityAsync(ServiceBusSubQueue subQueue, CancellationToken cancellationToken)
@@ -1734,6 +1830,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             DeadLetterSources.Remove(source);
         }
+        if (_preferredDlqSourceProfileId == profileId)
+        {
+            _preferredDlqSourceProfileId = null;
+            _preferredDlqSourceEntity = null;
+            _preferredDlqSourceSubQueue = null;
+        }
+        ApplyDeadLetterEnvironmentFilter();
 
         var keyPrefix = $"{profileId:N}|";
         foreach (var key in _previousDlqCounts.Keys.Where(key => key.StartsWith(keyPrefix, StringComparison.Ordinal)).ToArray())
@@ -1792,10 +1895,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void NotifyConnectionState()
     {
+        UpdateProfileConnectionStates();
         OnPropertyChanged(nameof(IsConnected));
+        OnPropertyChanged(nameof(ConnectedProfileId));
+        OnPropertyChanged(nameof(ConnectedProfileName));
         OnPropertyChanged(nameof(ConnectionLabel));
         OnPropertyChanged(nameof(ConnectionColor));
         OnPropertyChanged(nameof(ConnectedNamespace));
+        OnPropertyChanged(nameof(IsSelectedProfileConnected));
         OnPropertyChanged(nameof(CanWrite));
         OnPropertyChanged(nameof(CanUnlockWrites));
         OnPropertyChanged(nameof(HasDraftEnvironmentMismatch));
@@ -1806,6 +1913,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         NotifyCommandStates();
     }
 
+    private void UpdateProfileConnectionStates()
+    {
+        var connectedProfileId = IsConnected ? _workspace.ConnectedProfileId : null;
+        foreach (var profile in Profiles)
+        {
+            profile.UpdateConnectionState(profile.Id == connectedProfileId);
+        }
+    }
+
     private void NotifyStatistics()
     {
         OnPropertyChanged(nameof(QueueCount));
@@ -1813,7 +1929,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SubscriptionCount));
         OnPropertyChanged(nameof(ActiveMessageCount));
         OnPropertyChanged(nameof(DeadLetterCount));
+        OnPropertyChanged(nameof(GlobalDlqSourceCount));
         OnPropertyChanged(nameof(VisibleDlqSourceCount));
+        OnPropertyChanged(nameof(VisibleDlqSourceRowCount));
         OnPropertyChanged(nameof(LastUpdatedText));
     }
 

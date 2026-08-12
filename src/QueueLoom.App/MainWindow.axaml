@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="using:Avalonia.Data.Converters"
         xmlns:models="using:QueueLoom.App.Models"
         xmlns:vm="using:QueueLoom.App.ViewModels"
         x:Class="QueueLoom.App.MainWindow"
@@ -80,6 +81,10 @@
                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
                     <TextBlock Text="{Binding EnvironmentLabel}" Classes="muted" FontSize="10" />
                   </StackPanel>
+                  <TextBlock Grid.Column="3" Text="CONNECTED" Classes="eyebrow"
+                             Foreground="{DynamicResource SuccessBrush}"
+                             VerticalAlignment="Center" Margin="8,0,0,0"
+                             IsVisible="{Binding IsConnected}" />
                 </Grid>
               </DataTemplate>
             </ComboBox.ItemTemplate>
@@ -157,7 +162,7 @@
                     <Grid ColumnDefinitions="*,Auto">
                       <StackPanel Spacing="4">
                         <TextBlock Text="Current environment" FontSize="19" FontWeight="SemiBold" />
-                        <TextBlock Text="{Binding SelectedProfileName}" Classes="muted" />
+                        <TextBlock Text="{Binding ConnectedProfileName}" Classes="muted" />
                       </StackPanel>
                       <Border Grid.Column="1" Background="#102A2A" CornerRadius="20" Padding="12,6">
                         <TextBlock Text="{Binding ConnectionLabel}" Classes="eyebrow" Foreground="{Binding ConnectionColor}" />
@@ -181,7 +186,7 @@
                     <TextBlock Text="Global DLQ radar" FontSize="19" FontWeight="SemiBold" />
                     <TextBlock Text="Enumerates counters in every saved environment. It never receives, locks or changes a message."
                                Classes="muted" TextWrapping="Wrap" />
-                    <TextBlock Text="{Binding VisibleDlqSourceCount}" FontSize="40" FontWeight="SemiBold"
+                    <TextBlock Text="{Binding GlobalDlqSourceCount}" FontSize="40" FontWeight="SemiBold"
                                Foreground="{DynamicResource WarningBrush}" />
                     <TextBlock Text="messages found by the latest scan" Classes="muted" />
                     <Button Content="Scan all environments" Classes="primary" Command="{Binding ScanAllEnvironmentsCommand}" HorizontalAlignment="Left" />
@@ -205,24 +210,28 @@
 
           <!-- Explorer -->
           <Grid IsVisible="{Binding IsExplorerVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
-            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+            <Grid Grid.Row="0" RowDefinitions="Auto,10,Auto">
               <StackPanel Spacing="5">
                 <TextBlock Text="Namespace explorer" FontSize="27" FontWeight="SemiBold" />
                 <TextBlock Text="Queues, topics, subscriptions and live runtime counters." Classes="muted" />
+                <TextBlock x:Name="ExplorerCopyStatus"
+                           Text="Tip: double-click an entity name to copy it."
+                           Classes="muted" FontSize="10" TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Polite" />
               </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
-                <TextBox Width="235" Text="{Binding SearchText}" PlaceholderText="Filter entities…" />
-                <Button Content="Refresh" Classes="quiet" Command="{Binding RefreshTopologyCommand}" />
-                <Button Content="Peek active" Classes="quiet" Command="{Binding BrowseSelectedActiveCommand}" />
-                <Button Content="Peek DLQ" Classes="danger" Command="{Binding BrowseSelectedDeadLettersCommand}" />
-                <Button Content="Transfer DLQ" Classes="danger" Command="{Binding BrowseSelectedTransferDeadLettersCommand}" />
-              </StackPanel>
+              <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto">
+                <TextBox Grid.Column="0" MinWidth="150" Text="{Binding SearchText}" PlaceholderText="Filter entities…" />
+                <Button Grid.Column="2" Content="Refresh" Classes="quiet" Command="{Binding RefreshTopologyCommand}" />
+                <Button Grid.Column="4" Content="Peek active" Classes="quiet" Command="{Binding BrowseSelectedActiveCommand}" />
+                <Button Grid.Column="6" Content="Peek DLQ" Classes="danger" Command="{Binding BrowseSelectedDeadLettersCommand}" />
+                <Button Grid.Column="8" Content="Transfer DLQ" Classes="danger" Command="{Binding BrowseSelectedTransferDeadLettersCommand}" />
+              </Grid>
             </Grid>
 
             <Border Grid.Row="2" Classes="card" Padding="0" ClipToBounds="True">
               <Grid RowDefinitions="44,*">
                 <Border Background="#14243A" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1" Padding="16,0">
-                  <Grid ColumnDefinitions="110,*,100,90,90,90,110">
+                  <Grid ColumnDefinitions="104,*,72,60,52,72,88">
                     <TextBlock Text="TYPE" Classes="eyebrow" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="1" Text="ENTITY" Classes="eyebrow" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="2" Text="STATUS" Classes="eyebrow" VerticalAlignment="Center" />
@@ -236,13 +245,19 @@
                          IsEnabled="{Binding !IsBusy}">
                   <ListBox.ItemTemplate>
                     <DataTemplate x:DataType="vm:EntityItemViewModel">
-                      <Grid ColumnDefinitions="110,*,100,90,90,90,110" MinHeight="43">
+                      <Grid ColumnDefinitions="104,*,72,60,52,72,88" MinHeight="43">
                         <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
-                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                     TextTrimming="CharacterEllipsis" Cursor="Hand"
+                                     DoubleTapped="OnEntityNameDoubleTapped"
+                                     ToolTip.Tip="Double-click to copy the entity name"
+                                     AutomationProperties.Name="{Binding Name}"
+                                     AutomationProperties.HelpText="Double-click to copy the entity name" />
                           <TextBlock Text="{Binding ParentPath}" Classes="muted" FontSize="10" />
                         </StackPanel>
-                        <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" Classes="muted" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" Classes="muted"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         <TextBlock Grid.Column="3" Text="{Binding Active}" VerticalAlignment="Center" HorizontalAlignment="Right" />
                         <TextBlock Grid.Column="4" Text="{Binding DeadLetters}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource DangerBrush}" />
                         <TextBlock Grid.Column="5" Text="{Binding TransferDeadLetters}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource WarningBrush}" />
@@ -270,20 +285,60 @@
 
             <Grid Grid.Row="2" ColumnDefinitions="330,14,*">
               <Border Grid.Column="0" Classes="card" Padding="10">
-                <Grid RowDefinitions="Auto,8,*,Auto">
+                <Grid RowDefinitions="Auto,8,Auto,8,*,Auto">
                   <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="6,4">
                     <TextBlock Text="Sources with messages / errors" FontWeight="SemiBold" />
-                    <TextBlock Grid.Column="1" Text="{Binding VisibleDlqSourceCount}" Foreground="{DynamicResource WarningBrush}" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{Binding VisibleDlqSourceRowCount}" Foreground="{DynamicResource WarningBrush}" FontWeight="SemiBold" />
                   </Grid>
-                  <ListBox Grid.Row="2" ItemsSource="{Binding DeadLetterSources}" SelectedItem="{Binding SelectedDlqSource}"
+                  <ComboBox Grid.Row="2"
+                            ItemsSource="{Binding DeadLetterEnvironmentFilters}"
+                            SelectedItem="{Binding SelectedDeadLetterEnvironmentFilter}"
+                            IsEnabled="{Binding !IsBusy}"
+                            AutomationProperties.Name="Filter dead-letter sources by environment">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:DeadLetterEnvironmentFilterItemViewModel">
+                        <Grid ColumnDefinitions="8,8,*,Auto" MinWidth="245">
+                          <Border Width="7" Height="7" CornerRadius="4"
+                                  Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Column="2" Text="{Binding Name}" FontWeight="SemiBold"
+                                     TextTrimming="CharacterEllipsis" />
+                          <TextBlock Grid.Column="3" Text="{Binding EnvironmentLabel}" Classes="eyebrow"
+                                     Margin="8,0,0,0" />
+                        </Grid>
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <ListBox Grid.Row="4" ItemsSource="{Binding FilteredDeadLetterSources}" SelectedItem="{Binding SelectedDlqSource}"
                            IsEnabled="{Binding !IsBusy}">
                     <ListBox.ItemTemplate>
                       <DataTemplate x:DataType="vm:DlqSourceItemViewModel">
-                        <Grid ColumnDefinitions="8,10,*,Auto" MinHeight="62">
+                        <Grid ColumnDefinitions="8,10,*,Auto" MinHeight="72">
                           <Border Grid.Column="0" Width="7" Height="7" CornerRadius="4"
                                   Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
-                          <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="{Binding EntityPath}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                          <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="4"
+                                      ToolTip.Tip="{Binding EntityPath}">
+                            <Grid ColumnDefinitions="Auto,8,*">
+                              <Border Background="#14243A" BorderBrush="{DynamicResource HairlineBrush}"
+                                      BorderThickness="1" CornerRadius="9" Padding="7,3"
+                                      VerticalAlignment="Top">
+                                <TextBlock Text="{Binding EntityKind}" Classes="eyebrow" FontSize="9" />
+                              </Border>
+                              <Grid Grid.Column="2">
+                                <TextBlock Text="{Binding Entity.Name}" FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"
+                                           IsVisible="{Binding Entity.TopicName, Converter={x:Static converters:ObjectConverters.IsNull}}" />
+                                <StackPanel Spacing="1"
+                                            IsVisible="{Binding Entity.TopicName, Converter={x:Static converters:ObjectConverters.IsNotNull}}">
+                                  <TextBlock Text="{Binding Entity.TopicName}" Classes="muted" FontSize="10"
+                                             TextTrimming="CharacterEllipsis" />
+                                  <StackPanel Orientation="Horizontal" Spacing="5" Margin="10,0,0,0">
+                                    <TextBlock Text="›" Foreground="{DynamicResource AccentBrush}" FontWeight="Bold" />
+                                    <TextBlock Text="{Binding Entity.Name}" FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" />
+                                  </StackPanel>
+                                </StackPanel>
+                              </Grid>
+                            </Grid>
                             <StackPanel Orientation="Horizontal" Spacing="7">
                               <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow" />
                               <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow" Foreground="{DynamicResource DangerBrush}" />
@@ -303,7 +358,7 @@
                       </DataTemplate>
                     </ListBox.ItemTemplate>
                   </ListBox>
-                  <Button Grid.Row="3" Content="Peek selected source" Classes="quiet" Margin="5"
+                  <Button Grid.Row="5" Content="Peek selected source" Classes="quiet" Margin="5"
                           Command="{Binding BrowseDlqSourceCommand}" />
                 </Grid>
               </Border>
@@ -353,14 +408,14 @@
                     <TabControl Grid.Row="2">
                       <TabItem Header="Body">
                         <TextBox Text="{Binding SelectedMessage.BodyText}" IsReadOnly="True" AcceptsReturn="True"
-                                 TextWrapping="NoWrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto" />
                       </TabItem>
                       <TabItem Header="Properties">
                         <TextBox Text="{Binding SelectedMessage.ApplicationPropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
-                                 FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto" />
                       </TabItem>
                       <TabItem Header="Dead-letter reason">
@@ -398,10 +453,10 @@
                       <ComboBox Grid.Column="1" ItemsSource="{Binding MessageBodyFormats}" SelectedItem="{Binding DraftBodyFormat}" />
                     </Grid>
                   </Border>
-                  <TextBox Grid.Row="1" Text="{Binding DraftBody}" AcceptsReturn="True" TextWrapping="NoWrap"
+                  <TextBox Grid.Row="1" Text="{Binding DraftBody}" AcceptsReturn="True" TextWrapping="Wrap"
                            Background="#0B1422" BorderThickness="0" CornerRadius="0" Padding="18"
                            FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="13"
-                           ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                            ScrollViewer.VerticalScrollBarVisibility="Auto" />
                 </Grid>
               </Border>
@@ -465,8 +520,8 @@
                       <TextBlock Text="TYPED APPLICATION PROPERTIES" Classes="eyebrow" />
                       <TextBlock Text="Format: { property: { type: String, value: text } }" Classes="muted" FontSize="11" />
                       <TextBox Text="{Binding DraftApplicationProperties}" AcceptsReturn="True" MinHeight="150"
-                               FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
-                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                               TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                ScrollViewer.VerticalScrollBarVisibility="Auto" />
                     </StackPanel>
 
@@ -580,7 +635,7 @@
                        IsEnabled="{Binding !IsBusy}">
                 <ListBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:ProfileItemViewModel">
-                    <Grid ColumnDefinitions="10,14,1.2*,1.5*,1.3*,120" MinHeight="70">
+                    <Grid ColumnDefinitions="10,14,1.2*,1.5*,1.3*,120,112" MinHeight="70">
                       <Border Grid.Column="0" Width="8" Height="42" CornerRadius="4" Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
                       <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">
                         <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" />
@@ -599,6 +654,16 @@
                           <TextBlock Text="READ ONLY" Classes="eyebrow" IsVisible="{Binding IsReadOnly}" />
                           <TextBlock Text="READ / WRITE" Classes="eyebrow" Foreground="{DynamicResource WarningBrush}" IsVisible="{Binding !IsReadOnly}" />
                         </Grid>
+                      </Border>
+                      <Border Grid.Column="6" Background="#101D2F" BorderBrush="{DynamicResource HairlineBrush}"
+                              BorderThickness="1" CornerRadius="20" Padding="10,6"
+                              HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <Border Width="7" Height="7" CornerRadius="4" Background="{Binding ConnectionColor}"
+                                  VerticalAlignment="Center" />
+                          <TextBlock Text="{Binding ConnectionLabel}" Classes="eyebrow"
+                                     Foreground="{Binding ConnectionColor}" VerticalAlignment="Center" />
+                        </StackPanel>
                       </Border>
                     </Grid>
                   </DataTemplate>
