@@ -24,7 +24,15 @@ public sealed class DlqSourceItemViewModel(
 
     public string EntityPath => Entity.DisplayName;
 
-    public string EntityKind => Entity.Kind == ServiceBusEntityKind.Queue ? "Queue" : "Subscription";
+    public string ParentTopicName => Entity.TopicName ?? string.Empty;
+
+    public string EntityName => Entity.Name;
+
+    public bool IsQueue => Entity.Kind == ServiceBusEntityKind.Queue;
+
+    public bool IsSubscription => Entity.Kind == ServiceBusEntityKind.Subscription;
+
+    public string EntityKind => IsQueue ? "Queue" : "Subscription";
 
     public string SubQueueLabel => Snapshot.SubQueue == ServiceBusSubQueue.TransferDeadLetter
         ? "TRANSFER DLQ"

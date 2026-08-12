@@ -1,4 +1,6 @@
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Input.Platform;
 using QueueLoom.App.Services;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Infrastructure.Azure;
@@ -46,6 +48,33 @@ public sealed partial class MainWindow : Window
         _initialized = true;
         _initializationTask = _viewModel.InitializeAsync();
         await _initializationTask;
+    }
+
+    private async void OnEntityNameDoubleTapped(object? sender, TappedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: EntityItemViewModel entity })
+        {
+            return;
+        }
+
+        var name = entity.Name;
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel((Control)sender)?.Clipboard;
+            if (clipboard is null)
+            {
+                ExplorerCopyStatus.Text = "Clipboard is unavailable; the entity name was not copied.";
+                return;
+            }
+
+            await clipboard.SetTextAsync(name);
+            ExplorerCopyStatus.Text = $"Copied {entity.KindLabel.ToLowerInvariant()} name: {name}";
+        }
+        catch
+        {
+            ExplorerCopyStatus.Text = "Could not copy the entity name to the clipboard.";
+        }
     }
 
     private async void OnClosing(object? sender, WindowClosingEventArgs args)
