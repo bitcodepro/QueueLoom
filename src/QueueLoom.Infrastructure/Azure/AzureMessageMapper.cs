@@ -95,7 +95,7 @@ internal static class AzureMessageMapper
         return message;
     }
 
-    private static MessageApplicationProperty ToDomainProperty(KeyValuePair<string, object> property)
+    internal static MessageApplicationProperty ToDomainProperty(KeyValuePair<string, object> property)
     {
         var (type, value) = property.Value switch
         {

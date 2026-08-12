@@ -4,6 +4,7 @@ using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using System.Text;
 
 namespace QueueLoom.Tests;
 
@@ -127,19 +128,116 @@ public sealed class ViewModelStateTests
         Assert.Equal("billing", subscription.EntityName);
     }
 
+    [Fact]
+    public async Task PurgeCommands_ResolveEnvironmentTopicAndSelectedEntityScopes()
+    {
+        var dev = CreateProfile(
+            "Development",
+            EnvironmentKind.Development,
+            ProfileAccessMode.ReadWrite);
+        var queue = new ServiceBusQueue("jobs", ServiceBusEntityRuntime.Empty);
+        var billing = new ServiceBusSubscription("orders", "billing", ServiceBusEntityRuntime.Empty);
+        var shipping = new ServiceBusSubscription("orders", "shipping", ServiceBusEntityRuntime.Empty);
+        var topic = new ServiceBusTopic(
+            "orders",
+            ServiceBusEntityRuntime.Empty,
+            [billing, shipping]);
+        var repository = new FakeProfileRepository([dev], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [queue], [topic]),
+            Snapshots =
+            {
+                [dev.Id] = Snapshot(
+                    dev.Id,
+                    new DeadLetterEntitySnapshot(queue.Reference, 2),
+                    new DeadLetterEntitySnapshot(billing.Reference, 3),
+                    new DeadLetterEntitySnapshot(shipping.Reference, 4))
+            }
+        };
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(repository, workspace, dialogs);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
+        viewModel.SelectedDeadLetterEnvironmentFilter = Assert.Single(
+            viewModel.DeadLetterEnvironmentFilters,
+            filter => filter.ProfileId == dev.Id);
+
+        await viewModel.PurgeEnvironmentDeadLettersCommand.ExecuteAsync();
+        Assert.Equal(3, workspace.PurgeRequests[0].Sources.Count);
+        Assert.Empty(dialogs.Confirmations);
+
+        viewModel.SelectedDlqSource = Assert.Single(
+            viewModel.FilteredDeadLetterSources,
+            source => source.Entity == billing.Reference);
+        await viewModel.PurgeTopicDeadLettersCommand.ExecuteAsync();
+        Assert.Equal(
+            [billing.Reference, shipping.Reference],
+            workspace.PurgeRequests[1].Sources);
+
+        viewModel.SelectedDlqSource = Assert.Single(
+            viewModel.FilteredDeadLetterSources,
+            source => source.Entity == queue.Reference);
+        await viewModel.PurgeSelectedDeadLettersCommand.ExecuteAsync();
+        Assert.Equal([queue.Reference], workspace.PurgeRequests[2].Sources);
+        Assert.Empty(dialogs.Confirmations);
+    }
+
+    [Fact]
+    public async Task DeadLetterSearch_UsesEnvironmentFilterBuildsTimelineAndRestoresConnection()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var queue = new ServiceBusQueue("orders", ServiceBusEntityRuntime.Empty);
+        var repository = new FakeProfileRepository([dev, test], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [queue]),
+            SearchMatches =
+            {
+                [dev.Id] = [SearchMessage(queue.Reference, 2, "2026-08-12T11:00:00Z")],
+                [test.Id] = [SearchMessage(queue.Reference, 1, "2026-08-12T10:00:00Z")]
+            }
+        };
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.DeadLetterSearchQuery = "correlation-42";
+        await viewModel.SearchDeadLettersCommand.ExecuteAsync();
+
+        Assert.Equal(dev.Id, viewModel.ConnectedProfileId);
+        Assert.Equal([test.Id, dev.Id], viewModel.Messages.Select(message => message.ProfileId));
+        Assert.Equal([1L, 2L], viewModel.Messages.Select(message => message.SequenceNumber));
+        Assert.All(workspace.SearchRequests, request => Assert.Equal("correlation-42", request.Query));
+        Assert.Contains("oldest first", viewModel.DeadLetterSearchStatus, StringComparison.OrdinalIgnoreCase);
+
+        viewModel.SelectedMessage = viewModel.Messages[0];
+        Assert.False(viewModel.CanOpenSelectedMessageAsDraft);
+        viewModel.SelectedMessage = viewModel.Messages[1];
+        Assert.True(viewModel.CanOpenSelectedMessageAsDraft);
+    }
+
     private static MainWindowViewModel CreateViewModel(
         IProfileRepository repository,
-        IServiceBusWorkspace workspace) =>
-        new(repository, new FakeSecretVault(), workspace, new FakeDialogService());
+        IServiceBusWorkspace workspace,
+        IUserDialogService? dialogs = null) =>
+        new(repository, new FakeSecretVault(), workspace, dialogs ?? new FakeDialogService());
 
-    private static ServiceBusProfile CreateProfile(string name, EnvironmentKind environment) =>
+    private static ServiceBusProfile CreateProfile(
+        string name,
+        EnvironmentKind environment,
+        ProfileAccessMode accessMode = ProfileAccessMode.ReadOnly) =>
         new(
             Guid.NewGuid(),
             name,
             environment,
             null,
             $"{name.ToLowerInvariant()}.servicebus.windows.net",
-            AuthenticationSettings.Entra());
+            AuthenticationSettings.Entra(),
+            accessMode);
 
     private static DeadLetterSnapshot Snapshot(Guid profileId, params DeadLetterEntitySnapshot[] entities) =>
         new(profileId, DateTimeOffset.UtcNow, entities);
@@ -151,6 +249,18 @@ public sealed class ViewModelStateTests
             "DEV",
             "#2DD4BF",
             new DeadLetterEntitySnapshot(entity, 1));
+
+    private static BrowsedMessage SearchMessage(
+        ServiceBusEntityReference source,
+        long sequenceNumber,
+        string enqueuedAt) =>
+        new(
+            source,
+            ServiceBusSubQueue.DeadLetter,
+            sequenceNumber,
+            Encoding.UTF8.GetBytes("correlation-42"),
+            new EditableMessageProperties(CorrelationId: "correlation-42"),
+            enqueuedAt: DateTimeOffset.Parse(enqueuedAt));
 
     private sealed class FakeProfileRepository(
         IReadOnlyList<ServiceBusProfile> profiles,
@@ -204,6 +314,14 @@ public sealed class ViewModelStateTests
     {
         public Dictionary<Guid, DeadLetterSnapshot> Snapshots { get; } = [];
 
+        public List<DeadLetterPurgeRequest> PurgeRequests { get; } = [];
+
+        public List<DeadLetterSearchRequest> SearchRequests { get; } = [];
+
+        public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
+
+        public ServiceBusTopology Topology { get; set; } = new(DateTimeOffset.UtcNow);
+
         public bool FailNextConnection { get; set; }
 
         public WorkspaceConnectionState ConnectionState { get; private set; }
@@ -235,12 +353,32 @@ public sealed class ViewModelStateTests
         public Task<ServiceBusTopology> GetTopologyAsync(
             bool forceRefresh = false,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ServiceBusTopology(DateTimeOffset.UtcNow));
+            Task.FromResult(Topology);
 
         public Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
             BrowseMessagesRequest request,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<BrowsedMessage>>([]);
+
+        public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
+            DeadLetterSearchRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            SearchRequests.Add(request);
+            var now = DateTimeOffset.UtcNow;
+            var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
+            var matches = SearchMatches.TryGetValue(profileId, out var configured) ? configured : [];
+            var source = request.Sources[0];
+            return Task.FromResult(new DeadLetterSearchResult(
+                profileId,
+                now,
+                now,
+                [new DeadLetterSearchSourceResult(
+                    source,
+                    ServiceBusSubQueue.DeadLetter,
+                    matches.Count,
+                    matches)]));
+        }
 
         public Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -249,6 +387,23 @@ public sealed class ViewModelStateTests
             ResubmitDeadLetterRequest request,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
+            DeadLetterPurgeRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            PurgeRequests.Add(request);
+            var now = DateTimeOffset.UtcNow;
+            var results = request.Sources.SelectMany(source =>
+                request.SubQueues.Select(subQueue =>
+                    new DeadLetterPurgeSourceResult(source, subQueue, 0)));
+            return Task.FromResult(new DeadLetterPurgeResult(
+                ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),
+                now,
+                now,
+                results,
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+        }
 
         public Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
             DeadLetterMonitorScope scope,
@@ -265,6 +420,10 @@ public sealed class ViewModelStateTests
 
     private sealed class FakeDialogService : IUserDialogService
     {
+        public bool ConfirmResult { get; set; }
+
+        public List<(string Title, string Message, bool IsDangerous, string? RequiredText)> Confirmations { get; } = [];
+
         public Task<ProfileEditorResult?> EditProfileAsync(
             ServiceBusProfile? profile,
             CancellationToken cancellationToken = default) =>
@@ -275,8 +434,11 @@ public sealed class ViewModelStateTests
             string message,
             bool isDangerous = false,
             string? requiredText = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(false);
+            CancellationToken cancellationToken = default)
+        {
+            Confirmations.Add((title, message, isDangerous, requiredText));
+            return Task.FromResult(ConfirmResult);
+        }
 
         public Task ShowMessageAsync(
             string title,

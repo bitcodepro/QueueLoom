@@ -26,7 +26,9 @@ public sealed partial class MainWindow : Window
         var paths = QueueLoomPaths.CreateDefault();
         _profileRepository = new JsonProfileRepository(paths);
         _secretVault = new EncryptedFileSecretVault(paths);
-        var workspace = new AzureServiceBusWorkspace(_secretVault);
+        var workspace = new AzureServiceBusWorkspace(
+            _secretVault,
+            backupStore: new DeadLetterJsonBackupStore(paths));
         _viewModel = new MainWindowViewModel(
             _profileRepository,
             _secretVault,

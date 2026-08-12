@@ -52,6 +52,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private string _statusText = "Ready";
     private string _errorText = string.Empty;
     private string _searchText = string.Empty;
+    private string _deadLetterSearchQuery = string.Empty;
+    private string _deadLetterSearchStatus = "Search Correlation ID, Message ID, body, or application properties.";
     private string _messageListTitle = "Peeked messages";
     private DateTimeOffset? _lastUpdated;
     private CancellationTokenSource? _monitorCancellation;
@@ -138,6 +140,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ScanAllEnvironmentsCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Scanning all environments", ScanAllEnvironmentsAsync, token),
             () => !IsBusy && Profiles.Count > 0);
+        SearchDeadLettersCommand = new AsyncRelayCommand(
+            token => RunWorkspaceOperationAsync("Searching dead letters", SearchDeadLettersAsync, token),
+            () => !IsBusy && Profiles.Count > 0 && !string.IsNullOrWhiteSpace(DeadLetterSearchQuery));
+        ClearDeadLetterSearchCommand = new RelayCommand(
+            ClearDeadLetterSearch,
+            () => !IsBusy && (Messages.Count > 0 || !string.IsNullOrWhiteSpace(DeadLetterSearchQuery)));
         BrowseSelectedActiveCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Peeking messages", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.Active, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
@@ -150,10 +158,19 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         BrowseDlqSourceCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { Count: > 0 });
+        PurgeEnvironmentDeadLettersCommand = new AsyncRelayCommand(
+            token => RunWorkspaceOperationAsync("Purging environment dead letters", PurgeEnvironmentDeadLettersAsync, token),
+            () => !IsBusy && CanPurgeEnvironmentDeadLetters);
+        PurgeTopicDeadLettersCommand = new AsyncRelayCommand(
+            token => RunWorkspaceOperationAsync("Purging topic dead letters", PurgeTopicDeadLettersAsync, token),
+            () => !IsBusy && CanPurgeTopicDeadLetters);
+        PurgeSelectedDeadLettersCommand = new AsyncRelayCommand(
+            token => RunWorkspaceOperationAsync("Purging selected dead letters", PurgeSelectedDeadLettersAsync, token),
+            () => !IsBusy && CanPurgeSelectedDeadLetters);
         NewMessageCommand = new RelayCommand(NewMessage, () => !IsBusy && IsConnected);
         OpenMessageAsDraftCommand = new RelayCommand(
             OpenSelectedMessageAsDraft,
-            () => !IsBusy && IsConnected && SelectedMessage?.CanOpenAsDraft == true);
+            () => !IsBusy && CanOpenSelectedMessageAsDraft);
         SendDraftCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Sending message", SendDraftAsync, token),
             () => !IsBusy && IsConnected && CanWrite &&
@@ -201,10 +218,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand RefreshTopologyCommand { get; }
     public AsyncRelayCommand ScanCurrentEnvironmentCommand { get; }
     public AsyncRelayCommand ScanAllEnvironmentsCommand { get; }
+    public AsyncRelayCommand SearchDeadLettersCommand { get; }
+    public RelayCommand ClearDeadLetterSearchCommand { get; }
     public AsyncRelayCommand BrowseSelectedActiveCommand { get; }
     public AsyncRelayCommand BrowseSelectedDeadLettersCommand { get; }
     public AsyncRelayCommand BrowseSelectedTransferDeadLettersCommand { get; }
     public AsyncRelayCommand BrowseDlqSourceCommand { get; }
+    public AsyncRelayCommand PurgeEnvironmentDeadLettersCommand { get; }
+    public AsyncRelayCommand PurgeTopicDeadLettersCommand { get; }
+    public AsyncRelayCommand PurgeSelectedDeadLettersCommand { get; }
     public RelayCommand NewMessageCommand { get; }
     public RelayCommand OpenMessageAsDraftCommand { get; }
     public AsyncRelayCommand SendDraftCommand { get; }
@@ -267,6 +289,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             if (value is not null && SetProperty(ref _selectedDeadLetterEnvironmentFilter, value))
             {
                 ApplyDeadLetterEnvironmentFilter();
+                OnPropertyChanged(nameof(CanPurgeEnvironmentDeadLetters));
+                NotifyCommandStates();
             }
         }
     }
@@ -302,6 +326,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
                 OnPropertyChanged(nameof(HasSelectedDlqSource));
                 OnPropertyChanged(nameof(MonitorTargetPreview));
+                OnPropertyChanged(nameof(CanPurgeTopicDeadLetters));
+                OnPropertyChanged(nameof(CanPurgeSelectedDeadLetters));
                 NotifyCommandStates();
             }
         }
@@ -317,12 +343,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             if (SetProperty(ref _selectedMessage, value))
             {
                 OnPropertyChanged(nameof(HasSelectedMessage));
+                OnPropertyChanged(nameof(CanOpenSelectedMessageAsDraft));
                 NotifyCommandStates();
             }
         }
     }
 
     public bool HasSelectedMessage => SelectedMessage is not null;
+
+    public bool CanOpenSelectedMessageAsDraft =>
+        IsConnected &&
+        SelectedMessage is { CanOpenAsDraft: true } message &&
+        (message.ProfileId is null || message.ProfileId == ConnectedProfileId);
 
     public DestinationItemViewModel? SelectedDestination
     {
@@ -394,6 +426,23 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public bool CanUnlockWrites => IsConnected && !CanWrite;
 
+    public bool CanPurgeEnvironmentDeadLetters =>
+        CanWrite &&
+        SelectedDeadLetterEnvironmentFilter?.ProfileId is { } profileId &&
+        profileId == ConnectedProfileId &&
+        _topology is not null;
+
+    public bool CanPurgeTopicDeadLetters =>
+        CanWrite &&
+        SelectedDlqSource is { IsSubscription: true } source &&
+        source.ProfileId == ConnectedProfileId &&
+        _topology is not null;
+
+    public bool CanPurgeSelectedDeadLetters =>
+        CanWrite &&
+        SelectedDlqSource is { } source &&
+        source.ProfileId == ConnectedProfileId;
+
     public string WriteAccessLabel => CanWrite ? "WRITE ENABLED" : "READ ONLY";
 
     public string WriteAccessColor => CanWrite ? "#FFB45E" : "#91A5BD";
@@ -408,6 +457,25 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 ApplyEntityFilter();
             }
         }
+    }
+
+    public string DeadLetterSearchQuery
+    {
+        get => _deadLetterSearchQuery;
+        set
+        {
+            if (SetProperty(ref _deadLetterSearchQuery, value))
+            {
+                SearchDeadLettersCommand.NotifyCanExecuteChanged();
+                ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public string DeadLetterSearchStatus
+    {
+        get => _deadLetterSearchStatus;
+        private set => SetProperty(ref _deadLetterSearchStatus, value);
     }
 
     public string MessageListTitle
@@ -946,6 +1014,174 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(VisibleDlqSourceRowCount));
     }
 
+    private async Task SearchDeadLettersAsync(CancellationToken cancellationToken)
+    {
+        var query = DeadLetterSearchQuery.Trim();
+        if (query.Length == 0)
+        {
+            throw new InvalidOperationException("Enter a search value first.");
+        }
+
+        var filter = SelectedDeadLetterEnvironmentFilter
+            ?? throw new InvalidOperationException("Select an environment filter first.");
+        var profilesToSearch = filter.ProfileId is { } profileId
+            ? Profiles.Where(profile => profile.Id == profileId).ToArray()
+            : Profiles.ToArray();
+        if (profilesToSearch.Length == 0)
+        {
+            throw new InvalidOperationException("The selected search scope contains no environments.");
+        }
+
+        const int maximumResults = DeadLetterSearchRequest.DefaultMaximumResults;
+        var connectedProfileBeforeSearch = _connectedProfile;
+        var wasConnected = IsConnected && connectedProfileBeforeSearch is not null;
+        var results = new List<MessageItemViewModel>();
+        var scannedMessages = 0;
+        var sourceFailures = 0;
+        var environmentFailures = 0;
+        var incomplete = false;
+        var restoreFailed = false;
+
+        try
+        {
+            foreach (var profile in profilesToSearch)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (results.Count >= maximumResults)
+                {
+                    incomplete = true;
+                    break;
+                }
+
+                StatusText = $"Searching dead letters in {profile.Name}...";
+                try
+                {
+                    if (_workspace.ConnectedProfileId != profile.Id)
+                    {
+                        var readOnlyProfile = profile.Profile with { AccessMode = ProfileAccessMode.ReadOnly };
+                        await ConnectProfileAsync(profile, readOnlyProfile, loadTopology: true, cancellationToken)
+                            .ConfigureAwait(true);
+                    }
+                    else if (_topology is null)
+                    {
+                        ApplyTopology(await _workspace.GetTopologyAsync(forceRefresh: true, cancellationToken)
+                            .ConfigureAwait(true));
+                    }
+
+                    var sources = _topology?.MessageSources.ToArray() ?? [];
+                    if (sources.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var search = await _workspace.SearchDeadLettersAsync(
+                            new DeadLetterSearchRequest(
+                                query,
+                                sources,
+                                maximumResults: maximumResults - results.Count),
+                            cancellationToken)
+                        .ConfigureAwait(true);
+                    scannedMessages = checked(scannedMessages + search.ScannedMessageCount);
+                    sourceFailures += search.Sources.Count(source => !source.IsSuccessful);
+                    incomplete |= !search.IsComplete;
+                    results.AddRange(search.Matches.Select(message => new MessageItemViewModel(
+                        message,
+                        profile.Id,
+                        profile.Name,
+                        profile.EnvironmentLabel,
+                        profile.EnvironmentColor)));
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    environmentFailures++;
+                    incomplete = true;
+                    AddActivity(
+                        "Error",
+                        "DLQ search environment failed",
+                        $"{profile.Name} | {SanitizeException(exception)}");
+                }
+            }
+        }
+        finally
+        {
+            if (!_isDisposed)
+            {
+                using var restoreCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                try
+                {
+                    if (wasConnected && connectedProfileBeforeSearch is not null)
+                    {
+                        var originalProfile = Profiles.FirstOrDefault(profile =>
+                            profile.Id == connectedProfileBeforeSearch.Id);
+                        if (originalProfile is not null &&
+                            (_workspace.ConnectedProfileId != originalProfile.Id ||
+                             _connectedProfile != connectedProfileBeforeSearch))
+                        {
+                            var connectionProfile = connectedProfileBeforeSearch;
+                            if (connectionProfile.CanWrite &&
+                                _writeUnlockProfileId == connectionProfile.Id &&
+                                !IsTemporaryWriteUnlockActive)
+                            {
+                                connectionProfile = originalProfile.Profile;
+                            }
+                            await ConnectProfileAsync(
+                                    originalProfile,
+                                    connectionProfile,
+                                    loadTopology: true,
+                                    restoreCancellation.Token)
+                                .ConfigureAwait(true);
+                        }
+                    }
+                    else if (_workspace.ConnectionState == WorkspaceConnectionState.Connected)
+                    {
+                        await _workspace.DisconnectAsync(restoreCancellation.Token).ConfigureAwait(true);
+                        ClearConnectedState();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    restoreFailed = true;
+                    ClearConnectedState();
+                    AddActivity("Error", "Environment restore failed", SanitizeException(exception));
+                }
+            }
+        }
+
+        Messages.Clear();
+        foreach (var result in results
+                     .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
+                     .ThenBy(result => result.Message.SequenceNumber)
+                     .ThenBy(result => result.ProfileName, StringComparer.OrdinalIgnoreCase))
+        {
+            Messages.Add(result);
+        }
+        SelectedMessage = Messages.FirstOrDefault();
+        var scopeName = filter.ProfileId.HasValue ? filter.Name : "all environments";
+        var qualifier = incomplete || restoreFailed
+            ? " | incomplete: limits or errors occurred"
+            : " | complete within the current DLQ snapshot";
+        DeadLetterSearchStatus =
+            $"{Messages.Count:N0} matches | {scannedMessages:N0} messages inspected | oldest first{qualifier}";
+        MessageListTitle = $"Search timeline | {scopeName} | body search reads up to the first 1 MiB";
+        StatusText = $"Found {Messages.Count:N0} matching dead-letter messages in {scopeName}";
+        AddActivity(
+            incomplete || restoreFailed ? "Warning" : "Info",
+            "DLQ search",
+            $"{scopeName} | {Messages.Count:N0} matches | {scannedMessages:N0} inspected | " +
+            $"{sourceFailures:N0} source errors | {environmentFailures:N0} environment errors");
+        ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ClearDeadLetterSearch()
+    {
+        DeadLetterSearchQuery = string.Empty;
+        Messages.Clear();
+        SelectedMessage = null;
+        MessageListTitle = "Peeked messages";
+        DeadLetterSearchStatus = "Search Correlation ID, Message ID, body, or application properties.";
+        ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+    }
+
     private async Task ScanCurrentEnvironmentAsync(CancellationToken cancellationToken)
     {
         var profile = GetConnectedProfileItem();
@@ -1184,6 +1420,149 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             .ConfigureAwait(true);
     }
 
+    private Task PurgeEnvironmentDeadLettersAsync(CancellationToken cancellationToken)
+    {
+        var filter = SelectedDeadLetterEnvironmentFilter
+            ?? throw new InvalidOperationException("Select an environment filter first.");
+        var profile = GetConnectedProfileItem();
+        if (filter.ProfileId != profile.Id)
+        {
+            throw new InvalidOperationException(
+                "Select the connected environment in the dead-letter filter before purging it.");
+        }
+
+        var sources = _topology?.MessageSources.ToArray()
+            ?? throw new InvalidOperationException("Refresh the connected environment topology first.");
+        return BackupAndPurgeDeadLettersAsync(
+            $"environment '{profile.Name}'",
+            sources,
+            cancellationToken);
+    }
+
+    private Task PurgeTopicDeadLettersAsync(CancellationToken cancellationToken)
+    {
+        var selection = SelectedDlqSource
+            ?? throw new InvalidOperationException("Select a subscription source first.");
+        if (!selection.IsSubscription || string.IsNullOrWhiteSpace(selection.ParentTopicName))
+        {
+            throw new InvalidOperationException("Select a subscription to purge every subscription under its topic.");
+        }
+        EnsurePurgeSelectionUsesConnectedEnvironment(selection);
+
+        var topic = _topology?.Topics.FirstOrDefault(item =>
+            string.Equals(item.Name, selection.ParentTopicName, StringComparison.Ordinal));
+        if (topic is null)
+        {
+            throw new InvalidOperationException("The selected topic is no longer present in the connected topology.");
+        }
+
+        return BackupAndPurgeDeadLettersAsync(
+            $"all {topic.Subscriptions.Count:N0} subscriptions under topic '{topic.Name}'",
+            topic.Subscriptions.Select(subscription => subscription.Reference).ToArray(),
+            cancellationToken);
+    }
+
+    private Task PurgeSelectedDeadLettersAsync(CancellationToken cancellationToken)
+    {
+        var selection = SelectedDlqSource
+            ?? throw new InvalidOperationException("Select a queue or subscription first.");
+        EnsurePurgeSelectionUsesConnectedEnvironment(selection);
+        var targetKind = selection.IsSubscription ? "subscription" : "queue";
+        return BackupAndPurgeDeadLettersAsync(
+            $"{targetKind} '{selection.EntityPath}'",
+            [selection.Entity],
+            cancellationToken);
+    }
+
+    private void EnsurePurgeSelectionUsesConnectedEnvironment(DlqSourceItemViewModel selection)
+    {
+        if (selection.ProfileId != ConnectedProfileId)
+        {
+            throw new InvalidOperationException(
+                "The selected source belongs to another environment. Connect to that environment before purging.");
+        }
+    }
+
+    private async Task BackupAndPurgeDeadLettersAsync(
+        string targetDescription,
+        IReadOnlyList<ServiceBusEntityReference> sources,
+        CancellationToken cancellationToken)
+    {
+        if (sources.Count == 0)
+        {
+            throw new InvalidOperationException("The selected scope contains no queues or subscriptions.");
+        }
+        if (!CanWrite)
+        {
+            throw new InvalidOperationException("Unlock write access before purging dead letters.");
+        }
+
+        var connectedProfileId = ConnectedProfileId
+            ?? throw new InvalidOperationException("Connect to an environment first.");
+        var knownCount = DeadLetterSources
+            .Where(item => item.ProfileId == connectedProfileId && sources.Contains(item.Entity))
+            .Sum(item => item.Count);
+        StatusText =
+            $"Backing up and purging {knownCount:N0} known messages from {targetDescription}...";
+
+        using var purgeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var temporaryUnlockExpiresAt = _writeUnlockProfileId == connectedProfileId
+            ? _writeUnlockExpiresAt
+            : null;
+        if (temporaryUnlockExpiresAt is { } expiresAt)
+        {
+            var remaining = expiresAt - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw new InvalidOperationException("Temporary write access expired before the purge started.");
+            }
+            purgeCancellation.CancelAfter(remaining);
+        }
+
+        DeadLetterPurgeResult result;
+        try
+        {
+            result = await _workspace.PurgeDeadLettersAsync(
+                    new DeadLetterPurgeRequest(sources),
+                    purgeCancellation.Token)
+                .ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (
+            !cancellationToken.IsCancellationRequested &&
+            temporaryUnlockExpiresAt.HasValue &&
+            DateTimeOffset.UtcNow >= temporaryUnlockExpiresAt.Value)
+        {
+            throw new InvalidOperationException(
+                "Temporary write access expired during the purge. Some messages may already have been deleted; rescan the environment.");
+        }
+
+        Messages.Clear();
+        SelectedMessage = null;
+        MessageListTitle = "Select a queue or subscription, then Peek.";
+        await ScanCurrentEnvironmentAsync(cancellationToken).ConfigureAwait(true);
+        MessageListTitle = $"Backup saved to {result.BackupDirectory}";
+
+        var failures = result.Sources.Count(source => !source.IsSuccessful);
+        StatusText = failures == 0
+            ? $"Backed up and purged {result.DeletedCount:N0} dead-letter messages from {targetDescription}"
+            : $"Partial backup/purge · {result.DeletedCount:N0} deleted · {failures:N0} source errors";
+        AddActivity(
+            failures == 0 ? "Warning" : "Error",
+            failures == 0 ? "Dead letters backed up and purged" : "Partial dead-letter backup/purge",
+            $"{targetDescription} · {result.DeletedCount:N0} backed up and deleted · " +
+            $"{failures:N0} errors · {result.BackupDirectory}");
+        if (failures > 0)
+        {
+            var firstError = result.Sources.First(source => !source.IsSuccessful).Error;
+            var sanitizedError = string.IsNullOrWhiteSpace(firstError)
+                ? "The safety limit was reached."
+                : SanitizeException(new InvalidOperationException(firstError));
+            ErrorText =
+                $"Some dead-letter sources could not be fully backed up and purged. {sanitizedError} " +
+                $"Backup folder: {result.BackupDirectory}";
+        }
+    }
+
     private async Task BrowseAsync(
         ProfileItemViewModel profile,
         ServiceBusEntityReference source,
@@ -1203,7 +1582,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         Messages.Clear();
         foreach (var message in messages)
         {
-            Messages.Add(new MessageItemViewModel(message));
+            Messages.Add(new MessageItemViewModel(
+                message,
+                profile.Id,
+                profile.Name,
+                profile.EnvironmentLabel,
+                profile.EnvironmentColor));
         }
         SelectedMessage = Messages.FirstOrDefault();
         MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
@@ -1237,7 +1621,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void OpenSelectedMessageAsDraft()
     {
-        var selected = SelectedMessage?.Message ?? throw new InvalidOperationException("Select a message first.");
+        var selectedItem = SelectedMessage ?? throw new InvalidOperationException("Select a message first.");
+        if (selectedItem.ProfileId is { } profileId && profileId != ConnectedProfileId)
+        {
+            throw new InvalidOperationException(
+                "This search result belongs to another environment. Connect to that environment before opening it as a draft.");
+        }
+        var selected = selectedItem.Message;
         var draft = selected.CreateDraft();
         _draftSourceMessage = selected;
         BindDraftToConnectedEnvironment();
@@ -1943,10 +2333,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         RefreshTopologyCommand.NotifyCanExecuteChanged();
         ScanCurrentEnvironmentCommand.NotifyCanExecuteChanged();
         ScanAllEnvironmentsCommand.NotifyCanExecuteChanged();
+        SearchDeadLettersCommand.NotifyCanExecuteChanged();
+        ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
         BrowseSelectedActiveCommand.NotifyCanExecuteChanged();
         BrowseSelectedDeadLettersCommand.NotifyCanExecuteChanged();
         BrowseSelectedTransferDeadLettersCommand.NotifyCanExecuteChanged();
         BrowseDlqSourceCommand.NotifyCanExecuteChanged();
+        PurgeEnvironmentDeadLettersCommand.NotifyCanExecuteChanged();
+        PurgeTopicDeadLettersCommand.NotifyCanExecuteChanged();
+        PurgeSelectedDeadLettersCommand.NotifyCanExecuteChanged();
         NewMessageCommand.NotifyCanExecuteChanged();
         OpenMessageAsDraftCommand.NotifyCanExecuteChanged();
         SendDraftCommand.NotifyCanExecuteChanged();
@@ -2009,10 +2404,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             RefreshTopologyCommand,
             ScanCurrentEnvironmentCommand,
             ScanAllEnvironmentsCommand,
+            SearchDeadLettersCommand,
             BrowseSelectedActiveCommand,
             BrowseSelectedDeadLettersCommand,
             BrowseSelectedTransferDeadLettersCommand,
             BrowseDlqSourceCommand,
+            PurgeEnvironmentDeadLettersCommand,
+            PurgeTopicDeadLettersCommand,
+            PurgeSelectedDeadLettersCommand,
             SendDraftCommand,
             ToggleMonitorCommand,
             UnlockWritesCommand
