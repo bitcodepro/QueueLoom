@@ -11,6 +11,19 @@ namespace QueueLoom.Tests;
 public sealed class ViewModelStateTests
 {
     [Fact]
+    public async Task EmptyProfileList_UsesAddEnvironmentAsHeaderAction()
+    {
+        var repository = new FakeProfileRepository([], null);
+        await using var viewModel = CreateViewModel(repository, new FakeWorkspace());
+
+        await viewModel.InitializeAsync();
+
+        Assert.False(viewModel.HasProfiles);
+        Assert.Equal("Add environment", viewModel.EnvironmentActionLabel);
+        Assert.Same(viewModel.AddEnvironmentCommand, viewModel.EnvironmentActionCommand);
+    }
+
+    [Fact]
     public async Task ConnectionIndicator_FollowsWorkspaceProfile_NotUiSelectionOrReload()
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development);
@@ -61,6 +74,56 @@ public sealed class ViewModelStateTests
         Assert.All(viewModel.Profiles, item => Assert.False(item.IsConnected));
         Assert.Null(viewModel.ConnectedProfileId);
         Assert.Equal("No environment connected", viewModel.ConnectedProfileName);
+    }
+
+    [Fact]
+    public async Task MonitorDoesNotChangeSelectedEnvironmentAndRetainsNotificationsUntilCleared()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var repository = new FakeProfileRepository([dev, test], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Snapshots =
+            {
+                [dev.Id] = Snapshot(
+                    dev.Id,
+                    new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), 3)),
+                [test.Id] = Snapshot(test.Id)
+            }
+        };
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.SelectedProfile = Assert.Single(viewModel.Profiles, item => item.Id == test.Id);
+
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.MonitorNotificationCount == 1);
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+
+        Assert.Equal(test.Id, viewModel.SelectedProfile?.Id);
+        var notification = Assert.Single(viewModel.MonitorNotifications);
+        Assert.Equal("orders", notification.SourceName);
+        Assert.Equal(3, notification.Count);
+
+        workspace.Snapshots[dev.Id] = Snapshot(dev.Id);
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.MonitorStatus.Contains("last check", StringComparison.OrdinalIgnoreCase));
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+
+        Assert.Single(viewModel.MonitorNotifications);
+        viewModel.ClearMonitorNotificationsCommand.Execute(null);
+        Assert.Empty(viewModel.MonitorNotifications);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        while (!condition())
+        {
+            await Task.Delay(20, timeout.Token);
+        }
     }
 
     [Fact]

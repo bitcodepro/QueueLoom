@@ -34,6 +34,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, long> _previousDlqCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _monitorBaseline = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastDlqMeasurements = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MonitorNotificationItemViewModel> _monitorNotifications = new(StringComparer.Ordinal);
     private readonly List<EntityItemViewModel> _allEntities = [];
 
     private NavigationItem _selectedNavigation;
@@ -146,6 +147,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ClearDeadLetterSearchCommand = new RelayCommand(
             ClearDeadLetterSearch,
             () => !IsBusy && (Messages.Count > 0 || !string.IsNullOrWhiteSpace(DeadLetterSearchQuery)));
+        ClearMonitorNotificationsCommand = new RelayCommand(
+            ClearMonitorNotifications,
+            () => MonitorNotifications.Count > 0);
         BrowseSelectedActiveCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Peeking messages", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.Active, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
@@ -203,6 +207,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<ActivityItemViewModel> Activity { get; } = [];
 
+    public ObservableCollection<MonitorNotificationItemViewModel> MonitorNotifications { get; } = [];
+
     public IReadOnlyList<MessageBodyFormat> MessageBodyFormats { get; } = Enum.GetValues<MessageBodyFormat>();
 
     public IReadOnlyList<string> MonitorScopes { get; } =
@@ -220,6 +226,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand ScanAllEnvironmentsCommand { get; }
     public AsyncRelayCommand SearchDeadLettersCommand { get; }
     public RelayCommand ClearDeadLetterSearchCommand { get; }
+    public RelayCommand ClearMonitorNotificationsCommand { get; }
     public AsyncRelayCommand BrowseSelectedActiveCommand { get; }
     public AsyncRelayCommand BrowseSelectedDeadLettersCommand { get; }
     public AsyncRelayCommand BrowseSelectedTransferDeadLettersCommand { get; }
@@ -276,6 +283,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool HasSelectedProfile => SelectedProfile is not null;
+
+    public bool HasProfiles => Profiles.Count > 0;
+
+    public string EnvironmentActionLabel => HasProfiles ? "Connect" : "Add environment";
+
+    public System.Windows.Input.ICommand EnvironmentActionCommand =>
+        HasProfiles ? ConnectCommand : AddEnvironmentCommand;
 
     public string SelectedProfileName => SelectedProfile?.Name ?? "No environment selected";
 
@@ -585,6 +599,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasMonitorAlert => !string.IsNullOrWhiteSpace(MonitorAlert);
 
+    public bool HasMonitorNotifications => MonitorNotifications.Count > 0;
+
+    public int MonitorNotificationCount => MonitorNotifications.Count;
+
     public string DraftBody
     {
         get => _draftBody;
@@ -838,6 +856,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         SelectedProfile = Profiles.FirstOrDefault(item => item.Id == selectedId) ?? Profiles.FirstOrDefault();
         UpdateProfileConnectionStates();
         RefreshDeadLetterEnvironmentFilters();
+        OnPropertyChanged(nameof(HasProfiles));
+        OnPropertyChanged(nameof(EnvironmentActionLabel));
+        OnPropertyChanged(nameof(EnvironmentActionCommand));
         NotifyCommandStates();
     }
 
@@ -885,7 +906,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         _connectedProfile = connectionProfile;
-        SelectedProfile = item;
         var profileChanged = previousConnectedProfileId.HasValue &&
                              previousConnectedProfileId.Value != connectionProfile.Id;
         if (profileChanged)
@@ -2085,13 +2105,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 {
                     try
                     {
-                        IsBusy = true;
                         ranCheck = true;
                         checkComplete = await RunMonitorCheckAsync(cancellationToken).ConfigureAwait(true);
                     }
                     finally
                     {
-                        IsBusy = false;
                         _workspaceGate.Release();
                     }
                 }
@@ -2126,54 +2144,59 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task<bool> RunMonitorCheckAsync(CancellationToken cancellationToken)
     {
-        long total;
+        _lastDlqMeasurements.Clear();
         var isComplete = true;
         var activeScope = _activeMonitorScope ?? MonitorScope;
-        if (activeScope == AllEnvironmentsMonitorScope)
+        var profilesToCheck = activeScope switch
         {
-            await ScanAllEnvironmentsAsync(cancellationToken).ConfigureAwait(true);
-            total = _lastDlqMeasurements.Values.Sum();
-            isComplete = !_lastDlqScanHadFailures;
-        }
-        else if (activeScope == CurrentEnvironmentMonitorScope)
+            AllEnvironmentsMonitorScope => Profiles.ToArray(),
+            _ =>
+            [Profiles.FirstOrDefault(profile => profile.Id == _monitoredProfileId)
+             ?? throw new InvalidOperationException("The monitored environment no longer exists.")]
+        };
+        var originalConnection = _connectedProfile;
+        var wasConnected = IsConnected && originalConnection is not null;
+
+        try
         {
-            var monitoredProfileId = _monitoredProfileId
-                ?? throw new InvalidOperationException("The monitored environment is no longer available.");
-            var selected = Profiles.FirstOrDefault(profile => profile.Id == monitoredProfileId)
-                ?? throw new InvalidOperationException("The monitored environment no longer exists.");
-            if (_workspace.ConnectedProfileId != monitoredProfileId)
+            foreach (var profile in profilesToCheck)
             {
-                await ConnectProfileAsync(selected, selected.Profile, loadTopology: true, cancellationToken)
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_workspace.ConnectedProfileId != profile.Id)
+                {
+                    await _workspace.ConnectAsync(
+                            profile.Profile with { AccessMode = ProfileAccessMode.ReadOnly },
+                            cancellationToken)
+                        .ConfigureAwait(true);
+                }
+
+                var scope = activeScope == SelectedSourceMonitorScope
+                    ? DeadLetterMonitorScope.ForEntity(
+                        _monitoredEntity ?? throw new InvalidOperationException("The monitored source no longer exists."))
+                    : DeadLetterMonitorScope.All;
+                var snapshot = await _workspace.GetDeadLetterSnapshotAsync(scope, cancellationToken)
                     .ConfigureAwait(true);
+                CaptureMonitorSnapshot(profile, snapshot);
+                isComplete &= !snapshot.HasFailures;
             }
-            await ScanCurrentEnvironmentAsync(cancellationToken).ConfigureAwait(true);
-            total = _lastDlqMeasurements.Values.Sum();
-            isComplete = !_lastDlqScanHadFailures;
         }
-        else
+        finally
         {
-            var monitoredProfileId = _monitoredProfileId
-                ?? throw new InvalidOperationException("The monitored environment is no longer available.");
-            var monitoredEntity = _monitoredEntity
-                ?? throw new InvalidOperationException("The monitored source is no longer available.");
-            var profile = Profiles.FirstOrDefault(item => item.Id == monitoredProfileId)
-                ?? throw new InvalidOperationException("The monitored environment no longer exists.");
-            if (_workspace.ConnectedProfileId != profile.Id)
+            using var restoreTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            if (wasConnected && originalConnection is not null)
             {
-                await ConnectProfileAsync(profile, profile.Profile, loadTopology: true, cancellationToken)
-                    .ConfigureAwait(true);
+                if (_workspace.ConnectedProfileId != originalConnection.Id)
+                {
+                    await _workspace.ConnectAsync(originalConnection, restoreTimeout.Token).ConfigureAwait(true);
+                }
             }
-            var snapshot = await _workspace.GetDeadLetterSnapshotAsync(
-                    DeadLetterMonitorScope.ForEntity(monitoredEntity),
-                    cancellationToken)
-                .ConfigureAwait(true);
-            _lastDlqMeasurements.Clear();
-            CaptureDlqMeasurements(profile.Id, snapshot);
-            UpdateDeadLetterRows(profile, snapshot, replaceExisting: false, replaceEntity: monitoredEntity);
-            total = _lastDlqMeasurements.Values.Sum();
-            isComplete = !snapshot.HasFailures;
+            else if (_workspace.ConnectionState == WorkspaceConnectionState.Connected)
+            {
+                await _workspace.DisconnectAsync(restoreTimeout.Token).ConfigureAwait(true);
+            }
         }
 
+        var total = _lastDlqMeasurements.Values.Sum();
         if (!isComplete)
         {
             MonitorAlert = $"DLQ check was incomplete at {DateTimeOffset.Now:HH:mm:ss}; known counts were not used as a new baseline.";
@@ -2204,6 +2227,60 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         _hasMonitorBaseline = true;
         return true;
+    }
+
+    private void CaptureMonitorSnapshot(ProfileItemViewModel profile, DeadLetterSnapshot snapshot)
+    {
+        var detectedAt = DateTimeOffset.UtcNow;
+        foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
+        {
+            var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
+            var count = entity.Count!.Value;
+            _lastDlqMeasurements[key] = count;
+            if (count <= 0)
+            {
+                continue;
+            }
+
+            if (_monitorNotifications.TryGetValue(key, out var existing))
+            {
+                existing.Count = count;
+                existing.LastDetectedAt = detectedAt;
+                continue;
+            }
+
+            var notification = new MonitorNotificationItemViewModel(
+                key,
+                profile.Name,
+                entity.Entity.DisplayName,
+                FormatSubQueue(entity.SubQueue),
+                count,
+                detectedAt);
+            _monitorNotifications[key] = notification;
+            MonitorNotifications.Insert(0, notification);
+            AddActivity(
+                "Warning",
+                "DLQ detected",
+                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {count:N0} messages");
+        }
+
+        NotifyMonitorNotificationsChanged();
+    }
+
+    private void ClearMonitorNotifications()
+    {
+        _monitorNotifications.Clear();
+        MonitorNotifications.Clear();
+        MonitorAlert = string.Empty;
+        NotifyMonitorNotificationsChanged();
+    }
+
+    private void NotifyMonitorNotificationsChanged()
+    {
+        OnPropertyChanged(nameof(HasMonitorNotifications));
+        OnPropertyChanged(nameof(MonitorNotificationCount));
+        Navigation.First(item => item.Key == nameof(NavigationPage.Monitors)).AlertCount = MonitorNotifications.Count;
+        ClearMonitorNotificationsCommand.NotifyCanExecuteChanged();
     }
 
     private async Task RunWorkspaceOperationAsync(
