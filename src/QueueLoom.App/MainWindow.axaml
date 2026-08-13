@@ -125,11 +125,8 @@
           <ScrollViewer IsVisible="{Binding IsOverviewVisible}">
             <StackPanel Margin="26,24,26,30" Spacing="22">
               <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Spacing="6">
-                  <TextBlock Text="Operations overview" FontSize="28" FontWeight="SemiBold" />
-                  <TextBlock Text="One quiet view across topology, traffic and failure queues." Classes="muted" />
-                </StackPanel>
-                <TextBlock Grid.Column="1" Text="{Binding LastUpdatedText}" Classes="muted" VerticalAlignment="Bottom" />
+                <TextBlock Text="Operations overview" FontSize="28" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="{Binding LastUpdatedText}" Classes="muted" VerticalAlignment="Center" />
               </Grid>
 
               <Grid ColumnDefinitions="*,12,*,12,*,12,*,12,*">
@@ -153,18 +150,13 @@
               <Grid ColumnDefinitions="1.3*,16,*">
                 <Border Grid.Column="0" Classes="card">
                   <StackPanel Spacing="17">
-                    <Grid ColumnDefinitions="*,Auto">
-                      <StackPanel Spacing="4">
-                        <TextBlock Text="Current environment" FontSize="19" FontWeight="SemiBold" />
-                        <TextBlock Text="{Binding ConnectedProfileName}" Classes="muted" />
-                      </StackPanel>
-                      <Border Grid.Column="1" Background="#102A2A" CornerRadius="20" Padding="12,6">
-                        <TextBlock Text="{Binding ConnectionLabel}" Classes="eyebrow" Foreground="{Binding ConnectionColor}" />
-                      </Border>
-                    </Grid>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="Current environment" FontSize="19" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding ConnectedProfileName}" Classes="muted" />
+                    </StackPanel>
                     <Border Height="1" Background="{DynamicResource HairlineBrush}" />
                     <Grid ColumnDefinitions="*,*,*">
-                      <StackPanel><TextBlock Text="Authentication" Classes="eyebrow"/><TextBlock Text="OS-backed credentials" Margin="0,5,0,0"/></StackPanel>
+                      <StackPanel><TextBlock Text="Authentication" Classes="eyebrow"/><TextBlock Text="{Binding ConnectedAuthenticationLabel}" Margin="0,5,0,0"/></StackPanel>
                       <StackPanel Grid.Column="1"><TextBlock Text="Browse mode" Classes="eyebrow"/><TextBlock Text="Non-destructive Peek" Margin="0,5,0,0"/></StackPanel>
                       <StackPanel Grid.Column="2"><TextBlock Text="Writes" Classes="eyebrow"/><TextBlock Text="{Binding WriteAccessLabel}" Foreground="{Binding WriteAccessColor}" Margin="0,5,0,0"/></StackPanel>
                     </Grid>
@@ -188,17 +180,6 @@
                 </Border>
               </Grid>
 
-              <Border Classes="card">
-                <Grid ColumnDefinitions="*,Auto">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="Safety model" FontSize="17" FontWeight="SemiBold" />
-                    <TextBlock Text="Read operations use Peek. Resubmit always sends an edited copy and explicitly leaves the original in DLQ. Production write access expires automatically."
-                               Classes="muted" TextWrapping="Wrap" />
-                  </StackPanel>
-                  <TextBlock Grid.Column="1" Text="NO RECEIVE-AND-DELETE" Classes="eyebrow"
-                             Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
-                </Grid>
-              </Border>
             </StackPanel>
           </ScrollViewer>
 

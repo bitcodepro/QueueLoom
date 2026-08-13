@@ -6,16 +6,29 @@ namespace QueueLoom.Tests;
 public sealed class DeadLetterSearchModelTests
 {
     [Fact]
-    public void RequestDefaultsToBothDeadLetterSubQueues()
+    public void RequestAcceptsOnlyKnownNonEmptyDeadLetterTargets()
     {
         var request = new DeadLetterSearchRequest(
             "correlation-42",
-            [ServiceBusEntityReference.Queue("orders")]);
+            [new DeadLetterSearchTarget(
+                ServiceBusEntityReference.Queue("orders"),
+                ServiceBusSubQueue.DeadLetter,
+                12)]);
 
-        Assert.Equal(2, request.SubQueues.Count);
-        Assert.Contains(ServiceBusSubQueue.DeadLetter, request.SubQueues);
-        Assert.Contains(ServiceBusSubQueue.TransferDeadLetter, request.SubQueues);
-        Assert.Equal(DeadLetterSearchRequest.DefaultMaximumMessagesPerSubQueue, request.MaximumMessagesPerSubQueue);
+        Assert.Single(request.Targets);
+        Assert.Equal(DeadLetterSearchRequest.DefaultMaximumMessagesPerTarget, request.MaximumMessagesPerTarget);
+        Assert.Throws<ArgumentException>(() => new DeadLetterSearchRequest(
+            "value",
+            [new DeadLetterSearchTarget(
+                ServiceBusEntityReference.Queue("empty"),
+                ServiceBusSubQueue.DeadLetter,
+                0)]));
+        Assert.Throws<ArgumentException>(() => new DeadLetterSearchRequest(
+            "value",
+            [new DeadLetterSearchTarget(
+                ServiceBusEntityReference.Queue("active"),
+                ServiceBusSubQueue.Active,
+                1)]));
     }
 
     [Theory]
@@ -68,10 +81,16 @@ public sealed class DeadLetterSearchModelTests
     {
         Assert.Throws<ArgumentException>(() => new DeadLetterSearchRequest(
             " ",
-            [ServiceBusEntityReference.Queue("orders")]));
+            [new DeadLetterSearchTarget(
+                ServiceBusEntityReference.Queue("orders"),
+                ServiceBusSubQueue.DeadLetter,
+                1)]));
         Assert.Throws<ArgumentException>(() => new DeadLetterSearchRequest(
             "value",
-            [ServiceBusEntityReference.Topic("orders")]));
+            [new DeadLetterSearchTarget(
+                ServiceBusEntityReference.Topic("orders"),
+                ServiceBusSubQueue.DeadLetter,
+                1)]));
     }
 
     private static BrowsedMessage Message(
