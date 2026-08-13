@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
@@ -14,6 +15,7 @@ public sealed partial class MainWindow : Window
     private readonly JsonProfileRepository _profileRepository;
     private readonly EncryptedFileSecretVault _secretVault;
     private readonly MainWindowViewModel _viewModel;
+    private readonly WindowDialogService _dialogService;
     private bool _initialized;
     private bool _shutdownInProgress;
     private bool _shutdownComplete;
@@ -29,11 +31,12 @@ public sealed partial class MainWindow : Window
         var workspace = new AzureServiceBusWorkspace(
             _secretVault,
             backupStore: new DeadLetterJsonBackupStore(paths));
+        _dialogService = new WindowDialogService(this);
         _viewModel = new MainWindowViewModel(
             _profileRepository,
             _secretVault,
             workspace,
-            new WindowDialogService(this));
+            _dialogService);
 
         DataContext = _viewModel;
         Opened += OnOpened;
@@ -50,6 +53,32 @@ public sealed partial class MainWindow : Window
         _initialized = true;
         _initializationTask = _viewModel.InitializeAsync();
         await _initializationTask;
+        await CheckForUpdatesAsync();
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            using var checker = new GitHubUpdateChecker();
+            var update = await checker.CheckAsync();
+            if (update is null || _shutdownInProgress)
+            {
+                return;
+            }
+
+            if (await _dialogService.PromptForUpdateAsync(update.Version.ToString(3)))
+            {
+                Process.Start(new ProcessStartInfo(update.ReleasePage.AbsoluteUri)
+                {
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch
+        {
+            // Update checks must never prevent QueueLoom from starting or operating offline.
+        }
     }
 
     private async void OnEntityNameDoubleTapped(object? sender, TappedEventArgs args)
@@ -60,10 +89,26 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        await CopyEntityNameAsync(entity);
+    }
+
+    private async void OnCopyEntityNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: EntityItemViewModel entity })
+        {
+            return;
+        }
+
+        await CopyEntityNameAsync(entity);
+    }
+
+    private async Task CopyEntityNameAsync(EntityItemViewModel entity)
+    {
         var name = entity.Name;
         try
         {
-            var clipboard = TopLevel.GetTopLevel((Control)sender)?.Clipboard;
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
             if (clipboard is null)
             {
                 ExplorerCopyStatus.Text = "Clipboard is unavailable; the entity name was not copied.";

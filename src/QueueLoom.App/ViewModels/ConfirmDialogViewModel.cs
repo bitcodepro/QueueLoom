@@ -9,13 +9,17 @@ public sealed class ConfirmDialogViewModel : ObservableObject
         string message,
         bool isDangerous,
         string? requiredText,
-        bool showCancel = true)
+        bool showCancel = true,
+        string confirmLabel = "Continue",
+        string cancelLabel = "Cancel")
     {
         Title = title;
         Message = message;
         IsDangerous = isDangerous;
         RequiredText = requiredText;
         ShowCancel = showCancel;
+        ConfirmLabel = confirmLabel;
+        CancelLabel = cancelLabel;
     }
 
     public string Title { get; }
@@ -33,6 +37,10 @@ public sealed class ConfirmDialogViewModel : ObservableObject
         : string.Empty;
 
     public bool ShowCancel { get; }
+
+    public string ConfirmLabel { get; }
+
+    public string CancelLabel { get; }
 
     public string ConfirmationText
     {

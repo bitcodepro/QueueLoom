@@ -39,6 +39,21 @@ public sealed class WindowDialogService(Window owner) : IUserDialogService
             .ConfigureAwait(true);
     }
 
+    public Task<bool> PromptForUpdateAsync(
+        string version,
+        CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<bool>(
+            new ConfirmDialogWindow(
+                new ConfirmDialogViewModel(
+                    "QueueLoom update available",
+                    $"QueueLoom {version} is available. Open its GitHub release page?",
+                    isDangerous: false,
+                    requiredText: null,
+                    showCancel: true,
+                    confirmLabel: "Open GitHub release",
+                    cancelLabel: "Not now")),
+            cancellationToken);
+
     private async Task<T> ShowDialogAsync<T>(Window dialog, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

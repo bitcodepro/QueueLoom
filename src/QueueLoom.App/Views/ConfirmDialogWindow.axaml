@@ -20,8 +20,8 @@
     </StackPanel>
 
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
-      <Button Content="Cancel" Classes="quiet" Click="CancelClick" IsVisible="{Binding ShowCancel}" />
-      <Button Content="Continue" Classes="primary" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" IsVisible="{Binding !IsDangerous}" />
+      <Button Content="{Binding CancelLabel}" Classes="quiet" Click="CancelClick" IsVisible="{Binding ShowCancel}" />
+      <Button Content="{Binding ConfirmLabel}" Classes="primary" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" IsVisible="{Binding !IsDangerous}" />
       <Button Content="Confirm action" Classes="danger" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" IsVisible="{Binding IsDangerous}" />
     </StackPanel>
   </StackPanel>
