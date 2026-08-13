@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Text;
 using Azure;
 using Azure.Core;
 using Azure.Messaging.ServiceBus;
@@ -15,6 +17,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 {
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(5);
     private const int MonitorConcurrency = 6;
+    private const int SearchConcurrency = 12;
 
     private readonly ISecretVault _secretVault;
     private readonly DeadLetterJsonBackupStore _backupStore;
@@ -267,85 +270,99 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 
         var profile = GetConnectedProfile();
         var startedAt = _timeProvider.GetUtcNow();
-        var sourceResults = new List<DeadLetterSearchSourceResult>(
-            request.Sources.Count * request.SubQueues.Count);
-        var totalMatches = 0;
-        var resultLimitReached = false;
-
-        foreach (var source in request.Sources)
+        var acceptedMatches = 0;
+        var resultLimitReached = 0;
+        using var limiter = new SemaphoreSlim(SearchConcurrency, SearchConcurrency);
+        var tasks = request.Targets.Select(async target =>
         {
-            foreach (var subQueue in request.SubQueues)
+            await limiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (resultLimitReached)
-                {
-                    break;
-                }
-
-                var result = await SearchSubQueueAsync(
-                        source,
-                        subQueue,
+                return await SearchTargetAsync(
+                        target,
                         request,
-                        request.MaximumResults - totalMatches,
+                        message =>
+                        {
+                            var position = Interlocked.Increment(ref acceptedMatches);
+                            if (position <= request.MaximumResults)
+                            {
+                                return AzureMessageMapper.FromAzure(message, target.Source, target.SubQueue);
+                            }
+
+                            Interlocked.Exchange(ref resultLimitReached, 1);
+                            return null;
+                        },
+                        () =>
+                        {
+                            if (Volatile.Read(ref acceptedMatches) < request.MaximumResults)
+                            {
+                                return false;
+                            }
+
+                            Interlocked.Exchange(ref resultLimitReached, 1);
+                            return true;
+                        },
                         cancellationToken)
                     .ConfigureAwait(false);
-                sourceResults.Add(result);
-                totalMatches = checked(totalMatches + result.Matches.Count);
-                resultLimitReached = totalMatches >= request.MaximumResults;
             }
-
-            if (resultLimitReached)
+            finally
             {
-                break;
+                limiter.Release();
             }
-        }
+        }).ToArray();
+        var sourceResults = await Task.WhenAll(tasks).ConfigureAwait(false);
 
         return new DeadLetterSearchResult(
             profile.Id,
             startedAt,
             _timeProvider.GetUtcNow(),
             sourceResults,
-            resultLimitReached);
+            resultLimitReached != 0);
     }
 
-    private async Task<DeadLetterSearchSourceResult> SearchSubQueueAsync(
-        ServiceBusEntityReference source,
-        ServiceBusSubQueue subQueue,
+    private async Task<DeadLetterSearchSourceResult> SearchTargetAsync(
+        DeadLetterSearchTarget target,
         DeadLetterSearchRequest request,
-        int remainingResultCapacity,
+        Func<ServiceBusReceivedMessage, BrowsedMessage?> addMatch,
+        Func<bool> shouldStop,
         CancellationToken cancellationToken)
     {
         var matches = new List<BrowsedMessage>();
         var scanned = 0;
+        var scanLimit = (int)Math.Min(target.KnownMessageCount, request.MaximumMessagesPerTarget);
         try
         {
             var options = new ServiceBusReceiverOptions
             {
                 ReceiveMode = ServiceBusReceiveMode.PeekLock,
                 PrefetchCount = 0,
-                SubQueue = subQueue switch
+                SubQueue = target.SubQueue switch
                 {
                     ServiceBusSubQueue.DeadLetter => SubQueue.DeadLetter,
                     ServiceBusSubQueue.TransferDeadLetter => SubQueue.TransferDeadLetter,
-                    _ => throw new ArgumentOutOfRangeException(nameof(subQueue), subQueue, "Unsupported search subqueue.")
+                    _ => throw new ArgumentOutOfRangeException(nameof(target), target.SubQueue, "Unsupported search subqueue.")
                 }
             };
 
-            await using var receiver = source.Kind switch
+            await using var receiver = target.Source.Kind switch
             {
-                ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(source.Name, options),
+                ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(target.Source.Name, options),
                 ServiceBusEntityKind.Subscription => GetMessagingClient().CreateReceiver(
-                    source.TopicName!,
-                    source.Name,
+                    target.Source.TopicName!,
+                    target.Source.Name,
                     options),
-                _ => throw new ArgumentException("Only queues and subscriptions can be searched.", nameof(source))
+                _ => throw new ArgumentException("Only queues and subscriptions can be searched.", nameof(target))
             };
 
             long? fromSequenceNumber = null;
-            while (scanned < request.MaximumMessagesPerSubQueue && matches.Count < remainingResultCapacity)
+            while (scanned < scanLimit)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var batchSize = Math.Min(request.BatchSize, request.MaximumMessagesPerSubQueue - scanned);
+                if (shouldStop())
+                {
+                    break;
+                }
+                var batchSize = Math.Min(request.BatchSize, scanLimit - scanned);
                 var messages = await receiver.PeekMessagesAsync(
                         batchSize,
                         fromSequenceNumber,
@@ -359,13 +376,12 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 scanned = checked(scanned + messages.Count);
                 foreach (var azureMessage in messages)
                 {
-                    var message = AzureMessageMapper.FromAzure(azureMessage, source, subQueue);
-                    if (DeadLetterSearchMatcher.IsMatch(message, request.Query))
+                    if (MatchesSearch(azureMessage, request.Query))
                     {
-                        matches.Add(message);
-                        if (matches.Count >= remainingResultCapacity)
+                        var match = addMatch(azureMessage);
+                        if (match is not null)
                         {
-                            break;
+                            matches.Add(match);
                         }
                     }
                 }
@@ -380,22 +396,53 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             }
 
             return new DeadLetterSearchSourceResult(
-                source,
-                subQueue,
+                target.Source,
+                target.SubQueue,
                 scanned,
                 Array.AsReadOnly(matches.ToArray()),
-                scanned >= request.MaximumMessagesPerSubQueue);
+                target.KnownMessageCount > scanned);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return new DeadLetterSearchSourceResult(
-                source,
-                subQueue,
+                target.Source,
+                target.SubQueue,
                 scanned,
                 Array.AsReadOnly(matches.ToArray()),
                 Error: exception.GetBaseException().Message);
         }
     }
+
+    private static bool MatchesSearch(ServiceBusReceivedMessage message, string query)
+    {
+        if (Contains(message.CorrelationId, query) ||
+            Contains(message.MessageId, query) ||
+            Contains(message.Subject, query) ||
+            Contains(message.SessionId, query) ||
+            Contains(message.ContentType, query) ||
+            Contains(message.DeadLetterReason, query) ||
+            Contains(message.DeadLetterErrorDescription, query))
+        {
+            return true;
+        }
+
+        foreach (var property in message.ApplicationProperties)
+        {
+            if (Contains(property.Key, query) ||
+                Contains(Convert.ToString(property.Value, CultureInfo.InvariantCulture), query))
+            {
+                return true;
+            }
+        }
+
+        var body = message.Body.ToMemory();
+        var searchableLength = Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes);
+        return searchableLength > 0 && Encoding.UTF8.GetString(body.Span[..searchableLength])
+            .Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool Contains(string? value, string query) =>
+        !string.IsNullOrEmpty(value) && value.Contains(query, StringComparison.OrdinalIgnoreCase);
 
     public async Task SendMessageAsync(
         SendMessageRequest request,

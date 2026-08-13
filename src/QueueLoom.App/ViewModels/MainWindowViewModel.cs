@@ -408,6 +408,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ? _connectedProfile?.Name ?? "Connected environment"
         : "No environment connected";
 
+    public string ConnectedAuthenticationLabel => _connectedProfile?.Authentication.Kind switch
+    {
+        AuthenticationKind.ConnectionString => "SAS connection string",
+        AuthenticationKind.EntraId => $"Entra ID · {_connectedProfile.Authentication.EntraId?.CredentialKind}",
+        _ => "Not connected"
+    };
+
     public string ConnectionLabel => IsConnected
         ? $"CONNECTED · {_connectedProfile?.Name ?? "environment"}"
         : "OFFLINE";
@@ -1037,59 +1044,83 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var wasConnected = IsConnected && connectedProfileBeforeSearch is not null;
         var results = new List<MessageItemViewModel>();
         var scannedMessages = 0;
+        var searchedTargets = 0;
         var sourceFailures = 0;
         var environmentFailures = 0;
+        var timedOutEnvironments = 0;
         var incomplete = false;
         var restoreFailed = false;
+        using var totalSearchTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        totalSearchTimeout.CancelAfter(TimeSpan.FromSeconds(60));
+        var searchToken = totalSearchTimeout.Token;
 
         try
         {
             foreach (var profile in profilesToSearch)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                searchToken.ThrowIfCancellationRequested();
                 if (results.Count >= maximumResults)
                 {
                     incomplete = true;
                     break;
                 }
 
-                StatusText = $"Searching dead letters in {profile.Name}...";
+                StatusText = $"Reading topology and DLQ counts in {profile.Name}...";
                 try
                 {
                     if (_workspace.ConnectedProfileId != profile.Id)
                     {
                         var readOnlyProfile = profile.Profile with { AccessMode = ProfileAccessMode.ReadOnly };
-                        await ConnectProfileAsync(profile, readOnlyProfile, loadTopology: true, cancellationToken)
+                        await ConnectProfileAsync(profile, readOnlyProfile, loadTopology: false, searchToken)
                             .ConfigureAwait(true);
                     }
-                    else if (_topology is null)
-                    {
-                        ApplyTopology(await _workspace.GetTopologyAsync(forceRefresh: true, cancellationToken)
-                            .ConfigureAwait(true));
-                    }
 
-                    var sources = _topology?.MessageSources.ToArray() ?? [];
-                    if (sources.Length == 0)
+                    var topology = await _workspace.GetTopologyAsync(forceRefresh: true, searchToken)
+                        .ConfigureAwait(true);
+                    var targets = BuildDeadLetterSearchTargets(topology);
+                    if (targets.Length == 0)
                     {
                         continue;
                     }
 
-                    var search = await _workspace.SearchDeadLettersAsync(
-                            new DeadLetterSearchRequest(
-                                query,
-                                sources,
-                                maximumResults: maximumResults - results.Count),
-                            cancellationToken)
-                        .ConfigureAwait(true);
-                    scannedMessages = checked(scannedMessages + search.ScannedMessageCount);
-                    sourceFailures += search.Sources.Count(source => !source.IsSuccessful);
-                    incomplete |= !search.IsComplete;
-                    results.AddRange(search.Matches.Select(message => new MessageItemViewModel(
-                        message,
-                        profile.Id,
-                        profile.Name,
-                        profile.EnvironmentLabel,
-                        profile.EnvironmentColor)));
+                    StatusText = $"Searching {targets.Length:N0} non-empty DLQ sources in {profile.Name}...";
+                    using var environmentTimeout = CancellationTokenSource.CreateLinkedTokenSource(searchToken);
+                    environmentTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+                    try
+                    {
+                        var search = await _workspace.SearchDeadLettersAsync(
+                                new DeadLetterSearchRequest(
+                                    query,
+                                    targets,
+                                    maximumResults: maximumResults - results.Count),
+                                environmentTimeout.Token)
+                            .ConfigureAwait(true);
+                        scannedMessages = checked(scannedMessages + search.ScannedMessageCount);
+                        searchedTargets += search.Sources.Count;
+                        sourceFailures += search.Sources.Count(source => !source.IsSuccessful);
+                        incomplete |= !search.IsComplete;
+                        results.AddRange(search.Matches.Select(message => new MessageItemViewModel(
+                            message,
+                            profile.Id,
+                            profile.Name,
+                            profile.EnvironmentLabel,
+                            profile.EnvironmentColor)));
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        timedOutEnvironments++;
+                        incomplete = true;
+                        if (totalSearchTimeout.IsCancellationRequested)
+                        {
+                            break;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    timedOutEnvironments++;
+                    incomplete = true;
+                    break;
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -1161,15 +1192,50 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ? " | incomplete: limits or errors occurred"
             : " | complete within the current DLQ snapshot";
         DeadLetterSearchStatus =
-            $"{Messages.Count:N0} matches | {scannedMessages:N0} messages inspected | oldest first{qualifier}";
+            $"{Messages.Count:N0} matches | {scannedMessages:N0} messages inspected | " +
+            $"{searchedTargets:N0} non-empty sources | oldest first{qualifier}" +
+            (timedOutEnvironments > 0 ? $" | {timedOutEnvironments:N0} environment timeouts" : string.Empty);
         MessageListTitle = $"Search timeline | {scopeName} | body search reads up to the first 1 MiB";
         StatusText = $"Found {Messages.Count:N0} matching dead-letter messages in {scopeName}";
         AddActivity(
             incomplete || restoreFailed ? "Warning" : "Info",
             "DLQ search",
             $"{scopeName} | {Messages.Count:N0} matches | {scannedMessages:N0} inspected | " +
-            $"{sourceFailures:N0} source errors | {environmentFailures:N0} environment errors");
+            $"{sourceFailures:N0} source errors | {environmentFailures:N0} environment errors | " +
+            $"{timedOutEnvironments:N0} timeouts");
         ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+    }
+
+    private static DeadLetterSearchTarget[] BuildDeadLetterSearchTargets(ServiceBusTopology topology)
+    {
+        var targets = new List<DeadLetterSearchTarget>();
+        foreach (var queue in topology.Queues)
+        {
+            AddDeadLetterSearchTargets(targets, queue.Reference, queue.Runtime.MessageCounts);
+        }
+        foreach (var subscription in topology.Topics.SelectMany(topic => topic.Subscriptions))
+        {
+            AddDeadLetterSearchTargets(targets, subscription.Reference, subscription.Runtime.MessageCounts);
+        }
+        return targets.ToArray();
+    }
+
+    private static void AddDeadLetterSearchTargets(
+        ICollection<DeadLetterSearchTarget> targets,
+        ServiceBusEntityReference source,
+        ServiceBusMessageCounts counts)
+    {
+        if (counts.DeadLetter > 0)
+        {
+            targets.Add(new DeadLetterSearchTarget(source, ServiceBusSubQueue.DeadLetter, counts.DeadLetter));
+        }
+        if (counts.TransferDeadLetter > 0)
+        {
+            targets.Add(new DeadLetterSearchTarget(
+                source,
+                ServiceBusSubQueue.TransferDeadLetter,
+                counts.TransferDeadLetter));
+        }
     }
 
     private void ClearDeadLetterSearch()
@@ -2289,6 +2355,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsConnected));
         OnPropertyChanged(nameof(ConnectedProfileId));
         OnPropertyChanged(nameof(ConnectedProfileName));
+        OnPropertyChanged(nameof(ConnectedAuthenticationLabel));
         OnPropertyChanged(nameof(ConnectionLabel));
         OnPropertyChanged(nameof(ConnectionColor));
         OnPropertyChanged(nameof(ConnectedNamespace));

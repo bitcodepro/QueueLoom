@@ -190,7 +190,9 @@ public sealed class ViewModelStateTests
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development);
         var test = CreateProfile("Test", EnvironmentKind.Test);
-        var queue = new ServiceBusQueue("orders", ServiceBusEntityRuntime.Empty);
+        var queue = new ServiceBusQueue(
+            "orders",
+            new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 2)));
         var repository = new FakeProfileRepository([dev, test], dev.Id);
         var workspace = new FakeWorkspace
         {
@@ -368,14 +370,14 @@ public sealed class ViewModelStateTests
             var now = DateTimeOffset.UtcNow;
             var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
             var matches = SearchMatches.TryGetValue(profileId, out var configured) ? configured : [];
-            var source = request.Sources[0];
+            var target = request.Targets[0];
             return Task.FromResult(new DeadLetterSearchResult(
                 profileId,
                 now,
                 now,
                 [new DeadLetterSearchSourceResult(
-                    source,
-                    ServiceBusSubQueue.DeadLetter,
+                    target.Source,
+                    target.SubQueue,
                     matches.Count,
                     matches)]));
         }
