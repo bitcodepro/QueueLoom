@@ -1609,7 +1609,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         try
         {
             result = await _workspace.PurgeDeadLettersAsync(
-                    new DeadLetterPurgeRequest(sources),
+                    new DeadLetterPurgeRequest(sources, batchSize: 10),
                     purgeCancellation.Token)
                 .ConfigureAwait(true);
         }
@@ -1625,7 +1625,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         Messages.Clear();
         SelectedMessage = null;
         MessageListTitle = "Select a queue or subscription, then Peek.";
-        await ScanCurrentEnvironmentAsync(cancellationToken).ConfigureAwait(true);
+        ApplyCompletedPurgeToDeadLetterRows(result);
         MessageListTitle = $"Backup saved to {result.BackupDirectory}";
 
         var failures = result.Sources.Count(source => !source.IsSuccessful);
@@ -1647,6 +1647,24 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 $"Some dead-letter sources could not be fully backed up and purged. {sanitizedError} " +
                 $"Backup folder: {result.BackupDirectory}";
         }
+    }
+
+    private void ApplyCompletedPurgeToDeadLetterRows(DeadLetterPurgeResult result)
+    {
+        var completedSources = result.Sources
+            .Where(source => source.IsSuccessful)
+            .Select(source => (source.Source, source.SubQueue))
+            .ToHashSet();
+        foreach (var row in DeadLetterSources
+                     .Where(row => completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
+                     .ToArray())
+        {
+            DeadLetterSources.Remove(row);
+            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = 0;
+        }
+
+        SortDeadLetterSources(null, null, null);
+        NotifyStatistics();
     }
 
     private async Task BrowseAsync(

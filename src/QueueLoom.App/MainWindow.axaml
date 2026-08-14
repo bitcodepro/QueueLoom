@@ -266,6 +266,10 @@
               <StackPanel Spacing="5">
                 <TextBlock Text="Dead letter inbox" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Text="{Binding MessageListTitle}" Classes="muted" />
+                <TextBlock x:Name="DeadLetterCopyStatus"
+                           Text="Tip: right-click a source to copy its queue, topic, or subscription name."
+                           Classes="muted" FontSize="10" TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Polite" />
               </StackPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
                 <Button Content="Scan current" Classes="quiet" Command="{Binding ScanCurrentEnvironmentCommand}" />
@@ -319,6 +323,16 @@
                     <ListBox.ItemTemplate>
                       <DataTemplate x:DataType="vm:DlqSourceItemViewModel">
                         <Grid ColumnDefinitions="8,10,*,12,52" MinHeight="78">
+                          <Grid.ContextMenu>
+                            <ContextMenu>
+                              <MenuItem Header="Copy queue name" IsVisible="{Binding IsQueue}"
+                                        Click="OnCopyDlqEntityNameClick" />
+                              <MenuItem Header="Copy subscription name" IsVisible="{Binding IsSubscription}"
+                                        Click="OnCopyDlqEntityNameClick" />
+                              <MenuItem Header="Copy topic name" IsVisible="{Binding IsSubscription}"
+                                        Click="OnCopyDlqTopicNameClick" />
+                            </ContextMenu>
+                          </Grid.ContextMenu>
                           <Border Grid.Column="0" Width="7" Height="7" CornerRadius="4"
                                   Background="{Binding EnvironmentColor}" VerticalAlignment="Center" />
                           <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="4"

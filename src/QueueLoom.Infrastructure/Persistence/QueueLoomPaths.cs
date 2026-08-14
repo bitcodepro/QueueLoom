@@ -7,6 +7,7 @@ public sealed record QueueLoomPaths(
     string SecretsFile,
     string InstallationIdFile,
     string ProtectedMasterKeyFile,
+    string SettingsFile,
     string StorageLockFile)
 {
     public static QueueLoomPaths CreateDefault()
@@ -31,6 +32,7 @@ public sealed record QueueLoomPaths(
             Path.Combine(root, "secrets.v1.json"),
             Path.Combine(root, "installation.id"),
             Path.Combine(root, "vault-key.dpapi"),
+            Path.Combine(root, "settings.v1.json"),
             Path.Combine(root, ".storage.lock"));
     }
 
