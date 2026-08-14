@@ -370,7 +370,7 @@
         "dependencies": {
           "Azure.Identity": "[1.21.0, )",
           "Azure.Messaging.ServiceBus": "[7.20.2, )",
-          "QueueLoom.Core": "[0.2.2, )",
+          "QueueLoom.Core": "[0.2.3, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.11, )"
         }
       }

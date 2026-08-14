@@ -450,8 +450,8 @@
           "Avalonia.Desktop": "[12.1.1, )",
           "Avalonia.Fonts.Inter": "[12.1.1, )",
           "Avalonia.Themes.Fluent": "[12.1.1, )",
-          "QueueLoom.Core": "[0.2.2, )",
-          "QueueLoom.Infrastructure": "[0.2.2, )"
+          "QueueLoom.Core": "[0.2.3, )",
+          "QueueLoom.Infrastructure": "[0.2.3, )"
         }
       },
       "queueloom.core": {
@@ -462,7 +462,7 @@
         "dependencies": {
           "Azure.Identity": "[1.21.0, )",
           "Azure.Messaging.ServiceBus": "[7.20.2, )",
-          "QueueLoom.Core": "[0.2.2, )",
+          "QueueLoom.Core": "[0.2.3, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.11, )"
         }
       }

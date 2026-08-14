@@ -230,8 +230,10 @@ public sealed class ViewModelStateTests
 
         await viewModel.PurgeEnvironmentDeadLettersCommand.ExecuteAsync();
         Assert.Equal(3, workspace.PurgeRequests[0].Sources.Count);
+        Assert.Equal(10, workspace.PurgeRequests[0].BatchSize);
         Assert.Empty(dialogs.Confirmations);
 
+        await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
         viewModel.SelectedDlqSource = Assert.Single(
             viewModel.FilteredDeadLetterSources,
             source => source.Entity == billing.Reference);
@@ -240,6 +242,7 @@ public sealed class ViewModelStateTests
             [billing.Reference, shipping.Reference],
             workspace.PurgeRequests[1].Sources);
 
+        await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
         viewModel.SelectedDlqSource = Assert.Single(
             viewModel.FilteredDeadLetterSources,
             source => source.Entity == queue.Reference);

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -16,6 +17,7 @@ public sealed partial class MainWindow : Window
     private readonly EncryptedFileSecretVault _secretVault;
     private readonly MainWindowViewModel _viewModel;
     private readonly WindowDialogService _dialogService;
+    private readonly JsonAppSettingsStore _settingsStore;
     private bool _initialized;
     private bool _shutdownInProgress;
     private bool _shutdownComplete;
@@ -28,6 +30,7 @@ public sealed partial class MainWindow : Window
         var paths = QueueLoomPaths.CreateDefault();
         _profileRepository = new JsonProfileRepository(paths);
         _secretVault = new EncryptedFileSecretVault(paths);
+        _settingsStore = new JsonAppSettingsStore(paths);
         var workspace = new AzureServiceBusWorkspace(
             _secretVault,
             backupStore: new DeadLetterJsonBackupStore(paths));
@@ -53,7 +56,29 @@ public sealed partial class MainWindow : Window
         _initialized = true;
         _initializationTask = _viewModel.InitializeAsync();
         await _initializationTask;
+        _viewModel.MonitorIntervalSeconds = await _settingsStore.LoadMonitorIntervalSecondsAsync();
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         await CheckForUpdatesAsync();
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(MainWindowViewModel.MonitorIntervalSeconds))
+        {
+            _ = SaveMonitorIntervalBestEffortAsync();
+        }
+    }
+
+    private async Task SaveMonitorIntervalBestEffortAsync()
+    {
+        try
+        {
+            await _settingsStore.SaveMonitorIntervalSecondsAsync(_viewModel.MonitorIntervalSeconds);
+        }
+        catch
+        {
+            // Local preference persistence must not interrupt Service Bus operations.
+        }
     }
 
     private async Task CheckForUpdatesAsync()
@@ -124,6 +149,51 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async void OnCopyDlqEntityNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: DlqSourceItemViewModel source })
+        {
+            return;
+        }
+
+        await CopyDlqNameAsync(
+            source.EntityName,
+            source.IsQueue ? "queue" : "subscription");
+    }
+
+    private async void OnCopyDlqTopicNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: DlqSourceItemViewModel source } ||
+            !source.IsSubscription)
+        {
+            return;
+        }
+
+        await CopyDlqNameAsync(source.ParentTopicName, "topic");
+    }
+
+    private async Task CopyDlqNameAsync(string name, string kind)
+    {
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null)
+            {
+                DeadLetterCopyStatus.Text = "Clipboard is unavailable; the name was not copied.";
+                return;
+            }
+
+            await clipboard.SetTextAsync(name);
+            DeadLetterCopyStatus.Text = $"Copied {kind} name: {name}";
+        }
+        catch
+        {
+            DeadLetterCopyStatus.Text = "Could not copy the source name to the clipboard.";
+        }
+    }
+
     private async void OnClosing(object? sender, WindowClosingEventArgs args)
     {
         if (_shutdownComplete)
@@ -144,6 +214,7 @@ public sealed partial class MainWindow : Window
             {
                 await _initializationTask;
             }
+            await _settingsStore.SaveMonitorIntervalSecondsAsync(_viewModel.MonitorIntervalSeconds);
             await _viewModel.DisposeAsync();
         }
         catch
@@ -155,6 +226,8 @@ public sealed partial class MainWindow : Window
         {
             _secretVault.Dispose();
             _profileRepository.Dispose();
+            _settingsStore.Dispose();
+            _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
             Opened -= OnOpened;
             _shutdownComplete = true;
             _shutdownInProgress = false;
