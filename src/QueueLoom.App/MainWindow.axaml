@@ -228,6 +228,18 @@
                   <ListBox.ItemTemplate>
                     <DataTemplate x:DataType="vm:EntityItemViewModel">
                       <Grid ColumnDefinitions="104,*,72,60,52,72,88" MinHeight="43">
+                        <Grid.ContextMenu>
+                          <ContextMenu>
+                            <MenuItem Header="Copy queue name" IsVisible="{Binding IsQueue}"
+                                      Click="OnCopyEntityNameClick" />
+                            <MenuItem Header="Copy topic name" IsVisible="{Binding IsTopic}"
+                                      Click="OnCopyEntityNameClick" />
+                            <MenuItem Header="Copy subscription name" IsVisible="{Binding IsSubscription}"
+                                      Click="OnCopyEntityNameClick" />
+                            <MenuItem Header="Copy parent topic name" IsVisible="{Binding IsSubscription}"
+                                      Click="OnCopyExplorerParentTopicNameClick" />
+                          </ContextMenu>
+                        </Grid.ContextMenu>
                         <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
                           <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
@@ -235,13 +247,7 @@
                                      DoubleTapped="OnEntityNameDoubleTapped"
                                      ToolTip.Tip="{Binding Name}"
                                      AutomationProperties.Name="{Binding Name}"
-                                     AutomationProperties.HelpText="Double-click or right-click to copy the entity name">
-                            <TextBlock.ContextMenu>
-                              <ContextMenu>
-                                <MenuItem Header="Copy name" Click="OnCopyEntityNameClick" />
-                              </ContextMenu>
-                            </TextBlock.ContextMenu>
-                          </TextBlock>
+                                     AutomationProperties.HelpText="Double-click or right-click to copy the entity name" />
                           <TextBlock Text="{Binding ParentPath}" Classes="muted" FontSize="10"
                                      TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ParentPath}" />
                         </StackPanel>
@@ -657,6 +663,8 @@
                               Command="{Binding ClearMonitorNotificationsCommand}"
                               IsVisible="{Binding HasMonitorNotifications}" />
                     </Grid>
+                    <TextBlock x:Name="MonitorCopyStatus" Text="Right-click a notification to copy its source name."
+                               Classes="muted" FontSize="10" AutomationProperties.LiveSetting="Polite" />
                     <TextBlock Text="No retained DLQ notifications."
                                Classes="muted" IsVisible="{Binding !HasMonitorNotifications}" />
                     <ListBox ItemsSource="{Binding MonitorNotifications}" MaxHeight="230"
@@ -664,6 +672,16 @@
                       <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:MonitorNotificationItemViewModel">
                           <Grid RowDefinitions="Auto,Auto,Auto" Margin="2,5">
+                            <Grid.ContextMenu>
+                              <ContextMenu>
+                                <MenuItem Header="Copy queue name" IsVisible="{Binding IsQueue}"
+                                          Click="OnCopyMonitorEntityNameClick" />
+                                <MenuItem Header="Copy subscription name" IsVisible="{Binding IsSubscription}"
+                                          Click="OnCopyMonitorEntityNameClick" />
+                                <MenuItem Header="Copy topic name" IsVisible="{Binding IsSubscription}"
+                                          Click="OnCopyMonitorTopicNameClick" />
+                              </ContextMenu>
+                            </Grid.ContextMenu>
                             <Grid ColumnDefinitions="*,Auto">
                               <TextBlock Text="{Binding SourceName}" FontWeight="SemiBold"
                                          TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceName}" />
@@ -764,6 +782,8 @@
             <StackPanel Grid.Row="0" Spacing="5">
                 <TextBlock Text="Local activity" FontSize="22" FontWeight="SemiBold" />
               <TextBlock Text="Sanitized operational metadata only — never connection strings or message bodies." Classes="muted" />
+              <TextBlock x:Name="ActivityCopyStatus" Text="Right-click an activity row to copy its details."
+                         Classes="muted" FontSize="10" AutomationProperties.LiveSetting="Polite" />
             </StackPanel>
             <Border Grid.Row="2" Classes="card" Padding="0" ClipToBounds="True">
               <Grid RowDefinitions="44,*">
@@ -779,6 +799,19 @@
                   <ListBox.ItemTemplate>
                     <DataTemplate x:DataType="vm:ActivityItemViewModel">
                       <Grid ColumnDefinitions="90,100,220,*" MinHeight="40">
+                        <Grid.ContextMenu>
+                          <ContextMenu>
+                            <MenuItem Header="Copy queue name" IsVisible="{Binding IsQueue}"
+                                      Click="OnCopyActivityEntityNameClick" />
+                            <MenuItem Header="Copy topic name" IsVisible="{Binding IsTopic}"
+                                      Click="OnCopyActivityEntityNameClick" />
+                            <MenuItem Header="Copy subscription name" IsVisible="{Binding IsSubscription}"
+                                      Click="OnCopyActivityEntityNameClick" />
+                            <MenuItem Header="Copy parent topic name" IsVisible="{Binding IsSubscription}"
+                                      Click="OnCopyActivityTopicNameClick" />
+                            <MenuItem Header="Copy details" Click="OnCopyActivityDetailsClick" />
+                          </ContextMenu>
+                        </Grid.ContextMenu>
                         <TextBlock Text="{Binding Time}" Classes="muted" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="1" Text="{Binding Level}" Foreground="{Binding LevelColor}" FontWeight="SemiBold" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="2" Text="{Binding Action}" FontWeight="SemiBold" VerticalAlignment="Center" />

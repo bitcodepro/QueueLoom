@@ -36,6 +36,12 @@ public sealed class EntityItemViewModel
         ? Reference.TopicName ?? string.Empty
         : string.Empty;
 
+    public bool IsQueue => Reference.Kind == ServiceBusEntityKind.Queue;
+
+    public bool IsTopic => Reference.Kind == ServiceBusEntityKind.Topic;
+
+    public bool IsSubscription => Reference.Kind == ServiceBusEntityKind.Subscription;
+
     public string KindLabel => Reference.Kind switch
     {
         ServiceBusEntityKind.Queue => "QUEUE",

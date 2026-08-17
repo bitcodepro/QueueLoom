@@ -1,9 +1,11 @@
+using QueueLoom.Core.ServiceBus;
+
 namespace QueueLoom.App.ViewModels;
 
 public sealed class MonitorNotificationItemViewModel(
     string key,
     string environmentName,
-    string sourceName,
+    ServiceBusEntityReference source,
     string subQueueLabel,
     long count,
     DateTimeOffset firstDetectedAt) : ObservableObject
@@ -13,7 +15,12 @@ public sealed class MonitorNotificationItemViewModel(
 
     public string Key { get; } = key;
     public string EnvironmentName { get; } = environmentName;
-    public string SourceName { get; } = sourceName;
+    public ServiceBusEntityReference Source { get; } = source;
+    public string SourceName => Source.DisplayName;
+    public string EntityName => Source.Name;
+    public string ParentTopicName => Source.TopicName ?? string.Empty;
+    public bool IsQueue => Source.Kind == ServiceBusEntityKind.Queue;
+    public bool IsSubscription => Source.Kind == ServiceBusEntityKind.Subscription;
     public string SubQueueLabel { get; } = subQueueLabel;
     public DateTimeOffset FirstDetectedAt { get; } = firstDetectedAt;
 

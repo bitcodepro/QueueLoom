@@ -6,12 +6,12 @@ namespace QueueLoom.Tests;
 public sealed class GitHubUpdateCheckerTests
 {
     [Fact]
-    public async Task NewerRelease_ReturnsTrustedGitHubPage()
+    public async Task NewerTag_ReturnsTrustedGitHubPage()
     {
         using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("""
-                {"tag_name":"v99.1.0","html_url":"https://github.com/bitcodepro/QueueLoom/releases/tag/v99.1.0"}
+                [{"name":"v2.0.0"},{"name":"v99.1.0"},{"name":"not-a-version"}]
                 """)
         }));
         using var checker = new GitHubUpdateChecker(client);
@@ -35,12 +35,12 @@ public sealed class GitHubUpdateCheckerTests
     }
 
     [Fact]
-    public async Task InvalidOrUntrustedResponse_ReturnsNull()
+    public async Task InvalidResponse_ReturnsNull()
     {
         using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("""
-                {"tag_name":"v99.1.0","html_url":"https://example.com/download"}
+                {"not":"an array"}
                 """)
         }));
         using var checker = new GitHubUpdateChecker(client);

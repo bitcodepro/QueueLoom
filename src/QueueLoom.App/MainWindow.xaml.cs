@@ -128,9 +128,26 @@ public sealed partial class MainWindow : Window
         await CopyEntityNameAsync(entity);
     }
 
+    private async void OnCopyExplorerParentTopicNameClick(
+        object? sender,
+        Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: EntityItemViewModel { IsSubscription: true } entity })
+        {
+            return;
+        }
+
+        await CopyExplorerTextAsync(entity.ParentPath, "parent topic");
+    }
+
     private async Task CopyEntityNameAsync(EntityItemViewModel entity)
     {
-        var name = entity.Name;
+        await CopyExplorerTextAsync(entity.Name, entity.KindLabel.ToLowerInvariant());
+    }
+
+    private async Task CopyExplorerTextAsync(string name, string kind)
+    {
         try
         {
             var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
@@ -141,7 +158,7 @@ public sealed partial class MainWindow : Window
             }
 
             await clipboard.SetTextAsync(name);
-            ExplorerCopyStatus.Text = $"Copied {entity.KindLabel.ToLowerInvariant()} name: {name}";
+            ExplorerCopyStatus.Text = $"Copied {kind} name: {name}";
         }
         catch
         {
@@ -191,6 +208,119 @@ public sealed partial class MainWindow : Window
         catch
         {
             DeadLetterCopyStatus.Text = "Could not copy the source name to the clipboard.";
+        }
+    }
+
+    private async void OnCopyMonitorEntityNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: MonitorNotificationItemViewModel notification })
+        {
+            return;
+        }
+
+        await CopyMonitorNameAsync(
+            notification.EntityName,
+            notification.IsQueue ? "queue" : "subscription");
+    }
+
+    private async void OnCopyMonitorTopicNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: MonitorNotificationItemViewModel { IsSubscription: true } notification })
+        {
+            return;
+        }
+
+        await CopyMonitorNameAsync(notification.ParentTopicName, "topic");
+    }
+
+    private async Task CopyMonitorNameAsync(string name, string kind)
+    {
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null)
+            {
+                MonitorCopyStatus.Text = "Clipboard is unavailable; the name was not copied.";
+                return;
+            }
+
+            await clipboard.SetTextAsync(name);
+            MonitorCopyStatus.Text = $"Copied {kind} name: {name}";
+        }
+        catch
+        {
+            MonitorCopyStatus.Text = "Could not copy the notification source name.";
+        }
+    }
+
+    private async void OnCopyActivityDetailsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: ActivityItemViewModel activity })
+        {
+            return;
+        }
+
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null)
+            {
+                ActivityCopyStatus.Text = "Clipboard is unavailable; the details were not copied.";
+                return;
+            }
+
+            await clipboard.SetTextAsync(activity.Details);
+            ActivityCopyStatus.Text = "Activity details copied.";
+        }
+        catch
+        {
+            ActivityCopyStatus.Text = "Could not copy the activity details.";
+        }
+    }
+
+    private async void OnCopyActivityEntityNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: ActivityItemViewModel { HasSource: true } activity })
+        {
+            return;
+        }
+
+        var kind = activity.IsQueue ? "queue" : activity.IsTopic ? "topic" : "subscription";
+        await CopyActivityNameAsync(activity.EntityName, kind);
+    }
+
+    private async void OnCopyActivityTopicNameClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        if (sender is not Control { DataContext: ActivityItemViewModel { IsSubscription: true } activity })
+        {
+            return;
+        }
+
+        await CopyActivityNameAsync(activity.ParentTopicName, "parent topic");
+    }
+
+    private async Task CopyActivityNameAsync(string name, string kind)
+    {
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null)
+            {
+                ActivityCopyStatus.Text = "Clipboard is unavailable; the name was not copied.";
+                return;
+            }
+
+            await clipboard.SetTextAsync(name);
+            ActivityCopyStatus.Text = $"Copied {kind} name: {name}";
+        }
+        catch
+        {
+            ActivityCopyStatus.Text = "Could not copy the activity source name.";
         }
     }
 

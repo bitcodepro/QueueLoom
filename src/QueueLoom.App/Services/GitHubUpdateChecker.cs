@@ -8,8 +8,10 @@ public sealed record UpdateCheckResult(Version Version, string Tag, Uri ReleaseP
 
 public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDisposable
 {
-    private static readonly Uri LatestReleaseApi =
-        new("https://api.github.com/repos/bitcodepro/QueueLoom/releases/latest");
+    private static readonly Uri TagsApi =
+        new("https://api.github.com/repos/bitcodepro/QueueLoom/tags?per_page=30");
+    private static readonly Uri TagsPage =
+        new("https://github.com/bitcodepro/QueueLoom/tags");
     private readonly HttpClient _httpClient = httpClient ?? CreateClient();
     private readonly bool _ownsClient = httpClient is null;
 
@@ -17,7 +19,7 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
+            using var request = new HttpRequestMessage(HttpMethod.Get, TagsApi);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
             using var response = await _httpClient.SendAsync(
@@ -33,26 +35,31 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
             await using var content = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var document = await JsonDocument.ParseAsync(content, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("tag_name", out var tagElement) ||
-                !root.TryGetProperty("html_url", out var urlElement))
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }
 
-            var tag = tagElement.GetString();
-            var url = urlElement.GetString();
-            if (!TryParseVersion(tag, out var latestVersion) ||
-                !Uri.TryCreate(url, UriKind.Absolute, out var releasePage) ||
-                releasePage.Scheme != Uri.UriSchemeHttps ||
-                !string.Equals(releasePage.Host, "github.com", StringComparison.OrdinalIgnoreCase))
+            string? latestTag = null;
+            Version? latestVersion = null;
+            foreach (var item in document.RootElement.EnumerateArray())
             {
-                return null;
+                if (!item.TryGetProperty("name", out var nameElement))
+                {
+                    continue;
+                }
+                var tag = nameElement.GetString();
+                if (TryParseVersion(tag, out var candidate) &&
+                    (latestVersion is null || candidate > latestVersion))
+                {
+                    latestVersion = candidate;
+                    latestTag = tag;
+                }
             }
 
             var currentVersion = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0);
-            return latestVersion > Normalize(currentVersion)
-                ? new UpdateCheckResult(latestVersion, tag!, releasePage)
+            return latestVersion is not null && latestVersion > Normalize(currentVersion)
+                ? new UpdateCheckResult(latestVersion, latestTag!, TagsPage)
                 : null;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
