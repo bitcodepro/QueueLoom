@@ -46,11 +46,11 @@ public sealed class WindowDialogService(Window owner) : IUserDialogService
             new ConfirmDialogWindow(
                 new ConfirmDialogViewModel(
                     "QueueLoom update available",
-                    $"QueueLoom {version} is available. Open its GitHub release page?",
+                    $"QueueLoom {version} is available. Open the QueueLoom page on GitHub?",
                     isDangerous: false,
                     requiredText: null,
                     showCancel: true,
-                    confirmLabel: "Open GitHub release",
+                    confirmLabel: "Open GitHub",
                     cancelLabel: "Not now")),
             cancellationToken);
 

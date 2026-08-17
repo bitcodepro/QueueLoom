@@ -1697,7 +1697,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
         NavigateTo(NavigationPage.DeadLetters);
         StatusText = $"Peeked {messages.Count:N0} messages without acquiring locks";
-        AddActivity("Info", "Peek", $"{source.DisplayName} · {FormatSubQueue(subQueue)} · {messages.Count:N0} messages");
+        AddActivity(
+            "Info",
+            "Peek",
+            $"{source.DisplayName} · {FormatSubQueue(subQueue)} · {messages.Count:N0} messages",
+            source);
     }
 
     private void NewMessage()
@@ -1823,7 +1827,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                     DeadLetterDisposition.KeepOriginal),
                 cancellationToken).ConfigureAwait(true);
             StatusText = "Copy accepted by Service Bus · original remains in DLQ";
-            AddActivity("Success", "DLQ copy send accepted", $"{profile.Name} · {destination.Reference.DisplayName}");
+            AddActivity(
+                "Success",
+                "DLQ copy send accepted",
+                $"{profile.Name} · {destination.Reference.DisplayName}",
+                destination.Reference);
         }
         else
         {
@@ -1831,7 +1839,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 new SendMessageRequest(destination.Reference, draft),
                 cancellationToken).ConfigureAwait(true);
             StatusText = "Message accepted by Service Bus";
-            AddActivity("Success", "Message send accepted", $"{profile.Name} · {destination.Reference.DisplayName}");
+            AddActivity(
+                "Success",
+                "Message send accepted",
+                $"{profile.Name} · {destination.Reference.DisplayName}",
+                destination.Reference);
         }
     }
 
@@ -2257,20 +2269,38 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             _lastDlqMeasurements[key] = count;
             if (count <= 0)
             {
+                if (_monitorNotifications.Remove(key, out var resolved))
+                {
+                    MonitorNotifications.Remove(resolved);
+                    AddActivity(
+                        "Success",
+                        "DLQ resolved",
+                        $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · cleared",
+                        entity.Entity);
+                }
                 continue;
             }
 
             if (_monitorNotifications.TryGetValue(key, out var existing))
             {
-                existing.Count = count;
-                existing.LastDetectedAt = detectedAt;
+                if (existing.Count != count)
+                {
+                    var previousCount = existing.Count;
+                    existing.Count = count;
+                    existing.LastDetectedAt = detectedAt;
+                    AddActivity(
+                        "Warning",
+                        "DLQ count changed",
+                        $"{profile.Name} · {entity.Entity.DisplayName} · {previousCount:N0} → {count:N0}",
+                        entity.Entity);
+                }
                 continue;
             }
 
             var notification = new MonitorNotificationItemViewModel(
                 key,
                 profile.Name,
-                entity.Entity.DisplayName,
+                entity.Entity,
                 FormatSubQueue(entity.SubQueue),
                 count,
                 detectedAt);
@@ -2279,7 +2309,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             AddActivity(
                 "Warning",
                 "DLQ detected",
-                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {count:N0} messages");
+                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {count:N0} messages",
+                entity.Entity);
         }
 
         NotifyMonitorNotificationsChanged();
@@ -2511,9 +2542,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         UnlockWritesCommand.NotifyCanExecuteChanged();
     }
 
-    private void AddActivity(string level, string action, string details)
+    private void AddActivity(
+        string level,
+        string action,
+        string details,
+        ServiceBusEntityReference? source = null)
     {
-        Activity.Insert(0, new ActivityItemViewModel(DateTimeOffset.UtcNow, level, action, details));
+        Activity.Insert(0, new ActivityItemViewModel(DateTimeOffset.UtcNow, level, action, details, source));
         while (Activity.Count > 500)
         {
             Activity.RemoveAt(Activity.Count - 1);

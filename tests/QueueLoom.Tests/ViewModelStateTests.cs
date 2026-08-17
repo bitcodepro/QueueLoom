@@ -77,7 +77,7 @@ public sealed class ViewModelStateTests
     }
 
     [Fact]
-    public async Task MonitorDoesNotChangeSelectedEnvironmentAndRetainsNotificationsUntilCleared()
+    public async Task MonitorDoesNotChangeSelectedEnvironmentAndReconcilesNotifications()
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development);
         var test = CreateProfile("Test", EnvironmentKind.Test);
@@ -106,14 +106,22 @@ public sealed class ViewModelStateTests
         var notification = Assert.Single(viewModel.MonitorNotifications);
         Assert.Equal("orders", notification.SourceName);
         Assert.Equal(3, notification.Count);
+        var lastDetectedAt = notification.LastDetectedAt;
 
-        workspace.Snapshots[dev.Id] = Snapshot(dev.Id);
         await viewModel.ToggleMonitorCommand.ExecuteAsync();
         await WaitUntilAsync(() => viewModel.MonitorStatus.Contains("last check", StringComparison.OrdinalIgnoreCase));
         await viewModel.ToggleMonitorCommand.ExecuteAsync();
 
         Assert.Single(viewModel.MonitorNotifications);
-        viewModel.ClearMonitorNotificationsCommand.Execute(null);
+        Assert.Equal(lastDetectedAt, notification.LastDetectedAt);
+
+        workspace.Snapshots[dev.Id] = Snapshot(
+            dev.Id,
+            new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), 0));
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.MonitorStatus.Contains("last check", StringComparison.OrdinalIgnoreCase));
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+
         Assert.Empty(viewModel.MonitorNotifications);
     }
 
