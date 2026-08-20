@@ -5,6 +5,7 @@ public enum NavigationPage
     Overview,
     Explorer,
     DeadLetters,
+    Backups,
     Composer,
     Monitors,
     Environments,

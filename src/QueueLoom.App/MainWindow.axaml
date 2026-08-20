@@ -493,6 +493,150 @@
             </Grid>
           </Grid>
 
+          <!-- Local backup viewer -->
+          <Grid IsVisible="{Binding IsBackupsVisible}" Margin="26,22,26,24" RowDefinitions="Auto,14,Auto,14,*">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Backup viewer" FontSize="22" FontWeight="SemiBold" />
+                <TextBlock Text="Inspect purge backups, open a saved message as a draft, or delete one local JSON file. Azure is never changed here."
+                           Classes="muted" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding BackupRootDirectory}" Classes="muted" FontSize="10"
+                           TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding BackupRootDirectory}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
+                <Button Content="Open folder" Classes="quiet" Click="OnOpenBackupsFolderClick" />
+                <Button Content="Refresh" Classes="primary" Command="{Binding RefreshBackupsCommand}" />
+              </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="2" Classes="card" Padding="12">
+              <Grid ColumnDefinitions="*,12,Auto" VerticalAlignment="Center">
+                <TextBox PlaceholderText="Filter by environment, source, Message ID, Correlation ID, or subject..."
+                         Text="{Binding BackupFilterText}" />
+                <TextBlock Grid.Column="2" Text="{Binding VisibleBackupCount, StringFormat='{}{0} messages'}"
+                           Classes="muted" VerticalAlignment="Center" />
+              </Grid>
+            </Border>
+
+            <Grid Grid.Row="4" ColumnDefinitions="1.15*,14,*">
+              <Border Grid.Column="0" Classes="card" Padding="0" ClipToBounds="True">
+                <Grid RowDefinitions="42,*,Auto">
+                  <Border Background="#14243A" Padding="14,0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+                    <Grid ColumnDefinitions="82,1.2*,1.3*,112,112">
+                      <TextBlock Text="ENV" Classes="eyebrow" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="SOURCE" Classes="eyebrow" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="BACKED UP" Classes="eyebrow" VerticalAlignment="Center" />
+                    </Grid>
+                  </Border>
+                  <ListBox Grid.Row="1" ItemsSource="{Binding FilteredBackupMessages}"
+                           SelectedItem="{Binding SelectedBackup}"
+                           SelectionChanged="OnBackupSelectionChanged"
+                           IsEnabled="{Binding !IsBusy}" Margin="6">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:BackupMessageItemViewModel">
+                        <Grid ColumnDefinitions="82,1.2*,1.3*,112,112" MinHeight="68"
+                              ToolTip.Tip="{Binding FilePath}">
+                          <StackPanel VerticalAlignment="Center" Spacing="3">
+                            <Border Width="7" Height="7" CornerRadius="4" Background="{Binding EnvironmentColor}"
+                                    HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ProfileName}" />
+                          </StackPanel>
+                          <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="{Binding SourceKind}" Classes="eyebrow" FontSize="8" />
+                            <TextBlock Text="{Binding SourceDisplay}" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceDisplay}" />
+                            <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow"
+                                       Foreground="{DynamicResource DangerBrush}" />
+                          </StackPanel>
+                          <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="{Binding MessageId}" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding MessageId}" />
+                            <TextBlock Text="{Binding CorrelationId, StringFormat='Correlation: {0}'}" Classes="muted" FontSize="10"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding CorrelationId}" />
+                            <TextBlock Text="{Binding Error}" Foreground="{DynamicResource DangerBrush}" FontSize="10"
+                                       TextTrimming="CharacterEllipsis" IsVisible="{Binding HasError}" ToolTip.Tip="{Binding Error}" />
+                          </StackPanel>
+                          <TextBlock Grid.Column="3" Text="{Binding EnqueuedAt}" Classes="muted" FontSize="10"
+                                     TextWrapping="Wrap" VerticalAlignment="Center" />
+                          <TextBlock Grid.Column="4" Text="{Binding BackedUpAt}" Classes="muted" FontSize="10"
+                                     TextWrapping="Wrap" VerticalAlignment="Center" />
+                        </Grid>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                  <Border Grid.Row="2" Background="#101D2F" Padding="12,9"
+                          BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,1,0,0">
+                    <TextBlock Text="{Binding BackupStatus}" Classes="muted" TextWrapping="Wrap" />
+                  </Border>
+                </Grid>
+              </Border>
+
+              <Border Grid.Column="2" Classes="card" Padding="0" ClipToBounds="True">
+                <Grid RowDefinitions="Auto,*">
+                  <Border Padding="16,13" Background="#14243A" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+                    <Grid RowDefinitions="Auto,10,Auto">
+                      <StackPanel Grid.Row="0" Spacing="3">
+                        <TextBlock Text="Saved message" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding SelectedBackup.SourceDisplay}" Classes="muted"
+                                   TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SelectedBackup.SourceDisplay}" />
+                        <TextBlock Text="{Binding SelectedBackupMessage.CorrelationId, StringFormat='Correlation ID: {0}'}"
+                                   Classes="muted" FontSize="10" />
+                        <TextBlock Text="{Binding BackupDraftHint}" Foreground="{DynamicResource WarningBrush}"
+                                   FontSize="10" TextWrapping="Wrap" IsVisible="{Binding HasBackupDraftHint}" />
+                      </StackPanel>
+                      <Grid Grid.Row="2" ColumnDefinitions="*,8,*" RowDefinitions="Auto,8,Auto">
+                        <Button Grid.Row="0" Grid.Column="0" Content="Copy body"
+                                HorizontalAlignment="Stretch"
+                                Click="OnCopyBackupBodyClick" IsEnabled="{Binding HasLoadedBackupMessage}" />
+                        <Button Grid.Row="0" Grid.Column="2" Content="Copy properties"
+                                HorizontalAlignment="Stretch"
+                                Click="OnCopyBackupPropertiesClick" IsEnabled="{Binding HasLoadedBackupMessage}" />
+                        <Button Grid.Row="2" Grid.Column="0" Content="Open as draft" Classes="primary"
+                                HorizontalAlignment="Stretch" Command="{Binding OpenBackupAsDraftCommand}" />
+                        <Button Grid.Row="2" Grid.Column="2" Content="Delete backup" Classes="danger"
+                                HorizontalAlignment="Stretch" Command="{Binding DeleteSelectedBackupCommand}" />
+                      </Grid>
+                    </Grid>
+                  </Border>
+
+                  <Grid Grid.Row="1">
+                    <StackPanel Margin="22" Spacing="8" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                IsVisible="{Binding !HasLoadedBackupMessage}">
+                      <TextBlock Text="Select a backup message" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                      <TextBlock Text="The body and properties will be loaded from its local JSON file."
+                                 Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
+                    </StackPanel>
+                    <TabControl IsVisible="{Binding HasLoadedBackupMessage}">
+                      <TabItem Header="Body">
+                        <TextBox Text="{Binding SelectedBackupMessage.BodyText}" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                      </TabItem>
+                      <TabItem Header="Properties">
+                        <TextBox Text="{Binding SelectedBackupMessage.PropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                      </TabItem>
+                      <TabItem Header="Dead-letter reason">
+                        <StackPanel Margin="12" Spacing="10">
+                          <TextBlock Text="{Binding SelectedBackupMessage.DeadLetterReason}"
+                                     Foreground="{DynamicResource DangerBrush}" FontWeight="SemiBold" />
+                          <TextBlock Text="{Binding SelectedBackupMessage.DeadLetterDescription}"
+                                     Classes="muted" TextWrapping="Wrap" />
+                        </StackPanel>
+                      </TabItem>
+                    </TabControl>
+                  </Grid>
+                </Grid>
+              </Border>
+            </Grid>
+          </Grid>
+
           <!-- Composer -->
           <Grid IsVisible="{Binding IsComposerVisible}" Margin="26,22,26,24" RowDefinitions="Auto,14,*">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
