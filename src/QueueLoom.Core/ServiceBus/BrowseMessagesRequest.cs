@@ -3,7 +3,7 @@ namespace QueueLoom.Core.ServiceBus;
 public sealed record BrowseMessagesRequest
 {
     public const int DefaultMaxMessages = 100;
-    public const int MaximumMaxMessages = 2_000;
+    public const int MaximumMaxMessages = 1_000;
 
     public BrowseMessagesRequest(
         ServiceBusEntityReference source,

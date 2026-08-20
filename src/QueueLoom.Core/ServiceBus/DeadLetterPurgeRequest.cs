@@ -1,16 +1,8 @@
 namespace QueueLoom.Core.ServiceBus;
 
-public sealed record DeadLetterPurgeTarget(
-    ServiceBusEntityReference Source,
-    ServiceBusSubQueue SubQueue)
-{
-    public bool IsValid => Source.CanBrowse &&
-                           SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter;
-}
-
 public sealed record DeadLetterPurgeRequest
 {
-    public const int DefaultBatchSize = 10;
+    public const int DefaultBatchSize = 1;
     public const int DefaultMaximumMessagesPerSubQueue = 1_000_000;
 
     public DeadLetterPurgeRequest(
@@ -18,24 +10,29 @@ public sealed record DeadLetterPurgeRequest
         IEnumerable<ServiceBusSubQueue>? subQueues = null,
         int batchSize = DefaultBatchSize,
         int maximumMessagesPerSubQueue = DefaultMaximumMessagesPerSubQueue)
-        : this(CreateTargets(sources, subQueues), batchSize, maximumMessagesPerSubQueue)
     {
-    }
-
-    public DeadLetterPurgeRequest(
-        IEnumerable<DeadLetterPurgeTarget> targets,
-        int batchSize = DefaultBatchSize,
-        int maximumMessagesPerSubQueue = DefaultMaximumMessagesPerSubQueue)
-    {
-        ArgumentNullException.ThrowIfNull(targets);
-        var targetArray = targets.Distinct().ToArray();
-        if (targetArray.Length == 0)
+        ArgumentNullException.ThrowIfNull(sources);
+        var sourceArray = sources.Distinct().ToArray();
+        if (sourceArray.Length == 0)
         {
-            throw new ArgumentException("At least one dead-letter source is required.", nameof(targets));
+            throw new ArgumentException("At least one queue or subscription is required.", nameof(sources));
         }
-        if (targetArray.Any(target => !target.IsValid))
+        if (sourceArray.Any(source => !source.CanBrowse))
         {
-            throw new ArgumentException("Purge targets must be queue or subscription DLQs.", nameof(targets));
+            throw new ArgumentException("Only queues and subscriptions can have dead letters purged.", nameof(sources));
+        }
+
+        var subQueueArray = (subQueues ??
+            [ServiceBusSubQueue.DeadLetter, ServiceBusSubQueue.TransferDeadLetter])
+            .Distinct()
+            .ToArray();
+        if (subQueueArray.Length == 0 ||
+            subQueueArray.Any(subQueue => subQueue is not (
+                ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter)))
+        {
+            throw new ArgumentException(
+                "Only dead-letter and transfer dead-letter subqueues can be purged.",
+                nameof(subQueues));
         }
         if (batchSize is < 1 or > 100)
         {
@@ -48,14 +45,11 @@ public sealed record DeadLetterPurgeRequest
                 $"The per-subqueue limit must be between 1 and {DefaultMaximumMessagesPerSubQueue:N0}.");
         }
 
-        Targets = Array.AsReadOnly(targetArray);
-        Sources = Array.AsReadOnly(targetArray.Select(target => target.Source).Distinct().ToArray());
-        SubQueues = Array.AsReadOnly(targetArray.Select(target => target.SubQueue).Distinct().ToArray());
+        Sources = Array.AsReadOnly(sourceArray);
+        SubQueues = Array.AsReadOnly(subQueueArray);
         BatchSize = batchSize;
         MaximumMessagesPerSubQueue = maximumMessagesPerSubQueue;
     }
-
-    public IReadOnlyList<DeadLetterPurgeTarget> Targets { get; }
 
     public IReadOnlyList<ServiceBusEntityReference> Sources { get; }
 
@@ -64,18 +58,4 @@ public sealed record DeadLetterPurgeRequest
     public int BatchSize { get; }
 
     public int MaximumMessagesPerSubQueue { get; }
-
-    private static IEnumerable<DeadLetterPurgeTarget> CreateTargets(
-        IEnumerable<ServiceBusEntityReference> sources,
-        IEnumerable<ServiceBusSubQueue>? subQueues)
-    {
-        ArgumentNullException.ThrowIfNull(sources);
-        var sourceArray = sources.Distinct().ToArray();
-        var subQueueArray = (subQueues ??
-            [ServiceBusSubQueue.DeadLetter, ServiceBusSubQueue.TransferDeadLetter])
-            .Distinct()
-            .ToArray();
-        return sourceArray.SelectMany(source =>
-            subQueueArray.Select(subQueue => new DeadLetterPurgeTarget(source, subQueue)));
-    }
 }

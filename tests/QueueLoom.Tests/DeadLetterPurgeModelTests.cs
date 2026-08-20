@@ -28,19 +28,6 @@ public sealed class DeadLetterPurgeModelTests
     }
 
     [Fact]
-    public void Request_PreservesExactTargetsWithoutAddingEmptySubQueues()
-    {
-        var source = ServiceBusEntityReference.Queue("jobs");
-        var request = new DeadLetterPurgeRequest(
-            [new DeadLetterPurgeTarget(source, ServiceBusSubQueue.DeadLetter)]);
-
-        var target = Assert.Single(request.Targets);
-        Assert.Equal(source, target.Source);
-        Assert.Equal(ServiceBusSubQueue.DeadLetter, target.SubQueue);
-        Assert.Equal([ServiceBusSubQueue.DeadLetter], request.SubQueues);
-    }
-
-    [Fact]
     public void Result_AggregatesDeletedMessagesAndFailures()
     {
         var source = ServiceBusEntityReference.Queue("jobs");
