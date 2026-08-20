@@ -131,7 +131,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             () => !IsBusy && SelectedProfile is not null);
         ConnectCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Connecting", ConnectSelectedAsync, token),
-            () => !IsBusy && SelectedProfile is not null);
+            () => !IsBusy && SelectedProfile is not null && !IsSelectedProfileConnected);
+        DisconnectCommand = new AsyncRelayCommand(
+            token => RunWorkspaceOperationAsync("Disconnecting", DisconnectSelectedAsync, token),
+            () => !IsBusy && IsSelectedProfileConnected);
         RefreshTopologyCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Refreshing topology", RefreshTopologyAsync, token),
             () => !IsBusy && IsConnected);
@@ -221,6 +224,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand EditEnvironmentCommand { get; }
     public AsyncRelayCommand DeleteEnvironmentCommand { get; }
     public AsyncRelayCommand ConnectCommand { get; }
+    public AsyncRelayCommand DisconnectCommand { get; }
     public AsyncRelayCommand RefreshTopologyCommand { get; }
     public AsyncRelayCommand ScanCurrentEnvironmentCommand { get; }
     public AsyncRelayCommand ScanAllEnvironmentsCommand { get; }
@@ -277,6 +281,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 OnPropertyChanged(nameof(HasSelectedProfile));
                 OnPropertyChanged(nameof(SelectedProfileName));
                 OnPropertyChanged(nameof(IsSelectedProfileConnected));
+                OnPropertyChanged(nameof(EnvironmentActionLabel));
+                OnPropertyChanged(nameof(EnvironmentActionCommand));
                 NotifyCommandStates();
             }
         }
@@ -286,10 +292,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasProfiles => Profiles.Count > 0;
 
-    public string EnvironmentActionLabel => HasProfiles ? "Connect" : "Add environment";
+    public string EnvironmentActionLabel => !HasProfiles
+        ? "Add environment"
+        : IsSelectedProfileConnected
+            ? "Disconnect"
+            : "Connect";
 
     public System.Windows.Input.ICommand EnvironmentActionCommand =>
-        HasProfiles ? ConnectCommand : AddEnvironmentCommand;
+        !HasProfiles
+            ? AddEnvironmentCommand
+            : IsSelectedProfileConnected
+                ? DisconnectCommand
+                : ConnectCommand;
 
     public string SelectedProfileName => SelectedProfile?.Name ?? "No environment selected";
 
@@ -869,6 +883,22 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         await _profileRepository.SetSelectedProfileIdAsync(selected.Id, cancellationToken).ConfigureAwait(true);
         StatusText = $"Connected to {selected.Name}";
         AddActivity("Success", "Connected", $"{selected.Name} · {ConnectedNamespace}");
+    }
+
+    private async Task DisconnectSelectedAsync(CancellationToken cancellationToken)
+    {
+        var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
+        if (_workspace.ConnectedProfileId != selected.Id)
+        {
+            throw new InvalidOperationException("The selected environment is not connected.");
+        }
+
+        await StopMonitorForConfigurationChangeAsync().ConfigureAwait(true);
+        _writeUnlockCancellation?.Cancel();
+        await _workspace.DisconnectAsync(cancellationToken).ConfigureAwait(true);
+        ClearConnectedState();
+        StatusText = $"Disconnected from {selected.Name}";
+        AddActivity("Info", "Disconnected", selected.Name);
     }
 
     private async Task ConnectProfileAsync(
@@ -1517,11 +1547,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 "Select the connected environment in the dead-letter filter before purging it.");
         }
 
-        var sources = _topology?.MessageSources.ToArray()
-            ?? throw new InvalidOperationException("Refresh the connected environment topology first.");
+        var targets = GetKnownPurgeTargets(profile.Id, _ => true);
         return BackupAndPurgeDeadLettersAsync(
             $"environment '{profile.Name}'",
-            sources,
+            targets,
             cancellationToken);
     }
 
@@ -1535,16 +1564,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         EnsurePurgeSelectionUsesConnectedEnvironment(selection);
 
-        var topic = _topology?.Topics.FirstOrDefault(item =>
-            string.Equals(item.Name, selection.ParentTopicName, StringComparison.Ordinal));
-        if (topic is null)
+        if (_topology?.Topics.Any(item =>
+                string.Equals(item.Name, selection.ParentTopicName, StringComparison.Ordinal)) != true)
         {
             throw new InvalidOperationException("The selected topic is no longer present in the connected topology.");
         }
 
+        var targets = GetKnownPurgeTargets(
+            selection.ProfileId,
+            source => source.Kind == ServiceBusEntityKind.Subscription &&
+                      string.Equals(source.TopicName, selection.ParentTopicName, StringComparison.Ordinal));
+
         return BackupAndPurgeDeadLettersAsync(
-            $"all {topic.Subscriptions.Count:N0} subscriptions under topic '{topic.Name}'",
-            topic.Subscriptions.Select(subscription => subscription.Reference).ToArray(),
+            $"all non-empty subscriptions under topic '{selection.ParentTopicName}'",
+            targets,
             cancellationToken);
     }
 
@@ -1556,8 +1589,26 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var targetKind = selection.IsSubscription ? "subscription" : "queue";
         return BackupAndPurgeDeadLettersAsync(
             $"{targetKind} '{selection.EntityPath}'",
-            [selection.Entity],
+            GetKnownPurgeTargets(selection.ProfileId, source => source == selection.Entity),
             cancellationToken);
+    }
+
+    private IReadOnlyList<DeadLetterPurgeTarget> GetKnownPurgeTargets(
+        Guid profileId,
+        Func<ServiceBusEntityReference, bool> includesSource)
+    {
+        return DeadLetterSources
+            .Where(row => row.ProfileId == profileId &&
+                          row.Snapshot.IsSuccessful &&
+                          row.Count > 0 &&
+                          includesSource(row.Entity))
+            .OrderBy(row => row.Entity.TopicName ?? row.Entity.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Entity.Kind)
+            .ThenBy(row => row.Entity.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Snapshot.SubQueue)
+            .Select(row => new DeadLetterPurgeTarget(row.Entity, row.Snapshot.SubQueue))
+            .Distinct()
+            .ToArray();
     }
 
     private void EnsurePurgeSelectionUsesConnectedEnvironment(DlqSourceItemViewModel selection)
@@ -1571,12 +1622,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task BackupAndPurgeDeadLettersAsync(
         string targetDescription,
-        IReadOnlyList<ServiceBusEntityReference> sources,
+        IReadOnlyList<DeadLetterPurgeTarget> targets,
         CancellationToken cancellationToken)
     {
-        if (sources.Count == 0)
+        if (targets.Count == 0)
         {
-            throw new InvalidOperationException("The selected scope contains no queues or subscriptions.");
+            throw new InvalidOperationException(
+                "The latest scan contains no non-empty dead-letter sources in this scope. Scan the environment again first.");
         }
         if (!CanWrite)
         {
@@ -1585,8 +1637,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         var connectedProfileId = ConnectedProfileId
             ?? throw new InvalidOperationException("Connect to an environment first.");
+        var targetKeys = targets.Select(target => (target.Source, target.SubQueue)).ToHashSet();
         var knownCount = DeadLetterSources
-            .Where(item => item.ProfileId == connectedProfileId && sources.Contains(item.Entity))
+            .Where(item => item.ProfileId == connectedProfileId &&
+                           targetKeys.Contains((item.Entity, item.Snapshot.SubQueue)))
             .Sum(item => item.Count);
         StatusText =
             $"Backing up and purging {knownCount:N0} known messages from {targetDescription}...";
@@ -1609,7 +1663,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         try
         {
             result = await _workspace.PurgeDeadLettersAsync(
-                    new DeadLetterPurgeRequest(sources, batchSize: 10),
+                    new DeadLetterPurgeRequest(targets, batchSize: 10),
                     purgeCancellation.Token)
                 .ConfigureAwait(true);
         }
@@ -1680,11 +1734,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         var messages = await _workspace.BrowseMessagesAsync(
-                new BrowseMessagesRequest(source, subQueue, maxMessages: 10),
+                new BrowseMessagesRequest(
+                    source,
+                    subQueue,
+                    maxMessages: subQueue == ServiceBusSubQueue.Active
+                        ? BrowseMessagesRequest.DefaultMaxMessages
+                        : BrowseMessagesRequest.MaximumMaxMessages),
                 cancellationToken)
             .ConfigureAwait(true);
         Messages.Clear();
-        foreach (var message in messages)
+        foreach (var message in messages
+                     .OrderBy(message => message.EnqueuedAt ?? DateTimeOffset.MaxValue)
+                     .ThenBy(message => message.SequenceNumber))
         {
             Messages.Add(new MessageItemViewModel(
                 message,
@@ -1696,7 +1757,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         SelectedMessage = Messages.FirstOrDefault();
         MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
         NavigateTo(NavigationPage.DeadLetters);
-        StatusText = $"Peeked {messages.Count:N0} messages without acquiring locks";
+        StatusText = messages.Count == BrowseMessagesRequest.MaximumMaxMessages &&
+                     subQueue != ServiceBusSubQueue.Active
+            ? $"Loaded the first {messages.Count:N0} messages in chronological order; the safety limit was reached"
+            : $"Loaded all {messages.Count:N0} available messages in chronological order without acquiring locks";
         AddActivity(
             "Info",
             "Peek",
@@ -2486,6 +2550,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ConnectionColor));
         OnPropertyChanged(nameof(ConnectedNamespace));
         OnPropertyChanged(nameof(IsSelectedProfileConnected));
+        OnPropertyChanged(nameof(EnvironmentActionLabel));
+        OnPropertyChanged(nameof(EnvironmentActionCommand));
         OnPropertyChanged(nameof(CanWrite));
         OnPropertyChanged(nameof(CanUnlockWrites));
         OnPropertyChanged(nameof(HasDraftEnvironmentMismatch));
@@ -2523,6 +2589,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         EditEnvironmentCommand.NotifyCanExecuteChanged();
         DeleteEnvironmentCommand.NotifyCanExecuteChanged();
         ConnectCommand.NotifyCanExecuteChanged();
+        DisconnectCommand.NotifyCanExecuteChanged();
         RefreshTopologyCommand.NotifyCanExecuteChanged();
         ScanCurrentEnvironmentCommand.NotifyCanExecuteChanged();
         ScanAllEnvironmentsCommand.NotifyCanExecuteChanged();
@@ -2598,6 +2665,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             EditEnvironmentCommand,
             DeleteEnvironmentCommand,
             ConnectCommand,
+            DisconnectCommand,
             RefreshTopologyCommand,
             ScanCurrentEnvironmentCommand,
             ScanAllEnvironmentsCommand,

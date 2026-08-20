@@ -464,8 +464,13 @@
                                    Classes="muted" TextWrapping="Wrap" />
                         <TextBlock Text="{Binding SelectedMessage.EditLimitText}" Foreground="{DynamicResource WarningBrush}"
                                    FontSize="10" IsVisible="{Binding !SelectedMessage.CanOpenAsDraft}" />
+                        <TextBlock x:Name="MessageCopyStatus" Classes="muted" FontSize="10" TextWrapping="Wrap" />
                       </StackPanel>
-                      <Button Grid.Column="1" Content="Open as draft" Classes="primary" Command="{Binding OpenMessageAsDraftCommand}" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                        <Button Content="Copy body" Click="OnCopyMessageBodyClick" />
+                        <Button Content="Copy properties" Click="OnCopyMessagePropertiesClick" />
+                        <Button Content="Open as draft" Classes="primary" Command="{Binding OpenMessageAsDraftCommand}" />
+                      </StackPanel>
                     </Grid>
                     <TabControl Grid.Row="2">
                       <TabItem Header="Body">
@@ -475,7 +480,7 @@
                                  ScrollViewer.VerticalScrollBarVisibility="Auto" />
                       </TabItem>
                       <TabItem Header="Properties">
-                        <TextBox Text="{Binding SelectedMessage.ApplicationPropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
+                        <TextBox Text="{Binding SelectedMessage.PropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
                                  TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto" />

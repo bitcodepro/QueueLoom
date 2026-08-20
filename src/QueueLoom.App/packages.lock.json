@@ -45,12 +45,6 @@
           "Avalonia": "12.1.1"
         }
       },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[10.0.8, )",
-        "resolved": "10.0.8",
-        "contentHash": "dVbSXGIFNR5nZcv2tOLoWI+a9T4jtFd77IYjuND+QVe360qWgAF7H0WtoopYhRw/+SgpGUTyrkrh+65+ClNnfw=="
-      },
       "Avalonia.Angle.Windows.Natives": {
         "type": "Transitive",
         "resolved": "2.1.27548.20260419",
@@ -370,7 +364,7 @@
         "dependencies": {
           "Azure.Identity": "[1.21.0, )",
           "Azure.Messaging.ServiceBus": "[7.20.2, )",
-          "QueueLoom.Core": "[0.2.4, )",
+          "QueueLoom.Core": "[0.2.5, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.11, )"
         }
       }

@@ -324,6 +324,44 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async void OnCopyMessageBodyClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        await CopyMessageTextAsync(_viewModel.SelectedMessage?.BodyText, "Message body copied.");
+    }
+
+    private async void OnCopyMessagePropertiesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        await CopyMessageTextAsync(_viewModel.SelectedMessage?.PropertiesJson, "Message properties copied.");
+    }
+
+    private async Task CopyMessageTextAsync(string? text, string successMessage)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            MessageCopyStatus.Text = "Select a message first.";
+            return;
+        }
+
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null)
+            {
+                MessageCopyStatus.Text = "Clipboard is unavailable.";
+                return;
+            }
+
+            await clipboard.SetTextAsync(text);
+            MessageCopyStatus.Text = successMessage;
+        }
+        catch
+        {
+            MessageCopyStatus.Text = "Could not copy message data to the clipboard.";
+        }
+    }
+
     private async void OnClosing(object? sender, WindowClosingEventArgs args)
     {
         if (_shutdownComplete)

@@ -46,6 +46,17 @@ public sealed class ViewModelStateTests
         Assert.False(viewModel.IsSelectedProfileConnected);
         Assert.Equal("Development", viewModel.ConnectedProfileName);
         Assert.Contains("Development", viewModel.ConnectionLabel, StringComparison.Ordinal);
+        Assert.Equal("Connect", viewModel.EnvironmentActionLabel);
+        Assert.Same(viewModel.ConnectCommand, viewModel.EnvironmentActionCommand);
+
+        viewModel.SelectedProfile = connectedDev;
+        Assert.Equal("Disconnect", viewModel.EnvironmentActionLabel);
+        Assert.Same(viewModel.DisconnectCommand, viewModel.EnvironmentActionCommand);
+        await viewModel.DisconnectCommand.ExecuteAsync();
+        Assert.Null(viewModel.ConnectedProfileId);
+        Assert.False(connectedDev.IsConnected);
+        Assert.Equal("Connect", viewModel.EnvironmentActionLabel);
+        await viewModel.ConnectCommand.ExecuteAsync();
 
         await repository.SetSelectedProfileIdAsync(test.Id);
         await viewModel.InitializeAsync();
@@ -239,6 +250,8 @@ public sealed class ViewModelStateTests
         await viewModel.PurgeEnvironmentDeadLettersCommand.ExecuteAsync();
         Assert.Equal(3, workspace.PurgeRequests[0].Sources.Count);
         Assert.Equal(10, workspace.PurgeRequests[0].BatchSize);
+        Assert.All(workspace.PurgeRequests[0].Targets, target =>
+            Assert.Equal(ServiceBusSubQueue.DeadLetter, target.SubQueue));
         Assert.Empty(dialogs.Confirmations);
 
         await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
@@ -257,6 +270,35 @@ public sealed class ViewModelStateTests
         await viewModel.PurgeSelectedDeadLettersCommand.ExecuteAsync();
         Assert.Equal([queue.Reference], workspace.PurgeRequests[2].Sources);
         Assert.Empty(dialogs.Confirmations);
+    }
+
+    [Fact]
+    public async Task BrowseDeadLetters_RequestsFullLimitAndSortsOldestFirst()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var queue = new ServiceBusQueue("jobs", ServiceBusEntityRuntime.Empty);
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [queue]),
+            BrowsedMessages =
+            [
+                SearchMessage(queue.Reference, 3, "2026-08-12T12:00:00Z"),
+                SearchMessage(queue.Reference, 1, "2026-08-12T10:00:00Z"),
+                SearchMessage(queue.Reference, 2, "2026-08-12T11:00:00Z")
+            ]
+        };
+        await using var viewModel = CreateViewModel(
+            new FakeProfileRepository([dev], dev.Id),
+            workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.SelectedEntity = Assert.Single(viewModel.Entities);
+        await viewModel.BrowseSelectedDeadLettersCommand.ExecuteAsync();
+
+        Assert.Equal(BrowseMessagesRequest.MaximumMaxMessages, Assert.Single(workspace.BrowseRequests).MaxMessages);
+        Assert.Equal([1L, 2L, 3L], viewModel.Messages.Select(message => message.SequenceNumber));
+        Assert.Contains("chronological", viewModel.StatusText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -394,6 +436,10 @@ public sealed class ViewModelStateTests
 
         public List<DeadLetterSearchRequest> SearchRequests { get; } = [];
 
+        public List<BrowseMessagesRequest> BrowseRequests { get; } = [];
+
+        public IReadOnlyList<BrowsedMessage> BrowsedMessages { get; set; } = [];
+
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
         public ServiceBusTopology Topology { get; set; } = new(DateTimeOffset.UtcNow);
@@ -433,8 +479,11 @@ public sealed class ViewModelStateTests
 
         public Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
             BrowseMessagesRequest request,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<BrowsedMessage>>([]);
+            CancellationToken cancellationToken = default)
+        {
+            BrowseRequests.Add(request);
+            return Task.FromResult(BrowsedMessages);
+        }
 
         public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
             DeadLetterSearchRequest request,
@@ -470,9 +519,8 @@ public sealed class ViewModelStateTests
         {
             PurgeRequests.Add(request);
             var now = DateTimeOffset.UtcNow;
-            var results = request.Sources.SelectMany(source =>
-                request.SubQueues.Select(subQueue =>
-                    new DeadLetterPurgeSourceResult(source, subQueue, 0)));
+            var results = request.Targets.Select(target =>
+                new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, 0));
             return Task.FromResult(new DeadLetterPurgeResult(
                 ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),
                 now,

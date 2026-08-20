@@ -250,12 +250,36 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             _ => throw new ArgumentException("Only queues and subscriptions can be browsed.", nameof(request))
         };
 
-        var messages = await receiver.PeekMessagesAsync(
-            request.MaxMessages,
-            request.FromSequenceNumber,
-            cancellationToken).ConfigureAwait(false);
+        const int pageSize = 100;
+        var messages = new List<BrowsedMessage>(request.MaxMessages);
+        var fromSequenceNumber = request.FromSequenceNumber;
+        while (messages.Count < request.MaxMessages)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = await receiver.PeekMessagesAsync(
+                    Math.Min(pageSize, request.MaxMessages - messages.Count),
+                    fromSequenceNumber,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            messages.AddRange(page.Select(message =>
+                AzureMessageMapper.FromAzure(message, request.Source, request.SubQueue)));
+            var lastSequenceNumber = page.Max(message => message.SequenceNumber);
+            if (lastSequenceNumber == long.MaxValue ||
+                (fromSequenceNumber.HasValue && lastSequenceNumber < fromSequenceNumber.Value))
+            {
+                break;
+            }
+            fromSequenceNumber = lastSequenceNumber + 1;
+        }
+
         return Array.AsReadOnly(messages
-            .Select(message => AzureMessageMapper.FromAzure(message, request.Source, request.SubQueue))
+            .OrderBy(message => message.EnqueuedAt ?? DateTimeOffset.MaxValue)
+            .ThenBy(message => message.SequenceNumber)
             .ToArray());
     }
 
@@ -497,23 +521,19 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         var startedAt = _timeProvider.GetUtcNow();
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
-        var results = new List<DeadLetterPurgeSourceResult>(
-            request.Sources.Count * request.SubQueues.Count);
+        var results = new List<DeadLetterPurgeSourceResult>(request.Targets.Count);
 
-        foreach (var source in request.Sources)
+        foreach (var target in request.Targets)
         {
-            foreach (var subQueue in request.SubQueues)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                results.Add(await PurgeSubQueueAsync(
-                        source,
-                        subQueue,
-                        request.BatchSize,
-                        request.MaximumMessagesPerSubQueue,
-                        backupSession,
-                        cancellationToken)
-                    .ConfigureAwait(false));
-            }
+            cancellationToken.ThrowIfCancellationRequested();
+            results.Add(await PurgeSubQueueAsync(
+                    target.Source,
+                    target.SubQueue,
+                    request.BatchSize,
+                    request.MaximumMessagesPerSubQueue,
+                    backupSession,
+                    cancellationToken)
+                .ConfigureAwait(false));
         }
 
         _cachedTopology = null;
@@ -584,8 +604,11 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 {
                     await backupSession.BackupAsync(message, source, subQueue, cancellationToken)
                         .ConfigureAwait(false);
+                }
+                foreach (var message in messages)
+                {
                     await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
-                    deleted++;
+                    deleted = checked(deleted + 1);
                 }
             }
 
