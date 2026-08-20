@@ -39,7 +39,8 @@ public sealed partial class MainWindow : Window
             _profileRepository,
             _secretVault,
             workspace,
-            _dialogService);
+            _dialogService,
+            new JsonDeadLetterBackupRepository(paths));
 
         DataContext = _viewModel;
         Opened += OnOpened;
@@ -321,6 +322,61 @@ public sealed partial class MainWindow : Window
         catch
         {
             ActivityCopyStatus.Text = "Could not copy the activity source name.";
+        }
+    }
+
+    private void OnBackupSelectionChanged(object? sender, SelectionChangedEventArgs args)
+    {
+        if (_viewModel.LoadSelectedBackupCommand.CanExecute(null))
+        {
+            _viewModel.LoadSelectedBackupCommand.Execute(null);
+        }
+    }
+
+    private void OnOpenBackupsFolderClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        try
+        {
+            Directory.CreateDirectory(_viewModel.BackupRootDirectory);
+            Process.Start(new ProcessStartInfo(_viewModel.BackupRootDirectory) { UseShellExecute = true });
+        }
+        catch
+        {
+            // The path remains visible in the Backups page if the shell cannot open it.
+        }
+    }
+
+    private async void OnCopyBackupBodyClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        await CopyBackupTextAsync(_viewModel.SelectedBackupMessage?.BodyText);
+    }
+
+    private async void OnCopyBackupPropertiesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        await CopyBackupTextAsync(_viewModel.SelectedBackupMessage?.PropertiesJson);
+    }
+
+    private async Task CopyBackupTextAsync(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is not null)
+            {
+                await clipboard.SetTextAsync(text);
+            }
+        }
+        catch
+        {
+            // Clipboard errors do not affect the saved message.
         }
     }
 

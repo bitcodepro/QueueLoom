@@ -14,6 +14,7 @@ public sealed class MessageItemViewModel
     private readonly Lazy<EditableMessageBody> _displayBody;
     private readonly Lazy<string> _bodyPreview;
     private readonly Lazy<string> _applicationPropertiesJson;
+    private readonly Lazy<string> _propertiesJson;
 
     public MessageItemViewModel(
         BrowsedMessage message,
@@ -31,6 +32,7 @@ public sealed class MessageItemViewModel
             () => EditableMessageBody.FromBytes(Message.Body.Span));
         _bodyPreview = new Lazy<string>(CreateBodyPreview);
         _applicationPropertiesJson = new Lazy<string>(CreateApplicationPropertiesJson);
+        _propertiesJson = new Lazy<string>(CreatePropertiesJson);
     }
 
     public BrowsedMessage Message { get; }
@@ -87,6 +89,8 @@ public sealed class MessageItemViewModel
 
     public string ApplicationPropertiesJson => _applicationPropertiesJson.Value;
 
+    public string PropertiesJson => _propertiesJson.Value;
+
     private string CreateBodyPreview()
     {
         var length = Math.Min(Message.Body.Length, PreviewBytes);
@@ -112,6 +116,50 @@ public sealed class MessageItemViewModel
 
         return JsonSerializer.Serialize(
             properties,
+            new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private string CreatePropertiesJson()
+    {
+        var broker = Message.Properties;
+        return JsonSerializer.Serialize(
+            new
+            {
+                source = new
+                {
+                    path = Message.Source.Path,
+                    kind = Message.Source.Kind.ToString(),
+                    subQueue = Message.SubQueue.ToString()
+                },
+                runtime = new
+                {
+                    sequenceNumber = Message.SequenceNumber,
+                    enqueuedSequenceNumber = Message.EnqueuedSequenceNumber,
+                    state = Message.State.ToString(),
+                    deliveryCount = Message.DeliveryCount,
+                    enqueuedAt = Message.EnqueuedAt,
+                    expiresAt = Message.ExpiresAt,
+                    bodySize = Message.BodySize,
+                    deadLetterReason = Message.DeadLetterReason,
+                    deadLetterErrorDescription = Message.DeadLetterErrorDescription
+                },
+                broker = new
+                {
+                    broker.MessageId,
+                    broker.CorrelationId,
+                    broker.ContentType,
+                    broker.Subject,
+                    broker.To,
+                    broker.ReplyTo,
+                    broker.SessionId,
+                    broker.ReplyToSessionId,
+                    broker.PartitionKey,
+                    broker.TransactionPartitionKey,
+                    broker.TimeToLive,
+                    broker.ScheduledEnqueueTime
+                },
+                applicationProperties = Message.ApplicationProperties
+            },
             new JsonSerializerOptions { WriteIndented = true });
     }
 

@@ -60,6 +60,21 @@ public sealed class DeadLetterJsonBackupStoreTests
             Assert.Equal(body, json.GetProperty("bodyBase64").GetBytesFromBase64());
             Assert.Equal("northwind", json.GetProperty("applicationProperties")[0].GetProperty("value").GetString());
             Assert.True(File.Exists(Path.Combine(session.RootDirectory, "session.json")));
+
+            var repository = new JsonDeadLetterBackupRepository(paths);
+            var summary = Assert.Single(await repository.ListAsync());
+            Assert.Equal(profile.Id, summary.ProfileId);
+            Assert.Equal("orders / billing", summary.Source.DisplayName);
+            Assert.Equal("correlation-42", summary.CorrelationId);
+
+            var restored = await repository.LoadAsync(summary);
+            Assert.Equal(body, restored.Body.ToArray());
+            Assert.Equal("message/42", restored.Properties.MessageId);
+            Assert.Equal("northwind", Assert.Single(restored.ApplicationProperties).Value);
+
+            await repository.DeleteAsync(summary);
+            Assert.False(File.Exists(path));
+            Assert.True(File.Exists(Path.Combine(session.RootDirectory, "session.json")));
         }
         finally
         {

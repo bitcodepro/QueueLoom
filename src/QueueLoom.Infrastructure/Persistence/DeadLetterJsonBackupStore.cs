@@ -150,6 +150,8 @@ public sealed class DeadLetterJsonBackupSession(
                 writer.WriteString("fullyQualifiedNamespace", profile.FullyQualifiedNamespace);
                 writer.WriteString("sourceKind", source.Kind.ToString());
                 writer.WriteString("sourcePath", source.Path);
+                writer.WriteString("sourceName", source.Name);
+                WriteString(writer, "topicName", source.TopicName);
                 writer.WriteString("subQueue", subQueue.ToString());
                 writer.WriteNumber("sequenceNumber", message.SequenceNumber);
                 writer.WriteNumber("enqueuedSequenceNumber", message.EnqueuedSequenceNumber);

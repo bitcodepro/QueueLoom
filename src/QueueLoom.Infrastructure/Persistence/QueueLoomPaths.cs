@@ -18,7 +18,11 @@ public sealed record QueueLoomPaths(
             throw new InvalidOperationException("The operating system did not provide a local application-data directory.");
         }
 
-        return ForRoot(Path.Combine(localData, "QueueLoom"));
+        var persistentPaths = ForRoot(Path.Combine(localData, "QueueLoom"));
+        return persistentPaths with
+        {
+            BackupsDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"))
+        };
     }
 
     public static QueueLoomPaths ForRoot(string rootDirectory)

@@ -1,5 +1,6 @@
 using QueueLoom.App.Services;
 using QueueLoom.App.ViewModels;
+using QueueLoom.App.Models;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
@@ -296,11 +297,72 @@ public sealed class ViewModelStateTests
         Assert.True(viewModel.CanOpenSelectedMessageAsDraft);
     }
 
+    [Fact]
+    public async Task BackupViewer_LoadsFiltersOpensDraftAndDeletesOnlyAfterConfirmation()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var source = ServiceBusEntityReference.Queue("orders");
+        var message = SearchMessage(source, 42, "2026-08-12T10:00:00Z");
+        var summary = new DeadLetterBackupSummary(
+            Path.Combine(Path.GetTempPath(), "backups", "message-42.json"),
+            dev.Id,
+            dev.Name,
+            dev.Environment.ToString(),
+            dev.FullyQualifiedNamespace,
+            source,
+            ServiceBusSubQueue.DeadLetter,
+            42,
+            "message-42",
+            "correlation-42",
+            "order.failed",
+            DateTimeOffset.Parse("2026-08-12T10:00:00Z"),
+            DateTimeOffset.Parse("2026-08-12T10:05:00Z"),
+            message.BodySize);
+        var backups = new FakeBackupRepository(summary, message);
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(
+            new FakeProfileRepository([dev], dev.Id),
+            new FakeWorkspace(),
+            dialogs,
+            backups);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Single(viewModel.BackupMessages);
+        Assert.Equal("message-42", viewModel.SelectedBackup?.MessageId);
+        Assert.Equal(42, viewModel.SelectedBackupMessage?.SequenceNumber);
+
+        viewModel.BackupFilterText = "correlation-42";
+        Assert.Single(viewModel.FilteredBackupMessages);
+        viewModel.BackupFilterText = "does-not-exist";
+        Assert.Empty(viewModel.FilteredBackupMessages);
+        viewModel.BackupFilterText = string.Empty;
+        await viewModel.LoadSelectedBackupCommand.ExecuteAsync();
+
+        await viewModel.ConnectCommand.ExecuteAsync();
+        Assert.True(viewModel.CanOpenBackupAsDraft);
+        viewModel.OpenBackupAsDraftCommand.Execute(null);
+        Assert.Equal(NavigationPage.Composer, viewModel.CurrentPage);
+        Assert.Contains("Local backup draft", viewModel.DraftOriginNotice, StringComparison.Ordinal);
+
+        await viewModel.DeleteSelectedBackupCommand.ExecuteAsync();
+        Assert.Equal(summary, backups.Deleted);
+        Assert.Empty(viewModel.BackupMessages);
+        Assert.Single(dialogs.Confirmations);
+        Assert.Contains("Azure Service Bus is not changed", dialogs.Confirmations[0].Message, StringComparison.Ordinal);
+    }
+
     private static MainWindowViewModel CreateViewModel(
         IProfileRepository repository,
         IServiceBusWorkspace workspace,
-        IUserDialogService? dialogs = null) =>
-        new(repository, new FakeSecretVault(), workspace, dialogs ?? new FakeDialogService());
+        IUserDialogService? dialogs = null,
+        IDeadLetterBackupRepository? backupRepository = null) =>
+        new(
+            repository,
+            new FakeSecretVault(),
+            workspace,
+            dialogs ?? new FakeDialogService(),
+            backupRepository);
 
     private static ServiceBusProfile CreateProfile(
         string name,
@@ -384,6 +446,33 @@ public sealed class ViewModelStateTests
 
         public ValueTask<bool> RemoveAsync(ProfileSecretKey key, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(false);
+    }
+
+    private sealed class FakeBackupRepository(
+        DeadLetterBackupSummary summary,
+        BrowsedMessage message) : IDeadLetterBackupRepository
+    {
+        public string RootDirectory => Path.Combine(Path.GetTempPath(), "backups");
+
+        public DeadLetterBackupSummary? Deleted { get; private set; }
+
+        public Task<IReadOnlyList<DeadLetterBackupSummary>> ListAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<DeadLetterBackupSummary>>(
+                Deleted is null ? [summary] : []);
+
+        public Task<BrowsedMessage> LoadAsync(
+            DeadLetterBackupSummary selected,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(message);
+
+        public Task DeleteAsync(
+            DeadLetterBackupSummary selected,
+            CancellationToken cancellationToken = default)
+        {
+            Deleted = selected;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeWorkspace : IServiceBusWorkspace
