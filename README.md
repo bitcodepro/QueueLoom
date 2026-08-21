@@ -4,21 +4,21 @@ QueueLoom is a cross-platform desktop client for inspecting and operating Azure 
 
 Built with .NET 10 and Avalonia UI 12.1.1. Licensed under the [MIT License](LICENSE).
 
-> **Status:** QueueLoom 0.2.6 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
+> **Status:** QueueLoom 0.2.7 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
 
 ## Download
 
-- [QueueLoom 0.2.6 for Windows 11 x64](../../releases/download/v0.2.6/QueueLoom-0.2.6-windows-11-x64-self-contained.zip)
-- [SHA-256 checksum](../../releases/download/v0.2.6/QueueLoom-0.2.6-windows-11-x64-self-contained.zip.sha256)
-- [Release notes](../../releases/tag/v0.2.6)
+- [QueueLoom 0.2.7 for Windows 11 x64](../../releases/download/v0.2.7/QueueLoom-0.2.7-windows-11-x64-self-contained.zip)
+- [SHA-256 checksum](../../releases/download/v0.2.7/QueueLoom-0.2.7-windows-11-x64-self-contained.zip.sha256)
+- [Release notes](../../releases/tag/v0.2.7)
 
 The Windows package is self-contained and does not require a separate .NET installation. It is not Authenticode-signed, so Windows may show an unknown-publisher warning.
 
 Verify the downloaded archive in PowerShell:
 
 ```powershell
-(Get-FileHash .\QueueLoom-0.2.6-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-Get-Content .\QueueLoom-0.2.6-windows-11-x64-self-contained.zip.sha256
+(Get-FileHash .\QueueLoom-0.2.7-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\QueueLoom-0.2.7-windows-11-x64-self-contained.zip.sha256
 ```
 
 ## Features
