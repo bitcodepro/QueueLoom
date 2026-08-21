@@ -456,8 +456,8 @@
 
                 <Border Grid.Row="2" Classes="card" IsVisible="{Binding HasSelectedMessage}">
                   <Grid RowDefinitions="Auto,12,*">
-                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
-                      <StackPanel Spacing="3">
+                    <Grid Grid.Row="0" RowDefinitions="Auto,10,Auto">
+                      <StackPanel Grid.Row="0" Spacing="3">
                         <TextBlock Text="Message inspector" FontSize="18" FontWeight="SemiBold" />
                         <TextBlock Text="Peeked data · no lock token acquired" Classes="muted" />
                         <TextBlock Text="{Binding SelectedMessage.CorrelationId, StringFormat='Correlation ID: {0}'}"
@@ -465,7 +465,14 @@
                         <TextBlock Text="{Binding SelectedMessage.EditLimitText}" Foreground="{DynamicResource WarningBrush}"
                                    FontSize="10" IsVisible="{Binding !SelectedMessage.CanOpenAsDraft}" />
                       </StackPanel>
-                      <Button Grid.Column="1" Content="Open as draft" Classes="primary" Command="{Binding OpenMessageAsDraftCommand}" />
+                      <Grid Grid.Row="2" ColumnDefinitions="*,8,*,8,*">
+                        <Button Grid.Column="0" Content="Copy body" HorizontalAlignment="Stretch"
+                                Click="OnCopyMessageBodyClick" />
+                        <Button Grid.Column="2" Content="Copy properties" HorizontalAlignment="Stretch"
+                                Click="OnCopyMessagePropertiesClick" />
+                        <Button Grid.Column="4" Content="Open as draft" Classes="primary"
+                                HorizontalAlignment="Stretch" Command="{Binding OpenMessageAsDraftCommand}" />
+                      </Grid>
                     </Grid>
                     <TabControl Grid.Row="2">
                       <TabItem Header="Body">
@@ -475,7 +482,7 @@
                                  ScrollViewer.VerticalScrollBarVisibility="Auto" />
                       </TabItem>
                       <TabItem Header="Properties">
-                        <TextBox Text="{Binding SelectedMessage.ApplicationPropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
+                        <TextBox Text="{Binding SelectedMessage.PropertiesJson}" IsReadOnly="True" AcceptsReturn="True"
                                  TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto" />

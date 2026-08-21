@@ -359,6 +359,18 @@ public sealed partial class MainWindow : Window
         await CopyBackupTextAsync(_viewModel.SelectedBackupMessage?.PropertiesJson);
     }
 
+    private async void OnCopyMessageBodyClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        await CopyBackupTextAsync(_viewModel.SelectedMessage?.BodyText);
+    }
+
+    private async void OnCopyMessagePropertiesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        args.Handled = true;
+        await CopyBackupTextAsync(_viewModel.SelectedMessage?.PropertiesJson);
+    }
+
     private async Task CopyBackupTextAsync(string? text)
     {
         if (string.IsNullOrEmpty(text))
