@@ -395,13 +395,13 @@
                             Command="{Binding BrowseDlqSourceCommand}" />
                     <Button Grid.Row="2" Grid.Column="0" Content="Backup + purge" Classes="danger"
                             Command="{Binding PurgeSelectedDeadLettersCommand}"
-                            ToolTip.Tip="Back up each message as local JSON, then permanently delete both DLQs for the selected queue or subscription" />
+                            ToolTip.Tip="Back up and delete the non-empty DLQ entries shown by the latest scan for the selected queue or subscription" />
                     <Button Grid.Row="2" Grid.Column="2" Content="Topic backup + purge" Classes="danger"
                             Command="{Binding PurgeTopicDeadLettersCommand}"
-                            ToolTip.Tip="Back up each message as local JSON, then permanently delete both DLQs for every subscription under the selected topic" />
+                            ToolTip.Tip="Back up and delete the non-empty DLQ entries shown by the latest scan for subscriptions under the selected topic" />
                     <Button Grid.Row="4" Grid.ColumnSpan="3" Content="Environment backup + purge" Classes="danger"
                             Command="{Binding PurgeEnvironmentDeadLettersCommand}"
-                            ToolTip.Tip="Back up each message as local JSON, then permanently delete both DLQs from every queue and subscription in the selected environment" />
+                            ToolTip.Tip="Back up and delete all non-empty DLQ entries shown by the latest scan for this environment" />
                   </Grid>
                 </Grid>
               </Border>

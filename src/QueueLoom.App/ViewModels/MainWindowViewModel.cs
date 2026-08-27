@@ -1631,11 +1631,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 "Select the connected environment in the dead-letter filter before purging it.");
         }
 
-        var sources = _topology?.MessageSources.ToArray()
-            ?? throw new InvalidOperationException("Refresh the connected environment topology first.");
+        if (_topology is null)
+        {
+            throw new InvalidOperationException("Refresh the connected environment topology first.");
+        }
         return BackupAndPurgeDeadLettersAsync(
             $"environment '{profile.Name}'",
-            sources,
+            GetKnownPurgeTargets(profile.Id, _ => true),
             cancellationToken);
     }
 
@@ -1649,16 +1651,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         EnsurePurgeSelectionUsesConnectedEnvironment(selection);
 
-        var topic = _topology?.Topics.FirstOrDefault(item =>
-            string.Equals(item.Name, selection.ParentTopicName, StringComparison.Ordinal));
-        if (topic is null)
+        if (_topology?.Topics.Any(item =>
+                string.Equals(item.Name, selection.ParentTopicName, StringComparison.Ordinal)) != true)
         {
             throw new InvalidOperationException("The selected topic is no longer present in the connected topology.");
         }
 
         return BackupAndPurgeDeadLettersAsync(
-            $"all {topic.Subscriptions.Count:N0} subscriptions under topic '{topic.Name}'",
-            topic.Subscriptions.Select(subscription => subscription.Reference).ToArray(),
+            $"all non-empty subscriptions under topic '{selection.ParentTopicName}'",
+            GetKnownPurgeTargets(
+                selection.ProfileId,
+                source => source.Kind == ServiceBusEntityKind.Subscription &&
+                          string.Equals(source.TopicName, selection.ParentTopicName, StringComparison.Ordinal)),
             cancellationToken);
     }
 
@@ -1670,8 +1674,25 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var targetKind = selection.IsSubscription ? "subscription" : "queue";
         return BackupAndPurgeDeadLettersAsync(
             $"{targetKind} '{selection.EntityPath}'",
-            [selection.Entity],
+            GetKnownPurgeTargets(selection.ProfileId, source => source == selection.Entity),
             cancellationToken);
+    }
+
+    private IReadOnlyList<DeadLetterPurgeTarget> GetKnownPurgeTargets(
+        Guid profileId,
+        Func<ServiceBusEntityReference, bool> includesSource)
+    {
+        return DeadLetterSources
+            .Where(row => row.ProfileId == profileId &&
+                          row.Snapshot.IsSuccessful &&
+                          row.Count > 0 &&
+                          includesSource(row.Entity))
+            .OrderBy(row => row.Entity.TopicName ?? row.Entity.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Entity.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Snapshot.SubQueue)
+            .Select(row => new DeadLetterPurgeTarget(row.Entity, row.Snapshot.SubQueue))
+            .Distinct()
+            .ToArray();
     }
 
     private void EnsurePurgeSelectionUsesConnectedEnvironment(DlqSourceItemViewModel selection)
@@ -1685,12 +1706,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task BackupAndPurgeDeadLettersAsync(
         string targetDescription,
-        IReadOnlyList<ServiceBusEntityReference> sources,
+        IReadOnlyList<DeadLetterPurgeTarget> targets,
         CancellationToken cancellationToken)
     {
-        if (sources.Count == 0)
+        if (targets.Count == 0)
         {
-            throw new InvalidOperationException("The selected scope contains no queues or subscriptions.");
+            throw new InvalidOperationException(
+                "The latest scan contains no non-empty dead-letter sources in this scope. Scan the environment again first.");
         }
         if (!CanWrite)
         {
@@ -1699,8 +1721,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         var connectedProfileId = ConnectedProfileId
             ?? throw new InvalidOperationException("Connect to an environment first.");
+        var targetKeys = targets.Select(target => (target.Source, target.SubQueue)).ToHashSet();
         var knownCount = DeadLetterSources
-            .Where(item => item.ProfileId == connectedProfileId && sources.Contains(item.Entity))
+            .Where(item => item.ProfileId == connectedProfileId &&
+                           targetKeys.Contains((item.Entity, item.Snapshot.SubQueue)))
             .Sum(item => item.Count);
         StatusText =
             $"Backing up and purging {knownCount:N0} known messages from {targetDescription}...";
@@ -1720,11 +1744,30 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         DeadLetterPurgeResult result;
+        var progress = new Progress<DeadLetterPurgeProgress>(update =>
+        {
+            var subQueue = update.SubQueue == ServiceBusSubQueue.TransferDeadLetter
+                ? "transfer DLQ"
+                : "DLQ";
+            StatusText = update.Stage switch
+            {
+                DeadLetterPurgeStage.Starting =>
+                    $"Source {update.TargetNumber}/{update.TargetCount} · opening {update.Source.DisplayName} {subQueue}",
+                DeadLetterPurgeStage.BackingUp =>
+                    $"Source {update.TargetNumber}/{update.TargetCount} · backing up {update.Source.DisplayName} · {update.BackedUpCount:N0} saved",
+                DeadLetterPurgeStage.Deleting =>
+                    $"Source {update.TargetNumber}/{update.TargetCount} · backup complete · deleting {update.Source.DisplayName}",
+                DeadLetterPurgeStage.Completed =>
+                    $"Source {update.TargetNumber}/{update.TargetCount} complete · {update.DeletedCount:N0} deleted",
+                _ => StatusText
+            };
+        });
         try
         {
             result = await _workspace.PurgeDeadLettersAsync(
-                    new DeadLetterPurgeRequest(sources, batchSize: 10),
-                    purgeCancellation.Token)
+                    new DeadLetterPurgeRequest(targets, batchSize: 20),
+                    purgeCancellation.Token,
+                    progress)
                 .ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (
@@ -2153,8 +2196,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         var unlocked = selected.Profile with { AccessMode = ProfileAccessMode.ReadWrite };
-        await StopWriteUnlockTimerAsync().ConfigureAwait(true);
-        await ConnectProfileAsync(selected, unlocked, loadTopology: true, cancellationToken).ConfigureAwait(true);
+        CancelWriteUnlockTimerWithoutWaiting();
+        await _workspace.SetAccessModeAsync(ProfileAccessMode.ReadWrite, cancellationToken).ConfigureAwait(true);
+        _connectedProfile = unlocked;
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
         _writeUnlockCancellation = new CancellationTokenSource();
         _writeUnlockProfileId = selected.Id;
@@ -2184,8 +2228,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 var profile = Profiles.FirstOrDefault(item => item.Id == profileId);
                 if (profile is not null && _workspace.ConnectedProfileId == profileId)
                 {
-                    await ConnectProfileAsync(profile, profile.Profile, loadTopology: false, cancellationToken)
+                    await _workspace.SetAccessModeAsync(profile.Profile.AccessMode, cancellationToken)
                         .ConfigureAwait(true);
+                    _connectedProfile = profile.Profile;
+                    NotifyConnectionState();
                     StatusText = "Temporary write access expired; environment is read-only";
                     AddActivity("Info", "Writes relocked", profile.Name);
                 }
@@ -2233,6 +2279,41 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             _writeUnlockCancellation = null;
             _writeUnlockTask = null;
+        }
+    }
+
+    private void CancelWriteUnlockTimerWithoutWaiting()
+    {
+        var cancellation = _writeUnlockCancellation;
+        var task = _writeUnlockTask;
+        _writeUnlockCancellation = null;
+        _writeUnlockTask = null;
+        _writeUnlockProfileId = null;
+        _writeUnlockExpiresAt = null;
+        cancellation?.Cancel();
+        if (cancellation is not null)
+        {
+            _ = DisposeCancelledWriteTimerAsync(task, cancellation);
+        }
+    }
+
+    private static async Task DisposeCancelledWriteTimerAsync(
+        Task? task,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            if (task is not null)
+            {
+                await task.ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            cancellation.Dispose();
         }
     }
 

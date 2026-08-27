@@ -192,7 +192,6 @@ public sealed class DeadLetterJsonBackupSession(
                 writer.WriteEndObject();
                 await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                stream.Flush(flushToDisk: true);
             }
             AtomicFile.RestrictToCurrentUser(temporary);
             File.Move(temporary, destination, overwrite: true);
