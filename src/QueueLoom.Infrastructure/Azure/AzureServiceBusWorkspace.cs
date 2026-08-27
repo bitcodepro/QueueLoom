@@ -140,6 +140,17 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         }
     }
 
+    public Task SetAccessModeAsync(
+        ProfileAccessMode accessMode,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+        var profile = GetConnectedProfile();
+        _profile = profile with { AccessMode = accessMode };
+        return Task.CompletedTask;
+    }
+
     public async Task<ServiceBusTopology> GetTopologyAsync(
         bool forceRefresh = false,
         CancellationToken cancellationToken = default)
@@ -485,7 +496,8 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 
     public async Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
         DeadLetterPurgeRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<DeadLetterPurgeProgress>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ThrowIfDisposed();
@@ -497,23 +509,23 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         var startedAt = _timeProvider.GetUtcNow();
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
-        var results = new List<DeadLetterPurgeSourceResult>(
-            request.Sources.Count * request.SubQueues.Count);
+        var results = new List<DeadLetterPurgeSourceResult>(request.Targets.Count);
 
-        foreach (var source in request.Sources)
+        for (var index = 0; index < request.Targets.Count; index++)
         {
-            foreach (var subQueue in request.SubQueues)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                results.Add(await PurgeSubQueueAsync(
-                        source,
-                        subQueue,
-                        request.BatchSize,
-                        request.MaximumMessagesPerSubQueue,
-                        backupSession,
-                        cancellationToken)
-                    .ConfigureAwait(false));
-            }
+            var target = request.Targets[index];
+            cancellationToken.ThrowIfCancellationRequested();
+            results.Add(await PurgeSubQueueAsync(
+                    target.Source,
+                    target.SubQueue,
+                    request.BatchSize,
+                    request.MaximumMessagesPerSubQueue,
+                    backupSession,
+                    index + 1,
+                    request.Targets.Count,
+                    progress,
+                    cancellationToken)
+                .ConfigureAwait(false));
         }
 
         _cachedTopology = null;
@@ -536,6 +548,9 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         int batchSize,
         int maximumMessages,
         DeadLetterJsonBackupSession backupSession,
+        int targetNumber,
+        int targetCount,
+        IProgress<DeadLetterPurgeProgress>? progress,
         CancellationToken cancellationToken)
     {
         var options = new ServiceBusReceiverOptions
@@ -551,8 +566,11 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         };
 
         long deleted = 0;
+        long backedUp = 0;
         try
         {
+            progress?.Report(new DeadLetterPurgeProgress(
+                source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Starting));
             await using var receiver = source.Kind switch
             {
                 ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(source.Name, options),
@@ -577,15 +595,36 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                     .ConfigureAwait(false);
                 if (messages.Count == 0)
                 {
+                    progress?.Report(new DeadLetterPurgeProgress(
+                        source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Completed));
                     return new DeadLetterPurgeSourceResult(source, subQueue, deleted);
                 }
 
-                foreach (var message in messages)
+                progress?.Report(new DeadLetterPurgeProgress(
+                    source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.BackingUp));
+                await Task.WhenAll(messages.Select(message =>
+                    backupSession.BackupAsync(message, source, subQueue, cancellationToken))).ConfigureAwait(false);
+                backedUp = checked(backedUp + messages.Count);
+
+                progress?.Report(new DeadLetterPurgeProgress(
+                    source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Deleting));
+                var settlements = await Task.WhenAll(messages.Select(async message =>
                 {
-                    await backupSession.BackupAsync(message, source, subQueue, cancellationToken)
-                        .ConfigureAwait(false);
-                    await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
-                    deleted++;
+                    try
+                    {
+                        await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
+                        return (Exception?)null;
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        return exception;
+                    }
+                })).ConfigureAwait(false);
+                deleted = checked(deleted + settlements.Count(exception => exception is null));
+                var settlementError = settlements.FirstOrDefault(exception => exception is not null);
+                if (settlementError is not null)
+                {
+                    return new DeadLetterPurgeSourceResult(source, subQueue, deleted, settlementError.Message);
                 }
             }
 

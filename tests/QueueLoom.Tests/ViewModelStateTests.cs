@@ -78,6 +78,29 @@ public sealed class ViewModelStateTests
     }
 
     [Fact]
+    public async Task UnlockWrites_ChangesLocalModeWithoutReconnectOrTopologyReload()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var repository = new FakeProfileRepository([dev], dev.Id);
+        var workspace = new FakeWorkspace();
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(repository, workspace, dialogs);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+
+        Assert.Equal(1, workspace.ConnectCalls);
+        Assert.Equal(1, workspace.TopologyCalls);
+
+        await viewModel.UnlockWritesCommand.ExecuteAsync();
+
+        Assert.True(viewModel.CanWrite);
+        Assert.Equal(1, workspace.ConnectCalls);
+        Assert.Equal(1, workspace.TopologyCalls);
+        Assert.Equal([ProfileAccessMode.ReadWrite], workspace.AccessModeChanges);
+    }
+
+    [Fact]
     public async Task MonitorDoesNotChangeSelectedEnvironmentAndReconcilesNotifications()
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development);
@@ -239,7 +262,9 @@ public sealed class ViewModelStateTests
 
         await viewModel.PurgeEnvironmentDeadLettersCommand.ExecuteAsync();
         Assert.Equal(3, workspace.PurgeRequests[0].Sources.Count);
-        Assert.Equal(10, workspace.PurgeRequests[0].BatchSize);
+        Assert.Equal(20, workspace.PurgeRequests[0].BatchSize);
+        Assert.All(workspace.PurgeRequests[0].Targets, target =>
+            Assert.Equal(ServiceBusSubQueue.DeadLetter, target.SubQueue));
         Assert.Empty(dialogs.Confirmations);
 
         await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
@@ -489,12 +514,19 @@ public sealed class ViewModelStateTests
 
         public bool FailNextConnection { get; set; }
 
+        public int ConnectCalls { get; private set; }
+
+        public int TopologyCalls { get; private set; }
+
+        public List<ProfileAccessMode> AccessModeChanges { get; } = [];
+
         public WorkspaceConnectionState ConnectionState { get; private set; }
 
         public Guid? ConnectedProfileId { get; private set; }
 
         public Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
+            ConnectCalls++;
             if (FailNextConnection)
             {
                 FailNextConnection = false;
@@ -515,10 +547,21 @@ public sealed class ViewModelStateTests
             return Task.CompletedTask;
         }
 
+        public Task SetAccessModeAsync(
+            ProfileAccessMode accessMode,
+            CancellationToken cancellationToken = default)
+        {
+            AccessModeChanges.Add(accessMode);
+            return Task.CompletedTask;
+        }
+
         public Task<ServiceBusTopology> GetTopologyAsync(
             bool forceRefresh = false,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Topology);
+            CancellationToken cancellationToken = default)
+        {
+            TopologyCalls++;
+            return Task.FromResult(Topology);
+        }
 
         public Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
             BrowseMessagesRequest request,
@@ -555,13 +598,13 @@ public sealed class ViewModelStateTests
 
         public Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
             DeadLetterPurgeRequest request,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<DeadLetterPurgeProgress>? progress = null)
         {
             PurgeRequests.Add(request);
             var now = DateTimeOffset.UtcNow;
-            var results = request.Sources.SelectMany(source =>
-                request.SubQueues.Select(subQueue =>
-                    new DeadLetterPurgeSourceResult(source, subQueue, 0)));
+            var results = request.Targets.Select(target =>
+                new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, 0));
             return Task.FromResult(new DeadLetterPurgeResult(
                 ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),
                 now,

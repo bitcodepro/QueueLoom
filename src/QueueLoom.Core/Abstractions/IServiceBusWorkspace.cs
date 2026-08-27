@@ -14,6 +14,10 @@ public interface IServiceBusWorkspace : IAsyncDisposable
 
     Task DisconnectAsync(CancellationToken cancellationToken = default);
 
+    Task SetAccessModeAsync(
+        ProfileAccessMode accessMode,
+        CancellationToken cancellationToken = default);
+
     Task<ServiceBusTopology> GetTopologyAsync(
         bool forceRefresh = false,
         CancellationToken cancellationToken = default);
@@ -36,7 +40,8 @@ public interface IServiceBusWorkspace : IAsyncDisposable
 
     Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
         DeadLetterPurgeRequest request,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<DeadLetterPurgeProgress>? progress = null);
 
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,

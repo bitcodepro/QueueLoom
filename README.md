@@ -4,21 +4,21 @@ QueueLoom is a cross-platform desktop client for inspecting and operating Azure 
 
 Built with .NET 10 and Avalonia UI 12.1.1. Licensed under the [MIT License](LICENSE).
 
-> **Status:** QueueLoom 0.2.7 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
+> **Status:** QueueLoom 0.2.8 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
 
 ## Download
 
-- [QueueLoom 0.2.7 for Windows 11 x64](../../releases/download/v0.2.7/QueueLoom-0.2.7-windows-11-x64-self-contained.zip)
-- [SHA-256 checksum](../../releases/download/v0.2.7/QueueLoom-0.2.7-windows-11-x64-self-contained.zip.sha256)
-- [Release notes](../../releases/tag/v0.2.7)
+- [QueueLoom 0.2.8 for Windows 11 x64](../../releases/download/v0.2.8/QueueLoom-0.2.8-windows-11-x64-self-contained.zip)
+- [SHA-256 checksum](../../releases/download/v0.2.8/QueueLoom-0.2.8-windows-11-x64-self-contained.zip.sha256)
+- [Release notes](../../releases/tag/v0.2.8)
 
 The Windows package is self-contained and does not require a separate .NET installation. It is not Authenticode-signed, so Windows may show an unknown-publisher warning.
 
 Verify the downloaded archive in PowerShell:
 
 ```powershell
-(Get-FileHash .\QueueLoom-0.2.7-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-Get-Content .\QueueLoom-0.2.7-windows-11-x64-self-contained.zip.sha256
+(Get-FileHash .\QueueLoom-0.2.8-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\QueueLoom-0.2.8-windows-11-x64-self-contained.zip.sha256
 ```
 
 ## Features
@@ -30,7 +30,7 @@ Get-Content .\QueueLoom-0.2.7-windows-11-x64-self-contained.zip.sha256
 - Peek active, dead-letter, and transfer dead-letter messages without settling them.
 - Scan dead-letter counts in one entity or every saved environment, then filter global results by environment.
 - Search dead letters across the selected environment scope by Correlation ID, Message ID, subject, body, or application property and view matches as an oldest-first timeline.
-- Back up messages as full local JSON files and then purge both DLQs for one queue/subscription, every subscription under a topic, or one connected environment.
+- Back up messages as full local JSON files and then purge the non-empty DLQs found by the latest scan for one queue/subscription, every subscription under a topic, or one connected environment.
 - Inspect local purge backups in the Backups viewer, filter them by environment or message metadata, copy body/properties, open a saved message as a draft, or delete one local backup after confirmation.
 - Compose new messages with text, JSON, or Base64 bodies and typed application properties.
 - Open a peeked message as an editable draft and send a copy to a queue or topic.
@@ -47,7 +47,7 @@ Get-Content .\QueueLoom-0.2.7-windows-11-x64-self-contained.zip.sha256
 - Peek does not settle messages. Resubmitting a dead-letter message sends a new copy and leaves the original in the DLQ.
 - The inspector retains at most 1 MiB of a peeked body, and truncated messages cannot be opened as editable drafts.
 - DLQ search skips empty sources, searches up to 12 non-empty sources concurrently, inspects up to 1,000 messages per source, returns up to 500 matches, and clearly marks limits or timeouts.
-- Purge starts immediately when a backup-and-purge button is clicked. Messages are received in bounded batches of 10, and each message is settled only after its complete JSON backup has been written successfully.
+- Purge starts immediately when a backup-and-purge button is clicked. It processes only non-empty DLQs from the latest scan, one source at a time, in bounded batches of 20. Every JSON file in a batch is written successfully before that batch is settled in Azure.
 - Backups are stored in the `backups` folder next to the running QueueLoom executable, grouped by UTC date, environment, entity, and DLQ type. Keep the application in a folder where your account has write access.
 - Backup JSON files contain full message bodies and properties in plain text/Base64. Protect and remove them according to your data-retention policy.
 
