@@ -9,7 +9,8 @@ public sealed record BrowseMessagesRequest
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue = ServiceBusSubQueue.Active,
         int maxMessages = DefaultMaxMessages,
-        long? fromSequenceNumber = null)
+        long? fromSequenceNumber = null,
+        bool loadAll = false)
     {
         ArgumentNullException.ThrowIfNull(source);
 
@@ -30,6 +31,7 @@ public sealed record BrowseMessagesRequest
         SubQueue = subQueue;
         MaxMessages = maxMessages;
         FromSequenceNumber = fromSequenceNumber;
+        LoadAll = loadAll;
     }
 
     public ServiceBusEntityReference Source { get; }
@@ -39,4 +41,6 @@ public sealed record BrowseMessagesRequest
     public int MaxMessages { get; }
 
     public long? FromSequenceNumber { get; }
+
+    public bool LoadAll { get; }
 }

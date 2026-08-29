@@ -27,6 +27,17 @@ public sealed class ServiceBusModelTests
     }
 
     [Fact]
+    public void BrowseRequest_LoadAll_IsAnExplicitPagingMode()
+    {
+        var request = new BrowseMessagesRequest(
+            ServiceBusEntityReference.Queue("orders"),
+            ServiceBusSubQueue.DeadLetter,
+            loadAll: true);
+
+        Assert.True(request.LoadAll);
+    }
+
+    [Fact]
     public void BinaryBody_RoundTripsThroughDraftCreation()
     {
         byte[] bytes = [0xff, 0x00, 0x80];

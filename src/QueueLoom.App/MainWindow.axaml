@@ -466,9 +466,9 @@
                                    FontSize="10" IsVisible="{Binding !SelectedMessage.CanOpenAsDraft}" />
                       </StackPanel>
                       <Grid Grid.Row="2" ColumnDefinitions="*,8,*,8,*">
-                        <Button Grid.Column="0" Content="Copy body" HorizontalAlignment="Stretch"
+                        <Button Grid.Column="0" Content="Copy body" Classes="copyAction" HorizontalAlignment="Stretch"
                                 Click="OnCopyMessageBodyClick" />
-                        <Button Grid.Column="2" Content="Copy properties" HorizontalAlignment="Stretch"
+                        <Button Grid.Column="2" Content="Copy properties" Classes="copyAction" HorizontalAlignment="Stretch"
                                 Click="OnCopyMessagePropertiesClick" />
                         <Button Grid.Column="4" Content="Open as draft" Classes="primary"
                                 HorizontalAlignment="Stretch" Command="{Binding OpenMessageAsDraftCommand}" />
@@ -595,10 +595,10 @@
                                    FontSize="10" TextWrapping="Wrap" IsVisible="{Binding HasBackupDraftHint}" />
                       </StackPanel>
                       <Grid Grid.Row="2" ColumnDefinitions="*,8,*" RowDefinitions="Auto,8,Auto">
-                        <Button Grid.Row="0" Grid.Column="0" Content="Copy body"
+                        <Button Grid.Row="0" Grid.Column="0" Content="Copy body" Classes="copyAction"
                                 HorizontalAlignment="Stretch"
                                 Click="OnCopyBackupBodyClick" IsEnabled="{Binding HasLoadedBackupMessage}" />
-                        <Button Grid.Row="0" Grid.Column="2" Content="Copy properties"
+                        <Button Grid.Row="0" Grid.Column="2" Content="Copy properties" Classes="copyAction"
                                 HorizontalAlignment="Stretch"
                                 Click="OnCopyBackupPropertiesClick" IsEnabled="{Binding HasLoadedBackupMessage}" />
                         <Button Grid.Row="2" Grid.Column="0" Content="Open as draft" Classes="primary"
