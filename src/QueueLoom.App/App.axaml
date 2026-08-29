@@ -85,6 +85,10 @@
       <Setter Property="BorderThickness" Value="1" />
     </Style>
 
+    <Style Selector="Button.copyAction">
+      <Setter Property="FontSize" Value="9.8" />
+    </Style>
+
     <Style Selector="TextBox, ComboBox">
       <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />

@@ -224,6 +224,38 @@ public sealed class ViewModelStateTests
     }
 
     [Fact]
+    public async Task BrowseDeadLetters_RequestsAllMessagesAndSortsThemOldestFirst()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var source = ServiceBusEntityReference.Queue("orders");
+        var repository = new FakeProfileRepository([dev], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Snapshots =
+            {
+                [dev.Id] = Snapshot(dev.Id, new DeadLetterEntitySnapshot(source, 3))
+            },
+            BrowseMessages =
+            [
+                SearchMessage(source, 3, "2026-08-12T12:00:00Z"),
+                SearchMessage(source, 1, "2026-08-12T10:00:00Z"),
+                SearchMessage(source, 2, "2026-08-12T11:00:00Z")
+            ]
+        };
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
+        viewModel.SelectedDlqSource = Assert.Single(viewModel.FilteredDeadLetterSources);
+        await viewModel.BrowseDlqSourceCommand.ExecuteAsync();
+
+        var request = Assert.Single(workspace.BrowseRequests);
+        Assert.True(request.LoadAll);
+        Assert.Equal([1L, 2L, 3L], viewModel.Messages.Select(message => message.SequenceNumber));
+    }
+
+    [Fact]
     public async Task PurgeCommands_ResolveEnvironmentTopicAndSelectedEntityScopes()
     {
         var dev = CreateProfile(
@@ -508,6 +540,10 @@ public sealed class ViewModelStateTests
 
         public List<DeadLetterSearchRequest> SearchRequests { get; } = [];
 
+        public List<BrowseMessagesRequest> BrowseRequests { get; } = [];
+
+        public IReadOnlyList<BrowsedMessage> BrowseMessages { get; set; } = [];
+
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
         public ServiceBusTopology Topology { get; set; } = new(DateTimeOffset.UtcNow);
@@ -565,8 +601,11 @@ public sealed class ViewModelStateTests
 
         public Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
             BrowseMessagesRequest request,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<BrowsedMessage>>([]);
+            CancellationToken cancellationToken = default)
+        {
+            BrowseRequests.Add(request);
+            return Task.FromResult(BrowseMessages);
+        }
 
         public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
             DeadLetterSearchRequest request,

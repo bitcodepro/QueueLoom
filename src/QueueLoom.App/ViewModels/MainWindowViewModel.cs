@@ -1837,11 +1837,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         var messages = await _workspace.BrowseMessagesAsync(
-                new BrowseMessagesRequest(source, subQueue, maxMessages: 10),
+                new BrowseMessagesRequest(source, subQueue, loadAll: true),
                 cancellationToken)
             .ConfigureAwait(true);
         Messages.Clear();
-        foreach (var message in messages)
+        foreach (var message in messages
+                     .OrderBy(message => message.EnqueuedAt ?? DateTimeOffset.MaxValue)
+                     .ThenBy(message => message.SequenceNumber))
         {
             Messages.Add(new MessageItemViewModel(
                 message,

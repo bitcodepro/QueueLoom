@@ -18,6 +18,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(5);
     private const int MonitorConcurrency = 6;
     private const int SearchConcurrency = 12;
+    private const int BrowseBatchSize = 250;
 
     private readonly ISecretVault _secretVault;
     private readonly DeadLetterJsonBackupStore _backupStore;
@@ -261,13 +262,53 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             _ => throw new ArgumentException("Only queues and subscriptions can be browsed.", nameof(request))
         };
 
-        var messages = await receiver.PeekMessagesAsync(
-            request.MaxMessages,
-            request.FromSequenceNumber,
-            cancellationToken).ConfigureAwait(false);
-        return Array.AsReadOnly(messages
-            .Select(message => AzureMessageMapper.FromAzure(message, request.Source, request.SubQueue))
-            .ToArray());
+        var result = new List<BrowsedMessage>();
+        var seenSequenceNumbers = new HashSet<long>();
+        var nextSequenceNumber = request.FromSequenceNumber;
+        var remaining = request.LoadAll ? int.MaxValue : request.MaxMessages;
+
+        while (remaining > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var pageSize = Math.Min(BrowseBatchSize, remaining);
+            var page = await receiver.PeekMessagesAsync(
+                    pageSize,
+                    nextSequenceNumber,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var message in page)
+            {
+                if (seenSequenceNumbers.Add(message.SequenceNumber))
+                {
+                    result.Add(AzureMessageMapper.FromAzure(message, request.Source, request.SubQueue));
+                    remaining--;
+                    if (remaining == 0)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var lastSequenceNumber = page[^1].SequenceNumber;
+            if (lastSequenceNumber == long.MaxValue)
+            {
+                break;
+            }
+
+            var candidate = lastSequenceNumber + 1;
+            if (nextSequenceNumber.HasValue && candidate <= nextSequenceNumber.Value)
+            {
+                break;
+            }
+            nextSequenceNumber = candidate;
+        }
+
+        return Array.AsReadOnly(result.ToArray());
     }
 
     public async Task<DeadLetterSearchResult> SearchDeadLettersAsync(
