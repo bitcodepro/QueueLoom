@@ -23,8 +23,13 @@ public sealed class WindowDialogService(Window owner) : IUserDialogService
         CancellationToken cancellationToken = default) =>
         ShowDialogAsync<bool>(
             new ConfirmDialogWindow(
-                new ConfirmDialogViewModel(title, message, isDangerous, requiredText))
-            , cancellationToken);
+                new ConfirmDialogViewModel(
+                    title,
+                    message,
+                    isDangerous,
+                    requiredText,
+                    confirmLabel: isDangerous ? "Confirm action" : "Continue")),
+            cancellationToken);
 
     public async Task ShowMessageAsync(
         string title,
@@ -34,7 +39,13 @@ public sealed class WindowDialogService(Window owner) : IUserDialogService
     {
         await ShowDialogAsync<bool>(
                 new ConfirmDialogWindow(
-                    new ConfirmDialogViewModel(title, message, isError, requiredText: null, showCancel: false)),
+                    new ConfirmDialogViewModel(
+                        title,
+                        message,
+                        isDangerous: false,
+                        requiredText: null,
+                        showCancel: false,
+                        confirmLabel: "Close")),
                 cancellationToken)
             .ConfigureAwait(true);
     }

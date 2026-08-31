@@ -8,7 +8,7 @@ public sealed record DeadLetterSearchTarget(
     public bool IsValid =>
         Source.CanBrowse &&
         SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter &&
-        KnownMessageCount > 0;
+        KnownMessageCount >= 0;
 }
 
 public sealed record DeadLetterSearchRequest
@@ -45,11 +45,11 @@ public sealed record DeadLetterSearchRequest
         Targets = Array.AsReadOnly(targets.Distinct().ToArray());
         if (Targets.Count == 0)
         {
-            throw new ArgumentException("At least one non-empty dead-letter source is required.", nameof(targets));
+            throw new ArgumentException("At least one dead-letter source is required.", nameof(targets));
         }
         if (Targets.Any(target => !target.IsValid))
         {
-            throw new ArgumentException("Search targets must be non-empty queue or subscription DLQs.", nameof(targets));
+            throw new ArgumentException("Search targets must be queue or subscription DLQs.", nameof(targets));
         }
 
         BatchSize = batchSize;

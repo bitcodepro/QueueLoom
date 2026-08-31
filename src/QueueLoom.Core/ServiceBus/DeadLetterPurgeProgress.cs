@@ -5,6 +5,7 @@ public enum DeadLetterPurgeStage
     Starting,
     BackingUp,
     Deleting,
+    Verifying,
     Completed
 }
 

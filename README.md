@@ -4,21 +4,21 @@ QueueLoom is a cross-platform desktop client for inspecting and operating Azure 
 
 Built with .NET 10 and Avalonia UI 12.1.1. Licensed under the [MIT License](LICENSE).
 
-> **Status:** QueueLoom 0.2.9 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
+> **Status:** QueueLoom 0.3.0 is an early preview. It is suitable for testing and controlled operator workflows, but it is not a replacement for Azure Monitor or a production audit system.
 
 ## Download
 
-- [QueueLoom 0.2.9 for Windows 11 x64](../../releases/download/v0.2.9/QueueLoom-0.2.9-windows-11-x64-self-contained.zip)
-- [SHA-256 checksum](../../releases/download/v0.2.9/QueueLoom-0.2.9-windows-11-x64-self-contained.zip.sha256)
-- [Release notes](../../releases/tag/v0.2.9)
+- [QueueLoom 0.3.0 for Windows 11 x64](../../releases/download/v0.3.0/QueueLoom-0.3.0-windows-11-x64-self-contained.zip)
+- [SHA-256 checksum](../../releases/download/v0.3.0/QueueLoom-0.3.0-windows-11-x64-self-contained.zip.sha256)
+- [Release notes](../../releases/tag/v0.3.0)
 
 The Windows package is self-contained and does not require a separate .NET installation. It is not Authenticode-signed, so Windows may show an unknown-publisher warning.
 
 Verify the downloaded archive in PowerShell:
 
 ```powershell
-(Get-FileHash .\QueueLoom-0.2.9-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-Get-Content .\QueueLoom-0.2.9-windows-11-x64-self-contained.zip.sha256
+(Get-FileHash .\QueueLoom-0.3.0-windows-11-x64-self-contained.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+Get-Content .\QueueLoom-0.3.0-windows-11-x64-self-contained.zip.sha256
 ```
 
 ## Features
@@ -46,9 +46,10 @@ Get-Content .\QueueLoom-0.2.9-windows-11-x64-self-contained.zip.sha256
 - Production profiles are saved as read-only. Sending or purging requires a temporary 10-minute write unlock.
 - Peek does not settle messages. Resubmitting a dead-letter message sends a new copy and leaves the original in the DLQ.
 - The inspector retains at most 1 MiB of a peeked body, and truncated messages cannot be opened as editable drafts.
-- DLQ search skips empty sources, searches up to 12 non-empty sources concurrently, inspects up to 1,000 messages per source, returns up to 500 matches, and clearly marks limits or timeouts.
+- DLQ search checks every source in scope, searches up to 12 sources concurrently, inspects up to 1,000 messages per source, returns up to 500 matches, and preserves completed results when another source times out.
 - Purge starts immediately when a backup-and-purge button is clicked. It processes only non-empty DLQs from the latest scan, one source at a time, in bounded batches of 20. Every JSON file in a batch is written successfully before that batch is settled in Azure.
-- Backups are stored in the `backups` folder next to the running QueueLoom executable, grouped by UTC date, environment, entity, and DLQ type. Keep the application in a folder where your account has write access.
+- Backups are stored in the `backups` folder next to the running QueueLoom executable, grouped by UTC date, purge session, entity, and DLQ type. Keep the application in a folder where your account has write access.
+- QueueLoom restricts its local settings, encrypted vault, and backup files to the current operating-system user where the platform supports file permissions.
 - Backup JSON files contain full message bodies and properties in plain text/Base64. Protect and remove them according to your data-retention policy.
 
 These safeguards do not replace Azure RBAC or SAS permissions. Use least-privilege credentials and review every destination before sending.
@@ -94,7 +95,8 @@ dotnet run --project src/QueueLoom.App/QueueLoom.App.csproj
 - There are no desktop notifications, automatic updates, or persistent audit history.
 - QueueLoom cannot create, edit, or delete queues, topics, or subscriptions.
 - Automatic restore from local purge backups is not implemented; backup JSON files can be inspected or used to reconstruct messages manually.
-- Session, partitioning, and duplicate-detection scenarios require environment-specific testing.
+- Session-enabled queues and subscriptions are not supported by the current browse, search, or purge workflow; QueueLoom stops before changing their messages.
+- Partitioning and duplicate-detection scenarios require environment-specific testing.
 
 ## License
 
