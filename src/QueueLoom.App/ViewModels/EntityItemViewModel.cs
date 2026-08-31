@@ -1,3 +1,4 @@
+using Avalonia;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
@@ -11,6 +12,7 @@ public sealed class EntityItemViewModel
         bool requiresSession,
         int indent)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(indent);
         Reference = reference;
         Runtime = runtime;
         Status = status;
@@ -27,6 +29,8 @@ public sealed class EntityItemViewModel
     public bool RequiresSession { get; }
 
     public int Indent { get; }
+
+    public Thickness IndentMargin => new(Indent * 18, 0, 0, 0);
 
     public string Name => Reference.Kind == ServiceBusEntityKind.Subscription
         ? Reference.Name

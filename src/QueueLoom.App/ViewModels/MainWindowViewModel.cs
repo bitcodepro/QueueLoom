@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using QueueLoom.App.Commands;
@@ -64,7 +65,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private string _messageListTitle = "Peeked messages";
     private DateTimeOffset? _lastUpdated;
     private CancellationTokenSource? _monitorCancellation;
+    private CancellationTokenSource? _monitorCheckCancellation;
     private CancellationTokenSource? _writeUnlockCancellation;
+    private CancellationTokenSource? _currentOperationCancellation;
     private Task? _monitorTask;
     private Task? _writeUnlockTask;
     private Guid? _writeUnlockProfileId;
@@ -100,6 +103,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private Guid? _draftProfileId;
     private string? _draftProfileName;
     private bool _lastDlqScanHadFailures;
+    private bool _backupsLoaded;
+    private bool _pendingBackupRefresh;
     private ServiceBusTopology? _topology;
     private bool _isDisposed;
 
@@ -130,17 +135,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _selectedNavigation = Navigation[0];
 
         AddEnvironmentCommand = new AsyncRelayCommand(
-            token => RunOperationAsync("Saving environment", AddEnvironmentAsync, token),
+            token => RunOperationAsync("Saving environment", AddEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy);
         EditEnvironmentCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Updating environment", EditEnvironmentAsync, token),
+            token => RunWorkspaceOperationAsync("Updating environment", EditEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedProfile is not null);
         DeleteEnvironmentCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Deleting environment", DeleteEnvironmentAsync, token),
+            token => RunWorkspaceOperationAsync("Deleting environment", DeleteEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedProfile is not null);
         ConnectCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Connecting", ConnectSelectedAsync, token),
             () => !IsBusy && SelectedProfile is not null);
+        DisconnectCommand = new AsyncRelayCommand(
+            token => RunWorkspaceOperationAsync("Disconnecting", DisconnectSelectedAsync, token),
+            () => !IsBusy && IsSelectedProfileConnected);
         RefreshTopologyCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Refreshing topology", RefreshTopologyAsync, token),
             () => !IsBusy && IsConnected);
@@ -159,6 +167,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ClearMonitorNotificationsCommand = new RelayCommand(
             ClearMonitorNotifications,
             () => MonitorNotifications.Count > 0);
+        CancelCurrentOperationCommand = new RelayCommand(
+            CancelCurrentOperation,
+            () => IsBusy && _currentOperationCancellation is { IsCancellationRequested: false });
         BrowseSelectedActiveCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Peeking messages", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.Active, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
@@ -191,20 +202,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             token => RunOperationAsync("Loading backup message", LoadSelectedBackupAsync, token),
             () => !IsBusy && SelectedBackup?.IsReadable == true && _backupRepository is not null);
         DeleteSelectedBackupCommand = new AsyncRelayCommand(
-            token => RunOperationAsync("Deleting local backup", DeleteSelectedBackupAsync, token),
+            token => RunOperationAsync("Deleting local backup", DeleteSelectedBackupAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedBackup is not null && _backupRepository is not null);
         OpenBackupAsDraftCommand = new RelayCommand(
             OpenBackupAsDraft,
             () => !IsBusy && CanOpenBackupAsDraft);
         SendDraftCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Sending message", SendDraftAsync, token),
+            token => RunWorkspaceOperationAsync("Sending message", SendDraftAsync, token, allowCancellation: false),
             () => !IsBusy && IsConnected && CanWrite &&
                   !HasDraftEnvironmentMismatch && SelectedDestination is not null);
         ToggleMonitorCommand = new AsyncRelayCommand(
             ToggleMonitorAsync,
             () => IsMonitoring || (!IsBusy && Profiles.Count > 0));
         UnlockWritesCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Unlocking writes", UnlockWritesAsync, token),
+            token => RunWorkspaceOperationAsync("Unlocking writes", UnlockWritesAsync, token, allowCancellation: false),
             () => !IsBusy && IsConnected && !CanWrite);
 
         RefreshDeadLetterEnvironmentFilters();
@@ -246,12 +257,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand EditEnvironmentCommand { get; }
     public AsyncRelayCommand DeleteEnvironmentCommand { get; }
     public AsyncRelayCommand ConnectCommand { get; }
+    public AsyncRelayCommand DisconnectCommand { get; }
     public AsyncRelayCommand RefreshTopologyCommand { get; }
     public AsyncRelayCommand ScanCurrentEnvironmentCommand { get; }
     public AsyncRelayCommand ScanAllEnvironmentsCommand { get; }
     public AsyncRelayCommand SearchDeadLettersCommand { get; }
     public RelayCommand ClearDeadLetterSearchCommand { get; }
     public RelayCommand ClearMonitorNotificationsCommand { get; }
+    public RelayCommand CancelCurrentOperationCommand { get; }
     public AsyncRelayCommand BrowseSelectedActiveCommand { get; }
     public AsyncRelayCommand BrowseSelectedDeadLettersCommand { get; }
     public AsyncRelayCommand BrowseSelectedTransferDeadLettersCommand { get; }
@@ -281,6 +294,17 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
             OnPropertyChanged(nameof(CurrentPage));
             NotifyPageVisibility();
+            if (CurrentPage == NavigationPage.Backups && _backupRepository is not null)
+            {
+                if (IsBusy)
+                {
+                    _pendingBackupRefresh = true;
+                }
+                else if (!_backupsLoaded)
+                {
+                    RefreshBackupsCommand.Execute(null);
+                }
+            }
         }
     }
 
@@ -307,6 +331,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 OnPropertyChanged(nameof(HasSelectedProfile));
                 OnPropertyChanged(nameof(SelectedProfileName));
                 OnPropertyChanged(nameof(IsSelectedProfileConnected));
+                OnPropertyChanged(nameof(EnvironmentActionLabel));
+                OnPropertyChanged(nameof(EnvironmentActionCommand));
                 NotifyCommandStates();
             }
         }
@@ -316,10 +342,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasProfiles => Profiles.Count > 0;
 
-    public string EnvironmentActionLabel => HasProfiles ? "Connect" : "Add environment";
+    public string EnvironmentActionLabel => !HasProfiles
+        ? "Add environment"
+        : IsSelectedProfileConnected
+            ? "Disconnect"
+            : "Connect";
 
     public System.Windows.Input.ICommand EnvironmentActionCommand =>
-        HasProfiles ? ConnectCommand : AddEnvironmentCommand;
+        !HasProfiles
+            ? AddEnvironmentCommand
+            : IsSelectedProfileConnected
+                ? DisconnectCommand
+                : ConnectCommand;
 
     public string SelectedProfileName => SelectedProfile?.Name ?? "No environment selected";
 
@@ -516,6 +550,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
+
+    public string CancelOperationLabel =>
+        _currentOperationCancellation?.IsCancellationRequested == true ? "Cancelling…" : "Cancel";
+
+    public bool ShowCancelCurrentOperation =>
+        IsBusy && _currentOperationCancellation is { IsCancellationRequested: false };
 
     public bool IsConnected => _workspace.ConnectionState == WorkspaceConnectionState.Connected;
 
@@ -765,7 +805,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             try
             {
-                var length = new EditableMessageBody(DraftBody, DraftBodyFormat).GetBytes().Length;
+                var length = DraftBodyFormat is MessageBodyFormat.Text or MessageBodyFormat.Json
+                    ? Encoding.UTF8.GetByteCount(DraftBody)
+                    : new EditableMessageBody(DraftBody, DraftBodyFormat).GetBytes().Length;
                 return $"{length:N0} bytes";
             }
             catch
@@ -780,17 +822,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         await RunOperationAsync("Loading environments", async token =>
         {
             await ReloadProfilesAsync(token).ConfigureAwait(true);
-            if (_backupRepository is not null)
-            {
-                try
-                {
-                    await RefreshBackupsAsync(token).ConfigureAwait(true);
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    BackupStatus = $"Backups could not be loaded: {SanitizeException(exception)}";
-                }
-            }
             StatusText = Profiles.Count == 0
                 ? "Add your first environment to begin"
                 : "Choose an environment and connect";
@@ -848,17 +879,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             throw;
         }
 
-        if (_writeUnlockProfileId == result.Profile.Id)
-        {
-            await StopWriteUnlockTimerAsync().ConfigureAwait(true);
-        }
         await StopMonitorForConfigurationChangeAsync().ConfigureAwait(true);
         InvalidateProfileArtifacts(result.Profile.Id, "Environment configuration changed; the previous draft is no longer sendable.");
 
         if (_workspace.ConnectedProfileId == result.Profile.Id)
         {
             await _workspace.DisconnectAsync(cancellationToken).ConfigureAwait(true);
+            await StopWriteUnlockTimerAsync().ConfigureAwait(true);
             ClearConnectedState();
+        }
+        else if (_writeUnlockProfileId == result.Profile.Id)
+        {
+            await StopWriteUnlockTimerAsync().ConfigureAwait(true);
         }
 
         await ReloadProfilesAsync(cancellationToken, result.Profile.Id).ConfigureAwait(true);
@@ -868,36 +900,94 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private async Task SaveProfileAsync(ProfileEditorResult result, CancellationToken cancellationToken)
     {
         var secretKey = ProfileSecretKey.ConnectionString(result.Profile.Id);
+        var previousProfile = await _profileRepository.GetAsync(result.Profile.Id, cancellationToken)
+            .ConfigureAwait(true);
+        var previousSelectedProfileId = await _profileRepository.GetSelectedProfileIdAsync(cancellationToken)
+            .ConfigureAwait(true);
+        var replacesConnectionString = result.ReplacesConnectionString && result.ConnectionString is not null;
         string? previousConnectionString = null;
-        if (result.ReplacesConnectionString && result.ConnectionString is not null)
+        if (replacesConnectionString)
         {
             previousConnectionString = await _secretVault.RetrieveAsync(secretKey, cancellationToken)
                 .ConfigureAwait(true);
-            await _secretVault.StoreAsync(
-                secretKey,
-                result.ConnectionString,
-                cancellationToken).ConfigureAwait(true);
         }
 
+        var secretReplacementAttempted = false;
         try
         {
+            if (replacesConnectionString)
+            {
+                secretReplacementAttempted = true;
+                await _secretVault.StoreAsync(
+                    secretKey,
+                    result.ConnectionString!,
+                    cancellationToken).ConfigureAwait(true);
+            }
+
             await _profileRepository.UpsertAsync(result.Profile, cancellationToken).ConfigureAwait(true);
             await _profileRepository.SetSelectedProfileIdAsync(result.Profile.Id, cancellationToken).ConfigureAwait(true);
         }
-        catch
+        catch (Exception saveException)
         {
-            if (result.ReplacesConnectionString)
+            var rollbackFailures = new List<Exception>();
+
+            try
             {
-                if (previousConnectionString is null)
+                if (previousProfile is null)
                 {
-                    await _secretVault.RemoveAsync(secretKey, CancellationToken.None).ConfigureAwait(true);
+                    await _profileRepository.DeleteAsync(result.Profile.Id, CancellationToken.None)
+                        .ConfigureAwait(true);
                 }
                 else
                 {
-                    await _secretVault.StoreAsync(secretKey, previousConnectionString, CancellationToken.None)
+                    await _profileRepository.UpsertAsync(previousProfile, CancellationToken.None)
                         .ConfigureAwait(true);
                 }
             }
+            catch (Exception rollbackException)
+            {
+                rollbackFailures.Add(rollbackException);
+            }
+
+            try
+            {
+                await _profileRepository.SetSelectedProfileIdAsync(
+                        previousSelectedProfileId,
+                        CancellationToken.None)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception rollbackException)
+            {
+                rollbackFailures.Add(rollbackException);
+            }
+
+            if (secretReplacementAttempted)
+            {
+                try
+                {
+                    if (previousConnectionString is null)
+                    {
+                        await _secretVault.RemoveAsync(secretKey, CancellationToken.None).ConfigureAwait(true);
+                    }
+                    else
+                    {
+                        await _secretVault.StoreAsync(secretKey, previousConnectionString, CancellationToken.None)
+                            .ConfigureAwait(true);
+                    }
+                }
+                catch (Exception rollbackException)
+                {
+                    rollbackFailures.Add(rollbackException);
+                }
+            }
+
+            if (rollbackFailures.Count > 0)
+            {
+                throw new AggregateException(
+                    "Saving the environment failed and its previous state could not be fully restored.",
+                    [saveException, .. rollbackFailures]);
+            }
+
             throw;
         }
     }
@@ -985,6 +1075,21 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         AddActivity("Success", "Connected", $"{selected.Name} · {ConnectedNamespace}");
     }
 
+    private async Task DisconnectSelectedAsync(CancellationToken cancellationToken)
+    {
+        var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
+        if (_workspace.ConnectedProfileId != selected.Id)
+        {
+            return;
+        }
+
+        await _workspace.DisconnectAsync(cancellationToken).ConfigureAwait(true);
+        await StopWriteUnlockTimerAsync().ConfigureAwait(true);
+        ClearConnectedState();
+        StatusText = $"Disconnected from {selected.Name}";
+        AddActivity("Info", "Disconnected", selected.Name);
+    }
+
     private async Task ConnectProfileAsync(
         ProfileItemViewModel item,
         ServiceBusProfile connectionProfile,
@@ -1034,6 +1139,62 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             ApplyTopology(topology, preserveDestination: !profileChanged);
         }
+    }
+
+    private async Task RestoreConnectedProfileAsync(
+        ProfileItemViewModel item,
+        ServiceBusProfile previouslyConnectedProfile,
+        DateTimeOffset? temporaryWriteExpiry,
+        CancellationToken cancellationToken)
+    {
+        // Always reconnect with the persisted access mode first. A captured temporary
+        // ReadWrite record must never become permanent if a scan/search cleared its timer.
+        await ConnectProfileAsync(item, item.Profile, loadTopology: true, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!item.Profile.CanWrite &&
+            previouslyConnectedProfile.CanWrite &&
+            temporaryWriteExpiry is { } expiresAt &&
+            expiresAt > DateTimeOffset.UtcNow)
+        {
+            try
+            {
+                await _workspace.SetAccessModeAsync(ProfileAccessMode.ReadWrite, cancellationToken)
+                    .ConfigureAwait(true);
+                _connectedProfile = previouslyConnectedProfile;
+                RestoreTemporaryWriteUnlockTimer(item.Id, expiresAt);
+                NotifyConnectionState();
+            }
+            catch
+            {
+                try
+                {
+                    await _workspace.DisconnectAsync(CancellationToken.None).ConfigureAwait(true);
+                }
+                catch
+                {
+                    // Preserve the access-mode restoration failure.
+                }
+                ClearConnectedState();
+                throw;
+            }
+        }
+    }
+
+    private void RestoreTemporaryWriteUnlockTimer(Guid profileId, DateTimeOffset expiresAt)
+    {
+        if (_writeUnlockProfileId == profileId &&
+            _writeUnlockExpiresAt == expiresAt &&
+            _writeUnlockTask is not null)
+        {
+            return;
+        }
+
+        CancelWriteUnlockTimerWithoutWaiting();
+        _writeUnlockCancellation = new CancellationTokenSource();
+        _writeUnlockProfileId = profileId;
+        _writeUnlockExpiresAt = expiresAt;
+        _writeUnlockTask = RelockAfterDelayAsync(profileId, expiresAt, _writeUnlockCancellation.Token);
     }
 
     private async Task RefreshTopologyAsync(CancellationToken cancellationToken)
@@ -1176,6 +1337,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         const int maximumResults = DeadLetterSearchRequest.DefaultMaximumResults;
         var connectedProfileBeforeSearch = _connectedProfile;
         var wasConnected = IsConnected && connectedProfileBeforeSearch is not null;
+        var temporaryWriteExpiryBeforeSearch = connectedProfileBeforeSearch is not null &&
+                                               _writeUnlockProfileId == connectedProfileBeforeSearch.Id
+            ? _writeUnlockExpiresAt
+            : null;
         var results = new List<MessageItemViewModel>();
         var scannedMessages = 0;
         var searchedTargets = 0;
@@ -1192,7 +1357,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             foreach (var profile in profilesToSearch)
             {
-                searchToken.ThrowIfCancellationRequested();
+                if (searchToken.IsCancellationRequested)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    timedOutEnvironments++;
+                    incomplete = true;
+                    break;
+                }
                 if (results.Count >= maximumResults)
                 {
                     incomplete = true;
@@ -1217,7 +1388,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                         continue;
                     }
 
-                    StatusText = $"Searching {targets.Length:N0} non-empty DLQ sources in {profile.Name}...";
+                    StatusText = $"Searching {targets.Length:N0} DLQ sources in {profile.Name}...";
                     using var environmentTimeout = CancellationTokenSource.CreateLinkedTokenSource(searchToken);
                     environmentTimeout.CancelAfter(TimeSpan.FromSeconds(30));
                     try
@@ -1239,6 +1410,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                             profile.Name,
                             profile.EnvironmentLabel,
                             profile.EnvironmentColor)));
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (environmentTimeout.IsCancellationRequested)
+                        {
+                            timedOutEnvironments++;
+                            incomplete = true;
+                            if (totalSearchTimeout.IsCancellationRequested)
+                            {
+                                break;
+                            }
+                        }
                     }
                     catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                     {
@@ -1267,6 +1448,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Messages.Clear();
+            SelectedMessage = null;
+            MessageListTitle = "Search cancelled";
+            DeadLetterSearchStatus = "Search cancelled; partial results were not applied.";
+            throw;
+        }
         finally
         {
             if (!_isDisposed)
@@ -1282,17 +1471,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                             (_workspace.ConnectedProfileId != originalProfile.Id ||
                              _connectedProfile != connectedProfileBeforeSearch))
                         {
-                            var connectionProfile = connectedProfileBeforeSearch;
-                            if (connectionProfile.CanWrite &&
-                                _writeUnlockProfileId == connectionProfile.Id &&
-                                !IsTemporaryWriteUnlockActive)
-                            {
-                                connectionProfile = originalProfile.Profile;
-                            }
-                            await ConnectProfileAsync(
+                            await RestoreConnectedProfileAsync(
                                     originalProfile,
-                                    connectionProfile,
-                                    loadTopology: true,
+                                    connectedProfileBeforeSearch,
+                                    temporaryWriteExpiryBeforeSearch,
                                     restoreCancellation.Token)
                                 .ConfigureAwait(true);
                         }
@@ -1327,7 +1509,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             : " | complete within the current DLQ snapshot";
         DeadLetterSearchStatus =
             $"{Messages.Count:N0} matches | {scannedMessages:N0} messages inspected | " +
-            $"{searchedTargets:N0} non-empty sources | oldest first{qualifier}" +
+            $"{searchedTargets:N0} sources | oldest first{qualifier}" +
             (timedOutEnvironments > 0 ? $" | {timedOutEnvironments:N0} environment timeouts" : string.Empty);
         MessageListTitle = $"Search timeline | {scopeName} | body search reads up to the first 1 MiB";
         StatusText = $"Found {Messages.Count:N0} matching dead-letter messages in {scopeName}";
@@ -1359,17 +1541,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ServiceBusEntityReference source,
         ServiceBusMessageCounts counts)
     {
-        if (counts.DeadLetter > 0)
-        {
-            targets.Add(new DeadLetterSearchTarget(source, ServiceBusSubQueue.DeadLetter, counts.DeadLetter));
-        }
-        if (counts.TransferDeadLetter > 0)
-        {
-            targets.Add(new DeadLetterSearchTarget(
-                source,
-                ServiceBusSubQueue.TransferDeadLetter,
-                counts.TransferDeadLetter));
-        }
+        // Runtime counters are eventually consistent. Include zero-count sources so a
+        // newly dead-lettered message cannot be skipped by a stale topology snapshot.
+        targets.Add(new DeadLetterSearchTarget(source, ServiceBusSubQueue.DeadLetter, counts.DeadLetter));
+        targets.Add(new DeadLetterSearchTarget(
+            source,
+            ServiceBusSubQueue.TransferDeadLetter,
+            counts.TransferDeadLetter));
     }
 
     private void ClearDeadLetterSearch()
@@ -1412,10 +1590,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var selectedEntity = SelectedDlqSource?.Entity;
         var selectedSubQueue = SelectedDlqSource?.Snapshot.SubQueue;
         var connectedProfileBeforeScan = _connectedProfile;
+        var wasConnected = IsConnected && connectedProfileBeforeScan is not null;
+        var temporaryWriteExpiryBeforeScan = connectedProfileBeforeScan is not null &&
+                                             _writeUnlockProfileId == connectedProfileBeforeScan.Id
+            ? _writeUnlockExpiresAt
+            : null;
         _lastDlqMeasurements.Clear();
         DeadLetterSources.Clear();
         ApplyDeadLetterEnvironmentFilter();
-        var preferredProfileId = connectedProfileBeforeScan?.Id ?? SelectedProfile?.Id;
         var scanFailures = 0;
         var successfulEnvironments = 0;
         var partialFailures = 0;
@@ -1454,30 +1636,33 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _lastDlqScanHadFailures = true;
+            _lastDlqMeasurements.Clear();
+            DeadLetterSources.Clear();
+            ApplyDeadLetterEnvironmentFilter();
+            NotifyStatistics();
+            throw;
+        }
         finally
         {
             if (!_isDisposed)
             {
-                var preferred = Profiles.FirstOrDefault(profile => profile.Id == preferredProfileId)
-                    ?? Profiles.FirstOrDefault();
-                if (preferred is not null)
+                if (wasConnected && connectedProfileBeforeScan is not null)
                 {
-                    var connectionProfile = connectedProfileBeforeScan?.Id == preferred.Id
-                        ? connectedProfileBeforeScan
-                        : preferred.Profile;
-                    if (connectionProfile.CanWrite &&
-                        _writeUnlockProfileId == connectionProfile.Id &&
-                        !IsTemporaryWriteUnlockActive)
-                    {
-                        connectionProfile = preferred.Profile;
-                    }
+                    var preferred = Profiles.FirstOrDefault(profile => profile.Id == connectedProfileBeforeScan.Id);
                     using var restoreCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                     try
                     {
-                        await ConnectProfileAsync(
+                        if (preferred is null)
+                        {
+                            throw new InvalidOperationException("The previously connected environment no longer exists.");
+                        }
+                        await RestoreConnectedProfileAsync(
                                 preferred,
-                                connectionProfile,
-                                loadTopology: true,
+                                connectedProfileBeforeScan,
+                                temporaryWriteExpiryBeforeScan,
                                 restoreCancellation.Token)
                             .ConfigureAwait(true);
                     }
@@ -1485,10 +1670,30 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                     {
                         restoreFailed = true;
                         _lastDlqScanHadFailures = true;
+                        ClearConnectedState();
                         AddActivity(
                             "Error",
                             "Environment restore failed",
-                            $"{preferred.Name} · {SanitizeException(exception)}");
+                            $"{preferred?.Name ?? connectedProfileBeforeScan.Name} · {SanitizeException(exception)}");
+                    }
+                }
+                else
+                {
+                    using var restoreCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    try
+                    {
+                        if (_workspace.ConnectionState == WorkspaceConnectionState.Connected)
+                        {
+                            await _workspace.DisconnectAsync(restoreCancellation.Token).ConfigureAwait(true);
+                        }
+                        ClearConnectedState();
+                    }
+                    catch (Exception exception)
+                    {
+                        restoreFailed = true;
+                        _lastDlqScanHadFailures = true;
+                        ClearConnectedState();
+                        AddActivity("Error", "Offline state restore failed", SanitizeException(exception));
                     }
                 }
             }
@@ -1757,6 +1962,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                     $"Source {update.TargetNumber}/{update.TargetCount} · backing up {update.Source.DisplayName} · {update.BackedUpCount:N0} saved",
                 DeadLetterPurgeStage.Deleting =>
                     $"Source {update.TargetNumber}/{update.TargetCount} · backup complete · deleting {update.Source.DisplayName}",
+                DeadLetterPurgeStage.Verifying =>
+                    $"Source {update.TargetNumber}/{update.TargetCount} · verifying {update.Source.DisplayName} is empty",
                 DeadLetterPurgeStage.Completed =>
                     $"Source {update.TargetNumber}/{update.TargetCount} complete · {update.DeletedCount:N0} deleted",
                 _ => StatusText
@@ -1784,16 +1991,24 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         MessageListTitle = "Select a queue or subscription, then Peek.";
         ApplyCompletedPurgeToDeadLetterRows(result);
         MessageListTitle = $"Backup saved to {result.BackupDirectory}";
+        _backupsLoaded = false;
+        if (CurrentPage == NavigationPage.Backups && _backupRepository is not null)
+        {
+            _pendingBackupRefresh = true;
+        }
 
         var failures = result.Sources.Count(source => !source.IsSuccessful);
-        StatusText = failures == 0
-            ? $"Backed up and purged {result.DeletedCount:N0} dead-letter messages from {targetDescription}"
-            : $"Partial backup/purge · {result.DeletedCount:N0} deleted · {failures:N0} source errors";
+        var pendingVerifications = result.Sources.Count(source => source.VerificationPending);
+        StatusText = failures > 0
+            ? $"Partial backup/purge · {result.DeletedCount:N0} deleted · {failures:N0} source errors"
+            : pendingVerifications > 0
+                ? $"Backed up and purged {result.DeletedCount:N0} messages · Azure counters are refreshing; rescan recommended"
+                : $"Backed up and purged {result.DeletedCount:N0} dead-letter messages from {targetDescription}";
         AddActivity(
             failures == 0 ? "Warning" : "Error",
             failures == 0 ? "Dead letters backed up and purged" : "Partial dead-letter backup/purge",
             $"{targetDescription} · {result.DeletedCount:N0} backed up and deleted · " +
-            $"{failures:N0} errors · {result.BackupDirectory}");
+            $"{failures:N0} errors · {pendingVerifications:N0} counters pending · {result.BackupDirectory}");
         if (failures > 0)
         {
             var firstError = result.Sources.First(source => !source.IsSuccessful).Error;
@@ -1868,6 +2083,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var repository = _backupRepository ?? throw new InvalidOperationException("Backup storage is unavailable.");
         var selectedPath = SelectedBackup?.FilePath;
         var summaries = await repository.ListAsync(cancellationToken).ConfigureAwait(true);
+        _backupsLoaded = true;
 
         BackupMessages.Clear();
         foreach (var summary in summaries)
@@ -2445,24 +2661,58 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 var ranCheck = false;
                 var checkComplete = false;
-                if (!IsBusy &&
-                    await _workspaceGate.WaitAsync(0, cancellationToken).ConfigureAwait(true))
+                var checkInterrupted = false;
+                string? checkError = null;
+                try
                 {
-                    try
+                    if (!IsBusy &&
+                        await _workspaceGate.WaitAsync(0, cancellationToken).ConfigureAwait(true))
                     {
-                        ranCheck = true;
-                        checkComplete = await RunMonitorCheckAsync(cancellationToken).ConfigureAwait(true);
-                    }
-                    finally
-                    {
-                        _workspaceGate.Release();
+                        using var checkCancellation =
+                            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        _monitorCheckCancellation = checkCancellation;
+                        try
+                        {
+                            ranCheck = true;
+                            checkComplete = await RunMonitorCheckAsync(checkCancellation.Token).ConfigureAwait(true);
+                        }
+                        catch (OperationCanceledException) when (
+                            checkCancellation.IsCancellationRequested &&
+                            !cancellationToken.IsCancellationRequested)
+                        {
+                            checkInterrupted = true;
+                        }
+                        finally
+                        {
+                            if (ReferenceEquals(_monitorCheckCancellation, checkCancellation))
+                            {
+                                _monitorCheckCancellation = null;
+                            }
+                            _workspaceGate.Release();
+                        }
                     }
                 }
-                MonitorStatus = !ranCheck
-                    ? $"{_activeMonitorTargetLabel} · check skipped at {DateTimeOffset.Now:HH:mm:ss} · workspace busy"
-                    : checkComplete
-                    ? $"{_activeMonitorTargetLabel} · last check {DateTimeOffset.Now:HH:mm:ss} · next in {_activeMonitorIntervalSeconds}s"
-                    : $"{_activeMonitorTargetLabel} · check incomplete at {DateTimeOffset.Now:HH:mm:ss} · previous baseline retained";
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    ranCheck = true;
+                    checkError = SanitizeException(exception);
+                    MonitorAlert = checkError;
+                    AddActivity("Error", "Monitor check failed", $"{checkError} · retry scheduled");
+                }
+
+                MonitorStatus = checkError is not null
+                    ? $"{_activeMonitorTargetLabel} · check failed at {DateTimeOffset.Now:HH:mm:ss} · retry in {_activeMonitorIntervalSeconds}s"
+                    : checkInterrupted
+                        ? $"{_activeMonitorTargetLabel} · check paused for an interactive operation · retry in {_activeMonitorIntervalSeconds}s"
+                    : !ranCheck
+                        ? $"{_activeMonitorTargetLabel} · check skipped at {DateTimeOffset.Now:HH:mm:ss} · workspace busy"
+                        : checkComplete
+                            ? $"{_activeMonitorTargetLabel} · last check {DateTimeOffset.Now:HH:mm:ss} · next in {_activeMonitorIntervalSeconds}s"
+                            : $"{_activeMonitorTargetLabel} · check incomplete at {DateTimeOffset.Now:HH:mm:ss} · previous baseline retained";
                 await Task.Delay(
                         TimeSpan.FromSeconds(_activeMonitorIntervalSeconds),
                         cancellationToken)
@@ -2471,19 +2721,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-        }
-        catch (Exception exception)
-        {
-            MonitorStatus = "Monitor stopped after an error";
-            MonitorAlert = SanitizeException(exception);
-            AddActivity("Error", "Monitor failed", MonitorAlert);
-            _monitoredProfileId = null;
-            _monitoredEntity = null;
-            _activeMonitorScope = null;
-            _activeMonitorTargetLabel = null;
-            _hasMonitorBaseline = false;
-            _monitorBaseline.Clear();
-            IsMonitoring = false;
         }
     }
 
@@ -2501,28 +2738,45 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         };
         var originalConnection = _connectedProfile;
         var wasConnected = IsConnected && originalConnection is not null;
+        var workspaceWasReconnected = false;
 
         try
         {
             foreach (var profile in profilesToCheck)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (_workspace.ConnectedProfileId != profile.Id)
+                try
                 {
-                    await _workspace.ConnectAsync(
-                            profile.Profile with { AccessMode = ProfileAccessMode.ReadOnly },
-                            cancellationToken)
-                        .ConfigureAwait(true);
-                }
+                    if (_workspace.ConnectedProfileId != profile.Id)
+                    {
+                        await _workspace.ConnectAsync(
+                                profile.Profile with { AccessMode = ProfileAccessMode.ReadOnly },
+                                cancellationToken)
+                            .ConfigureAwait(true);
+                        workspaceWasReconnected = true;
+                    }
 
-                var scope = activeScope == SelectedSourceMonitorScope
-                    ? DeadLetterMonitorScope.ForEntity(
-                        _monitoredEntity ?? throw new InvalidOperationException("The monitored source no longer exists."))
-                    : DeadLetterMonitorScope.All;
-                var snapshot = await _workspace.GetDeadLetterSnapshotAsync(scope, cancellationToken)
-                    .ConfigureAwait(true);
-                CaptureMonitorSnapshot(profile, snapshot);
-                isComplete &= !snapshot.HasFailures;
+                    var scope = activeScope == SelectedSourceMonitorScope
+                        ? DeadLetterMonitorScope.ForEntity(
+                            _monitoredEntity ?? throw new InvalidOperationException("The monitored source no longer exists."))
+                        : DeadLetterMonitorScope.All;
+                    var snapshot = await _workspace.GetDeadLetterSnapshotAsync(scope, cancellationToken)
+                        .ConfigureAwait(true);
+                    CaptureMonitorSnapshot(profile, snapshot);
+                    isComplete &= !snapshot.HasFailures;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    isComplete = false;
+                    AddActivity(
+                        "Error",
+                        "Monitor environment failed",
+                        $"{profile.Name} · {SanitizeException(exception)}");
+                }
             }
         }
         finally
@@ -2530,9 +2784,17 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             using var restoreTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             if (wasConnected && originalConnection is not null)
             {
-                if (_workspace.ConnectedProfileId != originalConnection.Id)
+                if (workspaceWasReconnected || _workspace.ConnectedProfileId != originalConnection.Id)
                 {
-                    await _workspace.ConnectAsync(originalConnection, restoreTimeout.Token).ConfigureAwait(true);
+                    try
+                    {
+                        await _workspace.ConnectAsync(originalConnection, restoreTimeout.Token).ConfigureAwait(true);
+                    }
+                    catch
+                    {
+                        ClearConnectedState();
+                        throw;
+                    }
                 }
             }
             else if (_workspace.ConnectionState == WorkspaceConnectionState.Connected)
@@ -2548,6 +2810,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             AddActivity("Error", "Partial monitor check", MonitorAlert);
             return false;
         }
+
+        ReconcileMonitorNotifications(profilesToCheck, activeScope);
 
         var increases = _hasMonitorBaseline
             ? _lastDlqMeasurements
@@ -2572,6 +2836,40 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         _hasMonitorBaseline = true;
         return true;
+    }
+
+    private void ReconcileMonitorNotifications(
+        IReadOnlyCollection<ProfileItemViewModel> checkedProfiles,
+        string activeScope)
+    {
+        var prefixes = checkedProfiles
+            .Select(profile => $"{profile.Id:N}|")
+            .ToArray();
+        var removedAny = false;
+
+        foreach (var pair in _monitorNotifications.ToArray())
+        {
+            if (!prefixes.Any(prefix => pair.Key.StartsWith(prefix, StringComparison.Ordinal)) ||
+                activeScope == SelectedSourceMonitorScope && pair.Value.Source != _monitoredEntity ||
+                _lastDlqMeasurements.ContainsKey(pair.Key))
+            {
+                continue;
+            }
+
+            _monitorNotifications.Remove(pair.Key);
+            MonitorNotifications.Remove(pair.Value);
+            removedAny = true;
+            AddActivity(
+                "Success",
+                "DLQ source resolved",
+                $"{pair.Value.EnvironmentName} · {pair.Value.SourceName} · no longer reported",
+                pair.Value.Source);
+        }
+
+        if (removedAny)
+        {
+            NotifyMonitorNotificationsChanged();
+        }
     }
 
     private void CaptureMonitorSnapshot(ProfileItemViewModel profile, DeadLetterSnapshot snapshot)
@@ -2650,8 +2948,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private async Task RunWorkspaceOperationAsync(
         string operation,
         Func<CancellationToken, Task> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowCancellation = true)
     {
+        // Interactive work wins over a background monitor traversal. Cancelling the
+        // per-check token leaves the monitor itself running for its next interval.
+        _monitorCheckCancellation?.Cancel();
         await RunOperationAsync(
                 operation,
                 async token =>
@@ -2666,23 +2968,28 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                         _workspaceGate.Release();
                     }
                 },
-                cancellationToken)
+                cancellationToken,
+                allowCancellation)
             .ConfigureAwait(true);
     }
 
     private async Task RunOperationAsync(
         string operation,
         Func<CancellationToken, Task> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowCancellation = true)
     {
+        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _currentOperationCancellation = allowCancellation ? operationCancellation : null;
         IsBusy = true;
+        NotifyCurrentOperationCancellationState();
         ErrorText = string.Empty;
         StatusText = operation;
         try
         {
-            await action(cancellationToken).ConfigureAwait(true);
+            await action(operationCancellation.Token).ConfigureAwait(true);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
         {
             StatusText = "Operation cancelled";
         }
@@ -2694,14 +3001,66 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
+            if (ReferenceEquals(_currentOperationCancellation, operationCancellation))
+            {
+                _currentOperationCancellation = null;
+            }
             IsBusy = false;
+            NotifyCurrentOperationCancellationState();
         }
+
+        if (TryConsumePendingBackupRefresh())
+        {
+            await RunOperationAsync(
+                    "Loading backups",
+                    RefreshBackupsAsync,
+                    CancellationToken.None)
+                .ConfigureAwait(true);
+        }
+    }
+
+    private void CancelCurrentOperation()
+    {
+        if (_currentOperationCancellation is null)
+        {
+            return;
+        }
+
+        StatusText = "Cancelling…";
+        _currentOperationCancellation.Cancel();
+        NotifyCurrentOperationCancellationState();
+    }
+
+    private void NotifyCurrentOperationCancellationState()
+    {
+        OnPropertyChanged(nameof(CancelOperationLabel));
+        OnPropertyChanged(nameof(ShowCancelCurrentOperation));
+        CancelCurrentOperationCommand.NotifyCanExecuteChanged();
+    }
+
+    private bool TryConsumePendingBackupRefresh()
+    {
+        if (!_pendingBackupRefresh ||
+            _isDisposed ||
+            _backupRepository is null ||
+            IsBusy ||
+            CurrentPage != NavigationPage.Backups)
+        {
+            if (CurrentPage != NavigationPage.Backups)
+            {
+                _pendingBackupRefresh = false;
+            }
+            return false;
+        }
+
+        _pendingBackupRefresh = false;
+        return true;
     }
 
     private void ClearConnectedState()
     {
         _connectedProfile = null;
-        ClearTemporaryWriteState();
+        CancelWriteUnlockTimerWithoutWaiting();
         _topology = null;
         _allEntities.Clear();
         Entities.Clear();
@@ -2740,6 +3099,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             _previousDlqCounts.Remove(key);
         }
+        foreach (var key in _monitorNotifications.Keys.Where(key => key.StartsWith(keyPrefix, StringComparison.Ordinal)).ToArray())
+        {
+            var notification = _monitorNotifications[key];
+            _monitorNotifications.Remove(key);
+            MonitorNotifications.Remove(notification);
+        }
+        NotifyMonitorNotificationsChanged();
 
         Messages.Clear();
         SelectedMessage = null;
@@ -2803,6 +3169,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ConnectionColor));
         OnPropertyChanged(nameof(ConnectedNamespace));
         OnPropertyChanged(nameof(IsSelectedProfileConnected));
+        OnPropertyChanged(nameof(EnvironmentActionLabel));
+        OnPropertyChanged(nameof(EnvironmentActionCommand));
         OnPropertyChanged(nameof(CanOpenBackupAsDraft));
         OnPropertyChanged(nameof(BackupDraftHint));
         OnPropertyChanged(nameof(HasBackupDraftHint));
@@ -2843,11 +3211,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         EditEnvironmentCommand.NotifyCanExecuteChanged();
         DeleteEnvironmentCommand.NotifyCanExecuteChanged();
         ConnectCommand.NotifyCanExecuteChanged();
+        DisconnectCommand.NotifyCanExecuteChanged();
         RefreshTopologyCommand.NotifyCanExecuteChanged();
         ScanCurrentEnvironmentCommand.NotifyCanExecuteChanged();
         ScanAllEnvironmentsCommand.NotifyCanExecuteChanged();
         SearchDeadLettersCommand.NotifyCanExecuteChanged();
         ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+        CancelCurrentOperationCommand.NotifyCanExecuteChanged();
         BrowseSelectedActiveCommand.NotifyCanExecuteChanged();
         BrowseSelectedDeadLettersCommand.NotifyCanExecuteChanged();
         BrowseSelectedTransferDeadLettersCommand.NotifyCanExecuteChanged();
@@ -2915,6 +3285,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         _monitorCancellation?.Cancel();
         _writeUnlockCancellation?.Cancel();
+        _currentOperationCancellation?.Cancel();
 
         var commands = new[]
         {
@@ -2922,6 +3293,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             EditEnvironmentCommand,
             DeleteEnvironmentCommand,
             ConnectCommand,
+            DisconnectCommand,
             RefreshTopologyCommand,
             ScanCurrentEnvironmentCommand,
             ScanAllEnvironmentsCommand,

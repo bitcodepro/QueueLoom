@@ -6,7 +6,7 @@ namespace QueueLoom.Tests;
 public sealed class DeadLetterSearchModelTests
 {
     [Fact]
-    public void RequestAcceptsOnlyKnownNonEmptyDeadLetterTargets()
+    public void RequestAcceptsZeroKnownCountBecauseRuntimeCountersCanBeStale()
     {
         var request = new DeadLetterSearchRequest(
             "correlation-42",
@@ -17,12 +17,13 @@ public sealed class DeadLetterSearchModelTests
 
         Assert.Single(request.Targets);
         Assert.Equal(DeadLetterSearchRequest.DefaultMaximumMessagesPerTarget, request.MaximumMessagesPerTarget);
-        Assert.Throws<ArgumentException>(() => new DeadLetterSearchRequest(
+        var zeroCount = new DeadLetterSearchRequest(
             "value",
             [new DeadLetterSearchTarget(
                 ServiceBusEntityReference.Queue("empty"),
                 ServiceBusSubQueue.DeadLetter,
-                0)]));
+                0)]);
+        Assert.Single(zeroCount.Targets);
         Assert.Throws<ArgumentException>(() => new DeadLetterSearchRequest(
             "value",
             [new DeadLetterSearchTarget(

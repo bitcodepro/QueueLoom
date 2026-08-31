@@ -16,9 +16,19 @@ namespace QueueLoom.Infrastructure.Azure;
 public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 {
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan InteractiveTryTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan InteractiveRetryDelay = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan InteractiveMaximumRetryDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan PurgeReceiveWaitTime = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan PurgeVerificationTimeout = TimeSpan.FromSeconds(2);
     private const int MonitorConcurrency = 6;
     private const int SearchConcurrency = 12;
     private const int BrowseBatchSize = 250;
+    private const int InteractiveMaximumRetries = 2;
+    private const int PurgeEmptyReceiveConfirmations = 2;
+    private const int BackupWriteConcurrency = 4;
+    private const string SessionEnabledEntityError =
+        "Session-enabled queues and subscriptions are not supported by the current safe message workflow. No messages were changed.";
 
     private readonly ISecretVault _secretVault;
     private readonly DeadLetterJsonBackupStore _backupStore;
@@ -67,11 +77,8 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             ServiceBusAdministrationClient? administration = null;
             try
             {
-                var clientOptions = new ServiceBusClientOptions
-                {
-                    TransportType = ServiceBusTransportType.AmqpTcp,
-                    EnableCrossEntityTransactions = false
-                };
+                var clientOptions = CreateMessagingClientOptions();
+                var administrationOptions = CreateAdministrationClientOptions();
 
                 if (profile.Authentication.Kind == AuthenticationKind.ConnectionString)
                 {
@@ -91,7 +98,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                     }
 
                     client = new ServiceBusClient(connectionString, clientOptions);
-                    administration = new ServiceBusAdministrationClient(connectionString);
+                    administration = new ServiceBusAdministrationClient(connectionString, administrationOptions);
                 }
                 else
                 {
@@ -104,7 +111,10 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                         ?? throw new InvalidOperationException("Entra ID settings are missing.");
                     TokenCredential credential = AzureCredentialFactory.Create(settings);
                     client = new ServiceBusClient(profile.FullyQualifiedNamespace, credential, clientOptions);
-                    administration = new ServiceBusAdministrationClient(profile.FullyQualifiedNamespace, credential);
+                    administration = new ServiceBusAdministrationClient(
+                        profile.FullyQualifiedNamespace,
+                        credential,
+                        administrationOptions);
                 }
 
                 // This validates both the endpoint and the Manage/Data Owner permission needed
@@ -238,6 +248,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
 
+        await EnsureSessionlessMessageSourceAsync(request.Source, cancellationToken).ConfigureAwait(false);
         var client = GetMessagingClient();
         var options = new ServiceBusReceiverOptions
         {
@@ -325,7 +336,42 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         var acceptedMatches = 0;
         var resultLimitReached = 0;
         using var limiter = new SemaphoreSlim(SearchConcurrency, SearchConcurrency);
-        var tasks = request.Targets.Select(async target =>
+        // Counters are not trusted as an exclusion filter, but they are valuable for
+        // scheduling: likely non-empty sources return useful matches before stale-zero
+        // probes when a namespace contains hundreds of subscriptions.
+        var targetTasks = request.Targets
+            .OrderByDescending(target => target.KnownMessageCount)
+            .Select(target => (Target: target, Task: SearchAsync(target)))
+            .ToArray();
+        var sourceResults = Array.Empty<DeadLetterSearchSourceResult>();
+        try
+        {
+            sourceResults = await Task.WhenAll(targetTasks.Select(item => item.Task)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Preserve every source that completed before a per-environment timeout.
+            // Incomplete sources remain explicit failures instead of making all useful
+            // matches from the environment disappear with Task.WhenAll cancellation.
+            sourceResults = targetTasks.Select(item => item.Task.IsCompletedSuccessfully
+                    ? item.Task.Result
+                    : new DeadLetterSearchSourceResult(
+                        item.Target.Source,
+                        item.Target.SubQueue,
+                        0,
+                        [],
+                        Error: "Search timed out before this source completed."))
+                .ToArray();
+        }
+
+        return new DeadLetterSearchResult(
+            profile.Id,
+            startedAt,
+            _timeProvider.GetUtcNow(),
+            sourceResults,
+            resultLimitReached != 0);
+
+        async Task<DeadLetterSearchSourceResult> SearchAsync(DeadLetterSearchTarget target)
         {
             await limiter.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -361,15 +407,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             {
                 limiter.Release();
             }
-        }).ToArray();
-        var sourceResults = await Task.WhenAll(tasks).ConfigureAwait(false);
-
-        return new DeadLetterSearchResult(
-            profile.Id,
-            startedAt,
-            _timeProvider.GetUtcNow(),
-            sourceResults,
-            resultLimitReached != 0);
+        }
     }
 
     private async Task<DeadLetterSearchSourceResult> SearchTargetAsync(
@@ -379,11 +417,9 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         Func<bool> shouldStop,
         CancellationToken cancellationToken)
     {
-        var matches = new List<BrowsedMessage>();
-        var scanned = 0;
-        var scanLimit = (int)Math.Min(target.KnownMessageCount, request.MaximumMessagesPerTarget);
         try
         {
+            await EnsureSessionlessMessageSourceAsync(target.Source, cancellationToken).ConfigureAwait(false);
             var options = new ServiceBusReceiverOptions
             {
                 ReceiveMode = ServiceBusReceiveMode.PeekLock,
@@ -406,53 +442,85 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 _ => throw new ArgumentException("Only queues and subscriptions can be searched.", nameof(target))
             };
 
-            long? fromSequenceNumber = null;
-            while (scanned < scanLimit)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (shouldStop())
-                {
-                    break;
-                }
-                var batchSize = Math.Min(request.BatchSize, scanLimit - scanned);
-                var messages = await receiver.PeekMessagesAsync(
+            return await SearchTargetPagesAsync(
+                    target,
+                    request,
+                    (batchSize, fromSequenceNumber, token) => receiver.PeekMessagesAsync(
                         batchSize,
                         fromSequenceNumber,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                if (messages.Count == 0)
-                {
-                    break;
-                }
+                        token),
+                    addMatch,
+                    shouldStop,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return new DeadLetterSearchSourceResult(
+                target.Source,
+                target.SubQueue,
+                0,
+                [],
+                Error: exception.GetBaseException().Message);
+        }
+    }
 
-                scanned = checked(scanned + messages.Count);
-                foreach (var azureMessage in messages)
-                {
-                    if (MatchesSearch(azureMessage, request.Query))
+    internal static async Task<DeadLetterSearchSourceResult> SearchTargetPagesAsync(
+        DeadLetterSearchTarget target,
+        DeadLetterSearchRequest request,
+        Func<int, long?, CancellationToken, Task<IReadOnlyList<ServiceBusReceivedMessage>>> peekAsync,
+        Func<ServiceBusReceivedMessage, BrowsedMessage?> addMatch,
+        Func<bool> shouldStop,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(peekAsync);
+        ArgumentNullException.ThrowIfNull(addMatch);
+        ArgumentNullException.ThrowIfNull(shouldStop);
+
+        var matches = new List<BrowsedMessage>();
+        var scanned = 0;
+        try
+        {
+            var scan = await WalkSearchPagesAsync(
+                    request.BatchSize,
+                    GetSearchSafetyLimit(request, target),
+                    peekAsync,
+                    azureMessage =>
                     {
+                        scanned = checked(scanned + 1);
+                        if (!MatchesSearch(azureMessage, request.Query))
+                        {
+                            return;
+                        }
+
                         var match = addMatch(azureMessage);
                         if (match is not null)
                         {
                             matches.Add(match);
                         }
-                    }
-                }
-
-                var lastSequenceNumber = messages.Max(message => message.SequenceNumber);
-                if (lastSequenceNumber == long.MaxValue ||
-                    (fromSequenceNumber.HasValue && lastSequenceNumber < fromSequenceNumber.Value))
-                {
-                    break;
-                }
-                fromSequenceNumber = lastSequenceNumber + 1;
-            }
+                    },
+                    shouldStop,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            scanned = scan.ScannedMessageCount;
 
             return new DeadLetterSearchSourceResult(
                 target.Source,
                 target.SubQueue,
                 scanned,
                 Array.AsReadOnly(matches.ToArray()),
-                target.KnownMessageCount > scanned);
+                scan.SafetyLimitReached);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new DeadLetterSearchSourceResult(
+                target.Source,
+                target.SubQueue,
+                scanned,
+                Array.AsReadOnly(matches.ToArray()),
+                Error: $"Search was cancelled or timed out after inspecting {scanned:N0} messages in this source.");
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -464,6 +532,109 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 Error: exception.GetBaseException().Message);
         }
     }
+
+    internal static async Task<SearchPageWalkResult> WalkSearchPagesAsync(
+        int batchSize,
+        int safetyLimit,
+        Func<int, long?, CancellationToken, Task<IReadOnlyList<ServiceBusReceivedMessage>>> peekAsync,
+        Action<ServiceBusReceivedMessage> visitMessage,
+        Func<bool> shouldStop,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(safetyLimit, 1);
+        ArgumentNullException.ThrowIfNull(peekAsync);
+        ArgumentNullException.ThrowIfNull(visitMessage);
+        ArgumentNullException.ThrowIfNull(shouldStop);
+
+        var scanned = 0;
+        var stopped = false;
+        var exhausted = false;
+        long? fromSequenceNumber = null;
+        var seenSequenceNumbers = new HashSet<long>();
+
+        while (scanned < safetyLimit)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (shouldStop())
+            {
+                stopped = true;
+                break;
+            }
+
+            var requested = Math.Min(batchSize, safetyLimit - scanned);
+            var messages = await peekAsync(requested, fromSequenceNumber, cancellationToken)
+                .ConfigureAwait(false);
+            if (messages.Count == 0)
+            {
+                exhausted = true;
+                break;
+            }
+            if (messages.Count > requested)
+            {
+                throw new InvalidOperationException("Azure Service Bus returned more peeked messages than requested.");
+            }
+
+            var lastSequenceNumber = messages.Max(message => message.SequenceNumber);
+            if (fromSequenceNumber.HasValue && lastSequenceNumber < fromSequenceNumber.Value)
+            {
+                throw new InvalidOperationException("Azure Service Bus peek pagination did not advance.");
+            }
+
+            foreach (var message in messages)
+            {
+                if (!seenSequenceNumbers.Add(message.SequenceNumber))
+                {
+                    continue;
+                }
+
+                visitMessage(message);
+                scanned = checked(scanned + 1);
+                if (shouldStop())
+                {
+                    stopped = true;
+                    break;
+                }
+            }
+
+            if (stopped)
+            {
+                break;
+            }
+            if (lastSequenceNumber == long.MaxValue)
+            {
+                exhausted = true;
+                break;
+            }
+
+            fromSequenceNumber = lastSequenceNumber + 1;
+        }
+
+        var safetyLimitReached = false;
+        if (!stopped && !exhausted && scanned >= safetyLimit)
+        {
+            var probe = await peekAsync(1, fromSequenceNumber, cancellationToken).ConfigureAwait(false);
+            safetyLimitReached = probe.Count > 0;
+        }
+
+        return new SearchPageWalkResult(scanned, safetyLimitReached);
+    }
+
+    internal static int GetSearchSafetyLimit(
+        DeadLetterSearchRequest request,
+        DeadLetterSearchTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(target);
+
+        // Runtime counters are eventually consistent. They are useful for progress text,
+        // but a stale low count must never truncate a content search.
+        return request.MaximumMessagesPerTarget;
+    }
+
+    internal readonly record struct SearchPageWalkResult(
+        int ScannedMessageCount,
+        bool SafetyLimitReached);
 
     private static bool MatchesSearch(ServiceBusReceivedMessage message, string query)
     {
@@ -548,6 +719,12 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 
         var profile = GetConnectedProfile();
         var startedAt = _timeProvider.GetUtcNow();
+        foreach (var source in request.Targets.Select(target => target.Source).Distinct())
+        {
+            // Validate the entire request before creating a backup session or deleting
+            // from an earlier target. Mixed session/non-session scopes are all-or-none.
+            await EnsureSessionlessMessageSourceAsync(source, cancellationToken).ConfigureAwait(false);
+        }
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterPurgeSourceResult>(request.Targets.Count);
@@ -555,7 +732,18 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         for (var index = 0; index < request.Targets.Count; index++)
         {
             var target = request.Targets[index];
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                foreach (var pending in request.Targets.Skip(index))
+                {
+                    results.Add(new DeadLetterPurgeSourceResult(
+                        pending.Source,
+                        pending.SubQueue,
+                        0,
+                        "Cancelled before this source was processed."));
+                }
+                break;
+            }
             results.Add(await PurgeSubQueueAsync(
                     target.Source,
                     target.SubQueue,
@@ -597,6 +785,8 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         var options = new ServiceBusReceiverOptions
         {
             ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            // Keep at most one small work batch locked ahead. This hides receive latency
+            // without building a large lock-expiry or memory backlog while JSON is written.
             PrefetchCount = 0,
             SubQueue = subQueue switch
             {
@@ -608,6 +798,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 
         long deleted = 0;
         long backedUp = 0;
+        var consecutiveEmptyReceives = 0;
         try
         {
             progress?.Report(new DeadLetterPurgeProgress(
@@ -631,20 +822,41 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 var receiveCount = (int)Math.Min(batchSize, remaining);
                 var messages = await receiver.ReceiveMessagesAsync(
                         receiveCount,
-                        TimeSpan.FromMilliseconds(500),
+                        PurgeReceiveWaitTime,
                         cancellationToken)
                     .ConfigureAwait(false);
                 if (messages.Count == 0)
                 {
-                    progress?.Report(new DeadLetterPurgeProgress(
-                        source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Completed));
-                    return new DeadLetterPurgeSourceResult(source, subQueue, deleted);
+                    consecutiveEmptyReceives++;
+                    if (HasConfirmedEmptyPurge(consecutiveEmptyReceives))
+                    {
+                        progress?.Report(new DeadLetterPurgeProgress(
+                            source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Verifying));
+                        var remainingCount = await TryReadPurgeCountAsync(source, subQueue, cancellationToken)
+                            .ConfigureAwait(false);
+                        progress?.Report(new DeadLetterPurgeProgress(
+                            source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Completed));
+                        // Management-plane counters are eventually consistent. A nonzero
+                        // or unavailable value after two empty receive polls is advisory,
+                        // not proof that settlement failed. The UI prompts a later rescan.
+                        return new DeadLetterPurgeSourceResult(
+                            source,
+                            subQueue,
+                            deleted,
+                            VerificationPending: remainingCount is null or > 0);
+                    }
+                    continue;
                 }
+                consecutiveEmptyReceives = 0;
 
                 progress?.Report(new DeadLetterPurgeProgress(
                     source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.BackingUp));
-                await Task.WhenAll(messages.Select(message =>
-                    backupSession.BackupAsync(message, source, subQueue, cancellationToken))).ConfigureAwait(false);
+                foreach (var backupBatch in messages.Chunk(BackupWriteConcurrency))
+                {
+                    await Task.WhenAll(backupBatch.Select(message =>
+                            backupSession.BackupAsync(message, source, subQueue, cancellationToken)))
+                        .ConfigureAwait(false);
+                }
                 backedUp = checked(backedUp + messages.Count);
 
                 progress?.Report(new DeadLetterPurgeProgress(
@@ -653,7 +865,10 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 {
                     try
                     {
-                        await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
+                        // Once every message in this batch has a durable backup, finish settlement
+                        // independently from a UI cancellation. Cancellation is honored before the
+                        // next batch, preventing an unknowable half-settled batch.
+                        await receiver.CompleteMessageAsync(message, CancellationToken.None).ConfigureAwait(false);
                         return (Exception?)null;
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
@@ -676,9 +891,43 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 Error: $"Safety limit of {maximumMessages:N0} messages was reached.",
                 LimitReached: true);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new DeadLetterPurgeSourceResult(
+                source,
+                subQueue,
+                deleted,
+                $"Cancelled safely after backing up {backedUp:N0} and deleting {deleted:N0} messages.");
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return new DeadLetterPurgeSourceResult(source, subQueue, deleted, exception.Message);
+        }
+    }
+
+    internal static bool HasConfirmedEmptyPurge(int consecutiveEmptyReceives) =>
+        consecutiveEmptyReceives >= PurgeEmptyReceiveConfirmations;
+
+    private async Task<long?> TryReadPurgeCountAsync(
+        ServiceBusEntityReference source,
+        ServiceBusSubQueue subQueue,
+        CancellationToken cancellationToken)
+    {
+        using var verification = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        verification.CancelAfter(PurgeVerificationTimeout);
+        try
+        {
+            var counts = await GetDeadLetterCountsAsync(source, verification.Token).ConfigureAwait(false);
+            return counts.Single(item => item.SubQueue == subQueue).Count;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _ = exception;
+            return null;
         }
     }
 
@@ -781,6 +1030,65 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         }
 
         return new DeadLetterEntitySnapshot(source, count, previous, error, subQueue);
+    }
+
+    private async Task EnsureSessionlessMessageSourceAsync(
+        ServiceBusEntityReference source,
+        CancellationToken cancellationToken)
+    {
+        var requiresSession = TryGetRequiresSession(_cachedTopology, source);
+        if (!requiresSession.HasValue)
+        {
+            var administration = GetAdministrationClient();
+            requiresSession = source.Kind switch
+            {
+                ServiceBusEntityKind.Queue =>
+                    (await administration.GetQueueAsync(source.Name, cancellationToken).ConfigureAwait(false))
+                    .Value.RequiresSession,
+                ServiceBusEntityKind.Subscription =>
+                    (await administration.GetSubscriptionAsync(
+                            source.TopicName!,
+                            source.Name,
+                            cancellationToken)
+                        .ConfigureAwait(false))
+                    .Value.RequiresSession,
+                _ => throw new ArgumentException(
+                    "Only queues and subscriptions can be used as message sources.",
+                    nameof(source))
+            };
+        }
+
+        if (requiresSession.Value)
+        {
+            throw new NotSupportedException(SessionEnabledEntityError);
+        }
+    }
+
+    internal static bool? TryGetRequiresSession(
+        ServiceBusTopology? topology,
+        ServiceBusEntityReference source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (topology is null)
+        {
+            return null;
+        }
+
+        if (source.Kind == ServiceBusEntityKind.Queue)
+        {
+            return topology.Queues.FirstOrDefault(queue =>
+                string.Equals(queue.Name, source.Name, StringComparison.OrdinalIgnoreCase))?.RequiresSession;
+        }
+
+        if (source.Kind == ServiceBusEntityKind.Subscription)
+        {
+            var topic = topology.Topics.FirstOrDefault(item =>
+                string.Equals(item.Name, source.TopicName, StringComparison.OrdinalIgnoreCase));
+            return topic?.Subscriptions.FirstOrDefault(subscription =>
+                string.Equals(subscription.Name, source.Name, StringComparison.OrdinalIgnoreCase))?.RequiresSession;
+        }
+
+        return null;
     }
 
     private static async Task<ServiceBusTopic> MapTopicAsync(
@@ -889,6 +1197,31 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
             items.Add(item);
         }
         return items;
+    }
+
+    internal static ServiceBusClientOptions CreateMessagingClientOptions() => new()
+    {
+        TransportType = ServiceBusTransportType.AmqpTcp,
+        EnableCrossEntityTransactions = false,
+        RetryOptions = new ServiceBusRetryOptions
+        {
+            Mode = ServiceBusRetryMode.Exponential,
+            MaxRetries = InteractiveMaximumRetries,
+            Delay = InteractiveRetryDelay,
+            MaxDelay = InteractiveMaximumRetryDelay,
+            TryTimeout = InteractiveTryTimeout
+        }
+    };
+
+    internal static ServiceBusAdministrationClientOptions CreateAdministrationClientOptions()
+    {
+        var options = new ServiceBusAdministrationClientOptions();
+        options.Retry.Mode = RetryMode.Exponential;
+        options.Retry.MaxRetries = InteractiveMaximumRetries;
+        options.Retry.Delay = InteractiveRetryDelay;
+        options.Retry.MaxDelay = InteractiveMaximumRetryDelay;
+        options.Retry.NetworkTimeout = InteractiveTryTimeout;
+        return options;
     }
 
     private void EnsureWriteAllowed()

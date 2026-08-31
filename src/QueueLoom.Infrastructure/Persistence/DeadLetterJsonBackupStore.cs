@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 using QueueLoom.Core.Profiles;
@@ -23,8 +25,10 @@ public sealed class DeadLetterJsonBackupStore
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        var sessionName =
-            $"{startedAt.UtcDateTime:yyyyMMddTHHmmss.fffffffZ}_{SafeSegment(profile.Name)}_{Guid.NewGuid():N}";
+        // Profile/entity/message names can each approach the Windows component limit.
+        // Keep all user-controlled values in JSON and use fixed-size identifiers on disk.
+        // The date folder remains useful when operators inspect or archive backups.
+        var sessionName = $"{startedAt.UtcDateTime:HHmmss}-{CompactGuid(Guid.NewGuid())}";
         var sessionDirectory = Path.Combine(
             _paths.BackupsDirectory,
             startedAt.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -68,23 +72,73 @@ public sealed class DeadLetterJsonBackupStore
         return sanitized.Length <= 80 ? sanitized : sanitized[..80];
     }
 
-    internal static void RestrictDirectory(string path)
+    internal static string UniqueEntitySegment(ServiceBusEntityReference source)
     {
-        if (OperatingSystem.IsWindows())
+        ArgumentNullException.ThrowIfNull(source);
+
+        // Include the kind so a queue whose literal name resembles a subscription
+        // path cannot share a directory with that subscription. Lower-case base32
+        // preserves the full SHA-256 while remaining safe on case-insensitive disks.
+        var identity = source.Kind switch
         {
-            return;
+            ServiceBusEntityKind.Queue => $"q:{source.Name.Length}:{source.Name}",
+            ServiceBusEntityKind.Subscription =>
+                $"s:{source.TopicName!.Length}:{source.TopicName}:{source.Name.Length}:{source.Name}",
+            _ => throw new ArgumentException("Only queues and subscriptions can be backed up.", nameof(source))
+        };
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(identity));
+        var kind = source.Kind switch
+        {
+            ServiceBusEntityKind.Queue => "q",
+            ServiceBusEntityKind.Subscription => "s",
+            _ => throw new ArgumentOutOfRangeException(nameof(source), source.Kind, "Unsupported source kind.")
+        };
+        return $"{kind}-{ToLowerBase32(hash)}";
+    }
+
+    internal static string CompactGuid(Guid value)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        value.TryWriteBytes(bytes);
+        return ToLowerBase32(bytes);
+    }
+
+    internal static string ToLowerBase32(ReadOnlySpan<byte> bytes)
+    {
+        const string alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+        var outputLength = checked((bytes.Length * 8 + 4) / 5);
+        Span<char> output = outputLength <= 128
+            ? stackalloc char[outputLength]
+            : new char[outputLength];
+        var outputIndex = 0;
+        var buffer = 0;
+        var bufferedBits = 0;
+
+        foreach (var value in bytes)
+        {
+            buffer = (buffer << 8) | value;
+            bufferedBits += 8;
+            while (bufferedBits >= 5)
+            {
+                bufferedBits -= 5;
+                output[outputIndex++] = alphabet[(buffer >> bufferedBits) & 0x1f];
+            }
+
+            buffer = bufferedBits == 0
+                ? 0
+                : buffer & ((1 << bufferedBits) - 1);
         }
 
-        try
+        if (bufferedBits > 0)
         {
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            output[outputIndex++] = alphabet[(buffer << (5 - bufferedBits)) & 0x1f];
         }
-        catch (PlatformNotSupportedException)
-        {
-        }
+
+        return new string(output[..outputIndex]);
     }
+
+    internal static void RestrictDirectory(string path) =>
+        AtomicFile.RestrictDirectoryToCurrentUser(path);
 }
 
 public sealed class DeadLetterJsonBackupSession(
@@ -103,31 +157,25 @@ public sealed class DeadLetterJsonBackupSession(
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(source);
 
-        var relativeDirectory = source.Kind switch
+        var relativeDirectory = Path.Combine(
+            DeadLetterJsonBackupStore.UniqueEntitySegment(source),
+            subQueue switch
         {
-            ServiceBusEntityKind.Queue => Path.Combine(
-                "queues",
-                DeadLetterJsonBackupStore.SafeSegment(source.Name)),
-            ServiceBusEntityKind.Subscription => Path.Combine(
-                "topics",
-                DeadLetterJsonBackupStore.SafeSegment(source.TopicName!),
-                "subscriptions",
-                DeadLetterJsonBackupStore.SafeSegment(source.Name)),
-            _ => throw new ArgumentException("Only queues and subscriptions can be backed up.", nameof(source))
-        };
-        relativeDirectory = Path.Combine(relativeDirectory, subQueue switch
-        {
-            ServiceBusSubQueue.DeadLetter => "dead-letter",
-            ServiceBusSubQueue.TransferDeadLetter => "transfer-dead-letter",
+            ServiceBusSubQueue.DeadLetter => "dlq",
+            ServiceBusSubQueue.TransferDeadLetter => "tdlq",
             _ => throw new ArgumentOutOfRangeException(nameof(subQueue), subQueue, "Unsupported backup subqueue.")
         });
 
         var directory = Path.Combine(RootDirectory, relativeDirectory);
         Directory.CreateDirectory(directory);
         DeadLetterJsonBackupStore.RestrictDirectory(directory);
-        var messageId = DeadLetterJsonBackupStore.SafeSegment(message.MessageId ?? "no-message-id");
-        var destination = Path.Combine(directory, $"{message.SequenceNumber:D20}_{messageId}.json");
-        var temporary = Path.Combine(directory, $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
+        var backupId = Guid.NewGuid();
+        var destination = Path.Combine(
+            directory,
+            $"{message.SequenceNumber:D20}-{DeadLetterJsonBackupStore.CompactGuid(backupId)}.json");
+        var temporary = Path.Combine(
+            directory,
+            $".{DeadLetterJsonBackupStore.CompactGuid(Guid.NewGuid())}.tmp");
 
         try
         {
@@ -142,6 +190,7 @@ public sealed class DeadLetterJsonBackupSession(
                 using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
                 writer.WriteStartObject();
                 writer.WriteNumber("schemaVersion", 1);
+                writer.WriteString("backupId", backupId);
                 writer.WriteString("backedUpAtUtc", DateTimeOffset.UtcNow);
                 writer.WriteString("purgeStartedAtUtc", startedAt);
                 writer.WriteString("profileId", profile.Id);
@@ -191,10 +240,20 @@ public sealed class DeadLetterJsonBackupSession(
                 writer.WriteBase64String("bodyBase64", body.Span);
                 writer.WriteEndObject();
                 await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                // A successful return authorizes the caller to settle the Azure
+                // message. Flush through OS buffers before publishing the final
+                // name, so an in-memory write is never treated as a backup.
+                stream.Flush(flushToDisk: true);
             }
             AtomicFile.RestrictToCurrentUser(temporary);
-            File.Move(temporary, destination, overwrite: true);
+            // Never overwrite: independently delivered messages may legitimately
+            // share SequenceNumber/MessageId across entities or purge attempts.
+            File.Move(temporary, destination);
+            var completedFile = new FileInfo(destination);
+            if (!completedFile.Exists || completedFile.Length == 0)
+            {
+                throw new IOException("The durable dead-letter backup file was not created.");
+            }
             return destination;
         }
         finally
