@@ -43,18 +43,6 @@ public sealed record QueueLoomPaths(
     public void EnsureCreated()
     {
         Directory.CreateDirectory(RootDirectory);
-
-        if (!OperatingSystem.IsWindows())
-        {
-            try
-            {
-                File.SetUnixFileMode(
-                    RootDirectory,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
-            catch (PlatformNotSupportedException)
-            {
-            }
-        }
+        AtomicFile.RestrictDirectoryToCurrentUser(RootDirectory);
     }
 }

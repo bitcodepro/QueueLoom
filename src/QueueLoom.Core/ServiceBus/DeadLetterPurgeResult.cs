@@ -5,7 +5,8 @@ public sealed record DeadLetterPurgeSourceResult(
     ServiceBusSubQueue SubQueue,
     long DeletedCount,
     string? Error = null,
-    bool LimitReached = false)
+    bool LimitReached = false,
+    bool VerificationPending = false)
 {
     public bool IsSuccessful => string.IsNullOrWhiteSpace(Error) && !LimitReached;
 }
@@ -51,4 +52,6 @@ public sealed record DeadLetterPurgeResult
     public long DeletedCount => checked(Sources.Sum(source => source.DeletedCount));
 
     public bool HasFailures => Sources.Any(source => !source.IsSuccessful);
+
+    public bool HasPendingVerification => Sources.Any(source => source.VerificationPending);
 }

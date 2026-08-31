@@ -57,6 +57,35 @@ public sealed class ViewModelStateTests
     }
 
     [Fact]
+    public async Task EnvironmentHeaderAction_ConnectsAndDisconnectsOnlyTheSelectedEnvironment()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var repository = new FakeProfileRepository([dev, test], dev.Id);
+        var workspace = new FakeWorkspace();
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        Assert.Equal("Connect", viewModel.EnvironmentActionLabel);
+        Assert.Same(viewModel.ConnectCommand, viewModel.EnvironmentActionCommand);
+
+        await viewModel.ConnectCommand.ExecuteAsync();
+        Assert.Equal("Disconnect", viewModel.EnvironmentActionLabel);
+        Assert.Same(viewModel.DisconnectCommand, viewModel.EnvironmentActionCommand);
+
+        viewModel.SelectedProfile = Assert.Single(viewModel.Profiles, profile => profile.Id == test.Id);
+        Assert.Equal("Connect", viewModel.EnvironmentActionLabel);
+        Assert.Same(viewModel.ConnectCommand, viewModel.EnvironmentActionCommand);
+
+        viewModel.SelectedProfile = Assert.Single(viewModel.Profiles, profile => profile.Id == dev.Id);
+        await viewModel.DisconnectCommand.ExecuteAsync();
+
+        Assert.False(viewModel.IsConnected);
+        Assert.Equal("Connect", viewModel.EnvironmentActionLabel);
+        Assert.Equal(1, workspace.DisconnectCalls);
+    }
+
+    [Fact]
     public async Task FailedProfileSwitch_ClearsEveryConnectionIndicator()
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development);
@@ -75,6 +104,125 @@ public sealed class ViewModelStateTests
         Assert.All(viewModel.Profiles, item => Assert.False(item.IsConnected));
         Assert.Null(viewModel.ConnectedProfileId);
         Assert.Equal("No environment connected", viewModel.ConnectedProfileName);
+    }
+
+    [Fact]
+    public async Task CancelCurrentOperation_CancelsAWaitingAzureCallAndDisablesItself()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { WaitForConnectionCancellation = true };
+        await using var viewModel = CreateViewModel(
+            new FakeProfileRepository([dev], dev.Id),
+            workspace);
+
+        await viewModel.InitializeAsync();
+        var connection = viewModel.ConnectCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.IsBusy && viewModel.CancelCurrentOperationCommand.CanExecute(null));
+        Assert.True(viewModel.ShowCancelCurrentOperation);
+
+        viewModel.CancelCurrentOperationCommand.Execute(null);
+        Assert.Equal("Cancelling…", viewModel.CancelOperationLabel);
+        Assert.False(viewModel.ShowCancelCurrentOperation);
+        Assert.False(viewModel.CancelCurrentOperationCommand.CanExecute(null));
+        await connection;
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal("Operation cancelled", viewModel.StatusText);
+        Assert.Equal("Cancel", viewModel.CancelOperationLabel);
+    }
+
+    [Fact]
+    public async Task ProfileEdit_DoesNotExposeUnsafeCancellation()
+    {
+        var editCompletion = new TaskCompletionSource<ProfileEditorResult?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialogs = new FakeDialogService { PendingEdit = editCompletion };
+        await using var viewModel = CreateViewModel(
+            new FakeProfileRepository([], null),
+            new FakeWorkspace(),
+            dialogs);
+
+        await viewModel.InitializeAsync();
+        var edit = viewModel.AddEnvironmentCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.IsBusy);
+
+        Assert.False(viewModel.ShowCancelCurrentOperation);
+        Assert.False(viewModel.CancelCurrentOperationCommand.CanExecute(null));
+
+        editCompletion.SetResult(null);
+        await edit;
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task BackupsSelectedWhileBusy_RefreshesOnceAfterOperationCompletes()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var source = ServiceBusEntityReference.Queue("orders");
+        var message = SearchMessage(source, 42, "2026-08-12T10:00:00Z");
+        var summary = CreateBackupSummary(dev, source, message);
+        var backups = new FakeBackupRepository(summary, message);
+        var connectionRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workspace = new FakeWorkspace { ConnectionRelease = connectionRelease };
+        await using var viewModel = CreateViewModel(
+            new FakeProfileRepository([dev], dev.Id),
+            workspace,
+            backupRepository: backups);
+
+        await viewModel.InitializeAsync();
+        var connection = viewModel.ConnectCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.IsBusy);
+
+        viewModel.SelectedNavigation = Assert.Single(
+            viewModel.Navigation,
+            item => item.Key == nameof(NavigationPage.Backups));
+        Assert.Equal(0, backups.ListCalls);
+
+        connectionRelease.SetResult(true);
+        await connection;
+
+        Assert.Equal(1, backups.ListCalls);
+        Assert.Single(viewModel.BackupMessages);
+    }
+
+    [Fact]
+    public async Task ProfileSave_SetSelectedFailure_RestoresProfileSelectionAndSecret()
+    {
+        var original = CreateConnectionStringProfile("Original");
+        var other = CreateProfile("Other", EnvironmentKind.Test);
+        var updated = new ServiceBusProfile(
+            original.Id,
+            "Updated",
+            original.Environment,
+            original.CustomEnvironmentName,
+            original.FullyQualifiedNamespace,
+            AuthenticationSettings.ConnectionString(),
+            original.AccessMode);
+        var repository = new FakeProfileRepository([original, other], other.Id)
+        {
+            FailNextSetSelected = true
+        };
+        var vault = new FakeSecretVault();
+        var secretKey = ProfileSecretKey.ConnectionString(original.Id);
+        await vault.StoreAsync(secretKey, "old-secret");
+        var dialogs = new FakeDialogService
+        {
+            EditResult = new ProfileEditorResult(updated, "new-secret", ReplacesConnectionString: true)
+        };
+        await using var viewModel = CreateViewModel(
+            repository,
+            new FakeWorkspace(),
+            dialogs,
+            secretVault: vault);
+
+        await viewModel.InitializeAsync();
+        viewModel.SelectedProfile = Assert.Single(viewModel.Profiles, item => item.Id == original.Id);
+        await viewModel.EditEnvironmentCommand.ExecuteAsync();
+
+        Assert.Equal(original, await repository.GetAsync(original.Id));
+        Assert.Equal(other.Id, await repository.GetSelectedProfileIdAsync());
+        Assert.Equal("old-secret", await vault.RetrieveAsync(secretKey));
+        Assert.Contains("selected profile failure", viewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -98,6 +246,30 @@ public sealed class ViewModelStateTests
         Assert.Equal(1, workspace.ConnectCalls);
         Assert.Equal(1, workspace.TopologyCalls);
         Assert.Equal([ProfileAccessMode.ReadWrite], workspace.AccessModeChanges);
+    }
+
+    [Fact]
+    public async Task GlobalScanFailure_RestoresTemporaryWriteGrantWithItsRelockTimer()
+    {
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var repository = new FakeProfileRepository([test, dev], dev.Id);
+        var workspace = new FakeWorkspace();
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(repository, workspace, dialogs);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        await viewModel.UnlockWritesCommand.ExecuteAsync();
+        Assert.True(viewModel.CanWrite);
+
+        workspace.FailNextConnection = true;
+        await viewModel.ScanAllEnvironmentsCommand.ExecuteAsync();
+
+        Assert.Equal(dev.Id, viewModel.ConnectedProfileId);
+        Assert.True(viewModel.CanWrite);
+        Assert.Equal("WRITE ENABLED", viewModel.WriteAccessLabel);
+        Assert.Equal(ProfileAccessMode.ReadWrite, workspace.ConnectedAccessMode);
     }
 
     [Fact]
@@ -139,14 +311,69 @@ public sealed class ViewModelStateTests
         Assert.Single(viewModel.MonitorNotifications);
         Assert.Equal(lastDetectedAt, notification.LastDetectedAt);
 
-        workspace.Snapshots[dev.Id] = Snapshot(
-            dev.Id,
-            new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), 0));
+        workspace.Snapshots[dev.Id] = Snapshot(dev.Id);
         await viewModel.ToggleMonitorCommand.ExecuteAsync();
         await WaitUntilAsync(() => viewModel.MonitorStatus.Contains("last check", StringComparison.OrdinalIgnoreCase));
         await viewModel.ToggleMonitorCommand.ExecuteAsync();
 
         Assert.Empty(viewModel.MonitorNotifications);
+    }
+
+    [Fact]
+    public async Task MonitorRestoresOriginalWriteModeWhenConnectedEnvironmentIsScannedLast()
+    {
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var dev = CreateProfile(
+            "Development",
+            EnvironmentKind.Development,
+            ProfileAccessMode.ReadWrite);
+        var repository = new FakeProfileRepository([test, dev], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Snapshots =
+            {
+                [test.Id] = Snapshot(test.Id),
+                [dev.Id] = Snapshot(dev.Id)
+            }
+        };
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        Assert.Equal(ProfileAccessMode.ReadWrite, workspace.ConnectedAccessMode);
+
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.MonitorStatus.Contains("last check", StringComparison.OrdinalIgnoreCase));
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+
+        Assert.Equal(dev.Id, workspace.ConnectedProfileId);
+        Assert.Equal(ProfileAccessMode.ReadWrite, workspace.ConnectedAccessMode);
+        Assert.True(viewModel.CanWrite);
+    }
+
+    [Fact]
+    public async Task InteractiveWorkspaceOperation_InterruptsOnlyTheCurrentMonitorCheck()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { WaitForSnapshotCancellation = true };
+        await using var viewModel = CreateViewModel(
+            new FakeProfileRepository([dev], dev.Id),
+            workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await workspace.SnapshotStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await viewModel.RefreshTopologyCommand.ExecuteAsync();
+
+        Assert.Equal(1, workspace.CancelledSnapshotCalls);
+        Assert.True(viewModel.IsMonitoring);
+        Assert.False(viewModel.IsBusy);
+        Assert.Contains("paused", viewModel.MonitorStatus, StringComparison.OrdinalIgnoreCase);
+
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        Assert.False(viewModel.IsMonitoring);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
@@ -205,6 +432,31 @@ public sealed class ViewModelStateTests
 
         Assert.Same(originalSelection, viewModel.SelectedDlqSource);
         Assert.Equal(15, viewModel.VisibleDlqSourceCount);
+    }
+
+    [Fact]
+    public async Task GlobalDeadLetterScan_RestoresOfflineState()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var repository = new FakeProfileRepository([dev, test], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Snapshots =
+            {
+                [dev.Id] = Snapshot(dev.Id),
+                [test.Id] = Snapshot(test.Id)
+            }
+        };
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ScanAllEnvironmentsCommand.ExecuteAsync();
+
+        Assert.False(viewModel.IsConnected);
+        Assert.Null(viewModel.ConnectedProfileId);
+        Assert.All(viewModel.Profiles, profile => Assert.False(profile.IsConnected));
+        Assert.Equal(1, workspace.DisconnectCalls);
     }
 
     [Fact]
@@ -384,6 +636,12 @@ public sealed class ViewModelStateTests
             backups);
 
         await viewModel.InitializeAsync();
+        Assert.Equal(0, backups.ListCalls);
+        viewModel.SelectedNavigation = Assert.Single(
+            viewModel.Navigation,
+            item => item.Key == nameof(NavigationPage.Backups));
+        await viewModel.RefreshBackupsCommand.Completion;
+        Assert.Equal(1, backups.ListCalls);
 
         Assert.Single(viewModel.BackupMessages);
         Assert.Equal("message-42", viewModel.SelectedBackup?.MessageId);
@@ -413,10 +671,11 @@ public sealed class ViewModelStateTests
         IProfileRepository repository,
         IServiceBusWorkspace workspace,
         IUserDialogService? dialogs = null,
-        IDeadLetterBackupRepository? backupRepository = null) =>
+        IDeadLetterBackupRepository? backupRepository = null,
+        ISecretVault? secretVault = null) =>
         new(
             repository,
-            new FakeSecretVault(),
+            secretVault ?? new FakeSecretVault(),
             workspace,
             dialogs ?? new FakeDialogService(),
             backupRepository);
@@ -433,6 +692,16 @@ public sealed class ViewModelStateTests
             $"{name.ToLowerInvariant()}.servicebus.windows.net",
             AuthenticationSettings.Entra(),
             accessMode);
+
+    private static ServiceBusProfile CreateConnectionStringProfile(string name) =>
+        new(
+            Guid.NewGuid(),
+            name,
+            EnvironmentKind.Development,
+            null,
+            $"{name.ToLowerInvariant()}.servicebus.windows.net",
+            AuthenticationSettings.ConnectionString(),
+            ProfileAccessMode.ReadOnly);
 
     private static DeadLetterSnapshot Snapshot(Guid profileId, params DeadLetterEntitySnapshot[] entities) =>
         new(profileId, DateTimeOffset.UtcNow, entities);
@@ -457,12 +726,34 @@ public sealed class ViewModelStateTests
             new EditableMessageProperties(CorrelationId: "correlation-42"),
             enqueuedAt: DateTimeOffset.Parse(enqueuedAt));
 
+    private static DeadLetterBackupSummary CreateBackupSummary(
+        ServiceBusProfile profile,
+        ServiceBusEntityReference source,
+        BrowsedMessage message) =>
+        new(
+            Path.Combine(Path.GetTempPath(), "backups", $"message-{message.SequenceNumber}.json"),
+            profile.Id,
+            profile.Name,
+            profile.Environment.ToString(),
+            profile.FullyQualifiedNamespace,
+            source,
+            message.SubQueue,
+            message.SequenceNumber,
+            $"message-{message.SequenceNumber}",
+            message.Properties.CorrelationId,
+            message.Properties.Subject,
+            message.EnqueuedAt,
+            DateTimeOffset.UtcNow,
+            message.BodySize);
+
     private sealed class FakeProfileRepository(
         IReadOnlyList<ServiceBusProfile> profiles,
         Guid? selectedProfileId) : IProfileRepository
     {
         private readonly List<ServiceBusProfile> _profiles = [.. profiles];
         private Guid? _selectedProfileId = selectedProfileId;
+
+        public bool FailNextSetSelected { get; set; }
 
         public Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<ServiceBusProfile>>(_profiles.ToArray());
@@ -485,6 +776,12 @@ public sealed class ViewModelStateTests
 
         public Task SetSelectedProfileIdAsync(Guid? profileId, CancellationToken cancellationToken = default)
         {
+            if (FailNextSetSelected)
+            {
+                FailNextSetSelected = false;
+                throw new InvalidOperationException("Selected profile failure.");
+            }
+
             _selectedProfileId = profileId;
             return Task.CompletedTask;
         }
@@ -492,17 +789,22 @@ public sealed class ViewModelStateTests
 
     private sealed class FakeSecretVault : ISecretVault
     {
-        public ValueTask StoreAsync(ProfileSecretKey key, string secret, CancellationToken cancellationToken = default) =>
-            ValueTask.CompletedTask;
+        private readonly Dictionary<ProfileSecretKey, string> _secrets = [];
+
+        public ValueTask StoreAsync(ProfileSecretKey key, string secret, CancellationToken cancellationToken = default)
+        {
+            _secrets[key] = secret;
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask<string?> RetrieveAsync(ProfileSecretKey key, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<string?>(null);
+            ValueTask.FromResult(_secrets.GetValueOrDefault(key));
 
         public ValueTask<bool> ExistsAsync(ProfileSecretKey key, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(false);
+            ValueTask.FromResult(_secrets.ContainsKey(key));
 
         public ValueTask<bool> RemoveAsync(ProfileSecretKey key, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(false);
+            ValueTask.FromResult(_secrets.Remove(key));
     }
 
     private sealed class FakeBackupRepository(
@@ -513,10 +815,15 @@ public sealed class ViewModelStateTests
 
         public DeadLetterBackupSummary? Deleted { get; private set; }
 
+        public int ListCalls { get; private set; }
+
         public Task<IReadOnlyList<DeadLetterBackupSummary>> ListAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<DeadLetterBackupSummary>>(
+            CancellationToken cancellationToken = default)
+        {
+            ListCalls++;
+            return Task.FromResult<IReadOnlyList<DeadLetterBackupSummary>>(
                 Deleted is null ? [summary] : []);
+        }
 
         public Task<BrowsedMessage> LoadAsync(
             DeadLetterBackupSummary selected,
@@ -550,9 +857,22 @@ public sealed class ViewModelStateTests
 
         public bool FailNextConnection { get; set; }
 
+        public bool WaitForConnectionCancellation { get; set; }
+
+        public bool WaitForSnapshotCancellation { get; set; }
+
+        public TaskCompletionSource<bool> SnapshotStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int CancelledSnapshotCalls { get; private set; }
+
+        public TaskCompletionSource<bool>? ConnectionRelease { get; set; }
+
         public int ConnectCalls { get; private set; }
 
         public int TopologyCalls { get; private set; }
+
+        public int DisconnectCalls { get; private set; }
 
         public List<ProfileAccessMode> AccessModeChanges { get; } = [];
 
@@ -560,9 +880,19 @@ public sealed class ViewModelStateTests
 
         public Guid? ConnectedProfileId { get; private set; }
 
-        public Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
+        public ProfileAccessMode? ConnectedAccessMode { get; private set; }
+
+        public async Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
             ConnectCalls++;
+            if (ConnectionRelease is not null)
+            {
+                await ConnectionRelease.Task.WaitAsync(cancellationToken);
+            }
+            else if (WaitForConnectionCancellation)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
             if (FailNextConnection)
             {
                 FailNextConnection = false;
@@ -573,13 +903,15 @@ public sealed class ViewModelStateTests
 
             ConnectionState = WorkspaceConnectionState.Connected;
             ConnectedProfileId = profile.Id;
-            return Task.CompletedTask;
+            ConnectedAccessMode = profile.AccessMode;
         }
 
         public Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
+            DisconnectCalls++;
             ConnectionState = WorkspaceConnectionState.Disconnected;
             ConnectedProfileId = null;
+            ConnectedAccessMode = null;
             return Task.CompletedTask;
         }
 
@@ -588,6 +920,7 @@ public sealed class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             AccessModeChanges.Add(accessMode);
+            ConnectedAccessMode = accessMode;
             return Task.CompletedTask;
         }
 
@@ -652,14 +985,28 @@ public sealed class ViewModelStateTests
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 
-        public Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
+        public async Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
             DeadLetterMonitorScope scope,
             CancellationToken cancellationToken = default)
         {
+            if (WaitForSnapshotCancellation)
+            {
+                SnapshotStarted.TrySetResult(true);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    CancelledSnapshotCalls++;
+                    throw;
+                }
+            }
+
             var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
-            return Task.FromResult(Snapshots.TryGetValue(profileId, out var snapshot)
+            return Snapshots.TryGetValue(profileId, out var snapshot)
                 ? snapshot
-                : Snapshot(profileId));
+                : Snapshot(profileId);
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -669,12 +1016,23 @@ public sealed class ViewModelStateTests
     {
         public bool ConfirmResult { get; set; }
 
+        public ProfileEditorResult? EditResult { get; set; }
+
+        public TaskCompletionSource<ProfileEditorResult?>? PendingEdit { get; set; }
+
         public List<(string Title, string Message, bool IsDangerous, string? RequiredText)> Confirmations { get; } = [];
 
-        public Task<ProfileEditorResult?> EditProfileAsync(
+        public async Task<ProfileEditorResult?> EditProfileAsync(
             ServiceBusProfile? profile,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<ProfileEditorResult?>(null);
+            CancellationToken cancellationToken = default)
+        {
+            if (PendingEdit is not null)
+            {
+                return await PendingEdit.Task.WaitAsync(cancellationToken);
+            }
+
+            return EditResult;
+        }
 
         public Task<bool> ConfirmAsync(
             string title,

@@ -84,4 +84,26 @@ public sealed class ServiceBusModelTests
         Assert.Equal(2 * 1024 * 1024, browsed.BodySize);
         Assert.Throws<InvalidOperationException>(() => browsed.CreateDraft());
     }
+
+    [Fact]
+    public void PendingPurgeCounterRefresh_IsAdvisoryRatherThanADeletionFailure()
+    {
+        var source = new DeadLetterPurgeSourceResult(
+            ServiceBusEntityReference.Queue("orders"),
+            ServiceBusSubQueue.DeadLetter,
+            DeletedCount: 5,
+            VerificationPending: true);
+        var now = DateTimeOffset.UtcNow;
+        var result = new DeadLetterPurgeResult(
+            Guid.NewGuid(),
+            now,
+            now,
+            [source],
+            Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "purge"));
+
+        Assert.True(source.IsSuccessful);
+        Assert.False(result.HasFailures);
+        Assert.True(result.HasPendingVerification);
+        Assert.Equal(5, result.DeletedCount);
+    }
 }

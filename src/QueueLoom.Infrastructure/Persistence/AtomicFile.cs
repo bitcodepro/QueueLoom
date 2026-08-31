@@ -1,4 +1,7 @@
 using System.Text;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace QueueLoom.Infrastructure.Persistence;
 
@@ -64,6 +67,7 @@ internal static class AtomicFile
     {
         if (OperatingSystem.IsWindows())
         {
+            RestrictFileOnWindows(path);
             return;
         }
 
@@ -74,5 +78,54 @@ internal static class AtomicFile
         catch (PlatformNotSupportedException)
         {
         }
+    }
+
+    public static void RestrictDirectoryToCurrentUser(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            RestrictDirectoryOnWindows(path);
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(
+                path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RestrictFileOnWindows(string path)
+    {
+        var currentUser = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("The current Windows user SID is unavailable.");
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            currentUser,
+            FileSystemRights.FullControl,
+            AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RestrictDirectoryOnWindows(string path)
+    {
+        var currentUser = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("The current Windows user SID is unavailable.");
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            currentUser,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        new DirectoryInfo(path).SetAccessControl(security);
     }
 }
