@@ -19,10 +19,12 @@ public sealed class ProfileEditorViewModel : ObservableObject
     private string _clientId;
     private ProfileAccessMode _accessMode;
     private string _error = string.Empty;
+    public int EmulatorManagementPort { get; set; } = 5300;
 
     public ProfileEditorViewModel(ServiceBusProfile? existing)
     {
         _existing = existing;
+        EmulatorManagementPort = existing?.EmulatorManagementPort ?? 5300;
         _name = existing?.Name ?? string.Empty;
         _environment = existing?.Environment ?? EnvironmentKind.Development;
         _customEnvironmentName = existing?.CustomEnvironmentName ?? string.Empty;
@@ -206,7 +208,10 @@ public sealed class ProfileEditorViewModel : ObservableObject
             NullIfWhiteSpace(CustomEnvironmentName),
             normalizedNamespace,
             authentication,
-            Environment == EnvironmentKind.Production ? ProfileAccessMode.ReadOnly : AccessMode);
+            Environment == EnvironmentKind.Production ? ProfileAccessMode.ReadOnly : AccessMode)
+            { EmulatorManagementPort = EmulatorManagementPort };
+        if (EmulatorManagementPort is < 1 or > 65535)
+        { Error = "Emulator management port must be between 1 and 65535."; return false; }
         var validation = ProfileValidator.Validate(profile);
         if (!validation.IsValid)
         {

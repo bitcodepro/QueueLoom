@@ -1,0 +1,20 @@
+{
+  "UserConfig": {
+    "Namespaces": [{
+      "Name": "sbemulatorns",
+      "Queues": [
+        {"Name": "ql-orders", "Properties": {"MaxDeliveryCount": 3, "LockDuration": "PT1M", "DefaultMessageTimeToLive": "PT1H", "RequiresSession": false}},
+        {"Name": "ql-replay", "Properties": {"MaxDeliveryCount": 3, "LockDuration": "PT1M", "DefaultMessageTimeToLive": "PT1H", "RequiresSession": false}}
+      ],
+      "Topics": [{
+        "Name": "ql-events",
+        "Properties": {"DefaultMessageTimeToLive": "PT1H", "RequiresDuplicateDetection": false},
+        "Subscriptions": [
+          {"Name": "billing", "Properties": {"MaxDeliveryCount": 3, "LockDuration": "PT1M", "DefaultMessageTimeToLive": "PT1H", "RequiresSession": false}},
+          {"Name": "analytics", "Properties": {"MaxDeliveryCount": 3, "LockDuration": "PT1M", "DefaultMessageTimeToLive": "PT1H", "RequiresSession": false}}
+        ]
+      }]
+    }],
+    "Logging": {"Type": "Console"}
+  }
+}

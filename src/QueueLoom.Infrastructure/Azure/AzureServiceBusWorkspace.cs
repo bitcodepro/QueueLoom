@@ -13,7 +13,7 @@ using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Azure;
 
-public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
+public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
 {
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan InteractiveTryTimeout = TimeSpan.FromSeconds(15);
@@ -59,6 +59,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
     public WorkspaceConnectionState ConnectionState => _connectionState;
 
     public Guid? ConnectedProfileId => _profile?.Id;
+    public string? ConnectedNamespace => _profile?.FullyQualifiedNamespace;
 
     public async Task ConnectAsync(
         ServiceBusProfile profile,
@@ -75,6 +76,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
 
             ServiceBusClient? client = null;
             ServiceBusAdministrationClient? administration = null;
+            var isEmulator = false;
             try
             {
                 var clientOptions = CreateMessagingClientOptions();
@@ -91,6 +93,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                     }
 
                     var parsed = ServiceBusConnectionStringProperties.Parse(connectionString);
+                    isEmulator = EmulatorConnection.IsEmulator(connectionString);
                     if (!string.IsNullOrWhiteSpace(parsed.EntityPath))
                     {
                         throw new InvalidOperationException(
@@ -98,7 +101,8 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                     }
 
                     client = new ServiceBusClient(connectionString, clientOptions);
-                    administration = new ServiceBusAdministrationClient(connectionString, administrationOptions);
+                    administration = new ServiceBusAdministrationClient(
+                        EmulatorConnection.AdministrationConnectionString(connectionString, profile.EmulatorManagementPort), administrationOptions);
                 }
                 else
                 {
@@ -122,6 +126,7 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 await administration.GetNamespacePropertiesAsync(cancellationToken).ConfigureAwait(false);
 
                 _client = client;
+                _isEmulator = isEmulator;
                 _administration = administration;
                 _profile = profile;
                 _cachedTopology = null;
@@ -231,7 +236,8 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                 .OrderBy(topic => topic.Name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            return _cachedTopology = new ServiceBusTopology(_timeProvider.GetUtcNow(), queues, topics);
+            var topology = new ServiceBusTopology(_timeProvider.GetUtcNow(), queues, topics);
+            return _cachedTopology = _isEmulator ? await SampleEmulatorTopologyAsync(topology, cancellationToken).ConfigureAwait(false) : topology;
         }
         finally
         {
@@ -755,6 +761,9 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
                     progress,
                     cancellationToken)
                 .ConfigureAwait(false));
+            await AtomicFile.WriteTextAsync(Path.Combine(backupSession.RootDirectory, "purge-result.report"),
+                System.Text.Json.JsonSerializer.Serialize(new { profileId = profile.Id, startedAt,
+                    updatedAt = _timeProvider.GetUtcNow(), sources = results }), CancellationToken.None).ConfigureAwait(false);
         }
 
         _cachedTopology = null;
@@ -979,6 +988,12 @@ public sealed class AzureServiceBusWorkspace : IServiceBusWorkspace
         ServiceBusEntityReference source,
         CancellationToken cancellationToken)
     {
+        if (_isEmulator)
+        {
+            await EnsureSessionlessMessageSourceAsync(source, cancellationToken).ConfigureAwait(false);
+            return [CreateSnapshot(source, ServiceBusSubQueue.DeadLetter,
+                        await SampleEmulatorCountAsync(source, SubQueue.DeadLetter, cancellationToken).ConfigureAwait(false), null)];
+        }
         var administration = GetAdministrationClient();
         long deadLetters;
         long transferDeadLetters;

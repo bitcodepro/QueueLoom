@@ -1,0 +1,22 @@
+name: queueloom-lab
+services:
+  emulator:
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator@sha256:5a96d893b245031740f7d46e0fe5ff282d24b78c4b7d761dd57590f3f010a9b3
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:5300:5300"
+    volumes:
+      - ./config.json:/ServiceBus_Emulator/ConfigFiles/Config.json:ro
+    environment:
+      ACCEPT_EULA: "Y"
+      SQL_SERVER: sql
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:?Run Start-Lab.ps1 first}"
+      EMULATOR_HTTP_PORT: "5300"
+      SQL_WAIT_INTERVAL: "30"
+    depends_on:
+      - sql
+  sql:
+    image: mcr.microsoft.com/mssql/server@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:?Run Start-Lab.ps1 first}"

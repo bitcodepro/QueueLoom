@@ -14,7 +14,7 @@ using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
 
-public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
+public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDisposable
 {
     private static readonly Regex SensitiveValuePattern = new(
         @"\b(SharedAccessKey|SharedAccessSignature|sig|password|client_secret)\s*=\s*[^;\s&]+",
@@ -73,7 +73,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private Guid? _writeUnlockProfileId;
     private DateTimeOffset? _writeUnlockExpiresAt;
     private bool _isMonitoring;
-    private string _monitorScope = AllEnvironmentsMonitorScope;
+    private string _monitorScope = CurrentEnvironmentMonitorScope;
     private string _monitorTargetChoice = ExplorerMonitorTarget;
     private int _monitorIntervalSeconds = 60;
     private string _monitorStatus = "Monitor is stopped";
@@ -113,19 +113,23 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ISecretVault secretVault,
         IServiceBusWorkspace workspace,
         IUserDialogService dialogs,
-        IDeadLetterBackupRepository? backupRepository = null)
+        IDeadLetterBackupRepository? backupRepository = null,
+        IActivityJournal? activityJournal = null,
+        QueueLoom.Infrastructure.Persistence.BatchReplayStore? replayStore = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
         _workspace = workspace;
         _dialogs = dialogs;
         _backupRepository = backupRepository;
+        _activityJournal = activityJournal;
+        _replayStore = replayStore;
 
         Navigation =
         [
             new NavigationItem(nameof(NavigationPage.Overview), "01", "Overview"),
             new NavigationItem(nameof(NavigationPage.Explorer), "02", "Explorer"),
-            new NavigationItem(nameof(NavigationPage.DeadLetters), "03", "Dead letters"),
+            new NavigationItem(nameof(NavigationPage.DeadLetters), "03", "Messages / DLQ"),
             new NavigationItem(nameof(NavigationPage.Backups), "04", "Backups"),
             new NavigationItem(nameof(NavigationPage.Composer), "05", "Composer"),
             new NavigationItem(nameof(NavigationPage.Monitors), "06", "Monitors"),
@@ -178,7 +182,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
         BrowseSelectedTransferDeadLettersCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Peeking transfer DLQ", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.TransferDeadLetter, ct), token),
-            () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
+            () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && !UsesSampledCounts);
         BrowseDlqSourceCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { Count: > 0 });
@@ -218,6 +222,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             token => RunWorkspaceOperationAsync("Unlocking writes", UnlockWritesAsync, token, allowCancellation: false),
             () => !IsBusy && IsConnected && !CanWrite);
 
+        InitializeOperationsFeatures();
         RefreshDeadLetterEnvironmentFilters();
     }
 
@@ -248,7 +253,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<MessageBodyFormat> MessageBodyFormats { get; } = Enum.GetValues<MessageBodyFormat>();
 
     public IReadOnlyList<string> MonitorScopes { get; } =
-        [AllEnvironmentsMonitorScope, CurrentEnvironmentMonitorScope, SelectedSourceMonitorScope];
+        [CurrentEnvironmentMonitorScope, SelectedSourceMonitorScope];
 
     public IReadOnlyList<string> MonitorTargetChoices { get; } =
         [ExplorerMonitorTarget, DeadLettersMonitorTarget];
@@ -328,6 +333,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref _selectedProfile, value))
             {
+                RefreshDeadLetterEnvironmentFilters();
                 OnPropertyChanged(nameof(HasSelectedProfile));
                 OnPropertyChanged(nameof(SelectedProfileName));
                 OnPropertyChanged(nameof(IsSelectedProfileConnected));
@@ -364,8 +370,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         get => _selectedDeadLetterEnvironmentFilter;
         set
         {
-            if (value is not null && SetProperty(ref _selectedDeadLetterEnvironmentFilter, value))
+            if (SetProperty(ref _selectedDeadLetterEnvironmentFilter, value))
             {
+                Messages.Clear();
+                SelectedMessage = null;
+                ResetBrowsePaging();
                 ApplyDeadLetterEnvironmentFilter();
                 OnPropertyChanged(nameof(CanPurgeEnvironmentDeadLetters));
                 NotifyCommandStates();
@@ -821,6 +830,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     {
         await RunOperationAsync("Loading environments", async token =>
         {
+            LoadActivityHistory();
             await ReloadProfilesAsync(token).ConfigureAwait(true);
             StatusText = Profiles.Count == 0
                 ? "Add your first environment to begin"
@@ -1070,6 +1080,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     {
         var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
         await ConnectProfileAsync(selected, selected.Profile, loadTopology: true, cancellationToken).ConfigureAwait(true);
+        SelectedDeadLetterEnvironmentFilter = DeadLetterEnvironmentFilters
+            .FirstOrDefault(filter => filter.ProfileId == selected.Id);
         await _profileRepository.SetSelectedProfileIdAsync(selected.Id, cancellationToken).ConfigureAwait(true);
         StatusText = $"Connected to {selected.Name}";
         AddActivity("Success", "Connected", $"{selected.Name} · {ConnectedNamespace}");
@@ -1273,14 +1285,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshDeadLetterEnvironmentFilters()
     {
-        var selectedProfileId = SelectedDeadLetterEnvironmentFilter?.ProfileId;
+        var selectedProfileId = SelectedProfile?.Id;
 
         DeadLetterEnvironmentFilters.Clear();
-        DeadLetterEnvironmentFilters.Add(new DeadLetterEnvironmentFilterItemViewModel(
-            null,
-            "All environments",
-            "ALL",
-            "#91A5BD"));
         foreach (var profile in Profiles)
         {
             DeadLetterEnvironmentFilters.Add(new DeadLetterEnvironmentFilterItemViewModel(
@@ -1292,14 +1299,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         SelectedDeadLetterEnvironmentFilter = DeadLetterEnvironmentFilters
             .FirstOrDefault(filter => filter.ProfileId == selectedProfileId)
-            ?? DeadLetterEnvironmentFilters[0];
+            ?? DeadLetterEnvironmentFilters.FirstOrDefault();
     }
 
     private void ApplyDeadLetterEnvironmentFilter()
     {
         var filter = SelectedDeadLetterEnvironmentFilter;
         FilteredDeadLetterSources.Clear();
-        foreach (var source in DeadLetterSources.Where(source => filter?.Matches(source) != false))
+        foreach (var source in DeadLetterSources.Where(source => filter?.Matches(source) == true))
         {
             FilteredDeadLetterSources.Add(source);
         }
@@ -1318,6 +1325,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SearchDeadLettersAsync(CancellationToken cancellationToken)
     {
+        ResetBrowsePaging();
         var query = DeadLetterSearchQuery.Trim();
         if (query.Length == 0)
         {
@@ -1328,7 +1336,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ?? throw new InvalidOperationException("Select an environment filter first.");
         var profilesToSearch = filter.ProfileId is { } profileId
             ? Profiles.Where(profile => profile.Id == profileId).ToArray()
-            : Profiles.ToArray();
+            : [];
         if (profilesToSearch.Length == 0)
         {
             throw new InvalidOperationException("The selected search scope contains no environments.");
@@ -1533,7 +1541,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             AddDeadLetterSearchTargets(targets, subscription.Reference, subscription.Runtime.MessageCounts);
         }
-        return targets.ToArray();
+        return targets.Where(target => !topology.UsesSampledCounts || target.SubQueue != ServiceBusSubQueue.TransferDeadLetter).ToArray();
     }
 
     private static void AddDeadLetterSearchTargets(
@@ -1552,6 +1560,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void ClearDeadLetterSearch()
     {
+        ResetBrowsePaging();
         DeadLetterSearchQuery = string.Empty;
         Messages.Clear();
         SelectedMessage = null;
@@ -1716,6 +1725,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         bool replaceExisting,
         ServiceBusEntityReference? replaceEntity = null)
     {
+        _hasDlqScan = true;
+        OnPropertyChanged(nameof(GlobalDlqDisplay));
         var selectedProfileId = SelectedDlqSource?.ProfileId;
         var selectedEntity = SelectedDlqSource?.Entity;
         var selectedSubQueue = SelectedDlqSource?.Snapshot.SubQueue;
@@ -1931,6 +1942,24 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             .Where(item => item.ProfileId == connectedProfileId &&
                            targetKeys.Contains((item.Entity, item.Snapshot.SubQueue)))
             .Sum(item => item.Count);
+        if (!HasValidPurgeLimit)
+            throw new InvalidOperationException("Choose a purge limit between 1 and 10,000 per source.");
+        var limit = (int)PurgeLimitPerSource!.Value;
+        var profile = _connectedProfile ?? throw new InvalidOperationException("Connect first.");
+        var scope = string.Join("\n", targets.Take(20).Select(t => $"• {t.Source.Path} / {t.SubQueue}"));
+        if (targets.Count > 20) scope += $"\n… and {targets.Count - 20} additional sources";
+        var confirmed = await _dialogs.ConfirmAsync("Review backup and purge",
+            $"Environment: {profile.Name}\nNamespace: {profile.FullyQualifiedNamespace}\n" +
+            $"Sources: {targets.Count}\nKnown messages: {knownCount:N0} (latest scan; may be stale)\n" +
+            $"Hard limit: {limit:N0} per source\nBackup folder: {BackupRootDirectory}\n\n{scope}\n\n" +
+            "This receives and permanently deletes messages after backup. New arrivals can be included up to the limit. " +
+            "Cancellation stops future work; completed deletions are not undone.",
+            isDangerous: true, requiredText: profile.Environment == EnvironmentKind.Production ? profile.Name : null,
+            cancellationToken: cancellationToken).ConfigureAwait(true);
+        if (!confirmed) { StatusText = "Purge cancelled before any messages changed"; return; }
+        if (!CanWrite || ConnectedProfileId != connectedProfileId)
+            throw new InvalidOperationException("Write access or environment changed. Review the purge again.");
+        RecordOperationIntent("Purge started", $"{targetDescription} · {targets.Count} sources · limit {limit} per source", null);
         StatusText =
             $"Backing up and purging {knownCount:N0} known messages from {targetDescription}...";
 
@@ -1972,7 +2001,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         try
         {
             result = await _workspace.PurgeDeadLettersAsync(
-                    new DeadLetterPurgeRequest(targets, batchSize: 20),
+                    new DeadLetterPurgeRequest(targets, batchSize: 20, maximumMessagesPerSubQueue: limit),
                     purgeCancellation.Token,
                     progress)
                 .ConfigureAwait(true);
@@ -2051,30 +2080,20 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 .ConfigureAwait(true);
         }
 
-        var messages = await _workspace.BrowseMessagesAsync(
-                new BrowseMessagesRequest(source, subQueue, loadAll: true),
-                cancellationToken)
-            .ConfigureAwait(true);
+        ResetBrowsePaging();
+        _browseProfile = profile;
+        _browseSource = source;
+        _browseSubQueue = subQueue;
         Messages.Clear();
-        foreach (var message in messages
-                     .OrderBy(message => message.EnqueuedAt ?? DateTimeOffset.MaxValue)
-                     .ThenBy(message => message.SequenceNumber))
-        {
-            Messages.Add(new MessageItemViewModel(
-                message,
-                profile.Id,
-                profile.Name,
-                profile.EnvironmentLabel,
-                profile.EnvironmentColor));
-        }
-        SelectedMessage = Messages.FirstOrDefault();
+        SelectedMessage = null;
+        await LoadBrowsePageAsync(cancellationToken).ConfigureAwait(true);
         MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
         NavigateTo(NavigationPage.DeadLetters);
-        StatusText = $"Peeked {messages.Count:N0} messages without acquiring locks";
+        StatusText = $"Peeked {Messages.Count:N0} messages without acquiring locks";
         AddActivity(
             "Info",
             "Peek",
-            $"{source.DisplayName} · {FormatSubQueue(subQueue)} · {messages.Count:N0} messages",
+            $"{source.DisplayName} · {FormatSubQueue(subQueue)} · {Messages.Count:N0} messages",
             source);
     }
 
@@ -2980,6 +2999,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         bool allowCancellation = true)
     {
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _operationId = Guid.NewGuid();
         _currentOperationCancellation = allowCancellation ? operationCancellation : null;
         IsBusy = true;
         NotifyCurrentOperationCancellationState();
@@ -2992,6 +3012,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
         {
             StatusText = "Operation cancelled";
+            AddActivity("Warning", operation, "Cancelled; completed changes are retained. Inspect the saved operation result.");
         }
         catch (Exception exception)
         {
@@ -3059,6 +3080,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void ClearConnectedState()
     {
+        ResetBrowsePaging();
         _connectedProfile = null;
         CancelWriteUnlockTimerWithoutWaiting();
         _topology = null;
@@ -3195,6 +3217,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void NotifyStatistics()
     {
+        OnPropertyChanged(nameof(GlobalDlqDisplay));
+        OnPropertyChanged(nameof(UsesSampledCounts));
         OnPropertyChanged(nameof(QueueCount));
         OnPropertyChanged(nameof(TopicCount));
         OnPropertyChanged(nameof(SubscriptionCount));
@@ -3242,6 +3266,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         string details,
         ServiceBusEntityReference? source = null)
     {
+        PersistActivity(level, action, details, source);
         Activity.Insert(0, new ActivityItemViewModel(DateTimeOffset.UtcNow, level, action, details, source));
         while (Activity.Count > 500)
         {

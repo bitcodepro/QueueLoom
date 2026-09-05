@@ -10,6 +10,7 @@ public sealed record ServiceBusEntityReference
     private const string DeadLetterSegment = "$DeadLetterQueue";
     private const string TransferDeadLetterSegment = "$Transfer/$DeadLetterQueue";
 
+    [System.Text.Json.Serialization.JsonConstructor]
     private ServiceBusEntityReference(
         ServiceBusEntityKind kind,
         string name,

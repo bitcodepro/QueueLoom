@@ -8,13 +8,12 @@ namespace QueueLoom.Tests.Infrastructure;
 public sealed class QueueLoomPathsTests
 {
     [Fact]
-    public void CreateDefault_PlacesBackupsNextToRunningExecutable()
+    public void CreateDefault_UsesPersistentStorageUnlessLegacyBackupsExist()
     {
         var paths = QueueLoomPaths.CreateDefault();
 
-        Assert.Equal(
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups")),
-            paths.BackupsDirectory);
+        var legacy = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
+        Assert.Equal(Directory.Exists(legacy) ? legacy : Path.Combine(paths.RootDirectory, "backups"), paths.BackupsDirectory);
         Assert.NotEqual(paths.RootDirectory, paths.BackupsDirectory);
     }
 

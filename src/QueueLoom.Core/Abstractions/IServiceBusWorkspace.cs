@@ -9,6 +9,7 @@ public interface IServiceBusWorkspace : IAsyncDisposable
     WorkspaceConnectionState ConnectionState { get; }
 
     Guid? ConnectedProfileId { get; }
+    string? ConnectedNamespace => null;
 
     Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default);
 

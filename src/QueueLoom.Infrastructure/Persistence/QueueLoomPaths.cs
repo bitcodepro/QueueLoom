@@ -18,10 +18,16 @@ public sealed record QueueLoomPaths(
             throw new InvalidOperationException("The operating system did not provide a local application-data directory.");
         }
 
-        var persistentPaths = ForRoot(Path.Combine(localData, "QueueLoom"));
+        var rootOverride = Environment.GetEnvironmentVariable("QUEUELOOM_DATA_DIRECTORY");
+        var persistentPaths = ForRoot(string.IsNullOrWhiteSpace(rootOverride) ? Path.Combine(localData, "QueueLoom") : rootOverride);
+        var backupOverride = Environment.GetEnvironmentVariable("QUEUELOOM_BACKUP_DIRECTORY");
+        var legacyBackups = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
         return persistentPaths with
         {
-            BackupsDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"))
+            // Keep existing portable backups visible, without moving or deleting user data.
+            BackupsDirectory = !string.IsNullOrWhiteSpace(backupOverride) ? Path.GetFullPath(backupOverride) :
+                string.IsNullOrWhiteSpace(rootOverride) && Directory.Exists(legacyBackups)
+                    ? legacyBackups : persistentPaths.BackupsDirectory
         };
     }
 
