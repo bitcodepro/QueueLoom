@@ -12,6 +12,8 @@ public sealed record ServiceBusProfile(
     AuthenticationSettings Authentication,
     ProfileAccessMode AccessMode = ProfileAccessMode.ReadOnly)
 {
+    public int EmulatorManagementPort { get; init; } = 5300;
+
     public string EnvironmentDisplayName => Environment switch
     {
         EnvironmentKind.Development => "Development",

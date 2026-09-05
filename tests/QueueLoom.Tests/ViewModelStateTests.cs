@@ -9,7 +9,7 @@ using System.Text;
 
 namespace QueueLoom.Tests;
 
-public sealed class ViewModelStateTests
+public sealed partial class ViewModelStateTests
 {
     [Fact]
     public async Task EmptyProfileList_UsesAddEnvironmentAsHeaderAction()
@@ -409,11 +409,12 @@ public sealed class ViewModelStateTests
         await viewModel.InitializeAsync();
         await viewModel.ScanAllEnvironmentsCommand.ExecuteAsync();
 
-        Assert.Equal(3, viewModel.DeadLetterEnvironmentFilters.Count);
-        Assert.Equal(3, viewModel.VisibleDlqSourceRowCount);
-        Assert.Equal(15, viewModel.VisibleDlqSourceCount);
+        Assert.Equal(2, viewModel.DeadLetterEnvironmentFilters.Count);
+        Assert.Equal(dev.Id, viewModel.SelectedDeadLetterEnvironmentFilter?.ProfileId);
+        Assert.Equal(2, viewModel.VisibleDlqSourceRowCount);
+        Assert.Equal(8, viewModel.VisibleDlqSourceCount);
         Assert.Equal(15, viewModel.GlobalDlqSourceCount);
-        Assert.Equal(["jobs", "billing", "alerts"], viewModel.FilteredDeadLetterSources.Select(item => item.EntityName));
+        Assert.Equal(["jobs", "billing"], viewModel.FilteredDeadLetterSources.Select(item => item.EntityName));
 
         var originalSelection = viewModel.FilteredDeadLetterSources[0];
         viewModel.SelectedDlqSource = originalSelection;
@@ -428,10 +429,10 @@ public sealed class ViewModelStateTests
 
         viewModel.SelectedDeadLetterEnvironmentFilter = Assert.Single(
             viewModel.DeadLetterEnvironmentFilters,
-            item => item.IsAllEnvironments);
+            item => item.ProfileId == dev.Id);
 
         Assert.Same(originalSelection, viewModel.SelectedDlqSource);
-        Assert.Equal(15, viewModel.VisibleDlqSourceCount);
+        Assert.Equal(8, viewModel.VisibleDlqSourceCount);
     }
 
     [Fact]
@@ -476,7 +477,7 @@ public sealed class ViewModelStateTests
     }
 
     [Fact]
-    public async Task BrowseDeadLetters_RequestsAllMessagesAndSortsThemOldestFirst()
+    public async Task BrowseDeadLetters_RequestsBoundedPageInSequenceOrder()
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development);
         var source = ServiceBusEntityReference.Queue("orders");
@@ -503,7 +504,8 @@ public sealed class ViewModelStateTests
         await viewModel.BrowseDlqSourceCommand.ExecuteAsync();
 
         var request = Assert.Single(workspace.BrowseRequests);
-        Assert.True(request.LoadAll);
+        Assert.False(request.LoadAll);
+        Assert.Equal(100, request.MaxMessages);
         Assert.Equal([1L, 2L, 3L], viewModel.Messages.Select(message => message.SequenceNumber));
     }
 
@@ -549,7 +551,8 @@ public sealed class ViewModelStateTests
         Assert.Equal(20, workspace.PurgeRequests[0].BatchSize);
         Assert.All(workspace.PurgeRequests[0].Targets, target =>
             Assert.Equal(ServiceBusSubQueue.DeadLetter, target.SubQueue));
-        Assert.Empty(dialogs.Confirmations);
+        Assert.Single(dialogs.Confirmations);
+        Assert.Equal(1000, workspace.PurgeRequests[0].MaximumMessagesPerSubQueue);
 
         await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
         viewModel.SelectedDlqSource = Assert.Single(
@@ -566,7 +569,7 @@ public sealed class ViewModelStateTests
             source => source.Entity == queue.Reference);
         await viewModel.PurgeSelectedDeadLettersCommand.ExecuteAsync();
         Assert.Equal([queue.Reference], workspace.PurgeRequests[2].Sources);
-        Assert.Empty(dialogs.Confirmations);
+        Assert.Equal(3, dialogs.Confirmations.Count);
     }
 
     [Fact]
@@ -595,15 +598,20 @@ public sealed class ViewModelStateTests
         await viewModel.SearchDeadLettersCommand.ExecuteAsync();
 
         Assert.Equal(dev.Id, viewModel.ConnectedProfileId);
-        Assert.Equal([test.Id, dev.Id], viewModel.Messages.Select(message => message.ProfileId));
-        Assert.Equal([1L, 2L], viewModel.Messages.Select(message => message.SequenceNumber));
+        Assert.Equal([dev.Id], viewModel.Messages.Select(message => message.ProfileId));
+        Assert.Equal([2L], viewModel.Messages.Select(message => message.SequenceNumber));
         Assert.All(workspace.SearchRequests, request => Assert.Equal("correlation-42", request.Query));
         Assert.Contains("oldest first", viewModel.DeadLetterSearchStatus, StringComparison.OrdinalIgnoreCase);
 
         viewModel.SelectedMessage = viewModel.Messages[0];
-        Assert.False(viewModel.CanOpenSelectedMessageAsDraft);
-        viewModel.SelectedMessage = viewModel.Messages[1];
         Assert.True(viewModel.CanOpenSelectedMessageAsDraft);
+        viewModel.SelectedDeadLetterEnvironmentFilter = Assert.Single(viewModel.DeadLetterEnvironmentFilters, item => item.ProfileId == test.Id);
+        Assert.Empty(viewModel.Messages);
+        await viewModel.SearchDeadLettersCommand.ExecuteAsync();
+        Assert.Equal([test.Id], viewModel.Messages.Select(message => message.ProfileId));
+        Assert.Equal(dev.Id, viewModel.ConnectedProfileId);
+        viewModel.SelectedMessage = viewModel.Messages[0];
+        Assert.False(viewModel.CanOpenSelectedMessageAsDraft);
     }
 
     [Fact]
@@ -850,6 +858,8 @@ public sealed class ViewModelStateTests
         public List<BrowseMessagesRequest> BrowseRequests { get; } = [];
 
         public IReadOnlyList<BrowsedMessage> BrowseMessages { get; set; } = [];
+        public List<SendMessageRequest> SentMessages { get; } = [];
+        public Action? OnSend { get; set; }
 
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
@@ -937,7 +947,9 @@ public sealed class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             BrowseRequests.Add(request);
-            return Task.FromResult(BrowseMessages);
+            return Task.FromResult<IReadOnlyList<BrowsedMessage>>(BrowseMessages
+                .Where(m => m.SequenceNumber >= (request.FromSequenceNumber ?? 0))
+                .Take(request.MaxMessages).ToArray());
         }
 
         public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
@@ -960,8 +972,12 @@ public sealed class ViewModelStateTests
                     matches)]));
         }
 
-        public Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+        public Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default)
+        {
+            SentMessages.Add(request);
+            OnSend?.Invoke();
+            return Task.CompletedTask;
+        }
 
         public Task ResubmitDeadLetterAsync(
             ResubmitDeadLetterRequest request,

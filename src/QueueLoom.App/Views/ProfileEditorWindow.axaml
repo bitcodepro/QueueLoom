@@ -54,6 +54,13 @@
                      PasswordChar="●"
                      RevealPassword="False"
                      PlaceholderText="Endpoint=sb://…;SharedAccessKeyName=…" />
+            <TextBlock Text="Local emulator: include UseDevelopmentEmulator=true in the connection string."
+                       Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <TextBlock Text="Emulator management port" VerticalAlignment="Center" />
+              <NumericUpDown Value="{Binding EmulatorManagementPort}" Minimum="1" Maximum="65535" Width="120"
+                             AutomationProperties.Name="Emulator management port" />
+            </StackPanel>
           </StackPanel>
         </Border>
 

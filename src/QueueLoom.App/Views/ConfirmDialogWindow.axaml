@@ -4,14 +4,17 @@
         x:Class="QueueLoom.App.Views.ConfirmDialogWindow"
         x:DataType="vm:ConfirmDialogViewModel"
         Title="{Binding Title}"
-        Width="480"
+        Width="620"
+        MaxHeight="740"
         SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
-        CanResize="False">
+        CanResize="True">
   <StackPanel Margin="26" Spacing="18">
     <StackPanel Spacing="8">
       <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" />
-      <TextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" MaxWidth="420" />
+      <ScrollViewer MaxHeight="420" VerticalScrollBarVisibility="Auto">
+        <TextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" MaxWidth="550" />
+      </ScrollViewer>
     </StackPanel>
 
     <StackPanel Spacing="7" IsVisible="{Binding RequiresText}">

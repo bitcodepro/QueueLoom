@@ -13,6 +13,7 @@ public sealed record ServiceBusTopology
     }
 
     public DateTimeOffset FetchedAt { get; }
+    public bool UsesSampledCounts { get; init; }
 
     public IReadOnlyList<ServiceBusQueue> Queues { get; }
 

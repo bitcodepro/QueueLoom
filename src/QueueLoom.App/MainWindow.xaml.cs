@@ -40,7 +40,9 @@ public sealed partial class MainWindow : Window
             _secretVault,
             workspace,
             _dialogService,
-            new JsonDeadLetterBackupRepository(paths));
+            new JsonDeadLetterBackupRepository(paths),
+            new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")),
+            new BatchReplayStore(Path.Combine(paths.RootDirectory, "replay")));
 
         DataContext = _viewModel;
         Opened += OnOpened;

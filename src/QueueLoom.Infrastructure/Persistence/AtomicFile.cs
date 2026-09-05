@@ -19,13 +19,13 @@ internal static class AtomicFile
         var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
         try
         {
-            await File.WriteAllTextAsync(
-                temporaryPath,
-                contents,
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                cancellationToken).ConfigureAwait(false);
-
-            RestrictToCurrentUser(temporaryPath);
+            await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                64 * 1024, FileOptions.Asynchronous))
+            {
+                RestrictToCurrentUser(temporaryPath);
+                await stream.WriteAsync(new UTF8Encoding(false).GetBytes(contents), cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
             File.Move(temporaryPath, path, overwrite: true);
         }
         finally

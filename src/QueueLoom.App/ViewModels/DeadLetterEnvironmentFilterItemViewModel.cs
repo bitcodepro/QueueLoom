@@ -17,5 +17,5 @@ public sealed class DeadLetterEnvironmentFilterItemViewModel(
     public bool IsAllEnvironments => ProfileId is null;
 
     public bool Matches(DlqSourceItemViewModel source) =>
-        IsAllEnvironments || source.ProfileId == ProfileId;
+        ProfileId is not null && source.ProfileId == ProfileId;
 }

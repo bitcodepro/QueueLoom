@@ -7,9 +7,15 @@
         Title="QueueLoom — Azure Service Bus Operations Console"
         Width="1360"
         Height="780"
-        MinWidth="900"
+        MinWidth="1100"
         MinHeight="540"
         WindowStartupLocation="CenterScreen">
+  <Window.KeyBindings>
+    <KeyBinding Gesture="Ctrl+R" Command="{Binding RefreshTopologyCommand}" />
+    <KeyBinding Gesture="Ctrl+N" Command="{Binding NewMessageCommand}" />
+    <KeyBinding Gesture="Ctrl+Shift+F" Command="{Binding FormatJsonCommand}" />
+    <KeyBinding Gesture="Escape" Command="{Binding CancelCurrentOperationCommand}" />
+  </Window.KeyBindings>
   <Grid ColumnDefinitions="196,*" Background="{DynamicResource AppBackgroundBrush}">
     <!-- Navigation rail -->
     <Border Grid.Column="0"
@@ -25,7 +31,7 @@
             </Border>
             <StackPanel VerticalAlignment="Center" Spacing="0">
               <TextBlock Text="QueueLoom" FontSize="19" FontWeight="SemiBold" />
-              <TextBlock Text="SERVICE BUS CONSOLE" Classes="eyebrow" />
+              <TextBlock Text="SERVICE BUS" Classes="eyebrow" />
             </StackPanel>
           </StackPanel>
         </StackPanel>
@@ -77,10 +83,6 @@
                                TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
                     <TextBlock Text="{Binding EnvironmentLabel}" Classes="muted" FontSize="11" />
                   </StackPanel>
-                  <TextBlock Grid.Column="3" Text="CONNECTED" Classes="eyebrow"
-                             Foreground="{DynamicResource SuccessBrush}"
-                             VerticalAlignment="Center" Margin="8,0,0,0"
-                             IsVisible="{Binding IsConnected}" />
                 </Grid>
               </DataTemplate>
             </ComboBox.ItemTemplate>
@@ -108,23 +110,29 @@
       </Border>
 
       <!-- Page content -->
-      <Grid Grid.Row="1" RowDefinitions="Auto,*">
+      <Grid Grid.Row="1" RowDefinitions="Auto,Auto,*">
         <Border Grid.Row="0" Margin="24,16,24,0" Padding="13,10" CornerRadius="9"
                 Background="{DynamicResource DangerSoftBrush}" BorderBrush="#6C2A3B" BorderThickness="1"
                 IsVisible="{Binding HasError}">
           <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
         </Border>
 
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="2">
           <!-- Overview -->
           <ScrollViewer IsVisible="{Binding IsOverviewVisible}">
-            <StackPanel Margin="26,24,26,30" Spacing="22">
+            <StackPanel Margin="26,14,26,20" Spacing="22">
               <Grid ColumnDefinitions="*,Auto">
-                  <TextBlock Text="Operations overview" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="1" Text="{Binding LastUpdatedText}" Classes="muted" VerticalAlignment="Center" />
               </Grid>
 
-              <Grid ColumnDefinitions="*,12,*,12,*,12,*,12,*">
+              <Border Classes="card" IsVisible="{Binding !IsConnected}">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Connect an environment to see message counts" FontSize="18" FontWeight="SemiBold" />
+                  <TextBlock Text="Choose an environment above, or add your local emulator / Azure namespace." Classes="muted" />
+                  <Button Content="{Binding EnvironmentActionLabel}" Command="{Binding EnvironmentActionCommand}" Classes="primary" HorizontalAlignment="Left" />
+                </StackPanel>
+              </Border>
+              <Grid ColumnDefinitions="*,12,*,12,*,12,*,12,*" IsVisible="{Binding IsConnected}">
                 <Border Grid.Column="0" Classes="card">
                   <StackPanel Spacing="9"><TextBlock Text="QUEUES" Classes="eyebrow"/><TextBlock Text="{Binding QueueCount}" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="Namespace entities" Classes="muted"/></StackPanel>
                 </Border>
@@ -151,9 +159,9 @@
                     </StackPanel>
                     <Border Height="1" Background="{DynamicResource HairlineBrush}" />
                     <Grid ColumnDefinitions="*,*,*">
-                      <StackPanel><TextBlock Text="Authentication" Classes="eyebrow"/><TextBlock Text="{Binding ConnectedAuthenticationLabel}" Margin="0,5,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="1"><TextBlock Text="Browse mode" Classes="eyebrow"/><TextBlock Text="Non-destructive Peek" Margin="0,5,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="2"><TextBlock Text="Writes" Classes="eyebrow"/><TextBlock Text="{Binding WriteAccessLabel}" Foreground="{Binding WriteAccessColor}" Margin="0,5,0,0"/></StackPanel>
+                      <StackPanel><TextBlock Text="Authentication" Classes="eyebrow"/><TextBlock Text="{Binding ConnectedAuthenticationLabel}" Margin="0,5,8,0" TextWrapping="Wrap"/></StackPanel>
+                      <StackPanel Grid.Column="1"><TextBlock Text="Browse mode" Classes="eyebrow"/><TextBlock Text="Non-destructive Peek" Margin="0,5,8,0" TextWrapping="Wrap"/></StackPanel>
+                      <StackPanel Grid.Column="2"><TextBlock Text="Writes" Classes="eyebrow"/><TextBlock Text="{Binding WriteAccessLabel}" Foreground="{Binding WriteAccessColor}" Margin="0,5,8,0" TextWrapping="Wrap"/></StackPanel>
                     </Grid>
                     <StackPanel Orientation="Horizontal" Spacing="10">
                       <Button Content="Refresh topology" Classes="quiet" Command="{Binding RefreshTopologyCommand}" />
@@ -164,13 +172,13 @@
 
                 <Border Grid.Column="2" Classes="card" Background="#101B2B">
                   <StackPanel Spacing="14">
-                    <TextBlock Text="Global DLQ radar" FontSize="19" FontWeight="SemiBold" />
-                    <TextBlock Text="Enumerates counters in every saved environment. It never receives, locks or changes a message."
+                    <TextBlock Text="DLQ scan results" FontSize="19" FontWeight="SemiBold" />
+                    <TextBlock Text="Known results from scanned environments. Azure uses counters; local emulators use bounded Peek. Messages are never settled by scanning."
                                Classes="muted" TextWrapping="Wrap" />
-                    <TextBlock Text="{Binding GlobalDlqSourceCount}" FontSize="40" FontWeight="SemiBold"
+                    <TextBlock Text="{Binding GlobalDlqDisplay}" FontSize="40" FontWeight="SemiBold"
                                Foreground="{DynamicResource WarningBrush}" />
                     <TextBlock Text="messages found by the latest scan" Classes="muted" />
-                    <Button Content="Scan all environments" Classes="primary" Command="{Binding ScanAllEnvironmentsCommand}" HorizontalAlignment="Left" />
+                    <Button Content="Scan current environment" Classes="primary" Command="{Binding ScanCurrentEnvironmentCommand}" HorizontalAlignment="Left" />
                   </StackPanel>
                 </Border>
               </Grid>
@@ -179,10 +187,9 @@
           </ScrollViewer>
 
           <!-- Explorer -->
-          <Grid IsVisible="{Binding IsExplorerVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+          <Grid IsVisible="{Binding IsExplorerVisible}" Margin="26,14,26,18" RowDefinitions="Auto,16,*">
             <Grid Grid.Row="0" RowDefinitions="Auto,10,Auto">
               <StackPanel Spacing="5">
-                <TextBlock Text="Namespace explorer" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Text="Queues, topics, subscriptions and live runtime counters." Classes="muted" />
                 <TextBlock x:Name="ExplorerCopyStatus" Text="" Classes="muted" FontSize="11"
                            TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
@@ -193,15 +200,17 @@
                         ToolTip.Tip="Reload queues, topics, subscriptions, and runtime counters" />
                 <Button Grid.Column="4" Content="View active" Classes="quiet" Command="{Binding BrowseSelectedActiveCommand}"
                         ToolTip.Tip="Non-destructively view active messages in the selected queue or subscription" />
-                <Button Grid.Column="6" Content="View DLQ" Classes="danger" Command="{Binding BrowseSelectedDeadLettersCommand}"
-                        ToolTip.Tip="View every message in the selected dead-letter queue without locking it" />
-                <Button Grid.Column="8" Content="Transfer DLQ" Classes="danger" Command="{Binding BrowseSelectedTransferDeadLettersCommand}"
+                <Button Grid.Column="6" Content="View DLQ" Classes="quiet" Command="{Binding BrowseSelectedDeadLettersCommand}"
+                        ToolTip.Tip="Peek 100 messages without locking them; load more in Messages" />
+                <Button Grid.Column="8" Content="Transfer DLQ" Classes="quiet" Command="{Binding BrowseSelectedTransferDeadLettersCommand}"
                         ToolTip.Tip="View messages in the selected transfer dead-letter queue" />
               </Grid>
             </Grid>
 
             <Border Grid.Row="2" Classes="card" Padding="0" ClipToBounds="True">
               <Grid RowDefinitions="44,*">
+                <TextBlock Grid.Row="1" Text="Connect and refresh the namespace, or adjust the entity filter." IsVisible="{Binding !HasEntities}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" Classes="muted" TextWrapping="Wrap" Margin="18" />
                 <Border Background="#14243A" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1" Padding="16,0">
                   <Grid ColumnDefinitions="104,*,72,60,52,72,88">
                     <TextBlock Text="TYPE" Classes="eyebrow" VerticalAlignment="Center" />
@@ -247,8 +256,8 @@
                                    ToolTip.Tip="{Binding StatusLabel}" />
                         <TextBlock Grid.Column="3" Text="{Binding Active}" VerticalAlignment="Center" HorizontalAlignment="Right" />
                         <TextBlock Grid.Column="4" Text="{Binding DeadLetters}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource DangerBrush}" />
-                        <TextBlock Grid.Column="5" Text="{Binding TransferDeadLetters}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource WarningBrush}" />
-                        <TextBlock Grid.Column="6" Text="{Binding Scheduled}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="5" Text="{Binding TransferDeadLettersDisplay}" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="{DynamicResource WarningBrush}" />
+                        <TextBlock Grid.Column="6" Text="{Binding ScheduledDisplay}" VerticalAlignment="Center" HorizontalAlignment="Right" />
                       </Grid>
                     </DataTemplate>
                   </ListBox.ItemTemplate>
@@ -258,10 +267,9 @@
           </Grid>
 
           <!-- Dead letters and message inspector -->
-          <Grid IsVisible="{Binding IsDeadLettersVisible}" Margin="26,22,26,24" RowDefinitions="Auto,12,Auto,16,*">
+          <Grid IsVisible="{Binding IsDeadLettersVisible}" Margin="26,14,26,18" RowDefinitions="Auto,12,Auto,16,*">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="5">
-                <TextBlock Text="Dead letter inbox" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Text="{Binding MessageListTitle}" Classes="muted" />
                 <TextBlock x:Name="DeadLetterCopyStatus" Text=""
                            Classes="muted" FontSize="11" TextWrapping="Wrap"
@@ -269,7 +277,6 @@
               </StackPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
                 <Button Content="Scan current" Classes="quiet" Command="{Binding ScanCurrentEnvironmentCommand}" />
-                <Button Content="Scan every environment" Classes="primary" Command="{Binding ScanAllEnvironmentsCommand}" />
               </StackPanel>
             </Grid>
 
@@ -290,6 +297,7 @@
 
             <Grid Grid.Row="4" ColumnDefinitions="300,6,*">
               <Border Grid.Column="0" Classes="card" Padding="10" MinWidth="220">
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                 <Grid RowDefinitions="Auto,8,Auto,8,*,Auto">
                   <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="6,4">
                     <TextBlock Text="Sources" FontWeight="SemiBold" />
@@ -315,7 +323,7 @@
                       </DataTemplate>
                     </ComboBox.ItemTemplate>
                   </ComboBox>
-                  <ListBox Grid.Row="4" ItemsSource="{Binding FilteredDeadLetterSources}" SelectedItem="{Binding SelectedDlqSource}"
+                  <ListBox Grid.Row="4" MinHeight="80" MaxHeight="350" ItemsSource="{Binding FilteredDeadLetterSources}" SelectedItem="{Binding SelectedDlqSource}"
                            IsEnabled="{Binding !IsBusy}">
                     <ListBox.ItemTemplate>
                       <DataTemplate x:DataType="vm:DlqSourceItemViewModel">
@@ -381,28 +389,49 @@
                       </DataTemplate>
                     </ListBox.ItemTemplate>
                   </ListBox>
-                  <Grid Grid.Row="5" RowDefinitions="Auto,6,Auto,6,Auto" ColumnDefinitions="*,6,*" Margin="5">
-                    <Button Grid.Row="0" Grid.ColumnSpan="3" Content="Peek selected source" Classes="quiet"
-                            Command="{Binding BrowseDlqSourceCommand}" />
-                    <Button Grid.Row="2" Grid.Column="0" Content="Backup + purge" Classes="danger"
+                  <StackPanel Grid.Row="5" Margin="5" Spacing="6">
+                    <Button Content="Peek selected source" Classes="quiet" Command="{Binding BrowseDlqSourceCommand}" />
+                    <Expander Header="Backup and purge…" HorizontalAlignment="Stretch"
+                              Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource HairlineBrush}">
+                      <StackPanel Spacing="10" Margin="0,4,0,0">
+                    <TextBlock Text="Message limit per source" FontSize="13" FontWeight="SemiBold" />
+                    <NumericUpDown Value="{Binding PurgeLimitPerSource}" Minimum="1" Maximum="10000" Increment="100"
+                                   FormatString="0" MinHeight="40" HorizontalAlignment="Stretch"
+                                   Background="{DynamicResource SurfaceRaisedBrush}" Foreground="{DynamicResource TextPrimaryBrush}"
+                                   BorderBrush="{DynamicResource HairlineBrush}" CornerRadius="8"
+                                   IsEnabled="{Binding !IsBusy}" AutomationProperties.Name="Purge limit per source" />
+                    <TextBlock Text="{Binding PurgeLimitHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+                    <StackPanel Spacing="6" IsEnabled="{Binding HasValidPurgeLimit}">
+                    <Button Content="Review source purge…" Classes="danger"
                             Command="{Binding PurgeSelectedDeadLettersCommand}"
                             ToolTip.Tip="Back up and delete the non-empty DLQ entries shown by the latest scan for the selected queue or subscription" />
-                    <Button Grid.Row="2" Grid.Column="2" Content="Topic backup + purge" Classes="danger"
+                    <Button Content="Review topic purge…" Classes="danger"
                             Command="{Binding PurgeTopicDeadLettersCommand}"
                             ToolTip.Tip="Back up and delete the non-empty DLQ entries shown by the latest scan for subscriptions under the selected topic" />
-                    <Button Grid.Row="4" Grid.ColumnSpan="3" Content="Environment backup + purge" Classes="danger"
+                    <Button Content="Review environment purge…" Classes="danger"
                             Command="{Binding PurgeEnvironmentDeadLettersCommand}"
                             ToolTip.Tip="Back up and delete all non-empty DLQ entries shown by the latest scan for this environment" />
-                  </Grid>
+                    </StackPanel>
+                      </StackPanel>
+                    </Expander>
+                  </StackPanel>
                 </Grid>
+                </ScrollViewer>
               </Border>
 
               <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
                             Background="{DynamicResource HairlineBrush}" />
 
-              <Grid Grid.Column="2" RowDefinitions="0.45*,6,0.55*" MinWidth="300">
-                <Border Grid.Row="0" Classes="card" Padding="0" ClipToBounds="True" MinHeight="100">
-                  <Grid RowDefinitions="42,*">
+              <Grid Grid.Column="2" MinWidth="300">
+                <Grid.RowDefinitions><RowDefinition Height="0.45*" MinHeight="150"/><RowDefinition Height="6"/><RowDefinition Height="0.55*"/></Grid.RowDefinitions>
+                <Border Grid.Row="0" Classes="card" Padding="0" ClipToBounds="True" MinHeight="150">
+                  <Grid RowDefinitions="42,*,Auto">
+                    <TextBlock Grid.Row="1" Text="{Binding EmptyMessagesText}" IsVisible="{Binding !HasMessages}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Classes="muted" TextWrapping="Wrap" Margin="16" />
+                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="10,4">
+                      <TextBlock Text="{Binding BrowsePageStatus}" Classes="muted" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
+                      <Button Grid.Column="1" Content="Load next 100" Command="{Binding LoadMoreMessagesCommand}" Classes="quiet" />
+                    </Grid>
                     <Border Background="#14243A" Padding="14,0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
                       <Grid ColumnDefinitions="58,54,1.1*,1.6*,0.9*,96">
                         <TextBlock Text="SEQ" Classes="eyebrow" VerticalAlignment="Center" />
@@ -413,11 +442,11 @@
                         <TextBlock Grid.Column="5" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
                       </Grid>
                     </Border>
-                    <ListBox Grid.Row="1" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6"
+                    <ListBox Grid.Row="1" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6" Classes="messageRows"
                              IsEnabled="{Binding !IsBusy}">
                       <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:MessageItemViewModel">
-                          <Grid ColumnDefinitions="58,54,1.1*,1.6*,0.9*,96" MinHeight="62">
+                          <Grid ColumnDefinitions="58,54,1.1*,1.6*,0.9*,96" MinHeight="38">
                             <TextBlock Text="{Binding SequenceNumber}" Classes="muted" VerticalAlignment="Center" />
                             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
                               <Border Width="7" Height="7" CornerRadius="4" Background="{Binding EnvironmentColor}"
@@ -499,11 +528,11 @@
           </Grid>
 
           <!-- Local backup viewer -->
-          <Grid IsVisible="{Binding IsBackupsVisible}" Margin="26,22,26,24" RowDefinitions="Auto,14,Auto,14,*">
+          <ScrollViewer IsVisible="{Binding IsBackupsVisible}" HorizontalScrollBarVisibility="Disabled">
+          <Grid Margin="26,14,26,18" RowDefinitions="Auto,14,Auto,Auto,*">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="5">
-                <TextBlock Text="Backup viewer" FontSize="22" FontWeight="SemiBold" />
-                <TextBlock Text="Inspect purge backups, open a saved message as a draft, or delete one local JSON file. Azure is never changed here."
+                <TextBlock Text="Inspect local backups or replay copies after reviewing the destination."
                            Classes="muted" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding BackupRootDirectory}" Classes="muted" FontSize="11"
                            TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding BackupRootDirectory}" />
@@ -523,11 +552,32 @@
               </Grid>
             </Border>
 
-            <Grid Grid.Row="4" ColumnDefinitions="1.15*,6,*">
+            <Expander Grid.Row="3" Header="Batch restore / replay" Margin="0,8" IsExpanded="False">
+              <StackPanel Spacing="8" Margin="10">
+                <TextBlock Text="{Binding ReplayStatus}" Classes="muted" TextWrapping="Wrap" />
+                <WrapPanel Orientation="Horizontal">
+                  <ComboBox Width="260" Margin="0,0,10,0" ItemsSource="{Binding Destinations}" SelectedItem="{Binding ReplayDestination}"
+                            PlaceholderText="Replay destination" IsEnabled="{Binding !IsBusy}" AutomationProperties.Name="Replay destination">
+                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:DestinationItemViewModel"><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <NumericUpDown Width="110" Value="{Binding ReplayRate}" Minimum="1" Maximum="50"
+                                 IsEnabled="{Binding !IsBusy}" AutomationProperties.Name="Replay messages per second" />
+                  <TextBlock Text=" / second" VerticalAlignment="Center" />
+                  <CheckBox Content="Preserve Message IDs" Margin="16,0" IsChecked="{Binding PreserveReplayMessageIds}" IsEnabled="{Binding !IsBusy}" />
+                </WrapPanel>
+                <WrapPanel>
+                  <Button Content="Restore filtered backups…" Command="{Binding RestoreFilteredBackupsCommand}" Classes="primary" Margin="0,0,8,0" />
+                  <Button Content="Replay loaded messages…" Command="{Binding ReplayLoadedMessagesCommand}" Classes="quiet" Margin="0,0,8,0" />
+                  <Button Content="Resume latest batch…" Command="{Binding ResumeReplayCommand}" Classes="quiet" />
+                </WrapPanel>
+              </StackPanel>
+            </Expander>
+
+            <Grid Grid.Row="4" ColumnDefinitions="1.15*,6,*" MinHeight="400" MaxHeight="700">
               <Border Grid.Column="0" Classes="card" Padding="0" ClipToBounds="True" MinWidth="300">
                 <Grid RowDefinitions="42,*,Auto">
                   <Border Background="#14243A" Padding="14,0" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
-                    <Grid ColumnDefinitions="82,1.2*,1.3*,112,112">
+                    <Grid ColumnDefinitions="52,1.2*,1.5*,82,82">
                       <TextBlock Text="ENV" Classes="eyebrow" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="1" Text="SOURCE" Classes="eyebrow" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
@@ -541,7 +591,7 @@
                            IsEnabled="{Binding !IsBusy}" Margin="6">
                     <ListBox.ItemTemplate>
                       <DataTemplate x:DataType="vm:BackupMessageItemViewModel">
-                        <Grid ColumnDefinitions="82,1.2*,1.3*,112,112" MinHeight="68"
+                        <Grid ColumnDefinitions="52,1.2*,1.5*,82,82" MinHeight="68"
                               ToolTip.Tip="{Binding FilePath}">
                           <StackPanel VerticalAlignment="Center" Spacing="3">
                             <Border Width="7" Height="7" CornerRadius="4" Background="{Binding EnvironmentColor}"
@@ -564,9 +614,9 @@
                             <TextBlock Text="{Binding Error}" Foreground="{DynamicResource DangerBrush}" FontSize="11"
                                        TextTrimming="CharacterEllipsis" IsVisible="{Binding HasError}" ToolTip.Tip="{Binding Error}" />
                           </StackPanel>
-                          <TextBlock Grid.Column="3" Text="{Binding EnqueuedAt}" Classes="muted" FontSize="11"
+                          <TextBlock Grid.Column="3" Text="{Binding EnqueuedAt}" Classes="muted" FontSize="10"
                                      TextWrapping="Wrap" VerticalAlignment="Center" />
-                          <TextBlock Grid.Column="4" Text="{Binding BackedUpAt}" Classes="muted" FontSize="11"
+                          <TextBlock Grid.Column="4" Text="{Binding BackedUpAt}" Classes="muted" FontSize="10"
                                      TextWrapping="Wrap" VerticalAlignment="Center" />
                         </Grid>
                       </DataTemplate>
@@ -646,15 +696,17 @@
             </Grid>
           </Grid>
 
+          </ScrollViewer>
+
           <!-- Composer -->
-          <Grid IsVisible="{Binding IsComposerVisible}" Margin="26,22,26,24" RowDefinitions="Auto,14,*">
+          <Grid IsVisible="{Binding IsComposerVisible}" Margin="26,14,26,18" RowDefinitions="Auto,14,*">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="5">
-                <TextBlock Text="Message composer" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Text="{Binding DraftOriginNotice}" Classes="muted" TextWrapping="Wrap" />
               </StackPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Bottom">
                 <TextBlock Text="{Binding DraftSizeText}" Classes="muted" VerticalAlignment="Center" />
+                <Button Content="Format JSON" Classes="quiet" Command="{Binding FormatJsonCommand}" />
                 <Button Content="Send message" Classes="primary" Command="{Binding SendDraftCommand}" />
               </StackPanel>
             </Grid>
@@ -668,7 +720,7 @@
                       <ComboBox Grid.Column="1" ItemsSource="{Binding MessageBodyFormats}" SelectedItem="{Binding DraftBodyFormat}" />
                     </Grid>
                   </Border>
-                  <TextBox Grid.Row="1" Text="{Binding DraftBody}" AcceptsReturn="True" TextWrapping="Wrap"
+                  <TextBox Grid.Row="1" Text="{Binding DraftBody}" AcceptsReturn="True" TextWrapping="Wrap" AutomationProperties.Name="Message body"
                            Background="#0B1422" BorderThickness="0" CornerRadius="0" Padding="18"
                            FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="13"
                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -699,36 +751,39 @@
                       </ComboBox>
                     </StackPanel>
 
+                    <StackPanel Spacing="7">
+                      <TextBlock Text="MESSAGE ID" Classes="eyebrow" />
+                      <TextBox Text="{Binding DraftMessageId}" AutomationProperties.Name="Message ID" />
+                      <Button Content="Generate new ID" Command="{Binding GenerateMessageIdCommand}" Classes="quiet" HorizontalAlignment="Left" />
+                      <TextBlock Text="CORRELATION ID" Classes="eyebrow" />
+                      <TextBox Text="{Binding DraftCorrelationId}" AutomationProperties.Name="Correlation ID" />
+                    </StackPanel>
                     <Grid ColumnDefinitions="*,10,*">
-                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="MESSAGE ID" Classes="eyebrow"/><TextBox Text="{Binding DraftMessageId}"/></StackPanel>
-                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="CORRELATION ID" Classes="eyebrow"/><TextBox Text="{Binding DraftCorrelationId}"/></StackPanel>
+                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="SUBJECT" Classes="eyebrow"/><TextBox AutomationProperties.Name="Subject" Text="{Binding DraftSubject}"/></StackPanel>
+                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="CONTENT TYPE" Classes="eyebrow"/><TextBox AutomationProperties.Name="Content type" Text="{Binding DraftContentType}"/></StackPanel>
                     </Grid>
                     <Grid ColumnDefinitions="*,10,*">
-                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="SUBJECT" Classes="eyebrow"/><TextBox Text="{Binding DraftSubject}"/></StackPanel>
-                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="CONTENT TYPE" Classes="eyebrow"/><TextBox Text="{Binding DraftContentType}"/></StackPanel>
-                    </Grid>
-                    <Grid ColumnDefinitions="*,10,*">
-                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="SESSION ID" Classes="eyebrow"/><TextBox Text="{Binding DraftSessionId}"/></StackPanel>
-                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="TTL · SECONDS" Classes="eyebrow"/><TextBox Text="{Binding DraftTimeToLiveSeconds}"/></StackPanel>
+                      <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="SESSION ID" Classes="eyebrow"/><TextBox AutomationProperties.Name="Session ID" Text="{Binding DraftSessionId}"/></StackPanel>
+                      <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="TTL · SECONDS" Classes="eyebrow"/><TextBox AutomationProperties.Name="Time to live in seconds" Text="{Binding DraftTimeToLiveSeconds}"/></StackPanel>
                     </Grid>
 
                     <Expander Header="Advanced broker properties">
                       <StackPanel Spacing="11" Margin="0,10,0,0">
                         <Grid ColumnDefinitions="*,10,*">
-                          <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="TO" Classes="eyebrow"/><TextBox Text="{Binding DraftTo}"/></StackPanel>
-                          <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="REPLY TO" Classes="eyebrow"/><TextBox Text="{Binding DraftReplyTo}"/></StackPanel>
+                          <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="TO" Classes="eyebrow"/><TextBox AutomationProperties.Name="To" Text="{Binding DraftTo}"/></StackPanel>
+                          <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="REPLY TO" Classes="eyebrow"/><TextBox AutomationProperties.Name="Reply to" Text="{Binding DraftReplyTo}"/></StackPanel>
                         </Grid>
                         <Grid ColumnDefinitions="*,10,*">
-                          <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="REPLY-TO SESSION ID" Classes="eyebrow"/><TextBox Text="{Binding DraftReplyToSessionId}"/></StackPanel>
-                          <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="PARTITION KEY" Classes="eyebrow"/><TextBox Text="{Binding DraftPartitionKey}"/></StackPanel>
+                          <StackPanel Grid.Column="0" Spacing="7"><TextBlock Text="REPLY-TO SESSION ID" Classes="eyebrow"/><TextBox AutomationProperties.Name="Reply-to session ID" Text="{Binding DraftReplyToSessionId}"/></StackPanel>
+                          <StackPanel Grid.Column="2" Spacing="7"><TextBlock Text="PARTITION KEY" Classes="eyebrow"/><TextBox AutomationProperties.Name="Partition key" Text="{Binding DraftPartitionKey}"/></StackPanel>
                         </Grid>
                         <StackPanel Spacing="7">
                           <TextBlock Text="TRANSACTION PARTITION KEY" Classes="eyebrow"/>
-                          <TextBox Text="{Binding DraftTransactionPartitionKey}"/>
+                          <TextBox AutomationProperties.Name="Transaction partition key" Text="{Binding DraftTransactionPartitionKey}"/>
                         </StackPanel>
                         <StackPanel Spacing="7">
                           <TextBlock Text="SCHEDULED ENQUEUE · ISO 8601" Classes="eyebrow"/>
-                          <TextBox Text="{Binding DraftScheduledEnqueueTime}" PlaceholderText="2026-08-11T14:30:00Z"/>
+                          <TextBox AutomationProperties.Name="Scheduled enqueue time" Text="{Binding DraftScheduledEnqueueTime}" PlaceholderText="2026-08-11T14:30:00Z"/>
                         </StackPanel>
                         <TextBlock Text="If Session ID and Partition Key are both set, Azure requires identical values."
                                    Classes="muted" FontSize="11" TextWrapping="Wrap" />
@@ -737,8 +792,12 @@
 
                     <StackPanel Spacing="7">
                       <TextBlock Text="TYPED APPLICATION PROPERTIES" Classes="eyebrow" />
+                      <TextBox Text="{Binding PropertyName}" PlaceholderText="Property name" AutomationProperties.Name="Application property name" />
+                      <ComboBox ItemsSource="{Binding PropertyTypes}" SelectedItem="{Binding PropertyType}" AutomationProperties.Name="Application property type" />
+                      <TextBox Text="{Binding PropertyValue}" PlaceholderText="Property value" AutomationProperties.Name="Application property value" />
+                      <Button Content="Add / replace property" Command="{Binding AddApplicationPropertyCommand}" Classes="quiet" />
                       <TextBlock Text="Format: { property: { type: String, value: text } }" Classes="muted" FontSize="11" />
-                      <TextBox Text="{Binding DraftApplicationProperties}" AcceptsReturn="True" MinHeight="150"
+                      <TextBox AutomationProperties.Name="Typed application properties JSON" Text="{Binding DraftApplicationProperties}" AcceptsReturn="True" MinHeight="150"
                                TextWrapping="Wrap" FontFamily="Cascadia Mono,Consolas,Menlo" FontSize="12"
                                ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                ScrollViewer.VerticalScrollBarVisibility="Auto" />
@@ -770,10 +829,9 @@
 
           <!-- Monitor -->
           <ScrollViewer IsVisible="{Binding IsMonitorsVisible}">
-            <StackPanel Margin="26,22,26,30" Spacing="20">
+            <StackPanel Margin="26,14,26,20" Spacing="20">
               <StackPanel Spacing="5">
-                <TextBlock Text="Dead letter monitors" FontSize="22" FontWeight="SemiBold" />
-                <TextBlock Text="Counter-only polling with no message locks and no body reads." Classes="muted" />
+                <TextBlock Text="Azure counter polling; local emulators use bounded Peek. No message locks are acquired." Classes="muted" />
               </StackPanel>
 
               <Grid ColumnDefinitions="1.25*,16,*">
@@ -867,10 +925,9 @@
           </ScrollViewer>
 
           <!-- Environments -->
-          <Grid IsVisible="{Binding IsEnvironmentsVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+          <Grid IsVisible="{Binding IsEnvironmentsVisible}" Margin="26,14,26,18" RowDefinitions="Auto,16,*">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="5">
-                <TextBlock Text="Environments" FontSize="22" FontWeight="SemiBold" />
               </StackPanel>
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
                 <Button Content="Edit" Classes="quiet" Command="{Binding EditEnvironmentCommand}" />
@@ -925,9 +982,8 @@
           </Grid>
 
           <!-- Activity -->
-          <Grid IsVisible="{Binding IsActivityVisible}" Margin="26,22,26,24" RowDefinitions="Auto,16,*">
+          <Grid IsVisible="{Binding IsActivityVisible}" Margin="26,14,26,18" RowDefinitions="Auto,16,*">
             <StackPanel Grid.Row="0" Spacing="5">
-              <TextBlock Text="Local activity" FontSize="22" FontWeight="SemiBold" />
               <TextBlock x:Name="ActivityCopyStatus" Text=""
                          Classes="muted" FontSize="11" AutomationProperties.LiveSetting="Polite" />
             </StackPanel>

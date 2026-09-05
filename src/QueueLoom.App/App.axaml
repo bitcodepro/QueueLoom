@@ -109,6 +109,16 @@
       <Setter Property="MinHeight" Value="38" />
     </Style>
 
+    <Style Selector="NumericUpDown">
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+
+    <Style Selector="NumericUpDown /template/ TextBox#PART_TextBox">
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Padding" Value="10,0" />
+      <Setter Property="MinHeight" Value="0" />
+    </Style>
+
     <Style Selector="ListBox">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
@@ -125,6 +135,10 @@
     <Style Selector="ListBoxItem:selected">
       <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+    <Style Selector="ListBox.messageRows ListBoxItem">
+      <Setter Property="Padding" Value="6,4" />
+      <Setter Property="Margin" Value="0,1" />
     </Style>
   </Application.Styles>
 </Application>

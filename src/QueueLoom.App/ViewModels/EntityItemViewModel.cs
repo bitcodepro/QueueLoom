@@ -63,6 +63,8 @@ public sealed class EntityItemViewModel
     public long TransferDeadLetters => Runtime.MessageCounts.TransferDeadLetter;
 
     public long Scheduled => Runtime.MessageCounts.Scheduled;
+    public string ScheduledDisplay => Runtime.IsEmulatorSample ? "—" : Scheduled.ToString();
+    public string TransferDeadLettersDisplay => Runtime.IsEmulatorSample ? "—" : TransferDeadLetters.ToString();
 
     public string SessionLabel => RequiresSession ? "Sessions" : string.Empty;
 

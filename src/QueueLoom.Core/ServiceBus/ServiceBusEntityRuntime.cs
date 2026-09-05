@@ -20,6 +20,7 @@ public sealed record ServiceBusEntityRuntime
     }
 
     public ServiceBusMessageCounts MessageCounts { get; }
+    public bool IsEmulatorSample { get; init; }
 
     public long SizeInBytes { get; }
 
