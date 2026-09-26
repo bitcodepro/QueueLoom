@@ -6,7 +6,7 @@ using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
 
-public sealed class MessageItemViewModel
+public sealed class MessageItemViewModel : ObservableObject
 {
     private const int MaxEditablePayloadBytes = 1024 * 1024;
     private const int PreviewBytes = 4096;
@@ -23,6 +23,7 @@ public sealed class MessageItemViewModel
     private readonly Lazy<string> _bodyDisplay;
     private readonly Lazy<string> _applicationPropertiesJson;
     private readonly Lazy<string> _propertiesJson;
+    private bool _isMarked;
 
     public MessageItemViewModel(
         BrowsedMessage message,
@@ -45,6 +46,18 @@ public sealed class MessageItemViewModel
     }
 
     public BrowsedMessage Message { get; }
+
+    /// <summary>Ticked by the operator to include the message in "Delete selected".</summary>
+    public bool IsMarked
+    {
+        get => _isMarked;
+        set => SetProperty(ref _isMarked, value && CanDelete);
+    }
+
+    /// <summary>Only dead-lettered messages can be deleted; active messages are browse-only.</summary>
+    public bool CanDelete => Message.SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter;
+
+    public DeadLetterMessageKey Key => new(Message.Source, Message.SubQueue, Message.SequenceNumber, Message.Properties.MessageId);
 
     public Guid? ProfileId { get; }
 

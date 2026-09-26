@@ -1,70 +1,121 @@
 # QueueLoom
 
-Desktop client for Azure Service Bus queues, topics and dead-letter messages.
+Desktop client for Azure Service Bus: browse queues, topics and subscriptions, find dead-letter messages, and back them up, delete, replay or resend them.
 
-## Run
+## Install
 
-Download the Windows x64 ZIP from [Releases](../../releases), extract it and open `QueueLoom.exe`. No .NET installation is required.
+Download `QueueLoom-<version>-win-x64.zip` from [Releases](../../releases), extract it and run `QueueLoom.exe`. No .NET installation is needed. The `.sha256` file next to the ZIP lets you verify the download.
 
-1. Add a profile in **Environments** using a namespace connection string or Microsoft Entra ID.
-2. Connect and select a queue or subscription in **Explorer**.
-3. Use **View active** or **View DLQ** to inspect messages without locking them.
+## Quick start
 
-The last connected environment is selected on startup. DLQ browsing and search use one environment at a time.
+1. **Environments** → **Add environment**: enter a namespace connection string or use Microsoft Entra ID.
+2. Pick the environment in the top bar and press **Connect**.
+3. **Explorer** lists queues, topics and subscriptions with live counters. Select one and press **View active** or **View DLQ**. Peek never locks or removes messages.
 
-## Features
+Production environments are read-only by default, and you can make any environment read-only in its settings. Anything that changes Service Bus in a read-only environment needs **Unlock 10 min** in the top bar first.
 
-- Browse and search active/dead-letter messages.
-- Send text, JSON or Base64 messages with typed properties.
-- Back up DLQ messages before purging, with scope review and a per-source limit.
-- Restore backups or replay copies with rate limits and resumable progress.
-- Monitor DLQ counts while the app is open and review local activity history.
-- Light, dark or system theme; JSON bodies are highlighted and indented in the inspector.
-- Test locally with the [Docker emulator lab](dev/emulator/README.md).
+## Pages
 
-## Keyboard shortcuts
-
-| Keys | Action |
+| Page | Use it to |
 |---|---|
-| Ctrl+1 … Ctrl+8 | Open Overview, Explorer, Messages / DLQ, Backups, Composer, Monitors, Environments, Activity |
-| Ctrl+F | Focus the current page's search or filter box |
+| Overview | See totals for the connected namespace and the latest dead-letter scan. |
+| Explorer | Filter and sort entities, and open active, DLQ or transfer DLQ messages. |
+| Messages / DLQ | Search dead letters, inspect a message, delete selected messages, or back up and purge a whole source. |
+| Backups | Browse local backups, and restore or replay them to a queue or topic. |
+| Composer | Write and send a message: body (text, JSON or Base64), broker properties and typed application properties. |
+| Monitors | Poll dead-letter counts every N seconds while the app is open and list new arrivals. |
+| Environments | Add, edit and delete saved namespaces. |
+| Activity | Review the local history of connections, scans, sends, deletions and errors. |
+
+## Common tasks
+
+**Find and delete specific dead-letter messages**
+1. On **Messages / DLQ**, type a Correlation ID, Message ID, subject, body text or property value and press Enter.
+2. Tick the messages to remove. The box in the table header ticks all of them.
+3. Press **Delete N messages…** and confirm.
+
+Each ticked message is saved to a local backup and then deleted; every other message stays in the queue. Messages that are already gone are reported and left ticked.
+
+**Empty a dead-letter queue**
+1. On **Messages / DLQ**, press **Scan current environment** and select a source.
+2. Open **Backup and purge…** and set the per-source limit.
+3. Choose the source, topic or environment purge.
+
+Every message is backed up before it is deleted.
+
+**Resend a dead letter**
+1. Select the message and press **Open as draft**.
+2. Edit the copy in **Composer** if needed and press **Send message**.
+
+The original message is not changed.
+
+**Restore from a backup**: on **Backups**, filter the list, open **Batch restore / replay**, choose a destination and a rate, then **Restore filtered backups…**.
+
+## Keyboard and mouse
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+1 … Ctrl+8 | Go to Overview, Explorer, Messages / DLQ, Backups, Composer, Monitors, Environments, Activity |
+| Ctrl+F | Focus the search or filter box of the current page |
+| Enter (in the DLQ search box) | Search dead letters |
 | Ctrl+R | Refresh topology and counters |
-| Ctrl+N | New message |
-| Ctrl+Shift+F | Format the JSON body and jump to the first syntax error |
+| Ctrl+N | New message in Composer |
+| Ctrl+Shift+F | Format the JSON body; on a syntax error, jump to that line |
 | Esc | Cancel the running operation |
 
-Click an Explorer column header to sort by it; click **TYPE** to return to the topic hierarchy.
+| Mouse | Action |
+|---|---|
+| Click a column header in Explorer | Sort by that column (again to reverse); **TYPE** restores the topic grouping |
+| Double-click an entity name in Explorer | Copy the name |
+| Right-click a row | Copy menu: entity or topic name in Explorer, DLQ sources and Monitors; Message ID or Correlation ID in the message list; details in Activity |
+| Checkbox in the message list header | Tick or untick all dead-letter messages |
+| Theme button (bottom of the sidebar) | Switch between dark, light and system theme |
+
+Hover over a sidebar item or a button to see its shortcut.
+
+## Safety
+
+- **Read-only environments stay read-only** until you press **Unlock 10 min**. The unlock applies only to the connected environment; production asks you to type its name.
+- **Nothing is deleted without a backup.** Purges and selective deletes write each message to a local JSON file first. The confirmation lists the environment, the queues and the count.
+- **Peek and scans never settle messages.** Search, browse and monitoring only read.
+- **Replay sends copies.** The original messages and backups stay unchanged, and uncertain deliveries are flagged instead of retried.
 
 ## Data and limits
 
-Settings, backups and diagnostic logs (`logs\queueloom-yyyyMMdd.log`, kept 14 days, credentials redacted) normally live in `%LOCALAPPDATA%\QueueLoom`. Existing portable backups remain accessible. Override paths with `QUEUELOOM_DATA_DIRECTORY` or `QUEUELOOM_BACKUP_DIRECTORY`.
+| | |
+|---|---|
+| Data folder | `%LOCALAPPDATA%\QueueLoom`: settings, encrypted connection strings, backups, the activity journal and `logs\queueloom-yyyyMMdd.log`. Logs are kept 14 days, with credentials redacted. |
+| Override | `QUEUELOOM_DATA_DIRECTORY`, `QUEUELOOM_BACKUP_DIRECTORY` |
+| Backups | Contain message bodies in plain text or Base64; protect the folder accordingly. |
+| Peek | Up to 1,000 messages or 32 MiB of bodies per list. |
+| Selective delete | Up to 1,000 messages at a time; searches the first 5,000 messages of each dead-letter queue. |
+| Monitor | Runs only while QueueLoom is open; the minimum interval is 15 seconds. |
+| Not supported | Session-enabled entities, and creating or editing queues and topics. |
+| Emulator | Counts are sampled; the transfer DLQ is unavailable. See the [emulator lab](dev/emulator/README.md). |
 
-Connection strings are encrypted. Backups and replay snapshots contain message payloads in plain text/Base64. Production profiles require a temporary write unlock.
+The Windows package is unsigned. Failure scenarios against real Azure are not fully tested yet.
 
-Peek displays up to 1,000 messages / 32 MiB of retained bodies. Replay sends copies; uncertain deliveries require investigation before retrying. Session-enabled message operations and queue/topic administration are not supported. Emulator counts are sampled; transfer DLQ is unavailable locally.
+## Development
 
-**1.0.0-rc.1 is a release candidate.** Real-Azure failure testing remains pending. The Windows package is unsigned.
-
-## Build
-
-Requires .NET SDK 10.
+Requires the .NET 10 SDK.
 
 ```powershell
 dotnet restore QueueLoom.slnx
-dotnet test QueueLoom.slnx -c Release   # unit tests and headless UI tests
+dotnet test QueueLoom.slnx -c Release      # unit tests and headless UI tests
 dotnet publish src/QueueLoom.App/QueueLoom.App.csproj -p:PublishProfile=win-x64-single-file -o artifacts/publish
 ```
 
-### CI and releases
+Set `QUEUELOOM_SCREENSHOT_DIR` before `dotnet test` to save screenshots of every page in both themes.
 
-- **Pull requests** build and test on Windows and Linux; the Windows build is attached to the workflow run.
-- **Every merge to `main`** is tested again and then released automatically: the next version is taken from the latest `vX.Y.Z` tag, `QueueLoom.exe` is built with that version, and a GitHub Release with `QueueLoom-<version>-win-x64.zip`, its `.sha256` checksum and generated notes is published under the new tag.
-  - The patch number is bumped by default (`1.0.0` → `1.0.1`).
-  - Put `[minor]` or `[major]` in the first line of the merge commit (the pull request title when squash-merging) for `1.1.0` or `2.0.0`. Only that line is read.
-  - Put `[skip release]` there to merge without releasing. Changes that only touch Markdown files, `LICENSE` or `dev/` do not release.
-  - A release can also be started from **Actions → CI → Run workflow** on `main`, choosing the part to bump.
-- **Pre-releases**: push a tag by hand, e.g. `git tag v1.2.0-rc.1 && git push origin v1.2.0-rc.1`.
+**Releases are automatic.** Every merge to `main` is tested, built and published as the next version, taken from the latest `vX.Y.Z` tag:
 
-`tests/QueueLoom.UiTests` drives the real window headlessly with in-memory data. Set `QUEUELOOM_SCREENSHOT_DIR` to also save screenshots of every page in both themes.
+| First line of the merge commit contains | Result |
+|---|---|
+| nothing special | patch release, e.g. 1.2.0 → 1.2.1 |
+| `[minor]` | 1.2.0 → 1.3.0 |
+| `[major]` | 1.2.0 → 2.0.0 |
+| `[skip release]` | no release |
+
+With a squash merge, the first line is the pull request title; for a single-commit pull request GitHub proposes the commit subject instead, so check it in the merge dialog. Merges that only change Markdown, `LICENSE` or `dev/` do not release. **Actions → CI → Run workflow** on `main` releases on demand. Push a tag such as `v1.3.0-rc.1` for a pre-release.
 
 [MIT License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)

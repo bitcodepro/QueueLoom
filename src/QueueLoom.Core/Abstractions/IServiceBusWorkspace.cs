@@ -44,6 +44,14 @@ public interface IServiceBusWorkspace : IAsyncDisposable
         CancellationToken cancellationToken = default,
         IProgress<DeadLetterPurgeProgress>? progress = null);
 
+    /// <summary>
+    /// Backs up and deletes exactly the given dead-lettered messages, leaving every other message in place.
+    /// </summary>
+    Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
+        DeleteDeadLetterMessagesRequest request,
+        CancellationToken cancellationToken = default,
+        IProgress<DeadLetterMessageDeletionProgress>? progress = null);
+
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default);

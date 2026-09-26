@@ -1001,6 +1001,31 @@ public sealed partial class ViewModelStateTests
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 
+        public List<DeleteDeadLetterMessagesRequest> DeleteRequests { get; } = [];
+
+        /// <summary>Sequence numbers reported as not found by the fake deletion.</summary>
+        public HashSet<long> MissingSequenceNumbers { get; } = [];
+
+        public Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
+            DeleteDeadLetterMessagesRequest request,
+            CancellationToken cancellationToken = default,
+            IProgress<DeadLetterMessageDeletionProgress>? progress = null)
+        {
+            DeleteRequests.Add(request);
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(new DeleteDeadLetterMessagesResult(
+                ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),
+                now,
+                now,
+                request.Messages.Select(key => new DeadLetterMessageDeletionResult(
+                    key,
+                    MissingSequenceNumbers.Contains(key.SequenceNumber)
+                        ? DeadLetterMessageDeletionOutcome.NotFound
+                        : DeadLetterMessageDeletionOutcome.Deleted,
+                    MissingSequenceNumbers.Contains(key.SequenceNumber) ? "Already gone." : null)),
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+        }
+
         public async Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
             DeadLetterMonitorScope scope,
             CancellationToken cancellationToken = default)

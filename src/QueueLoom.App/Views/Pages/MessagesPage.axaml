@@ -177,13 +177,17 @@
         <Border Grid.Row="0" Classes="card flush" MinHeight="150">
           <Grid RowDefinitions="Auto,*,Auto">
             <Border Classes="tableHeader" Padding="14,0">
-              <Grid ColumnDefinitions="64,56,1.1*,1.6*,0.9*,146">
-                <TextBlock Text="SEQ" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" Text="ENV" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="SOURCE" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="3" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="4" Text="REASON" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="5" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
+              <Grid ColumnDefinitions="32,64,56,1.1*,1.6*,0.9*,146">
+                <CheckBox IsChecked="{Binding AreAllMessagesMarked}" IsVisible="{Binding HasDeletableMessages}"
+                          MinWidth="0" Padding="0" VerticalAlignment="Center"
+                          ToolTip.Tip="Select all dead-lettered messages in the list"
+                          AutomationProperties.Name="Select all messages" />
+                <TextBlock Grid.Column="1" Text="SEQ" Classes="eyebrow" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="ENV" Classes="eyebrow" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="3" Text="SOURCE" Classes="eyebrow" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="4" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="5" Text="REASON" Classes="eyebrow" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="6" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
               </Grid>
             </Border>
             <controls:EmptyState Grid.Row="1" IsVisible="{Binding !HasMessages}"
@@ -195,7 +199,7 @@
                      AutomationProperties.Name="Messages">
               <ListBox.ItemTemplate>
                 <DataTemplate x:DataType="vm:MessageItemViewModel">
-                  <Grid ColumnDefinitions="64,56,1.1*,1.6*,0.9*,146" MinHeight="38">
+                  <Grid ColumnDefinitions="32,64,56,1.1*,1.6*,0.9*,146" MinHeight="38">
                     <Grid.ContextMenu>
                       <ContextMenu>
                         <MenuItem Header="Copy Message ID"
@@ -206,36 +210,42 @@
                                   CommandParameter="{Binding CorrelationId}" />
                       </ContextMenu>
                     </Grid.ContextMenu>
-                    <TextBlock Text="{Binding SequenceNumber}" Classes="muted" VerticalAlignment="Center" />
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                    <CheckBox IsChecked="{Binding IsMarked}" IsVisible="{Binding CanDelete}"
+                              MinWidth="0" Padding="0" VerticalAlignment="Center"
+                              AutomationProperties.Name="{Binding MessageId, StringFormat='Select message {0}'}" />
+                    <TextBlock Grid.Column="1" Text="{Binding SequenceNumber}" Classes="muted" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">
                       <Border Classes="envDot" HorizontalAlignment="Left"
                               controls:ToneAssist.Background="{Binding EnvironmentTone}" />
                       <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
-                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2" Margin="0,0,8,0">
+                    <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="2" Margin="0,0,8,0">
                       <TextBlock Text="{Binding SourceDisplay}" FontWeight="SemiBold"
                                  TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceDisplay}" />
                       <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow danger" />
                     </StackPanel>
-                    <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="2" Margin="0,0,8,0">
+                    <StackPanel Grid.Column="4" VerticalAlignment="Center" Spacing="2" Margin="0,0,8,0">
                       <TextBlock Text="{Binding MessageId}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                  ToolTip.Tip="{Binding MessageId}" />
                       <TextBlock Text="{Binding BodyPreview}" Classes="muted" FontSize="11" TextTrimming="CharacterEllipsis"
                                  ToolTip.Tip="{Binding BodyPreview}" />
                     </StackPanel>
-                    <TextBlock Grid.Column="4" Text="{Binding DeadLetterReason}" Classes="danger" Margin="0,0,8,0"
+                    <TextBlock Grid.Column="5" Text="{Binding DeadLetterReason}" Classes="danger" Margin="0,0,8,0"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                                ToolTip.Tip="{Binding DeadLetterReason}" />
-                    <TextBlock Grid.Column="5" Text="{Binding EnqueuedAt}" Classes="muted" VerticalAlignment="Center"
+                    <TextBlock Grid.Column="6" Text="{Binding EnqueuedAt}" Classes="muted" VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding EnqueuedAt}" />
                   </Grid>
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
             <Border Grid.Row="2" Classes="tableFooter">
-              <Grid ColumnDefinitions="*,Auto">
+              <Grid ColumnDefinitions="*,Auto,8,Auto">
                 <TextBlock Text="{Binding BrowsePageStatus}" Classes="muted" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <Button Grid.Column="1" Content="Load next 100" Command="{Binding LoadMoreMessagesCommand}" Classes="quiet copyAction" />
+                <Button Grid.Column="3" Content="{Binding DeleteMarkedMessagesLabel}" Classes="danger copyAction"
+                        Command="{Binding DeleteMarkedMessagesCommand}" IsVisible="{Binding HasDeletableMessages}"
+                        ToolTip.Tip="Back up and permanently delete exactly the ticked dead-letter messages. Requires write access." />
               </Grid>
             </Border>
           </Grid>

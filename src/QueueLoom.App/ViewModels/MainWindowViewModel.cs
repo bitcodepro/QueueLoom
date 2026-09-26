@@ -231,6 +231,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeOperationsFeatures();
         InitializePreferences();
         InitializePresentation();
+        InitializeMessageDeletion();
         RefreshDeadLetterEnvironmentFilters();
     }
 
@@ -548,6 +549,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         SendDraftCommand.NotifyCanExecuteChanged();
         ToggleMonitorCommand.NotifyCanExecuteChanged();
         UnlockWritesCommand.NotifyCanExecuteChanged();
+        DeleteMarkedMessagesCommand?.NotifyCanExecuteChanged();
     }
 
     private void AddActivity(
@@ -612,6 +614,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             PurgeEnvironmentDeadLettersCommand,
             PurgeTopicDeadLettersCommand,
             PurgeSelectedDeadLettersCommand,
+            DeleteMarkedMessagesCommand,
             SendDraftCommand,
             ToggleMonitorCommand,
             UnlockWritesCommand
