@@ -1,7 +1,9 @@
-name: Release
+name: Release from tag
 
-# Push a tag such as v1.1.0 (or v1.1.0-rc.1 for a pre-release) to publish a GitHub Release
-# with the self-contained Windows build. The version is taken from the tag.
+# Releases normally happen automatically after a merge to main (see ci.yml).
+# Pushing a tag by hand still works, e.g. for a pre-release:
+#   git tag v1.2.0-rc.1 && git push origin v1.2.0-rc.1
+# Tags with a suffix such as -rc.1 are published as pre-releases.
 on:
   push:
     tags: ['v*']
@@ -10,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -46,28 +48,11 @@ jobs:
       - name: Test
         run: dotnet test QueueLoom.slnx -c Release --no-restore
 
-      - name: Publish single-file executable
-        run: >-
-          dotnet publish src/QueueLoom.App/QueueLoom.App.csproj
-          -p:PublishProfile=win-x64-single-file
-          -p:Version=${{ steps.version.outputs.version }}
-          -o artifacts/publish
-
-      - name: Package ZIP and checksum
+      - name: Package
         id: package
-        shell: pwsh
-        run: |
-          $name = "QueueLoom-${{ steps.version.outputs.version }}-win-x64.zip"
-          $staging = 'artifacts/package'
-          New-Item -ItemType Directory -Force $staging | Out-Null
-          # Native symbol files are not needed at runtime and triple the download size.
-          Get-ChildItem artifacts/publish -File | Where-Object Extension -ne '.pdb' | Copy-Item -Destination $staging
-          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md -Destination $staging
-          Compress-Archive -Path "$staging/*" -DestinationPath "artifacts/$name"
-          $hash = (Get-FileHash "artifacts/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-          # Same "<hash>  <file>" format as sha256sum, so `sha256sum -c` works.
-          "$hash  $name" | Out-File -Encoding ascii -NoNewline "artifacts/$name.sha256"
-          "zip=artifacts/$name" >> $env:GITHUB_OUTPUT
+        uses: ./.github/actions/package-windows
+        with:
+          version: ${{ steps.version.outputs.version }}
 
       - name: Create GitHub Release
         shell: pwsh
@@ -76,4 +61,4 @@ jobs:
         run: |
           $flags = @('--verify-tag', '--generate-notes', '--title', '${{ github.ref_name }}')
           if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { $flags += '--prerelease' }
-          gh release create '${{ github.ref_name }}' '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.zip }}.sha256' @flags
+          gh release create '${{ github.ref_name }}' '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.checksum }}' @flags

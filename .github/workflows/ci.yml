@@ -1,17 +1,33 @@
 name: CI
 
+# Pull requests: build and test on Windows and Linux, and attach the Windows build.
+# Merges to main: the same, then publish the next version as a GitHub Release.
+#   The patch number is bumped by default; put [minor] or [major] in the merge commit
+#   (for example in the pull request title when squash-merging) for a bigger bump,
+#   or [skip release] to merge without releasing.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'dev/**'
   pull_request:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump when run on main
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a release that is already running on main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   DOTNET_NOLOGO: true
@@ -50,6 +66,7 @@ jobs:
 
   publish-windows:
     name: Publish Windows package
+    if: github.event_name == 'pull_request'
     needs: build-and-test
     runs-on: windows-latest
     steps:
@@ -59,12 +76,56 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Publish single-file executable
-        run: dotnet publish src/QueueLoom.App/QueueLoom.App.csproj -p:PublishProfile=win-x64-single-file -o artifacts/publish
+      - name: Package
+        id: package
+        uses: ./.github/actions/package-windows
+        with:
+          version: 0.0.0-pr.${{ github.event.pull_request.number }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: QueueLoom-win-x64
-          path: |
-            artifacts/publish
-            !artifacts/publish/*.pdb
+          path: ${{ steps.package.outputs.zip }}
+
+  release:
+    name: Release
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build-and-test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Compute next version
+        id: version
+        shell: pwsh
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: ./.github/scripts/next-version.ps1 -Bump '${{ inputs.bump || 'auto' }}' -CommitMessage $env:COMMIT_MESSAGE
+
+      - name: Package
+        id: package
+        if: steps.version.outputs.skip != 'true'
+        uses: ./.github/actions/package-windows
+        with:
+          version: ${{ steps.version.outputs.version }}
+
+      - name: Create tag and GitHub Release
+        if: steps.version.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create '${{ steps.version.outputs.tag }}'
+          '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.checksum }}'
+          --target '${{ github.sha }}' --title '${{ steps.version.outputs.tag }}' --generate-notes
