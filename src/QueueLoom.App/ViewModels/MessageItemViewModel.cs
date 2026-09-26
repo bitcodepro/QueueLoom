@@ -1,3 +1,4 @@
+using QueueLoom.App.Models;
 using System.Text;
 using System.Text.Json;
 using QueueLoom.Core.ServiceBus;
@@ -10,9 +11,15 @@ public sealed class MessageItemViewModel
     private const int PreviewBytes = 4096;
     private const int MaxDisplayedProperties = 256;
     private const int MaxDisplayedPropertyCharacters = 4096;
+    private static readonly JsonSerializerOptions IndentedJson = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     private readonly Lazy<EditableMessageBody> _displayBody;
     private readonly Lazy<string> _bodyPreview;
+    private readonly Lazy<string> _bodyDisplay;
     private readonly Lazy<string> _applicationPropertiesJson;
     private readonly Lazy<string> _propertiesJson;
 
@@ -21,16 +28,17 @@ public sealed class MessageItemViewModel
         Guid? profileId = null,
         string? profileName = null,
         string? environmentLabel = null,
-        string? environmentColor = null)
+        Tone environmentTone = Tone.Neutral)
     {
         Message = message;
         ProfileId = profileId;
         ProfileName = profileName ?? string.Empty;
         EnvironmentLabel = environmentLabel ?? string.Empty;
-        EnvironmentColor = environmentColor ?? "#91A5BD";
+        EnvironmentTone = environmentTone;
         _displayBody = new Lazy<EditableMessageBody>(
             () => EditableMessageBody.FromBytes(Message.Body.Span));
         _bodyPreview = new Lazy<string>(CreateBodyPreview);
+        _bodyDisplay = new Lazy<string>(CreateBodyDisplay);
         _applicationPropertiesJson = new Lazy<string>(CreateApplicationPropertiesJson);
         _propertiesJson = new Lazy<string>(CreatePropertiesJson);
     }
@@ -43,7 +51,7 @@ public sealed class MessageItemViewModel
 
     public string EnvironmentLabel { get; }
 
-    public string EnvironmentColor { get; }
+    public Tone EnvironmentTone { get; }
 
     public string SourceDisplay => Message.Source.DisplayName;
 
@@ -81,6 +89,12 @@ public sealed class MessageItemViewModel
           $"\n\n[QueueLoom preview truncated at {Message.Body.Length:N0} of {Message.BodySize:N0} bytes]"
         : _displayBody.Value.Content;
 
+    /// <summary>
+    /// The body as shown in the inspector: complete JSON bodies are indented for reading.
+    /// Copy actions keep using <see cref="BodyText"/> so the original bytes are preserved.
+    /// </summary>
+    public string BodyDisplayText => _bodyDisplay.Value;
+
     public string BodyFormat => Message.IsBodyTruncated
         ? "Truncated preview"
         : _displayBody.Value.Format.ToString();
@@ -90,6 +104,27 @@ public sealed class MessageItemViewModel
     public string ApplicationPropertiesJson => _applicationPropertiesJson.Value;
 
     public string PropertiesJson => _propertiesJson.Value;
+
+    private string CreateBodyDisplay()
+    {
+        const int MaxFormattedBytes = 256 * 1024;
+        if (Message.IsBodyTruncated ||
+            Message.Body.Length > MaxFormattedBytes ||
+            _displayBody.Value.Format != MessageBodyFormat.Json)
+        {
+            return BodyText;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(Message.Body);
+            return JsonSerializer.Serialize(document.RootElement, IndentedJson);
+        }
+        catch (JsonException)
+        {
+            return BodyText;
+        }
+    }
 
     private string CreateBodyPreview()
     {

@@ -3,13 +3,20 @@ using System.Runtime.CompilerServices;
 
 namespace QueueLoom.App.Models;
 
-public sealed class NavigationItem(string key, string icon, string label) : INotifyPropertyChanged
+public sealed class NavigationItem(string key, string label, string shortcut) : INotifyPropertyChanged
 {
     private int _alertCount;
 
     public string Key { get; } = key;
-    public string Icon { get; } = icon;
+
+    /// <summary>Name of the icon in <c>Controls.Icons</c>; views resolve it to a geometry.</summary>
+    public string Icon => Key;
     public string Label { get; } = label;
+
+    /// <summary>Keyboard gesture that opens this page, shown in the tooltip.</summary>
+    public string Shortcut { get; } = shortcut;
+
+    public string ToolTip => $"{Label} ({Shortcut})";
 
     public int AlertCount
     {

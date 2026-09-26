@@ -1,0 +1,58 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:controls="using:QueueLoom.App.Controls"
+             x:Class="QueueLoom.App.Views.Pages.ActivityPage"
+             x:DataType="vm:MainWindowViewModel">
+  <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
+    <StackPanel Spacing="4">
+      <TextBlock Text="Activity" Classes="pageTitle" />
+      <TextBlock Text="Local history of connections, scans, sends and purges. Right-click a row to copy." Classes="muted" />
+    </StackPanel>
+    <Border Grid.Row="2" Classes="card flush">
+      <Grid RowDefinitions="Auto,*">
+        <Border Classes="tableHeader">
+          <Grid ColumnDefinitions="90,100,220,*">
+            <TextBlock Text="TIME" Classes="eyebrow" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="LEVEL" Classes="eyebrow" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="2" Text="ACTION" Classes="eyebrow" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="3" Text="DETAILS" Classes="eyebrow" VerticalAlignment="Center" />
+          </Grid>
+        </Border>
+        <controls:EmptyState Grid.Row="1" IsVisible="{Binding !HasActivity}"
+                             Icon="{x:Static controls:Icons.Activity}"
+                             Title="No activity yet"
+                             Description="Connections, scans, sends and purges are recorded here and in the local journal." />
+        <ListBox Grid.Row="1" ItemsSource="{Binding Activity}" Margin="6" Classes="tableRows" IsVisible="{Binding HasActivity}"
+                 AutomationProperties.Name="Activity history">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ActivityItemViewModel">
+              <Grid ColumnDefinitions="90,100,220,*" MinHeight="38">
+                <Grid.ContextMenu>
+                  <ContextMenu>
+                    <MenuItem Header="Copy details"
+                              Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).CopyTextCommand}"
+                              CommandParameter="{Binding Details}" />
+                    <MenuItem Header="Copy entity name" IsVisible="{Binding HasSource}"
+                              Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).CopyTextCommand}"
+                              CommandParameter="{Binding EntityName}" />
+                    <MenuItem Header="Copy parent topic name" IsVisible="{Binding IsSubscription}"
+                              Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).CopyTextCommand}"
+                              CommandParameter="{Binding ParentTopicName}" />
+                  </ContextMenu>
+                </Grid.ContextMenu>
+                <TextBlock Text="{Binding Time}" Classes="muted" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding Level}" FontWeight="SemiBold" VerticalAlignment="Center"
+                           controls:ToneAssist.Foreground="{Binding LevelTone}" />
+                <TextBlock Grid.Column="2" Text="{Binding Action}" FontWeight="SemiBold" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Action}" Margin="0,0,8,0" />
+                <TextBlock Grid.Column="3" Text="{Binding Details}" Classes="muted" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Details}" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

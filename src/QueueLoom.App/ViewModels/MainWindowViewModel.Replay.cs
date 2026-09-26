@@ -1,13 +1,13 @@
+using QueueLoom.Core.Abstractions;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
-using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.App.ViewModels;
 
 public sealed partial class MainWindowViewModel
 {
-    private readonly BatchReplayStore? _replayStore;
+    private readonly IBatchReplayStore? _replayStore;
     private DestinationItemViewModel? _replayDestination;
     private bool _preserveReplayMessageIds;
     private int _replayRate = 5;

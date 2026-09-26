@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using QueueLoom.Core.ServiceBus;
 
@@ -54,6 +55,8 @@ public sealed class EntityItemViewModel
         _ => "ENTITY"
     };
 
+    public string KindName => KindLabel.ToLowerInvariant();
+
     public string StatusLabel => Status.ToString();
 
     public long Active => Runtime.MessageCounts.Active;
@@ -63,8 +66,18 @@ public sealed class EntityItemViewModel
     public long TransferDeadLetters => Runtime.MessageCounts.TransferDeadLetter;
 
     public long Scheduled => Runtime.MessageCounts.Scheduled;
-    public string ScheduledDisplay => Runtime.IsEmulatorSample ? "—" : Scheduled.ToString();
-    public string TransferDeadLettersDisplay => Runtime.IsEmulatorSample ? "—" : TransferDeadLetters.ToString();
+    public string ActiveDisplay => Active.ToString("N0", CultureInfo.CurrentCulture);
+    public string DeadLettersDisplay => DeadLetters.ToString("N0", CultureInfo.CurrentCulture);
+    public string ScheduledDisplay => Runtime.IsEmulatorSample ? "—" : Scheduled.ToString("N0", CultureInfo.CurrentCulture);
+    public string TransferDeadLettersDisplay => Runtime.IsEmulatorSample ? "—" : TransferDeadLetters.ToString("N0", CultureInfo.CurrentCulture);
+
+    public bool HasDeadLetters => DeadLetters > 0;
+
+    public bool HasTransferDeadLetters => !Runtime.IsEmulatorSample && TransferDeadLetters > 0;
+
+    public bool HasActiveMessages => Active > 0;
+
+    public bool HasScheduledMessages => !Runtime.IsEmulatorSample && Scheduled > 0;
 
     public string SessionLabel => RequiresSession ? "Sessions" : string.Empty;
 

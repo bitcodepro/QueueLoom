@@ -1,0 +1,112 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:controls="using:QueueLoom.App.Controls"
+             x:Class="QueueLoom.App.Views.Pages.OverviewPage"
+             x:DataType="vm:MainWindowViewModel">
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+    <StackPanel Margin="{StaticResource PageMargin}" Spacing="20">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="4">
+          <TextBlock Text="Overview" Classes="pageTitle" />
+          <TextBlock Text="Namespace totals and the latest dead-letter scan." Classes="muted" />
+        </StackPanel>
+        <TextBlock Grid.Column="1" Text="{Binding LastUpdatedText}" Classes="muted" VerticalAlignment="Bottom" />
+      </Grid>
+
+      <Border Classes="card" IsVisible="{Binding !IsConnected}" Padding="28">
+        <controls:EmptyState Icon="{x:Static controls:Icons.Plug}"
+                             Title="Connect an environment to see message counts"
+                             Description="Choose an environment in the top bar, or add your local emulator or Azure namespace.">
+          <Button Content="{Binding EnvironmentActionLabel}" Command="{Binding EnvironmentActionCommand}" Classes="primary" />
+        </controls:EmptyState>
+      </Border>
+
+      <UniformGrid Columns="5" IsVisible="{Binding IsConnected}">
+        <Border Classes="card" Margin="0,0,12,0">
+          <StackPanel Spacing="8">
+            <TextBlock Text="QUEUES" Classes="eyebrow" />
+            <TextBlock Text="{Binding QueueCount, StringFormat={}{0:N0}}" Classes="statValue" />
+            <TextBlock Text="Namespace entities" Classes="muted" />
+          </StackPanel>
+        </Border>
+        <Border Classes="card" Margin="0,0,12,0">
+          <StackPanel Spacing="8">
+            <TextBlock Text="TOPICS" Classes="eyebrow" />
+            <TextBlock Text="{Binding TopicCount, StringFormat={}{0:N0}}" Classes="statValue" />
+            <TextBlock Text="Publish destinations" Classes="muted" />
+          </StackPanel>
+        </Border>
+        <Border Classes="card" Margin="0,0,12,0">
+          <StackPanel Spacing="8">
+            <TextBlock Text="SUBSCRIPTIONS" Classes="eyebrow" />
+            <TextBlock Text="{Binding SubscriptionCount, StringFormat={}{0:N0}}" Classes="statValue" />
+            <TextBlock Text="Topic consumers" Classes="muted" />
+          </StackPanel>
+        </Border>
+        <Border Classes="card" Margin="0,0,12,0">
+          <StackPanel Spacing="8">
+            <TextBlock Text="ACTIVE" Classes="eyebrow" />
+            <TextBlock Text="{Binding ActiveMessageCount, StringFormat={}{0:N0}}" Classes="statValue accent" />
+            <TextBlock Text="Messages available" Classes="muted" />
+          </StackPanel>
+        </Border>
+        <Border Classes="card dangerCard">
+          <StackPanel Spacing="8">
+            <TextBlock Text="DEAD LETTERS" Classes="eyebrow danger" />
+            <TextBlock Text="{Binding DeadLetterCount, StringFormat={}{0:N0}}" Classes="statValue danger" />
+            <TextBlock Text="DLQ + transfer DLQ" Classes="muted" />
+          </StackPanel>
+        </Border>
+      </UniformGrid>
+
+      <Grid ColumnDefinitions="1.3*,16,*">
+        <Border Grid.Column="0" Classes="card">
+          <StackPanel Spacing="16">
+            <StackPanel Spacing="4">
+              <TextBlock Text="Current environment" Classes="sectionTitle" />
+              <TextBlock Text="{Binding ConnectedProfileName}" Classes="muted" />
+            </StackPanel>
+            <Border Classes="divider" />
+            <Grid ColumnDefinitions="*,*,*">
+              <StackPanel Spacing="5">
+                <TextBlock Text="AUTHENTICATION" Classes="eyebrow" />
+                <TextBlock Text="{Binding ConnectedAuthenticationLabel}" Margin="0,0,8,0" TextWrapping="Wrap" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="5">
+                <TextBlock Text="BROWSE MODE" Classes="eyebrow" />
+                <TextBlock Text="Non-destructive Peek" Margin="0,0,8,0" TextWrapping="Wrap" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="5">
+                <TextBlock Text="WRITES" Classes="eyebrow" />
+                <TextBlock Text="{Binding WriteAccessLabel}" controls:ToneAssist.Foreground="{Binding WriteAccessTone}"
+                           FontWeight="SemiBold" Margin="0,0,8,0" TextWrapping="Wrap" />
+              </StackPanel>
+            </Grid>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Button Content="Refresh topology" Classes="quiet" Command="{Binding RefreshTopologyCommand}"
+                      ToolTip.Tip="Reload queues, topics and runtime counters (Ctrl+R)" />
+              <Button Content="Open Explorer" Classes="quiet" Command="{Binding NavigateCommand}" CommandParameter="Explorer"
+                      ToolTip.Tip="Browse queues and subscriptions (Ctrl+2)" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="2" Classes="card">
+          <StackPanel Spacing="12">
+            <TextBlock Text="DLQ scan results" Classes="sectionTitle" />
+            <TextBlock Text="Known results from scanned environments. Azure uses counters; local emulators use bounded Peek. Messages are never settled by scanning."
+                       Classes="muted" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding GlobalDlqDisplay}" FontSize="40" FontWeight="SemiBold" Classes="warning" />
+            <TextBlock Text="messages found by the latest scan" Classes="muted" />
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Button Content="Scan current environment" Classes="primary" Command="{Binding ScanCurrentEnvironmentCommand}" />
+              <Button Content="View sources" Classes="quiet" Command="{Binding NavigateCommand}" CommandParameter="DeadLetters"
+                      ToolTip.Tip="Open Messages / DLQ (Ctrl+3)" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </Grid>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

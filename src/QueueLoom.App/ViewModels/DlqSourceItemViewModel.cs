@@ -1,3 +1,4 @@
+using QueueLoom.App.Models;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.ServiceBus;
 
@@ -7,7 +8,7 @@ public sealed class DlqSourceItemViewModel(
     Guid profileId,
     string profileName,
     string environmentLabel,
-    string environmentColor,
+    Tone environmentTone,
     DeadLetterEntitySnapshot snapshot)
 {
     public Guid ProfileId { get; } = profileId;
@@ -16,7 +17,7 @@ public sealed class DlqSourceItemViewModel(
 
     public string EnvironmentLabel { get; } = environmentLabel;
 
-    public string EnvironmentColor { get; } = environmentColor;
+    public Tone EnvironmentTone { get; } = environmentTone;
 
     public DeadLetterEntitySnapshot Snapshot { get; } = snapshot;
 

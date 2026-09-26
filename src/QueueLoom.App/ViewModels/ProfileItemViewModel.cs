@@ -1,3 +1,4 @@
+using QueueLoom.App.Models;
 using QueueLoom.Core.Profiles;
 
 namespace QueueLoom.App.ViewModels;
@@ -20,13 +21,7 @@ public sealed class ProfileItemViewModel(ServiceBusProfile profile) : Observable
         _ => Profile.EnvironmentDisplayName.ToUpperInvariant()
     };
 
-    public string EnvironmentColor => Profile.Environment switch
-    {
-        EnvironmentKind.Development => "#2DD4BF",
-        EnvironmentKind.Test => "#8B7CFF",
-        EnvironmentKind.Production => "#FF6B82",
-        _ => "#FFB45E"
-    };
+    public Tone EnvironmentTone => Tones.ForEnvironment(Profile.Environment);
 
     public string Namespace => string.IsNullOrWhiteSpace(Profile.FullyQualifiedNamespace)
         ? "Namespace from secure connection string"
@@ -51,14 +46,14 @@ public sealed class ProfileItemViewModel(ServiceBusProfile profile) : Observable
             if (SetProperty(ref _isConnected, value))
             {
                 OnPropertyChanged(nameof(ConnectionLabel));
-                OnPropertyChanged(nameof(ConnectionColor));
+                OnPropertyChanged(nameof(ConnectionTone));
             }
         }
     }
 
     public string ConnectionLabel => IsConnected ? "CONNECTED" : "OFFLINE";
 
-    public string ConnectionColor => IsConnected ? "#4ADE9D" : "#91A5BD";
+    public Tone ConnectionTone => IsConnected ? Tone.Success : Tone.Neutral;
 
     internal void UpdateConnectionState(bool isConnected) => IsConnected = isConnected;
 
@@ -67,7 +62,7 @@ public sealed class ProfileItemViewModel(ServiceBusProfile profile) : Observable
         Profile = updated;
         OnPropertyChanged(nameof(Name));
         OnPropertyChanged(nameof(EnvironmentLabel));
-        OnPropertyChanged(nameof(EnvironmentColor));
+        OnPropertyChanged(nameof(EnvironmentTone));
         OnPropertyChanged(nameof(Namespace));
         OnPropertyChanged(nameof(AuthenticationLabel));
         OnPropertyChanged(nameof(IsProduction));

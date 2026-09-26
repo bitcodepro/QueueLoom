@@ -7,12 +7,9 @@ namespace QueueLoom.Infrastructure.Persistence;
 
 public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProperties Properties,
     MessageApplicationProperty[] ApplicationProperties, string Origin);
-public sealed record ReplayPlan(Guid Id, Guid ProfileId, ServiceBusEntityReference Destination,
-    DateTimeOffset CreatedAt, int Count, int MessagesPerSecond, bool PreserveMessageIds, string? Namespace = null);
-public sealed record ReplayProgress(Guid Id, int Sent, int Total, string Status);
 
 /// <summary>Durable, resumable copy operation. Never settles original messages.</summary>
-public sealed class BatchReplayStore(string root)
+public sealed class BatchReplayStore(string root) : IBatchReplayStore
 {
     public string RootDirectory => Path.GetFullPath(root);
     private string DirectoryFor(Guid id) => Path.Combine(RootDirectory, id.ToString("N"));

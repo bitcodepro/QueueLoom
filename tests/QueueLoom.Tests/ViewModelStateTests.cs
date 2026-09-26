@@ -719,7 +719,7 @@ public sealed partial class ViewModelStateTests
             Guid.NewGuid(),
             "Development",
             "DEV",
-            "#2DD4BF",
+            Tone.Accent,
             new DeadLetterEntitySnapshot(entity, 1));
 
     private static BrowsedMessage SearchMessage(
