@@ -69,7 +69,7 @@
           <Border Classes="divider" Margin="0,0,0,4" />
           <Button Classes="quiet" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
                   Command="{Binding CycleThemeCommand}"
-                  ToolTip.Tip="Switch between system, light and dark themes"
+                  ToolTip.Tip="Switch between dark, light and system themes"
                   AutomationProperties.Name="{Binding ThemeLabel}">
             <StackPanel Orientation="Horizontal" Spacing="10">
               <PathIcon Data="{x:Static controls:Icons.Theme}" Width="14" Height="14" />

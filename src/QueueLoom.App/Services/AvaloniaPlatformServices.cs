@@ -96,11 +96,17 @@ public sealed class WindowNotificationService(TopLevelAccessor topLevel) : INoti
             return;
         }
 
-        _manager ??= new WindowNotificationManager(host)
+        if (_manager is null)
         {
-            Position = NotificationPosition.BottomRight,
-            MaxItems = 3
-        };
+            _manager = new WindowNotificationManager(host)
+            {
+                Position = NotificationPosition.BottomRight,
+                MaxItems = 3
+            };
+            // The manager drops notifications until its template exists; apply it now so
+            // the very first toast is not lost.
+            _manager.ApplyTemplate();
+        }
         _manager.Show(new Notification(title, message, ToNotificationType(tone), DisplayTime));
     }
 

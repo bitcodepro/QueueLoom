@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using QueueLoom.App.Commands;
 using Microsoft.Extensions.Logging;
@@ -23,7 +24,7 @@ public sealed partial class MainWindowViewModel
     private bool _browseDisplayLimit;
     private decimal? _purgeLimitPerSource = 1000;
     private bool _hasDlqScan;
-    public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0") : "—";
+    public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0", CultureInfo.CurrentCulture) : "—";
     public decimal? PurgeLimitPerSource
     {
         get => _purgeLimitPerSource;

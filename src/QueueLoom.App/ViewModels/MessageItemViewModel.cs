@@ -1,3 +1,4 @@
+using System.Globalization;
 using QueueLoom.App.Models;
 using System.Text;
 using System.Text.Json;
@@ -65,7 +66,7 @@ public sealed class MessageItemViewModel
 
     public string Subject => Message.Properties.Subject ?? "—";
 
-    public string EnqueuedAt => Message.EnqueuedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
+    public string EnqueuedAt => Message.EnqueuedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "—";
 
     public string DeadLetterReason => Message.DeadLetterReason ?? "—";
 

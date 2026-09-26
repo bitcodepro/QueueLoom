@@ -2,14 +2,14 @@ namespace QueueLoom.Core.Settings;
 
 public enum AppThemePreference
 {
-    System,
+    Dark,
     Light,
-    Dark
+    System
 }
 
 public sealed record AppSettings(
     int MonitorIntervalSeconds = AppSettings.DefaultMonitorIntervalSeconds,
-    AppThemePreference Theme = AppThemePreference.System)
+    AppThemePreference Theme = AppThemePreference.Dark)
 {
     public const int DefaultMonitorIntervalSeconds = 60;
     public const int MinimumMonitorIntervalSeconds = 15;
@@ -23,6 +23,6 @@ public sealed record AppSettings(
             MonitorIntervalSeconds,
             MinimumMonitorIntervalSeconds,
             MaximumMonitorIntervalSeconds),
-        Theme = Enum.IsDefined(Theme) ? Theme : AppThemePreference.System
+        Theme = Enum.IsDefined(Theme) ? Theme : AppThemePreference.Dark
     };
 }

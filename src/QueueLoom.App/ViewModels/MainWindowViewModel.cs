@@ -222,7 +222,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             () => !IsBusy && IsConnected && CanWrite &&
                   !HasDraftEnvironmentMismatch && SelectedDestination is not null);
         ToggleMonitorCommand = new AsyncRelayCommand(
-            ToggleMonitorAsync,
+            token => RunGuardedAsync("Monitor", ToggleMonitorAsync, token),
             () => IsMonitoring || (!IsBusy && Profiles.Count > 0));
         UnlockWritesCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Unlocking writes", UnlockWritesAsync, token, allowCancellation: false),
@@ -306,7 +306,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             }
 
             OnPropertyChanged(nameof(CurrentPage));
-            NotifyPageVisibility();
             if (CurrentPage == NavigationPage.Backups && _backupRepository is not null)
             {
                 if (IsBusy)
@@ -324,15 +323,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     public NavigationPage CurrentPage => Enum.TryParse<NavigationPage>(SelectedNavigation.Key, out var page)
         ? page
         : NavigationPage.Overview;
-
-    public bool IsOverviewVisible => CurrentPage == NavigationPage.Overview;
-    public bool IsExplorerVisible => CurrentPage == NavigationPage.Explorer;
-    public bool IsDeadLettersVisible => CurrentPage == NavigationPage.DeadLetters;
-    public bool IsBackupsVisible => CurrentPage == NavigationPage.Backups;
-    public bool IsComposerVisible => CurrentPage == NavigationPage.Composer;
-    public bool IsMonitorsVisible => CurrentPage == NavigationPage.Monitors;
-    public bool IsEnvironmentsVisible => CurrentPage == NavigationPage.Environments;
-    public bool IsActivityVisible => CurrentPage == NavigationPage.Activity;
 
     public bool IsBusy
     {
@@ -466,6 +456,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         }
     }
 
+    /// <summary>
+    /// Runs work that must not take the busy state (the monitor toggle stays available while
+    /// other operations run) but whose failures must still reach the operator, not crash the app.
+    /// </summary>
+    private async Task RunGuardedAsync(string operation, Func<CancellationToken, Task> action, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await action(cancellationToken).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "{Operation} failed", operation);
+            ErrorText = SanitizeException(exception);
+            AddActivity("Error", operation, ErrorText);
+        }
+    }
+
     private void CancelCurrentOperation()
     {
         if (_currentOperationCancellation is null)
@@ -507,18 +518,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private void NavigateTo(NavigationPage page)
     {
         SelectedNavigation = Navigation.First(item => item.Key == page.ToString());
-    }
-
-    private void NotifyPageVisibility()
-    {
-        OnPropertyChanged(nameof(IsOverviewVisible));
-        OnPropertyChanged(nameof(IsExplorerVisible));
-        OnPropertyChanged(nameof(IsDeadLettersVisible));
-        OnPropertyChanged(nameof(IsBackupsVisible));
-        OnPropertyChanged(nameof(IsComposerVisible));
-        OnPropertyChanged(nameof(IsMonitorsVisible));
-        OnPropertyChanged(nameof(IsEnvironmentsVisible));
-        OnPropertyChanged(nameof(IsActivityVisible));
     }
 
     private void NotifyCommandStates()

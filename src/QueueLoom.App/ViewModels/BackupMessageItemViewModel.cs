@@ -1,3 +1,4 @@
+using System.Globalization;
 using QueueLoom.App.Models;
 using QueueLoom.Core.ServiceBus;
 
@@ -34,9 +35,9 @@ public sealed class BackupMessageItemViewModel(DeadLetterBackupSummary summary)
 
     public string Subject => Summary.Subject ?? "—";
 
-    public string EnqueuedAt => Summary.EnqueuedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
+    public string EnqueuedAt => Summary.EnqueuedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "—";
 
-    public string BackedUpAt => Summary.BackedUpAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    public string BackedUpAt => Summary.BackedUpAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
     public string BodySize => $"{Summary.BodySize:N0} bytes";
 

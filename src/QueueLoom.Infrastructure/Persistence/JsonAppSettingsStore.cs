@@ -112,6 +112,6 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
     {
         public int SchemaVersion { get; set; } = 1;
         public int MonitorIntervalSeconds { get; set; } = DefaultMonitorIntervalSeconds;
-        public AppThemePreference Theme { get; set; } = AppThemePreference.System;
+        public AppThemePreference Theme { get; set; } = AppThemePreference.Dark;
     }
 }

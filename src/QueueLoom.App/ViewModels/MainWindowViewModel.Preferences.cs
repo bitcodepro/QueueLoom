@@ -7,7 +7,7 @@ namespace QueueLoom.App.ViewModels;
 public sealed partial class MainWindowViewModel
 {
     private readonly IThemeService? _theme;
-    private AppThemePreference _themePreference = AppThemePreference.System;
+    private AppThemePreference _themePreference = AppThemePreference.Dark;
 
     public RelayCommand CycleThemeCommand { get; private set; } = null!;
 
@@ -28,8 +28,8 @@ public sealed partial class MainWindowViewModel
     public string ThemeLabel => ThemePreference switch
     {
         AppThemePreference.Light => "Light theme",
-        AppThemePreference.Dark => "Dark theme",
-        _ => "System theme"
+        AppThemePreference.System => "System theme",
+        _ => "Dark theme"
     };
 
     /// <summary>Applies stored preferences without treating them as user edits.</summary>
@@ -44,9 +44,9 @@ public sealed partial class MainWindowViewModel
     {
         CycleThemeCommand = new RelayCommand(() => ThemePreference = ThemePreference switch
         {
-            AppThemePreference.System => AppThemePreference.Light,
-            AppThemePreference.Light => AppThemePreference.Dark,
-            _ => AppThemePreference.System
+            AppThemePreference.Dark => AppThemePreference.Light,
+            AppThemePreference.Light => AppThemePreference.System,
+            _ => AppThemePreference.Dark
         });
     }
 }

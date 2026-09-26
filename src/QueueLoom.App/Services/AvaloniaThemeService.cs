@@ -6,7 +6,7 @@ namespace QueueLoom.App.Services;
 
 public sealed class AvaloniaThemeService : IThemeService
 {
-    public AppThemePreference Preference { get; private set; } = AppThemePreference.System;
+    public AppThemePreference Preference { get; private set; } = AppThemePreference.Dark;
 
     public void Apply(AppThemePreference preference)
     {

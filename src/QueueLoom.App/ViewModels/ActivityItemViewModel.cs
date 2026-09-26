@@ -1,3 +1,4 @@
+using System.Globalization;
 using QueueLoom.App.Models;
 using QueueLoom.Core.ServiceBus;
 
@@ -10,7 +11,7 @@ public sealed record ActivityItemViewModel(
     string Details,
     ServiceBusEntityReference? Source = null)
 {
-    public string Time => Timestamp.ToLocalTime().ToString("HH:mm:ss");
+    public string Time => Timestamp.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
     public Tone LevelTone => Tones.ForActivityLevel(Level);
 

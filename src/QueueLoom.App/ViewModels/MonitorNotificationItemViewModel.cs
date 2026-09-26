@@ -1,3 +1,4 @@
+using System.Globalization;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
@@ -42,6 +43,6 @@ public sealed class MonitorNotificationItemViewModel(
         }
     }
 
-    public string FirstDetectedText => FirstDetectedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-    public string LastDetectedText => LastDetectedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    public string FirstDetectedText => FirstDetectedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    public string LastDetectedText => LastDetectedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 }

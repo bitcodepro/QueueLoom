@@ -161,6 +161,21 @@ public sealed class MainWindowUiTests
     });
 
     [Fact]
+    public Task Toasts_AreShownInTheWindow() => UiSession.RunAsync(async () =>
+    {
+        await using var fixture = await WindowFixture.OpenAsync(connect: false);
+        var toasts = new QueueLoom.App.Services.WindowNotificationService(
+            new QueueLoom.App.Services.TopLevelAccessor { Current = fixture.Window });
+
+        toasts.Show("Copied to clipboard", "orders", QueueLoom.App.Services.NotificationTone.Success);
+        await fixture.SettleAsync();
+        fixture.Window.UpdateLayout();
+
+        var card = fixture.Window.GetVisualDescendants().OfType<Avalonia.Controls.Notifications.NotificationCard>().Single();
+        Assert.True(card.IsVisible);
+    });
+
+    [Fact]
     public Task Screenshots_AreWrittenWhenRequested() => UiSession.RunAsync(async () =>
     {
         var directory = Environment.GetEnvironmentVariable("QUEUELOOM_SCREENSHOT_DIR");
