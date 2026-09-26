@@ -1,10 +1,11 @@
+using QueueLoom.App.Models;
 namespace QueueLoom.App.ViewModels;
 
 public sealed class DeadLetterEnvironmentFilterItemViewModel(
     Guid? profileId,
     string name,
     string environmentLabel,
-    string environmentColor)
+    Tone environmentTone)
 {
     public Guid? ProfileId { get; } = profileId;
 
@@ -12,7 +13,7 @@ public sealed class DeadLetterEnvironmentFilterItemViewModel(
 
     public string EnvironmentLabel { get; } = environmentLabel;
 
-    public string EnvironmentColor { get; } = environmentColor;
+    public Tone EnvironmentTone { get; } = environmentTone;
 
     public bool IsAllEnvironments => ProfileId is null;
 

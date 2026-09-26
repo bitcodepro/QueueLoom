@@ -1,0 +1,42 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:controls="using:QueueLoom.App.Controls"
+             x:Class="QueueLoom.App.Views.MessageDetailsView"
+             x:DataType="vm:MessageItemViewModel">
+  <!-- Body, broker properties and dead-letter reason of one message; shared by Messages and Backups. -->
+  <TabControl Padding="0,6,0,0">
+    <TabItem Header="Body">
+      <Border Classes="callout" Padding="0" ClipToBounds="True">
+        <controls:CodeEditor Text="{Binding BodyDisplayText, Mode=OneWay}" IsReadOnly="True"
+                             AutomationProperties.Name="Message body" />
+      </Border>
+    </TabItem>
+    <TabItem Header="Properties">
+      <Border Classes="callout" Padding="0" ClipToBounds="True">
+        <controls:CodeEditor Text="{Binding PropertiesJson, Mode=OneWay}" IsReadOnly="True"
+                             AutomationProperties.Name="Message properties" />
+      </Border>
+    </TabItem>
+    <TabItem Header="Dead-letter reason">
+      <StackPanel Margin="4,12" Spacing="10">
+        <TextBlock Text="{Binding DeadLetterReason}" Classes="danger" FontWeight="SemiBold" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding DeadLetterDescription}" Classes="muted" TextWrapping="Wrap" />
+        <Grid ColumnDefinitions="Auto,16,Auto,16,Auto" Margin="0,6,0,0">
+          <StackPanel Spacing="3">
+            <TextBlock Text="DELIVERY COUNT" Classes="eyebrow" />
+            <TextBlock Text="{Binding DeliveryCount}" />
+          </StackPanel>
+          <StackPanel Grid.Column="2" Spacing="3">
+            <TextBlock Text="CONTENT TYPE" Classes="eyebrow" />
+            <TextBlock Text="{Binding ContentType}" />
+          </StackPanel>
+          <StackPanel Grid.Column="4" Spacing="3">
+            <TextBlock Text="ENQUEUED" Classes="eyebrow" />
+            <TextBlock Text="{Binding EnqueuedAt}" />
+          </StackPanel>
+        </Grid>
+      </StackPanel>
+    </TabItem>
+  </TabControl>
+</UserControl>

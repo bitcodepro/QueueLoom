@@ -1,0 +1,170 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:controls="using:QueueLoom.App.Controls"
+             x:Class="QueueLoom.App.Views.Pages.ComposerPage"
+             x:DataType="vm:MainWindowViewModel">
+  <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Composer" Classes="pageTitle" />
+        <TextBlock Text="{Binding DraftOriginNotice}" Classes="muted" TextWrapping="Wrap" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Bottom">
+        <TextBlock Text="{Binding DraftSizeText}" Classes="muted" VerticalAlignment="Center" />
+        <Button Content="Format JSON" Classes="quiet" Command="{Binding FormatJsonCommand}"
+                ToolTip.Tip="Indent the JSON body and point at the first syntax error (Ctrl+Shift+F)" />
+        <Button Content="Send message" Classes="primary" Command="{Binding SendDraftCommand}"
+                ToolTip.Tip="Send one message to the selected destination" />
+      </StackPanel>
+    </Grid>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,8,360">
+      <Border Grid.Column="0" Classes="card flush" MinWidth="300">
+        <Grid RowDefinitions="Auto,*">
+          <Border Classes="tableHeader" Padding="15,7">
+            <Grid ColumnDefinitions="*,170">
+              <TextBlock Text="BODY" Classes="eyebrow" VerticalAlignment="Center" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding MessageBodyFormats}" SelectedItem="{Binding DraftBodyFormat}"
+                        HorizontalAlignment="Stretch" AutomationProperties.Name="Body format" />
+            </Grid>
+          </Border>
+          <controls:CodeEditor Grid.Row="1" Text="{Binding DraftBody}" HighlightJson="{Binding IsDraftBodyJson}"
+                               ErrorLine="{Binding DraftBodyErrorLine}"
+                               Background="{DynamicResource SurfaceSunkenBrush}"
+                               AutomationProperties.Name="Message body" />
+        </Grid>
+      </Border>
+
+      <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" Background="Transparent" />
+
+      <Border Grid.Column="2" Classes="card flush" MinWidth="300">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Margin="18" Spacing="15">
+            <StackPanel Spacing="7">
+              <TextBlock Text="DESTINATION" Classes="eyebrow" />
+              <ComboBox ItemsSource="{Binding Destinations}" SelectedItem="{Binding SelectedDestination}"
+                        HorizontalAlignment="Stretch" IsEnabled="{Binding !IsBusy}"
+                        PlaceholderText="Choose queue or topic" AutomationProperties.Name="Destination">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:DestinationItemViewModel">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                 TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                      <TextBlock Grid.Column="1" Text="{Binding KindLabel}" Classes="eyebrow" Margin="8,0,0,0" />
+                    </Grid>
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+            </StackPanel>
+
+            <Border Classes="warningAlert" IsVisible="{Binding HasDraftEnvironmentMismatch}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Draft is pinned to another environment" Classes="warning" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding DraftEnvironmentWarning}" TextWrapping="Wrap" />
+                <Button Content="Start a new message here" Classes="quiet" Command="{Binding NewMessageCommand}" HorizontalAlignment="Left" />
+              </StackPanel>
+            </Border>
+
+            <Border Classes="alert" IsVisible="{Binding !CanWrite}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Write access is locked" Classes="danger" FontWeight="SemiBold" />
+                <TextBlock Text="Unlock writes temporarily before sending. Production always requires an explicit typed confirmation."
+                           TextWrapping="Wrap" />
+                <Button Content="Unlock for 10 minutes" Classes="danger" Command="{Binding UnlockWritesCommand}"
+                        HorizontalAlignment="Left" />
+              </StackPanel>
+            </Border>
+
+            <StackPanel Spacing="7">
+              <TextBlock Text="MESSAGE ID" Classes="eyebrow" />
+              <Grid ColumnDefinitions="*,8,Auto">
+                <TextBox Text="{Binding DraftMessageId}" AutomationProperties.Name="Message ID" />
+                <Button Grid.Column="2" Content="New ID" Command="{Binding GenerateMessageIdCommand}" Classes="quiet"
+                        ToolTip.Tip="Generate a new random Message ID" />
+              </Grid>
+            </StackPanel>
+            <StackPanel Spacing="7">
+              <TextBlock Text="CORRELATION ID" Classes="eyebrow" />
+              <TextBox Text="{Binding DraftCorrelationId}" AutomationProperties.Name="Correlation ID" />
+            </StackPanel>
+            <Grid ColumnDefinitions="*,10,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="SUBJECT" Classes="eyebrow" />
+                <TextBox AutomationProperties.Name="Subject" Text="{Binding DraftSubject}" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="CONTENT TYPE" Classes="eyebrow" />
+                <TextBox AutomationProperties.Name="Content type" Text="{Binding DraftContentType}" />
+              </StackPanel>
+            </Grid>
+            <Grid ColumnDefinitions="*,10,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="SESSION ID" Classes="eyebrow" />
+                <TextBox AutomationProperties.Name="Session ID" Text="{Binding DraftSessionId}" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="TTL · SECONDS" Classes="eyebrow" />
+                <TextBox AutomationProperties.Name="Time to live in seconds" Text="{Binding DraftTimeToLiveSeconds}" />
+              </StackPanel>
+            </Grid>
+
+            <Expander Header="Advanced broker properties" HorizontalAlignment="Stretch">
+              <StackPanel Spacing="11" Margin="0,6,0,0">
+                <Grid ColumnDefinitions="*,10,*">
+                  <StackPanel Grid.Column="0" Spacing="7">
+                    <TextBlock Text="TO" Classes="eyebrow" />
+                    <TextBox AutomationProperties.Name="To" Text="{Binding DraftTo}" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="2" Spacing="7">
+                    <TextBlock Text="REPLY TO" Classes="eyebrow" />
+                    <TextBox AutomationProperties.Name="Reply to" Text="{Binding DraftReplyTo}" />
+                  </StackPanel>
+                </Grid>
+                <Grid ColumnDefinitions="*,10,*">
+                  <StackPanel Grid.Column="0" Spacing="7">
+                    <TextBlock Text="REPLY-TO SESSION ID" Classes="eyebrow" />
+                    <TextBox AutomationProperties.Name="Reply-to session ID" Text="{Binding DraftReplyToSessionId}" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="2" Spacing="7">
+                    <TextBlock Text="PARTITION KEY" Classes="eyebrow" />
+                    <TextBox AutomationProperties.Name="Partition key" Text="{Binding DraftPartitionKey}" />
+                  </StackPanel>
+                </Grid>
+                <StackPanel Spacing="7">
+                  <TextBlock Text="TRANSACTION PARTITION KEY" Classes="eyebrow" />
+                  <TextBox AutomationProperties.Name="Transaction partition key" Text="{Binding DraftTransactionPartitionKey}" />
+                </StackPanel>
+                <StackPanel Spacing="7">
+                  <TextBlock Text="SCHEDULED ENQUEUE · ISO 8601" Classes="eyebrow" />
+                  <TextBox AutomationProperties.Name="Scheduled enqueue time" Text="{Binding DraftScheduledEnqueueTime}"
+                           PlaceholderText="2026-08-11T14:30:00Z" />
+                </StackPanel>
+                <TextBlock Text="If Session ID and Partition Key are both set, Azure requires identical values."
+                           Classes="muted" FontSize="11" TextWrapping="Wrap" />
+              </StackPanel>
+            </Expander>
+
+            <StackPanel Spacing="7">
+              <TextBlock Text="TYPED APPLICATION PROPERTIES" Classes="eyebrow" />
+              <Grid ColumnDefinitions="*,8,130">
+                <TextBox Text="{Binding PropertyName}" PlaceholderText="Name" AutomationProperties.Name="Application property name" />
+                <ComboBox Grid.Column="2" ItemsSource="{Binding PropertyTypes}" SelectedItem="{Binding PropertyType}"
+                          HorizontalAlignment="Stretch" AutomationProperties.Name="Application property type" />
+              </Grid>
+              <Grid ColumnDefinitions="*,8,Auto">
+                <TextBox Text="{Binding PropertyValue}" PlaceholderText="Value" AutomationProperties.Name="Application property value" />
+                <Button Grid.Column="2" Content="Add / replace" Command="{Binding AddApplicationPropertyCommand}" Classes="quiet" />
+              </Grid>
+              <TextBlock Text="Format: { property: { type: String, value: text } }" Classes="muted" FontSize="11" />
+              <Border Classes="callout" Padding="0" Height="170" ClipToBounds="True">
+                <controls:CodeEditor Text="{Binding DraftApplicationProperties}"
+                                     AutomationProperties.Name="Typed application properties JSON" />
+              </Border>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>

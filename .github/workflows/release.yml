@@ -1,0 +1,64 @@
+name: Release from tag
+
+# Releases normally happen automatically after a merge to main (see ci.yml).
+# Pushing a tag by hand still works, e.g. for a pre-release:
+#   git tag v1.2.0-rc.1 && git push origin v1.2.0-rc.1
+# Tags with a suffix such as -rc.1 are published as pre-releases.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  release:
+    name: Test, package and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Read version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Tag '$tag' is not a semantic version such as v1.2.3 or v1.2.3-rc.1."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Restore (locked)
+        run: dotnet restore QueueLoom.slnx --locked-mode
+
+      - name: Test
+        run: dotnet test QueueLoom.slnx -c Release --no-restore
+
+      - name: Package
+        id: package
+        uses: ./.github/actions/package-windows
+        with:
+          version: ${{ steps.version.outputs.version }}
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $flags = @('--verify-tag', '--generate-notes', '--title', '${{ github.ref_name }}')
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { $flags += '--prerelease' }
+          gh release create '${{ github.ref_name }}' '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.checksum }}' @flags

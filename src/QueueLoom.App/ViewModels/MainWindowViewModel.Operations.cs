@@ -1,6 +1,10 @@
+using System.Globalization;
 using System.Text.Json;
 using QueueLoom.App.Commands;
+using Microsoft.Extensions.Logging;
+using QueueLoom.App.Services;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.App.Serialization;
 using QueueLoom.Core.Validation;
@@ -20,7 +24,7 @@ public sealed partial class MainWindowViewModel
     private bool _browseDisplayLimit;
     private decimal? _purgeLimitPerSource = 1000;
     private bool _hasDlqScan;
-    public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0") : "—";
+    public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0", CultureInfo.CurrentCulture) : "—";
     public decimal? PurgeLimitPerSource
     {
         get => _purgeLimitPerSource;
@@ -42,6 +46,8 @@ public sealed partial class MainWindowViewModel
     public RelayCommand FormatJsonCommand { get; private set; } = null!;
     public RelayCommand GenerateMessageIdCommand { get; private set; } = null!;
     public RelayCommand AddApplicationPropertyCommand { get; private set; } = null!;
+    public RelayCommand<string> CopyTextCommand { get; private set; } = null!;
+    public AsyncRelayCommand OpenBackupsFolderCommand { get; private set; } = null!;
     public string PropertyName { get; set; } = string.Empty;
     public string PropertyValue { get; set; } = string.Empty;
     public ApplicationPropertyType PropertyType { get; set; } = ApplicationPropertyType.String;
@@ -68,9 +74,14 @@ public sealed partial class MainWindowViewModel
             {
                 using var document = JsonDocument.Parse(DraftBody);
                 DraftBody = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+                DraftBodyErrorLine = null;
                 ErrorText = string.Empty;
             }
-            catch (JsonException exception) { ErrorText = $"JSON: line {exception.LineNumber + 1}, column {exception.BytePositionInLine + 1}: {exception.Message}"; }
+            catch (JsonException exception)
+            {
+                DraftBodyErrorLine = exception.LineNumber is { } line ? (int)line + 1 : null;
+                ErrorText = $"JSON: line {exception.LineNumber + 1}, column {exception.BytePositionInLine + 1}: {exception.Message}";
+            }
         }, () => !IsBusy);
         GenerateMessageIdCommand = new RelayCommand(() => DraftMessageId = Guid.NewGuid().ToString("N"), () => !IsBusy);
         AddApplicationPropertyCommand = new RelayCommand(() =>
@@ -88,6 +99,10 @@ public sealed partial class MainWindowViewModel
             }
             catch (Exception exception) { ErrorText = SanitizeException(exception); }
         }, () => !IsBusy);
+        CopyTextCommand = new RelayCommand<string>(text => _ = CopyTextAsync(text), text => !string.IsNullOrEmpty(text));
+        OpenBackupsFolderCommand = new AsyncRelayCommand(
+            OpenBackupsFolderAsync,
+            () => _backupRepository is not null && _launcher is not null);
         InitializeReplayFeatures();
         Messages.CollectionChanged += (_, _) => NotifyBrowseFeatures();
         Entities.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasEntities));
@@ -118,7 +133,7 @@ public sealed partial class MainWindowViewModel
             if (Messages.Count >= 1000 || bytes + message.Body.Length > 32 * 1024 * 1024)
             { _browseExhausted = true; _browseDisplayLimit = true; break; }
             if (!seen.Add(message.SequenceNumber)) continue;
-            Messages.Add(new MessageItemViewModel(message, profile.Id, profile.Name, profile.EnvironmentLabel, profile.EnvironmentColor));
+            Messages.Add(new MessageItemViewModel(message, profile.Id, profile.Name, profile.EnvironmentLabel, profile.EnvironmentTone));
             bytes += message.Body.Length;
             _browseCursor = message.SequenceNumber == long.MaxValue ? null : message.SequenceNumber + 1;
             if (message.SequenceNumber == long.MaxValue) _browseExhausted = true;
@@ -139,7 +154,7 @@ public sealed partial class MainWindowViewModel
     }
 
     private ActivityRecord MakeActivity(string level, string action, string details, ServiceBusEntityReference? source) =>
-        new(_operationId, DateTimeOffset.UtcNow, level, action, SensitiveValuePattern.Replace(details, "$1=[REDACTED]"),
+        new(_operationId, DateTimeOffset.UtcNow, level, action, SensitiveDataRedactor.Redact(details),
             ConnectedProfileId, _connectedProfile?.Name, source);
 
     private void RecordOperationIntent(string action, string details, ServiceBusEntityReference? source)
@@ -153,6 +168,50 @@ public sealed partial class MainWindowViewModel
     {
         try { _activityJournal?.Append(MakeActivity(level, action, details, source)); }
         catch (Exception exception) { ErrorText = $"Activity journal could not be saved: {SanitizeException(exception)}"; }
+    }
+
+    private void LogActivity(string level, string action, string details, ServiceBusEntityReference? source)
+    {
+        var logLevel = level switch
+        {
+            "Error" => LogLevel.Error,
+            "Warning" => LogLevel.Warning,
+            _ => LogLevel.Information
+        };
+        _logger.Log(logLevel, "{Action}: {Details} ({Source})", action, details, source?.DisplayName ?? "namespace");
+    }
+
+    /// <summary>Copies operator-visible text and confirms the result with a short toast.</summary>
+    public async Task CopyTextAsync(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        var copied = _clipboard is not null && await _clipboard.SetTextAsync(text).ConfigureAwait(true);
+        var preview = text.Length > 80 ? text[..80] + "…" : text;
+        StatusText = copied ? $"Copied: {preview}" : "The clipboard is unavailable; nothing was copied.";
+        _notifications?.Show(
+            copied ? "Copied to clipboard" : "Copy failed",
+            copied ? preview : "The clipboard is unavailable; nothing was copied.",
+            copied ? NotificationTone.Success : NotificationTone.Warning);
+    }
+
+    private async Task OpenBackupsFolderAsync(CancellationToken cancellationToken)
+    {
+        if (_backupRepository is null || _launcher is null)
+        {
+            return;
+        }
+
+        if (!await _launcher.OpenFolderAsync(_backupRepository.RootDirectory).ConfigureAwait(true))
+        {
+            _notifications?.Show(
+                "Could not open folder",
+                $"Open it manually: {_backupRepository.RootDirectory}",
+                NotificationTone.Warning);
+        }
     }
 
     private void LoadActivityHistory()

@@ -1,3 +1,5 @@
+using System.Globalization;
+using QueueLoom.App.Models;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
@@ -9,15 +11,9 @@ public sealed record ActivityItemViewModel(
     string Details,
     ServiceBusEntityReference? Source = null)
 {
-    public string Time => Timestamp.ToLocalTime().ToString("HH:mm:ss");
+    public string Time => Timestamp.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
-    public string LevelColor => Level switch
-    {
-        "Error" => "#FF6B82",
-        "Warning" => "#FFB45E",
-        "Success" => "#4ADE9D",
-        _ => "#91A5BD"
-    };
+    public Tone LevelTone => Tones.ForActivityLevel(Level);
 
     public string EntityName => Source?.Name ?? string.Empty;
 

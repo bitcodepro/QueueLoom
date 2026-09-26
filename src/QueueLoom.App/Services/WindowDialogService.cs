@@ -6,7 +6,7 @@ using QueueLoom.Core.Profiles;
 
 namespace QueueLoom.App.Services;
 
-public sealed class WindowDialogService(Window owner) : IUserDialogService
+public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogService
 {
     public Task<ProfileEditorResult?> EditProfileAsync(
         ServiceBusProfile? profile,
@@ -71,7 +71,7 @@ public sealed class WindowDialogService(Window owner) : IUserDialogService
         using var registration = cancellationToken.Register(
             static state => Dispatcher.UIThread.Post(((Window)state!).Close),
             dialog);
-        var result = await dialog.ShowDialog<T>(owner).ConfigureAwait(true);
+        var result = await dialog.ShowDialog<T>(owner.Window).ConfigureAwait(true);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
     }

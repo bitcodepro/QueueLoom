@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using QueueLoom.Core.Abstractions;
@@ -9,7 +10,7 @@ public sealed class FileActivityJournal(string directory) : IActivityJournal
 {
     public void Append(ActivityRecord record)
     {
-        var day = Path.Combine(directory, record.Timestamp.UtcDateTime.ToString("yyyy-MM-dd"));
+        var day = Path.Combine(directory, record.Timestamp.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
         Directory.CreateDirectory(day);
         AtomicFile.RestrictDirectoryToCurrentUser(day);
         var target = Path.Combine(day, $"{record.Timestamp.UtcTicks}-{Guid.NewGuid():N}.json");

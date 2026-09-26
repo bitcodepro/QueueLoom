@@ -1,0 +1,72 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:controls="using:QueueLoom.App.Controls"
+             x:Class="QueueLoom.App.Views.Pages.EnvironmentsPage"
+             x:DataType="vm:MainWindowViewModel">
+  <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Environments" Classes="pageTitle" />
+        <TextBlock Text="Saved namespaces. Connection strings are encrypted on this device." Classes="muted" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
+        <Button Content="Edit" Classes="quiet" Command="{Binding EditEnvironmentCommand}" />
+        <Button Content="Delete" Classes="danger" Command="{Binding DeleteEnvironmentCommand}" />
+        <Button Content="Add environment" Classes="primary" Command="{Binding AddEnvironmentCommand}" />
+      </StackPanel>
+    </Grid>
+
+    <Border Grid.Row="2" Classes="card" Padding="10">
+      <Grid>
+        <controls:EmptyState IsVisible="{Binding !HasProfiles}"
+                             Icon="{x:Static controls:Icons.Environments}"
+                             Title="No environments yet"
+                             Description="Add an Azure Service Bus namespace using a connection string or Microsoft Entra ID, or point QueueLoom at the local emulator.">
+          <Button Content="Add environment" Classes="primary" Command="{Binding AddEnvironmentCommand}" />
+        </controls:EmptyState>
+        <ListBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
+                 IsEnabled="{Binding !IsBusy}" IsVisible="{Binding HasProfiles}"
+                 AutomationProperties.Name="Environments">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ProfileItemViewModel">
+              <Grid ColumnDefinitions="8,16,1.2*,1.5*,1.3*,Auto,Auto" MinHeight="66">
+                <Border Width="6" Height="40" CornerRadius="3" VerticalAlignment="Center"
+                        controls:ToneAssist.Background="{Binding EnvironmentTone}" />
+                <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3" Margin="0,0,12,0">
+                  <TextBlock Text="{Binding Name}" FontSize="16" FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                  <TextBlock Text="{Binding EnvironmentLabel}" Classes="eyebrow"
+                             controls:ToneAssist.Foreground="{Binding EnvironmentTone}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="3" Margin="0,0,12,0">
+                  <TextBlock Text="NAMESPACE" Classes="eyebrow" />
+                  <TextBlock Text="{Binding Namespace}" Classes="muted" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding Namespace}" />
+                </StackPanel>
+                <StackPanel Grid.Column="4" VerticalAlignment="Center" Spacing="3" Margin="0,0,12,0">
+                  <TextBlock Text="AUTHENTICATION" Classes="eyebrow" />
+                  <TextBlock Text="{Binding AuthenticationLabel}" Classes="muted"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding AuthenticationLabel}" />
+                </StackPanel>
+                <Border Grid.Column="5" Classes="pill" Margin="0,0,8,0">
+                  <Grid>
+                    <TextBlock Text="READ ONLY" Classes="eyebrow" IsVisible="{Binding IsReadOnly}" />
+                    <TextBlock Text="READ / WRITE" Classes="eyebrow warning" IsVisible="{Binding !IsReadOnly}" />
+                  </Grid>
+                </Border>
+                <Border Grid.Column="6" Classes="pill">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Border Classes="envDot" controls:ToneAssist.Background="{Binding ConnectionTone}" />
+                    <TextBlock Text="{Binding ConnectionLabel}" Classes="eyebrow" VerticalAlignment="Center"
+                               controls:ToneAssist.Foreground="{Binding ConnectionTone}" />
+                  </StackPanel>
+                </Border>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

@@ -1,0 +1,102 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:controls="using:QueueLoom.App.Controls"
+             x:Class="QueueLoom.App.Views.Pages.MonitorsPage"
+             x:DataType="vm:MainWindowViewModel">
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+    <StackPanel Margin="{StaticResource PageMargin}" Spacing="18">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Monitors" Classes="pageTitle" />
+        <TextBlock Text="Azure counter polling; local emulators use bounded Peek. No message locks are acquired." Classes="muted" />
+      </StackPanel>
+
+      <Grid ColumnDefinitions="1.25*,16,*">
+        <Border Grid.Column="0" Classes="card">
+          <StackPanel Spacing="16">
+            <TextBlock Text="Monitor settings" Classes="sectionTitle" />
+            <Grid ColumnDefinitions="*,14,180">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="SCOPE" Classes="eyebrow" />
+                <ComboBox ItemsSource="{Binding MonitorScopes}" SelectedItem="{Binding MonitorScope}"
+                          HorizontalAlignment="Stretch" IsEnabled="{Binding !IsMonitoring}"
+                          AutomationProperties.Name="Monitor scope" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="INTERVAL · SECONDS" Classes="eyebrow" />
+                <NumericUpDown Value="{Binding MonitorIntervalSeconds}" Minimum="15" Maximum="86400" Increment="15"
+                               FormatString="0" IsEnabled="{Binding !IsMonitoring}"
+                               AutomationProperties.Name="Monitor interval in seconds" />
+              </StackPanel>
+            </Grid>
+            <Border Classes="callout" IsVisible="{Binding IsSelectedSourceMonitorScope}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="SINGLE-SOURCE TARGET" Classes="eyebrow" />
+                <ComboBox ItemsSource="{Binding MonitorTargetChoices}" SelectedItem="{Binding MonitorTargetChoice}"
+                          HorizontalAlignment="Stretch" IsEnabled="{Binding !IsMonitoring}"
+                          AutomationProperties.Name="Monitor target" />
+                <TextBlock Text="{Binding MonitorTargetPreview}" Classes="muted" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+            <TextBlock Text="Minimum interval is 15 seconds. Single-source mode pins the explicit target shown above. A scan is skipped while another workspace operation is active."
+                       Classes="muted" TextWrapping="Wrap" />
+            <Button Content="{Binding MonitorButtonLabel}" Classes="primary" Command="{Binding ToggleMonitorCommand}" HorizontalAlignment="Left" />
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="2" Classes="card">
+          <StackPanel Spacing="12">
+            <TextBlock Text="STATUS" Classes="eyebrow" />
+            <TextBlock Text="{Binding MonitorStatus}" Classes="sectionTitle" TextWrapping="Wrap" />
+            <Border Classes="warningAlert" IsVisible="{Binding HasMonitorAlert}">
+              <TextBlock Text="{Binding MonitorAlert}" Classes="warning" TextWrapping="Wrap" />
+            </Border>
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Text="NOTIFICATIONS" Classes="eyebrow" VerticalAlignment="Center" />
+              <Button Grid.Column="1" Content="Clear" Classes="quiet statusAction"
+                      Command="{Binding ClearMonitorNotificationsCommand}"
+                      IsVisible="{Binding HasMonitorNotifications}" />
+            </Grid>
+            <controls:EmptyState IsVisible="{Binding !HasMonitorNotifications}" Margin="8"
+                                 Icon="{x:Static controls:Icons.Monitors}"
+                                 Title="No retained notifications"
+                                 Description="New dead letters found by the monitor are listed here until cleared." />
+            <ListBox ItemsSource="{Binding MonitorNotifications}" MaxHeight="260"
+                     IsVisible="{Binding HasMonitorNotifications}" AutomationProperties.Name="Monitor notifications">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:MonitorNotificationItemViewModel">
+                  <Grid RowDefinitions="Auto,Auto,Auto" Margin="2,4">
+                    <Grid.ContextMenu>
+                      <ContextMenu>
+                        <MenuItem Header="Copy entity name"
+                                  Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).CopyTextCommand}"
+                                  CommandParameter="{Binding EntityName}" />
+                        <MenuItem Header="Copy topic name" IsVisible="{Binding IsSubscription}"
+                                  Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).CopyTextCommand}"
+                                  CommandParameter="{Binding ParentTopicName}" />
+                      </ContextMenu>
+                    </Grid.ContextMenu>
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="{Binding SourceName}" FontWeight="SemiBold"
+                                 TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceName}" />
+                      <TextBlock Grid.Column="1" Text="{Binding Count, StringFormat={}{0:N0}}" FontWeight="Bold"
+                                 Classes="danger" Margin="10,0,0,0" />
+                    </Grid>
+                    <TextBlock Grid.Row="1" Text="{Binding EnvironmentName}" Classes="muted" FontSize="11" />
+                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+                      <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow" />
+                      <TextBlock Grid.Column="1" Text="{Binding FirstDetectedText, StringFormat='Found {0}'}"
+                                 Classes="muted" FontSize="11" />
+                    </Grid>
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <TextBlock Text="The desktop monitor runs while QueueLoom is open. Use Azure Monitor for guaranteed 24/7 alerting."
+                       Classes="muted" TextWrapping="Wrap" FontSize="12" />
+          </StackPanel>
+        </Border>
+      </Grid>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>
