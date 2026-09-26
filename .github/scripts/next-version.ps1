@@ -4,11 +4,13 @@
 
 .DESCRIPTION
   Finds the highest stable tag (pre-release tags such as v1.2.0-rc.1 are ignored) and bumps it.
-  With -Bump auto the commit message decides the part to bump:
+  Only the first line of the commit message is read: a squash merge puts every commit of the
+  pull request into the body, and prose there must not change the release.
+  With -Bump auto that line decides the part to bump:
     [major] or #major -> X+1.0.0
     [minor] or #minor -> X.Y+1.0
     anything else     -> X.Y.Z+1
-  [skip release] in the message skips the release.
+  [skip release] in that line skips the release.
   Writes version, tag and skip to $env:GITHUB_OUTPUT when it is set.
 #>
 param(
@@ -26,14 +28,16 @@ function Write-Output-Value([string] $name, [string] $value) {
     }
 }
 
-if ($CommitMessage -match '\[skip release\]') {
+$subject = ($CommitMessage -split "`r?`n", 2)[0]
+
+if ($subject -match '\[skip release\]') {
     Write-Output-Value 'skip' 'true'
     return
 }
 
 if ($Bump -eq 'auto') {
-    $Bump = if ($CommitMessage -match '\[major\]|#major') { 'major' }
-            elseif ($CommitMessage -match '\[minor\]|#minor') { 'minor' }
+    $Bump = if ($subject -match '\[major\]|#major') { 'major' }
+            elseif ($subject -match '\[minor\]|#minor') { 'minor' }
             else { 'patch' }
 }
 

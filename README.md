@@ -60,7 +60,7 @@ dotnet publish src/QueueLoom.App/QueueLoom.App.csproj -p:PublishProfile=win-x64-
 - **Pull requests** build and test on Windows and Linux; the Windows build is attached to the workflow run.
 - **Every merge to `main`** is tested again and then released automatically: the next version is taken from the latest `vX.Y.Z` tag, `QueueLoom.exe` is built with that version, and a GitHub Release with `QueueLoom-<version>-win-x64.zip`, its `.sha256` checksum and generated notes is published under the new tag.
   - The patch number is bumped by default (`1.0.0` → `1.0.1`).
-  - Put `[minor]` or `[major]` in the merge commit message (the pull request title when squash-merging) for `1.1.0` or `2.0.0`.
+  - Put `[minor]` or `[major]` in the first line of the merge commit (the pull request title when squash-merging) for `1.1.0` or `2.0.0`. Only that line is read.
   - Put `[skip release]` there to merge without releasing. Changes that only touch Markdown files, `LICENSE` or `dev/` do not release.
   - A release can also be started from **Actions → CI → Run workflow** on `main`, choosing the part to bump.
 - **Pre-releases**: push a tag by hand, e.g. `git tag v1.2.0-rc.1 && git push origin v1.2.0-rc.1`.

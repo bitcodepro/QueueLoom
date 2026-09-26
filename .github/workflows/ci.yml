@@ -2,9 +2,9 @@ name: CI
 
 # Pull requests: build and test on Windows and Linux, and attach the Windows build.
 # Merges to main: the same, then publish the next version as a GitHub Release.
-#   The patch number is bumped by default; put [minor] or [major] in the merge commit
-#   (for example in the pull request title when squash-merging) for a bigger bump,
-#   or [skip release] to merge without releasing.
+#   The patch number is bumped by default; put [minor] or [major] in the first line of the
+#   merge commit (the pull request title when squash-merging) for a bigger bump,
+#   or [skip release] there to merge without releasing.
 on:
   push:
     branches: [main]
