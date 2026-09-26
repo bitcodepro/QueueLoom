@@ -780,6 +780,101 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
             backupSession.RootDirectory);
     }
 
+    public async Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
+        DeleteDeadLetterMessagesRequest request,
+        CancellationToken cancellationToken = default,
+        IProgress<DeadLetterMessageDeletionProgress>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
+        EnsureWriteAllowed();
+
+        var profile = GetConnectedProfile();
+        var startedAt = _timeProvider.GetUtcNow();
+        var groups = request.BySubQueue.ToArray();
+        foreach (var source in groups.Select(group => group.Key.Source).Distinct())
+        {
+            await EnsureSessionlessMessageSourceAsync(source, cancellationToken).ConfigureAwait(false);
+        }
+        var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
+            .ConfigureAwait(false);
+        var results = new List<DeadLetterMessageDeletionResult>(request.Messages.Count);
+
+        for (var index = 0; index < groups.Length; index++)
+        {
+            var (source, subQueue) = groups[index].Key;
+            var selection = groups[index].ToArray();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                results.AddRange(groups.Skip(index).SelectMany(group => group).Select(key =>
+                    new DeadLetterMessageDeletionResult(key, DeadLetterMessageDeletionOutcome.Cancelled)));
+                break;
+            }
+
+            var targetNumber = index + 1;
+            var deletedBefore = results.Count(result => result.Outcome == DeadLetterMessageDeletionOutcome.Deleted);
+            progress?.Report(new DeadLetterMessageDeletionProgress(
+                source, subQueue, targetNumber, groups.Length, 0, deletedBefore));
+            try
+            {
+                await using var receiver = CreateDeadLetterLockReceiver(source, subQueue);
+                results.AddRange(await SelectiveDeadLetterDeleter.DeleteAsync(
+                        new ServiceBusDeadLetterLockReceiver(receiver),
+                        selection,
+                        (message, token) => backupSession.BackupAsync(message, source, subQueue, token),
+                        request.BatchSize,
+                        request.MaximumScannedPerSubQueue,
+                        PurgeEmptyReceiveConfirmations,
+                        PurgeReceiveWaitTime,
+                        (scanned, deleted) => progress?.Report(new DeadLetterMessageDeletionProgress(
+                            source, subQueue, targetNumber, groups.Length, scanned, deletedBefore + deleted)),
+                        cancellationToken)
+                    .ConfigureAwait(false));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                var handled = results.Select(result => result.Message).ToHashSet();
+                results.AddRange(selection.Where(key => !handled.Contains(key)).Select(key =>
+                    new DeadLetterMessageDeletionResult(key, DeadLetterMessageDeletionOutcome.Failed, exception.Message)));
+            }
+
+            await AtomicFile.WriteTextAsync(Path.Combine(backupSession.RootDirectory, "delete-result.report"),
+                System.Text.Json.JsonSerializer.Serialize(new { profileId = profile.Id, startedAt,
+                    updatedAt = _timeProvider.GetUtcNow(), messages = results }), CancellationToken.None).ConfigureAwait(false);
+        }
+
+        _cachedTopology = null;
+        return new DeleteDeadLetterMessagesResult(
+            profile.Id,
+            startedAt,
+            _timeProvider.GetUtcNow(),
+            results,
+            backupSession.RootDirectory);
+    }
+
+    private ServiceBusReceiver CreateDeadLetterLockReceiver(ServiceBusEntityReference source, ServiceBusSubQueue subQueue)
+    {
+        var options = new ServiceBusReceiverOptions
+        {
+            ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            PrefetchCount = 0,
+            SubQueue = subQueue switch
+            {
+                ServiceBusSubQueue.DeadLetter => SubQueue.DeadLetter,
+                ServiceBusSubQueue.TransferDeadLetter => SubQueue.TransferDeadLetter,
+                _ => throw new ArgumentOutOfRangeException(nameof(subQueue), subQueue, "Only dead-letter queues can be edited.")
+            }
+        };
+        return source.Kind switch
+        {
+            ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(source.Name, options),
+            ServiceBusEntityKind.Subscription => GetMessagingClient().CreateReceiver(source.TopicName!, source.Name, options),
+            _ => throw new ArgumentException("Only queues and subscriptions have dead-letter queues.", nameof(source))
+        };
+    }
+
     private async Task<DeadLetterPurgeSourceResult> PurgeSubQueueAsync(
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
