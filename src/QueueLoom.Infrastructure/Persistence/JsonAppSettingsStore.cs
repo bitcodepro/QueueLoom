@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using QueueLoom.Core.Settings;
 
 namespace QueueLoom.Infrastructure.Persistence;
@@ -8,11 +7,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
 {
     public const int DefaultMonitorIntervalSeconds = AppSettings.DefaultMonitorIntervalSeconds;
 
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed;
@@ -23,7 +18,14 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await ReadAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await ReadAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return AppSettings.Default;
+            }
         }
         finally
         {
@@ -31,7 +33,11 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         }
     }
 
-    /// <summary>Applies <paramref name="update"/> to the stored settings so unrelated preferences are preserved.</summary>
+    /// <summary>
+    /// Applies <paramref name="update"/> to the stored settings so unrelated preferences are preserved.
+    /// If the file exists but cannot be read (for example it is locked), nothing is written and the
+    /// I/O exception propagates, so a transient failure never resets the other preferences.
+    /// </summary>
     public async Task<AppSettings> UpdateAsync(
         Func<AppSettings, AppSettings> update,
         CancellationToken cancellationToken = default)
@@ -47,7 +53,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 new SettingsDocument
                 {
                     MonitorIntervalSeconds = updated.MonitorIntervalSeconds,
-                    Theme = updated.Theme
+                    Theme = updated.Theme.ToString()
                 },
                 SerializerOptions);
             paths.EnsureCreated();
@@ -77,6 +83,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         _gate.Dispose();
     }
 
+    /// <summary>Reads the file; a missing or corrupt file yields defaults, an unreadable one throws.</summary>
     private async Task<AppSettings> ReadAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(paths.SettingsFile))
@@ -98,11 +105,20 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     SerializerOptions,
                     cancellationToken)
                 .ConfigureAwait(false);
-            return document is { SchemaVersion: 1 }
-                ? new AppSettings(document.MonitorIntervalSeconds, document.Theme).Normalize()
-                : AppSettings.Default;
+            if (document is not { SchemaVersion: 1 })
+            {
+                return AppSettings.Default;
+            }
+
+            // Unknown theme names (for example from a newer version) keep the default theme
+            // instead of invalidating the whole file.
+            var theme = Enum.TryParse<AppThemePreference>(document.Theme, ignoreCase: true, out var parsed) &&
+                        Enum.IsDefined(parsed)
+                ? parsed
+                : AppSettings.Default.Theme;
+            return new AppSettings(document.MonitorIntervalSeconds, theme).Normalize();
         }
-        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
+        catch (JsonException)
         {
             return AppSettings.Default;
         }
@@ -112,6 +128,6 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
     {
         public int SchemaVersion { get; set; } = 1;
         public int MonitorIntervalSeconds { get; set; } = DefaultMonitorIntervalSeconds;
-        public AppThemePreference Theme { get; set; } = AppThemePreference.Dark;
+        public string? Theme { get; set; }
     }
 }

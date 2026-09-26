@@ -64,4 +64,38 @@ public sealed class JsonAppSettingsStoreTests
 
         Assert.Equal(new AppSettings(120, AppThemePreference.Dark), await store.LoadAsync());
     }
+
+    [Fact]
+    public async Task UnknownTheme_KeepsTheOtherSettings()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(temporaryDirectory.Path);
+        Directory.CreateDirectory(paths.RootDirectory);
+        await File.WriteAllTextAsync(paths.SettingsFile, """{"SchemaVersion":1,"MonitorIntervalSeconds":240,"Theme":"HighContrast"}""");
+
+        using var store = new JsonAppSettingsStore(paths);
+
+        Assert.Equal(new AppSettings(240, AppThemePreference.Dark), await store.LoadAsync());
+    }
+
+    [Fact]
+    public async Task UnreadableFile_IsNotOverwrittenByAnUpdate()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(temporaryDirectory.Path);
+        using (var store = new JsonAppSettingsStore(paths))
+        {
+            await store.SaveThemeAsync(AppThemePreference.Light);
+            await store.SaveMonitorIntervalSecondsAsync(300);
+        }
+        var original = await File.ReadAllTextAsync(paths.SettingsFile);
+
+        using (var store = new JsonAppSettingsStore(paths))
+        using (new FileStream(paths.SettingsFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            await Assert.ThrowsAnyAsync<IOException>(() => store.SaveThemeAsync(AppThemePreference.Dark));
+        }
+
+        Assert.Equal(original, await File.ReadAllTextAsync(paths.SettingsFile));
+    }
 }

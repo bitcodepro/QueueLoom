@@ -68,21 +68,30 @@ public sealed partial class MainWindow : Window
         _initialized = true;
         try
         {
-            var settings = await _settingsStore.LoadAsync();
-            _theme?.Apply(settings.Theme);
-            _viewModel.ApplyPreferences(settings);
-            _initializationTask = _viewModel.InitializeAsync();
+            // Assigned before the first await so a close during startup waits for it.
+            _initializationTask = InitializeAsync(_viewModel, _settingsStore);
             await _initializationTask;
             _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         }
         catch (Exception exception)
         {
             _logger?.LogError(exception, "Startup initialization failed");
-            await ShowStartupErrorAsync(exception);
+            if (!_shutdownInProgress)
+            {
+                await ShowStartupErrorAsync(exception);
+            }
             return;
         }
 
         await CheckForUpdatesAsync();
+    }
+
+    private async Task InitializeAsync(MainWindowViewModel viewModel, JsonAppSettingsStore settingsStore)
+    {
+        var settings = await settingsStore.LoadAsync();
+        _theme?.Apply(settings.Theme);
+        viewModel.ApplyPreferences(settings);
+        await viewModel.InitializeAsync();
     }
 
     private async Task ShowStartupErrorAsync(Exception exception)
@@ -201,7 +210,15 @@ public sealed partial class MainWindow : Window
         {
             if (_initializationTask is not null)
             {
-                await _initializationTask;
+                try
+                {
+                    await _initializationTask;
+                }
+                catch (Exception exception)
+                {
+                    // Already reported by OnOpened; shutdown still has to release resources.
+                    _logger?.LogDebug(exception, "Startup had failed before shutdown");
+                }
             }
             if (_settingsStore is not null)
             {

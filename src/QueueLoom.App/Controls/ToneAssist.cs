@@ -10,6 +10,7 @@ namespace QueueLoom.App.Controls;
 /// <summary>
 /// Binds a control's brush to the theme resource of a semantic <see cref="Tone"/>.
 /// The resource binding is dynamic, so a light/dark switch recolours rows immediately.
+/// It binds at local-value priority so the tone wins over class styles such as <c>eyebrow</c>.
 /// </summary>
 public static class ToneAssist
 {
@@ -70,6 +71,6 @@ public static class ToneAssist
         }
 
         var resource = control.GetResourceObservable(Tones.ResourceKey(tone.Value));
-        control.SetValue(subscriptionProperty, control.Bind(target, resource, BindingPriority.Style));
+        control.SetValue(subscriptionProperty, control.Bind(target, resource, BindingPriority.LocalValue));
     }
 }

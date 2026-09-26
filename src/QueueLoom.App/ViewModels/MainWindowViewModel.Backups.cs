@@ -108,6 +108,7 @@ public sealed partial class MainWindowViewModel
             : BackupMessages.Where(item =>
                 item.ProfileName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 item.EnvironmentLabel.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                item.Summary.Environment.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 item.SourceDisplay.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 item.MessageId.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 item.CorrelationId.Contains(query, StringComparison.OrdinalIgnoreCase) ||

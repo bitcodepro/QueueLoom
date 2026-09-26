@@ -146,6 +146,19 @@ public sealed class MainWindowUiTests
     });
 
     [Fact]
+    public Task ToneForeground_WinsOverTheEyebrowClassColour() => UiSession.RunAsync(async () =>
+    {
+        await using var fixture = await WindowFixture.OpenAsync();
+        fixture.ViewModel.ThemePreference = AppThemePreference.Dark;
+        await fixture.SettleAsync();
+
+        var writeLabel = fixture.Window.GetVisualDescendants().OfType<TextBlock>()
+            .Single(text => text.Text == "WRITE ENABLED" && text.Classes.Contains("eyebrow"));
+
+        Assert.Equal(Color.Parse("#FFB45E"), ((ISolidColorBrush)writeLabel.Foreground!).Color);
+    });
+
+    [Fact]
     public Task FormatJsonError_PointsTheEditorAtTheFailingLine() => UiSession.RunAsync(async () =>
     {
         await using var fixture = await WindowFixture.OpenAsync();
