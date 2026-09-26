@@ -65,4 +65,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: QueueLoom-win-x64
-          path: artifacts/publish
+          path: |
+            artifacts/publish
+            !artifacts/publish/*.pdb

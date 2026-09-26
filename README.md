@@ -55,6 +55,19 @@ dotnet test QueueLoom.slnx -c Release   # unit tests and headless UI tests
 dotnet publish src/QueueLoom.App/QueueLoom.App.csproj -p:PublishProfile=win-x64-single-file -o artifacts/publish
 ```
 
+### Releases
+
+CI (`.github/workflows/ci.yml`) builds and tests every pull request and push to `main` on Windows and Linux, and attaches the Windows build to the run.
+
+To publish a release, push a version tag:
+
+```powershell
+git tag v1.1.0        # or v1.1.0-rc.1 for a pre-release
+git push origin v1.1.0
+```
+
+`.github/workflows/release.yml` then runs the tests, builds `QueueLoom.exe` with the tag's version, and creates a GitHub Release with `QueueLoom-<version>-win-x64.zip`, its `.sha256` checksum and generated release notes.
+
 `tests/QueueLoom.UiTests` drives the real window headlessly with in-memory data. Set `QUEUELOOM_SCREENSHOT_DIR` to also save screenshots of every page in both themes.
 
 [MIT License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)
