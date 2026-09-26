@@ -159,6 +159,35 @@ public sealed class MainWindowUiTests
     });
 
     [Fact]
+    public Task MessageCheckboxes_DriveTheDeleteSelectedButton() => UiSession.RunAsync(async () =>
+    {
+        await using var fixture = await WindowFixture.OpenAsync();
+        await fixture.OpenDeadLettersAsync();
+        await fixture.NavigateAsync("DeadLetters");
+
+        var rowBoxes = fixture.Window.GetVisualDescendants().OfType<CheckBox>()
+            .Where(box => box.DataContext is MessageItemViewModel)
+            .ToArray();
+        Assert.Equal(fixture.ViewModel.Messages.Count, rowBoxes.Length);
+
+        rowBoxes[0].IsChecked = true;
+        await fixture.SettleAsync();
+
+        var delete = fixture.Window.GetVisualDescendants().OfType<Button>()
+            .Single(button => ReferenceEquals(button.Command, fixture.ViewModel.DeleteMarkedMessagesCommand));
+        Assert.Equal("Delete 1 message…", delete.Content);
+        Assert.True(delete.IsEffectivelyEnabled);
+        Assert.True(fixture.ViewModel.Messages[0].IsMarked);
+
+        var selectAll = fixture.Window.GetVisualDescendants().OfType<CheckBox>()
+            .Single(box => box.DataContext is MainWindowViewModel);
+        Assert.Null(selectAll.IsChecked);
+        selectAll.IsChecked = true;
+        await fixture.SettleAsync();
+        Assert.All(fixture.ViewModel.Messages, message => Assert.True(message.IsMarked));
+    });
+
+    [Fact]
     public Task FormatJsonError_PointsTheEditorAtTheFailingLine() => UiSession.RunAsync(async () =>
     {
         await using var fixture = await WindowFixture.OpenAsync();
@@ -200,6 +229,7 @@ public sealed class MainWindowUiTests
         Directory.CreateDirectory(directory);
         await using var fixture = await WindowFixture.OpenAsync();
         await fixture.OpenDeadLettersAsync();
+        fixture.ViewModel.Messages[0].IsMarked = true;
         fixture.ViewModel.NewMessageCommand.Execute(null);
         foreach (var theme in new[] { AppThemePreference.Dark, AppThemePreference.Light })
         {

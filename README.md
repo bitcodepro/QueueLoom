@@ -17,6 +17,7 @@ The last connected environment is selected on startup. DLQ browsing and search u
 - Browse and search active/dead-letter messages.
 - Send text, JSON or Base64 messages with typed properties.
 - Back up DLQ messages before purging, with scope review and a per-source limit.
+- Delete only chosen dead-letter messages: tick search or Peek results (or use the header box to tick all) and choose **Delete N messages…**. Each message is backed up first; other messages are left in place.
 - Restore backups or replay copies with rate limits and resumable progress.
 - Monitor DLQ counts while the app is open and review local activity history.
 - Light, dark or system theme; JSON bodies are highlighted and indented in the inspector.

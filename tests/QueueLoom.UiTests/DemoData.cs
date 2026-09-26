@@ -157,6 +157,17 @@ internal sealed class DemoWorkspace : IServiceBusWorkspace
         IProgress<DeadLetterPurgeProgress>? progress = null) =>
         throw new NotSupportedException("Purge is not part of the UI demo.");
 
+    public Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
+        DeleteDeadLetterMessagesRequest request,
+        CancellationToken cancellationToken = default,
+        IProgress<DeadLetterMessageDeletionProgress>? progress = null) =>
+        Task.FromResult(new DeleteDeadLetterMessagesResult(
+            ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            request.Messages.Select(key => new DeadLetterMessageDeletionResult(key, DeadLetterMessageDeletionOutcome.Deleted)),
+            Path.Combine(Path.GetTempPath(), "queueloom-ui", "backups")));
+
     public Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default) =>
