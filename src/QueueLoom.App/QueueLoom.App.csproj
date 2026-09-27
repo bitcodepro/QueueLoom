@@ -27,5 +27,6 @@
   <ItemGroup>
     <ProjectReference Include="..\QueueLoom.Core\QueueLoom.Core.csproj" />
     <ProjectReference Include="..\QueueLoom.Infrastructure\QueueLoom.Infrastructure.csproj" />
+    <ProjectReference Include="..\QueueLoom.Mcp\QueueLoom.Mcp.csproj" />
   </ItemGroup>
 </Project>
