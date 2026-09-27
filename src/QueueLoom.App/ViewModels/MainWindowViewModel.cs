@@ -188,7 +188,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
         BrowseSelectedTransferDeadLettersCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Peeking transfer DLQ", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.TransferDeadLetter, ct), token),
-            () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && !UsesSampledCounts);
+            () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && SupportsTransferDeadLetter);
         BrowseDlqSourceCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { Count: > 0 });

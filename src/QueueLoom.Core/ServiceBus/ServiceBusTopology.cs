@@ -15,6 +15,12 @@ public sealed record ServiceBusTopology
     public DateTimeOffset FetchedAt { get; }
     public bool UsesSampledCounts { get; init; }
 
+    /// <summary>Only Azure Service Bus has transfer dead-letter queues.</summary>
+    public bool SupportsTransferDeadLetter { get; init; } = true;
+
+    /// <summary>Whether the service reports message counts at all (Google Pub/Sub does not).</summary>
+    public bool HasMessageCounts { get; init; } = true;
+
     public IReadOnlyList<ServiceBusQueue> Queues { get; }
 
     public IReadOnlyList<ServiceBusTopic> Topics { get; }

@@ -87,6 +87,12 @@ public sealed record BrowsedMessage
 
     public string? DeadLetterErrorDescription { get; }
 
+    /// <summary>
+    /// False for services without sequence numbers (SQS, Pub/Sub): <see cref="SequenceNumber"/> is then a stable
+    /// key derived from the message ID, useful for identity but meaningless as a position.
+    /// </summary>
+    public bool HasSequenceNumber { get; init; } = true;
+
     public bool IsDeadLetter => SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter;
 
     public MessageDraft CreateDraft()

@@ -17,7 +17,7 @@
       <Border Classes="card" IsVisible="{Binding !IsConnected}" Padding="28">
         <controls:EmptyState Icon="{x:Static controls:Icons.Plug}"
                              Title="Connect an environment to see message counts"
-                             Description="Choose an environment in the top bar, or add your local emulator or Azure namespace.">
+                             Description="Choose an environment in the top bar, or add an Azure Service Bus namespace, an AWS region or a Google Cloud project.">
           <Button Content="{Binding EnvironmentActionLabel}" Command="{Binding EnvironmentActionCommand}" Classes="primary" />
         </controls:EmptyState>
       </Border>
@@ -55,7 +55,7 @@
           <StackPanel Spacing="8">
             <TextBlock Text="DEAD LETTERS" Classes="eyebrow danger" />
             <TextBlock Text="{Binding DeadLetterCount, StringFormat={}{0:N0}}" Classes="statValue danger" />
-            <TextBlock Text="DLQ + transfer DLQ" Classes="muted" />
+            <TextBlock Text="{Binding DeadLetterCountCaption}" Classes="muted" />
           </StackPanel>
         </Border>
       </UniformGrid>
@@ -65,7 +65,12 @@
           <StackPanel Spacing="16">
             <StackPanel Spacing="4">
               <TextBlock Text="Current environment" Classes="sectionTitle" />
-              <TextBlock Text="{Binding ConnectedProfileName}" Classes="muted" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <controls:ProviderBadge Provider="{Binding ConnectedProvider}" ShowFullName="True" />
+                <TextBlock Text="{Binding ConnectedProfileName}" Classes="muted" VerticalAlignment="Center" />
+              </StackPanel>
+              <TextBlock Text="{Binding ConnectedNamespace}" Classes="muted" FontSize="12" IsVisible="{Binding IsConnected}"
+                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ConnectedNamespace}" />
             </StackPanel>
             <Border Classes="divider" />
             <Grid ColumnDefinitions="*,*,*">
@@ -75,7 +80,8 @@
               </StackPanel>
               <StackPanel Grid.Column="1" Spacing="5">
                 <TextBlock Text="BROWSE MODE" Classes="eyebrow" />
-                <TextBlock Text="Non-destructive Peek" Margin="0,0,8,0" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding BrowseModeLabel}" Margin="0,0,8,0" TextWrapping="Wrap"
+                           ToolTip.Tip="{Binding BrowseModeDescription}" />
               </StackPanel>
               <StackPanel Grid.Column="2" Spacing="5">
                 <TextBlock Text="WRITES" Classes="eyebrow" />
@@ -95,7 +101,7 @@
         <Border Grid.Column="2" Classes="card">
           <StackPanel Spacing="12">
             <TextBlock Text="DLQ scan results" Classes="sectionTitle" />
-            <TextBlock Text="Known results from scanned environments. Azure uses counters; local emulators use bounded Peek. Messages are never settled by scanning."
+            <TextBlock Text="Known results from scanned environments. Services that report counts use counters; local emulators use a bounded scan. Messages are never settled by scanning."
                        Classes="muted" TextWrapping="Wrap" />
             <TextBlock Text="{Binding GlobalDlqDisplay}" FontSize="40" FontWeight="SemiBold" Classes="warning" />
             <TextBlock Text="messages found by the latest scan" Classes="muted" />

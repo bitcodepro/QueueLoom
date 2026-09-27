@@ -14,7 +14,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session)
         "Saved environment name (see list_environments). Optional when only one environment is saved.";
 
     [McpServerTool(Name = "list_environments", Title = "List environments", ReadOnly = true, Idempotent = true, OpenWorld = false)]
-    [Description("Lists the Service Bus environments saved in QueueLoom (name, kind such as Production, namespace, authentication, access mode).")]
+    [Description("Lists the environments saved in QueueLoom (name, kind such as Production, service such as Amazon SQS / SNS, " +
+        "namespace/region/project, authentication, access mode).")]
     public Task<IReadOnlyList<EnvironmentInfo>> ListEnvironmentsAsync(CancellationToken cancellationToken) =>
         McpGuard.RunAsync<IReadOnlyList<EnvironmentInfo>>(async () =>
             (await session.ListProfilesAsync(cancellationToken).ConfigureAwait(false)).Select(McpMapping.ToInfo).ToArray());
@@ -62,8 +63,9 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session)
         });
 
     [McpServerTool(Name = "peek_messages", Title = "Peek messages", ReadOnly = true, Idempotent = true)]
-    [Description("Returns messages from a queue or subscription without locking or removing them. " +
-                 "Bodies longer than 4,000 characters are truncated. Use fromSequenceNumber to page.")]
+    [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
+                 "SQS and Pub/Sub receive the messages and release them at once (paging is not available there). " +
+                 "Bodies longer than 4,000 characters are truncated. Use fromSequenceNumber to page on Azure.")]
     public Task<MessageListInfo> PeekMessagesAsync(
         [Description("Queue name, or 'topic/subscription'.")] string entity,
         [Description(EnvironmentDescription)] string? environment = null,

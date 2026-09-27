@@ -72,7 +72,8 @@ public sealed partial class MainWindowViewModel
                 queue.Runtime,
                 queue.Status,
                 queue.RequiresSession,
-                indent: 0));
+                indent: 0,
+                queue.Note));
         }
 
         foreach (var topic in topology.Topics)
@@ -90,7 +91,8 @@ public sealed partial class MainWindowViewModel
                     subscription.Runtime,
                     subscription.Status,
                     subscription.RequiresSession,
-                    indent: 1));
+                    indent: 1,
+                    subscription.Note));
             }
         }
 
@@ -134,6 +136,7 @@ public sealed partial class MainWindowViewModel
     {
         OnPropertyChanged(nameof(GlobalDlqDisplay));
         OnPropertyChanged(nameof(UsesSampledCounts));
+        OnPropertyChanged(nameof(SupportsTransferDeadLetter));
         OnPropertyChanged(nameof(QueueCount));
         OnPropertyChanged(nameof(TopicCount));
         OnPropertyChanged(nameof(SubscriptionCount));

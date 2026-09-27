@@ -6,6 +6,7 @@
     <Project Path="src/QueueLoom.Mcp/QueueLoom.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/QueueLoom.IntegrationTests/QueueLoom.IntegrationTests.csproj" />
     <Project Path="tests/QueueLoom.Tests/QueueLoom.Tests.csproj" />
     <Project Path="tests/QueueLoom.UiTests/QueueLoom.UiTests.csproj" />
   </Folder>

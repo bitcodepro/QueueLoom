@@ -76,7 +76,7 @@
         <ListBox Grid.Row="1" ItemsSource="{Binding Entities}" SelectedItem="{Binding SelectedEntity}" Margin="6"
                  Classes="tableRows"
                  IsEnabled="{Binding !IsBusy}" IsVisible="{Binding HasEntities}"
-                 AutomationProperties.Name="Service Bus entities">
+                 AutomationProperties.Name="Queues, topics and subscriptions">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:EntityItemViewModel">
               <Grid MinHeight="43">
@@ -107,9 +107,9 @@
                              ToolTip.Tip="{Binding Name}"
                              AutomationProperties.Name="{Binding Name}"
                              AutomationProperties.HelpText="Double-click or right-click to copy the entity name" />
-                  <TextBlock Text="{Binding ParentPath}" Classes="muted" FontSize="11"
-                             IsVisible="{Binding IsSubscription}"
-                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ParentPath}" />
+                  <TextBlock Text="{Binding Detail}" Classes="muted" FontSize="11"
+                             IsVisible="{Binding HasDetail}"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Detail}" />
                 </StackPanel>
                 <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" Classes="muted" Margin="0,0,12,0"
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis"

@@ -117,13 +117,21 @@ internal sealed class WindowFixture : IAsyncDisposable
     private readonly HttpClient _offlineHttp = new(new OfflineHandler());
 
     private WindowFixture(params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
+        : this(new DemoWorkspace(), new InMemorySecretVault(), profiles)
+    {
+    }
+
+    private WindowFixture(
+        QueueLoom.Core.Abstractions.IServiceBusWorkspace workspace,
+        QueueLoom.Core.Abstractions.ISecretVault secretVault,
+        params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
     {
         _settings = new JsonAppSettingsStore(QueueLoomPaths.ForRoot(_dataDirectory));
         var accessor = new TopLevelAccessor();
         ViewModel = new MainWindowViewModel(
             new InMemoryProfileRepository(profiles),
-            new InMemorySecretVault(),
-            new DemoWorkspace(),
+            secretVault,
+            workspace,
             new WindowDialogService(accessor),
             new InMemoryBackupRepository(),
             clipboard: Clipboard,
@@ -153,11 +161,13 @@ internal sealed class WindowFixture : IAsyncDisposable
 
     public RecordingNotifications Notifications { get; } = new();
 
-    public static async Task<WindowFixture> OpenAsync(bool connect = true)
+    public static async Task<WindowFixture> OpenAsync(bool connect = true, bool allClouds = false)
     {
-        var fixture = connect
-            ? new WindowFixture(DemoData.Development, DemoData.Production)
-            : new WindowFixture();
+        var fixture = !connect
+            ? new WindowFixture()
+            : allClouds
+                ? new WindowFixture(DemoData.Development, DemoData.Production, DemoData.AwsStaging, DemoData.GoogleDevelopment)
+                : new WindowFixture(DemoData.Development, DemoData.Production);
         fixture.Window.Show();
         await fixture.SettleAsync();
         if (connect)
@@ -166,6 +176,18 @@ internal sealed class WindowFixture : IAsyncDisposable
             await fixture.ViewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
             await fixture.SettleAsync();
         }
+        return fixture;
+    }
+
+    /// <summary>Opens the window on real services, for example a workspace talking to LocalStack.</summary>
+    public static async Task<WindowFixture> OpenWithAsync(
+        QueueLoom.Core.Abstractions.IServiceBusWorkspace workspace,
+        QueueLoom.Core.Abstractions.ISecretVault secretVault,
+        params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
+    {
+        var fixture = new WindowFixture(workspace, secretVault, profiles);
+        fixture.Window.Show();
+        await fixture.SettleAsync();
         return fixture;
     }
 

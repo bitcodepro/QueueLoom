@@ -23,16 +23,16 @@ public sealed class ProfileItemViewModel(ServiceBusProfile profile) : Observable
 
     public Tone EnvironmentTone => Tones.ForEnvironment(Profile.Environment);
 
-    public string Namespace => string.IsNullOrWhiteSpace(Profile.FullyQualifiedNamespace)
-        ? "Namespace from secure connection string"
-        : Profile.FullyQualifiedNamespace;
+    public MessagingProvider Provider => Profile.Provider;
 
-    public string AuthenticationLabel => Profile.Authentication.Kind switch
-    {
-        AuthenticationKind.ConnectionString => "SAS connection string",
-        AuthenticationKind.EntraId => $"Entra ID · {Profile.Authentication.EntraId?.CredentialKind}",
-        _ => "Unknown"
-    };
+    public string ProviderName => Profile.Provider.DisplayName();
+
+    /// <summary>Namespace (Azure), region (AWS) or project (Google Cloud).</summary>
+    public string Namespace => Profile.EndpointDisplay is { Length: > 0 } endpoint
+        ? endpoint
+        : "Namespace from secure connection string";
+
+    public string AuthenticationLabel => Profile.AuthenticationDisplayName;
 
     public bool IsProduction => Profile.Environment == EnvironmentKind.Production;
 
@@ -64,6 +64,8 @@ public sealed class ProfileItemViewModel(ServiceBusProfile profile) : Observable
         OnPropertyChanged(nameof(EnvironmentLabel));
         OnPropertyChanged(nameof(EnvironmentTone));
         OnPropertyChanged(nameof(Namespace));
+        OnPropertyChanged(nameof(Provider));
+        OnPropertyChanged(nameof(ProviderName));
         OnPropertyChanged(nameof(AuthenticationLabel));
         OnPropertyChanged(nameof(IsProduction));
         OnPropertyChanged(nameof(IsReadOnly));

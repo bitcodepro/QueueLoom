@@ -126,7 +126,7 @@ public sealed partial class MainWindowViewModel
 
         var confirmed = await _dialogs.ConfirmAsync(
             "Delete selected messages",
-            $"Environment: {profile.Name}\nNamespace: {profile.FullyQualifiedNamespace}\n" +
+            $"Environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n" +
             $"Messages: {marked.Length:N0} (exactly the ticked ones)\nBackup folder: {BackupRootDirectory}\n\n{scope}\n\n" +
             "Each message is saved to a local backup first and then permanently deleted. " +
             "Other messages in these dead-letter queues are only locked briefly while QueueLoom looks for the selection " +

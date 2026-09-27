@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Infrastructure.Azure;
+using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Logging;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Infrastructure.Security;
@@ -29,9 +30,8 @@ public static class AppServices
         services.AddSingleton<EncryptedFileSecretVault>();
         services.AddSingleton<ISecretVault>(provider => provider.GetRequiredService<EncryptedFileSecretVault>());
         services.AddSingleton<JsonAppSettingsStore>();
-        services.AddSingleton<IServiceBusWorkspace>(provider => new AzureServiceBusWorkspace(
-            provider.GetRequiredService<ISecretVault>(),
-            backupStore: new DeadLetterJsonBackupStore(paths)));
+        services.AddSingleton<IServiceBusWorkspace>(provider =>
+            MessagingWorkspaces.Create(provider.GetRequiredService<ISecretVault>(), paths));
         services.AddSingleton<IDeadLetterBackupRepository>(_ => new JsonDeadLetterBackupRepository(paths));
         services.AddSingleton<IActivityJournal>(_ => new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")));
         services.AddSingleton<IBatchReplayStore>(_ => new BatchReplayStore(Path.Combine(paths.RootDirectory, "replay")));

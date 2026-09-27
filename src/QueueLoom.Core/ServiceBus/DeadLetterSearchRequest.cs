@@ -20,8 +20,11 @@ public static class DeadLetterSearchTargets
     public static DeadLetterSearchTarget[] ForTopology(ServiceBusTopology topology)
     {
         ArgumentNullException.ThrowIfNull(topology);
-        var sources = topology.Queues.Select(queue => (queue.Reference, queue.Runtime.MessageCounts))
+        var sources = topology.Queues
+            .Where(queue => queue.HasDeadLetterQueue)
+            .Select(queue => (queue.Reference, queue.Runtime.MessageCounts))
             .Concat(topology.Topics.SelectMany(topic => topic.Subscriptions)
+                .Where(subscription => subscription.HasDeadLetterQueue)
                 .Select(subscription => (subscription.Reference, subscription.Runtime.MessageCounts)));
         return sources
             .SelectMany(source => new[]
@@ -29,7 +32,8 @@ public static class DeadLetterSearchTargets
                 new DeadLetterSearchTarget(source.Reference, ServiceBusSubQueue.DeadLetter, source.MessageCounts.DeadLetter),
                 new DeadLetterSearchTarget(source.Reference, ServiceBusSubQueue.TransferDeadLetter, source.MessageCounts.TransferDeadLetter)
             })
-            .Where(target => !topology.UsesSampledCounts || target.SubQueue != ServiceBusSubQueue.TransferDeadLetter)
+            .Where(target => target.SubQueue != ServiceBusSubQueue.TransferDeadLetter ||
+                             (topology.SupportsTransferDeadLetter && !topology.UsesSampledCounts))
             .ToArray();
     }
 }

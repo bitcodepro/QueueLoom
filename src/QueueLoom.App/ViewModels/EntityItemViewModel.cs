@@ -11,7 +11,8 @@ public sealed class EntityItemViewModel
         ServiceBusEntityRuntime runtime,
         ServiceBusEntityStatus status,
         bool requiresSession,
-        int indent)
+        int indent,
+        string? note = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(indent);
         Reference = reference;
@@ -19,7 +20,16 @@ public sealed class EntityItemViewModel
         Status = status;
         RequiresSession = requiresSession;
         Indent = indent;
+        Note = note;
     }
+
+    /// <summary>A provider-specific remark, for example "Dead-letter queue of orders" or "Pushes to https://…".</summary>
+    public string? Note { get; }
+
+    /// <summary>The second line under the name: the note when there is one, else the parent topic.</summary>
+    public string Detail => Note ?? ParentPath;
+
+    public bool HasDetail => !string.IsNullOrEmpty(Detail);
 
     public ServiceBusEntityReference Reference { get; }
 
@@ -66,14 +76,22 @@ public sealed class EntityItemViewModel
     public long TransferDeadLetters => Runtime.MessageCounts.TransferDeadLetter;
 
     public long Scheduled => Runtime.MessageCounts.Scheduled;
-    public string ActiveDisplay => Active.ToString("N0", CultureInfo.CurrentCulture);
-    public string DeadLettersDisplay => DeadLetters.ToString("N0", CultureInfo.CurrentCulture);
-    public string ScheduledDisplay => Runtime.IsEmulatorSample ? "—" : Scheduled.ToString("N0", CultureInfo.CurrentCulture);
-    public string TransferDeadLettersDisplay => Runtime.IsEmulatorSample ? "—" : TransferDeadLetters.ToString("N0", CultureInfo.CurrentCulture);
+    // "—" means the service does not report this number, which is different from zero.
+    public string ActiveDisplay => Runtime.CountsUnavailable ? "—" : Active.ToString("N0", CultureInfo.CurrentCulture);
+    public string DeadLettersDisplay => Runtime.CountsUnavailable ? "—" : DeadLetters.ToString("N0", CultureInfo.CurrentCulture);
+    public string ScheduledDisplay => Runtime.IsEmulatorSample || Runtime.CountsUnavailable
+        ? "—"
+        : Scheduled.ToString("N0", CultureInfo.CurrentCulture);
+    public string TransferDeadLettersDisplay => HasTransferDeadLetterCount
+        ? TransferDeadLetters.ToString("N0", CultureInfo.CurrentCulture)
+        : "—";
+
+    private bool HasTransferDeadLetterCount =>
+        !Runtime.IsEmulatorSample && !Runtime.CountsUnavailable && Runtime.HasTransferDeadLetterCount;
 
     public bool HasDeadLetters => DeadLetters > 0;
 
-    public bool HasTransferDeadLetters => !Runtime.IsEmulatorSample && TransferDeadLetters > 0;
+    public bool HasTransferDeadLetters => HasTransferDeadLetterCount && TransferDeadLetters > 0;
 
     public bool HasActiveMessages => Active > 0;
 

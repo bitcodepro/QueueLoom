@@ -1,8 +1,9 @@
+using System.Text.RegularExpressions;
 using QueueLoom.Core.Profiles;
 
 namespace QueueLoom.Core.Validation;
 
-public static class ProfileValidator
+public static partial class ProfileValidator
 {
     public const int MaxNameLength = 100;
     public const int MaxEnvironmentNameLength = 50;
@@ -28,8 +29,20 @@ public static class ProfileValidator
         ValidateName(profile.Name, errors);
         ValidateEnvironment(profile, errors);
         ValidateAccessMode(profile, errors);
+        ValidateProvider(profile, errors);
         ValidateAuthentication(profile, errors);
-        ValidateNamespace(profile, errors);
+        switch (profile.Provider)
+        {
+            case MessagingProvider.AmazonSqsSns:
+                ValidateAws(profile, errors);
+                break;
+            case MessagingProvider.GooglePubSub:
+                ValidateGooglePubSub(profile, errors);
+                break;
+            default:
+                ValidateNamespace(profile, errors);
+                break;
+        }
 
         return errors.Count == 0 ? ValidationResult.Valid : new ValidationResult(errors);
     }
@@ -121,6 +134,134 @@ public static class ProfileValidator
                 nameof(profile.AccessMode)));
         }
     }
+
+    private static void ValidateProvider(
+        ServiceBusProfile profile,
+        ICollection<ValidationError> errors)
+    {
+        if (!Enum.IsDefined(profile.Provider))
+        {
+            errors.Add(new ValidationError(
+                "profile.provider.invalid",
+                "The messaging service is not supported.",
+                nameof(profile.Provider)));
+            return;
+        }
+
+        if (profile.Provider != MessagingProvider.AmazonSqsSns && profile.Aws is not null ||
+            profile.Provider != MessagingProvider.GooglePubSub && profile.GooglePubSub is not null)
+        {
+            errors.Add(new ValidationError(
+                "profile.provider.settings_unexpected",
+                "The environment contains settings for a different messaging service.",
+                nameof(profile.Provider)));
+        }
+
+        if (profile.Provider != MessagingProvider.AzureServiceBus &&
+            !string.IsNullOrWhiteSpace(profile.FullyQualifiedNamespace))
+        {
+            errors.Add(new ValidationError(
+                "profile.namespace.unexpected",
+                "A Service Bus namespace only applies to Azure Service Bus environments.",
+                nameof(profile.FullyQualifiedNamespace)));
+        }
+
+        if (profile.Authentication is not null &&
+            Enum.IsDefined(profile.Authentication.Kind) &&
+            profile.Authentication.Kind.Provider() != profile.Provider)
+        {
+            errors.Add(new ValidationError(
+                "profile.authentication.provider_mismatch",
+                $"This sign-in method cannot be used with {profile.Provider.DisplayName()}.",
+                nameof(profile.Authentication)));
+        }
+    }
+
+    private static void ValidateAws(
+        ServiceBusProfile profile,
+        ICollection<ValidationError> errors)
+    {
+        var settings = profile.Aws;
+        if (settings is null || string.IsNullOrWhiteSpace(settings.Region))
+        {
+            errors.Add(new ValidationError(
+                "profile.aws.region.required",
+                "An AWS region is required, for example eu-west-1.",
+                nameof(profile.Aws)));
+            return;
+        }
+
+        if (!AwsRegionPattern().IsMatch(settings.Region))
+        {
+            errors.Add(new ValidationError(
+                "profile.aws.region.invalid",
+                "Use an AWS region code such as us-east-1 or eu-central-1.",
+                nameof(profile.Aws)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.ServiceUrl) &&
+            (!Uri.TryCreate(settings.ServiceUrl, UriKind.Absolute, out var uri) ||
+             uri.Scheme is not ("http" or "https") ||
+             !string.IsNullOrEmpty(uri.Query) ||
+             !string.IsNullOrEmpty(uri.UserInfo)))
+        {
+            errors.Add(new ValidationError(
+                "profile.aws.service_url.invalid",
+                "The endpoint must be an http or https address, for example http://localhost:4566.",
+                nameof(profile.Aws)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.ProfileName) &&
+            (settings.ProfileName.Trim().Length > 64 || settings.ProfileName.Any(char.IsWhiteSpace)))
+        {
+            errors.Add(new ValidationError(
+                "profile.aws.profile_name.invalid",
+                "The AWS profile name cannot contain spaces or exceed 64 characters.",
+                nameof(profile.Aws)));
+        }
+    }
+
+    private static void ValidateGooglePubSub(
+        ServiceBusProfile profile,
+        ICollection<ValidationError> errors)
+    {
+        var settings = profile.GooglePubSub;
+        if (settings is null || string.IsNullOrWhiteSpace(settings.ProjectId))
+        {
+            errors.Add(new ValidationError(
+                "profile.gcp.project.required",
+                "A Google Cloud project ID is required.",
+                nameof(profile.GooglePubSub)));
+            return;
+        }
+
+        if (!GoogleProjectPattern().IsMatch(settings.ProjectId))
+        {
+            errors.Add(new ValidationError(
+                "profile.gcp.project.invalid",
+                "Use the project ID (not the display name), for example orders-prod-4821.",
+                nameof(profile.GooglePubSub)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.EmulatorHost) &&
+            !HostAndPortPattern().IsMatch(settings.EmulatorHost))
+        {
+            errors.Add(new ValidationError(
+                "profile.gcp.emulator.invalid",
+                "The emulator address must be host:port, for example localhost:8085.",
+                nameof(profile.GooglePubSub)));
+        }
+    }
+
+    [GeneratedRegex("^[a-z]{2}(-[a-z]+)+-[0-9]+$")]
+    private static partial Regex AwsRegionPattern();
+
+    // Project IDs are 6-30 lower-case characters; domain-scoped projects add "example.com:".
+    [GeneratedRegex("^([a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$")]
+    private static partial Regex GoogleProjectPattern();
+
+    [GeneratedRegex("^[A-Za-z0-9.-]+:[0-9]{1,5}$")]
+    private static partial Regex HostAndPortPattern();
 
     private static void ValidateAuthentication(
         ServiceBusProfile profile,

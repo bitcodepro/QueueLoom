@@ -672,7 +672,7 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(summary, backups.Deleted);
         Assert.Empty(viewModel.BackupMessages);
         Assert.Single(dialogs.Confirmations);
-        Assert.Contains("Azure Service Bus is not changed", dialogs.Confirmations[0].Message, StringComparison.Ordinal);
+        Assert.Contains("The queue itself is not changed", dialogs.Confirmations[0].Message, StringComparison.Ordinal);
     }
 
     private static MainWindowViewModel CreateViewModel(

@@ -147,7 +147,7 @@ public sealed partial class MainWindowViewModel
         var confirmed = await _dialogs.ConfirmAsync(
             "Delete local backup",
             $"Delete the local JSON backup for message '{selected.MessageId}' from " +
-            $"'{selected.SourceDisplay}'?\n\nAzure Service Bus is not changed. This local file cannot be restored by QueueLoom.",
+            $"'{selected.SourceDisplay}'?\n\nThe queue itself is not changed. This local file cannot be restored by QueueLoom.",
             isDangerous: true,
             cancellationToken: cancellationToken).ConfigureAwait(true);
         if (!confirmed)

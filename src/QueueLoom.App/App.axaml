@@ -33,6 +33,12 @@
           <SolidColorBrush x:Key="DangerCardBrush" Color="#231722" />
           <SolidColorBrush x:Key="DangerBorderBrush" Color="#6C2A3B" />
           <SolidColorBrush x:Key="WarningSoftBrush" Color="#33260F" />
+          <SolidColorBrush x:Key="ProviderAzureBrush" Color="#4DA3FF" />
+          <SolidColorBrush x:Key="ProviderAzureSoftBrush" Color="#132A48" />
+          <SolidColorBrush x:Key="ProviderAwsBrush" Color="#FFA53A" />
+          <SolidColorBrush x:Key="ProviderAwsSoftBrush" Color="#382710" />
+          <SolidColorBrush x:Key="ProviderGcpBrush" Color="#5BC27A" />
+          <SolidColorBrush x:Key="ProviderGcpSoftBrush" Color="#133324" />
           <!-- Fluent control overrides -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#101D2F" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#15263C" />
@@ -70,6 +76,12 @@
           <SolidColorBrush x:Key="DangerCardBrush" Color="#FFF5F7" />
           <SolidColorBrush x:Key="DangerBorderBrush" Color="#F0B6C0" />
           <SolidColorBrush x:Key="WarningSoftBrush" Color="#FFF3DF" />
+          <SolidColorBrush x:Key="ProviderAzureBrush" Color="#0063B8" />
+          <SolidColorBrush x:Key="ProviderAzureSoftBrush" Color="#E3EFFC" />
+          <SolidColorBrush x:Key="ProviderAwsBrush" Color="#A65300" />
+          <SolidColorBrush x:Key="ProviderAwsSoftBrush" Color="#FFF0DD" />
+          <SolidColorBrush x:Key="ProviderGcpBrush" Color="#1B7A3B" />
+          <SolidColorBrush x:Key="ProviderGcpSoftBrush" Color="#E2F4E7" />
           <!-- Fluent control overrides -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#FFFFFF" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#F4F7FB" />
@@ -298,7 +310,7 @@
       <Setter Property="Padding" Value="12,7" />
       <Setter Property="MinHeight" Value="32" />
     </Style>
-    <Style Selector="TextBox, ComboBox">
+    <Style Selector="TextBox, ComboBox, AutoCompleteBox">
       <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
       <Setter Property="CornerRadius" Value="8" />
@@ -356,6 +368,26 @@
     </Style>
     <Style Selector="ListBox.navigation ListBoxItem:selected TextBlock.navLabel">
       <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <!-- Cloud picker in the environment editor -->
+    <Style Selector="ListBox.providerPicker ListBoxItem">
+      <Setter Property="Padding" Value="12" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+      <Setter Property="BorderThickness" Value="1.5" />
+      <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+      <Setter Property="VerticalContentAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="ListBox.providerPicker ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    </Style>
+    <Style Selector="ListBox.providerPicker ListBoxItem:disabled">
+      <Setter Property="Opacity" Value="0.45" />
+    </Style>
+    <Style Selector="ListBox.providerPicker ListBoxItem:selected:disabled">
+      <Setter Property="Opacity" Value="1" />
     </Style>
 
     <!-- Empty-state placeholder -->

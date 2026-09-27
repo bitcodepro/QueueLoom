@@ -241,7 +241,7 @@ public sealed partial class MainWindowViewModel
                     draft,
                     DeadLetterDisposition.KeepOriginal),
                 cancellationToken).ConfigureAwait(true);
-            StatusText = "Copy accepted by Service Bus · original remains in DLQ";
+            StatusText = "Copy accepted · original remains in DLQ";
             AddActivity(
                 "Success",
                 "DLQ copy send accepted",
@@ -253,7 +253,7 @@ public sealed partial class MainWindowViewModel
             await _workspace.SendMessageAsync(
                 new SendMessageRequest(destination.Reference, draft),
                 cancellationToken).ConfigureAwait(true);
-            StatusText = "Message accepted by Service Bus";
+            StatusText = "Message accepted";
             AddActivity(
                 "Success",
                 "Message send accepted",
