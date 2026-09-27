@@ -18,6 +18,14 @@ This inventory was prepared from the restored NuGet dependency graph for the cur
 | Azure.Core / Azure.Core.Amqp / System.ClientModel | 1.60.0 / 1.3.1 / 1.14.0 | MIT | [Azure SDK for .NET](https://github.com/Azure/azure-sdk-for-net), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
 | Microsoft.Azure.Amqp | 2.7.0 | MIT | [Azure/azure-amqp](https://github.com/Azure/azure-amqp), [license](https://github.com/Azure/azure-amqp/blob/master/LICENSE) |
 | Microsoft.Identity.Client / Extensions.Msal / IdentityModel.Abstractions | 4.84.2 / 4.84.2 / 8.14.0 | MIT | [AzureAD/microsoft-authentication-library-for-dotnet](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet), [license](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet/blob/main/LICENSE) |
+| AWSSDK.SQS / AWSSDK.SimpleNotificationService / AWSSDK.Core | 4.0.100.14 / 4.0.100.15 / 4.0.102.6 | Apache-2.0 | [aws/aws-sdk-net](https://github.com/aws/aws-sdk-net), [license](https://github.com/aws/aws-sdk-net/blob/main/License.txt) |
+| Google.Cloud.PubSub.V1 / Google.Cloud.Iam.V1 | 3.38.0 / 3.5.0 | Apache-2.0 | [googleapis/google-cloud-dotnet](https://github.com/googleapis/google-cloud-dotnet), [license](https://github.com/googleapis/google-cloud-dotnet/blob/main/LICENSE) |
+| Google.Api.Gax / Google.Api.Gax.Grpc / Google.Api.CommonProtos | 4.13.1 / 4.13.1 / 2.17.0 | BSD-3-Clause | [googleapis/gax-dotnet](https://github.com/googleapis/gax-dotnet), [license](https://github.com/googleapis/gax-dotnet/blob/main/LICENSE) |
+| Google.Apis / Google.Apis.Auth / Google.Apis.Core | 1.73.0 | Apache-2.0 | [googleapis/google-api-dotnet-client](https://github.com/googleapis/google-api-dotnet-client), [license](https://github.com/googleapis/google-api-dotnet-client/blob/main/LICENSE) |
+| Google.Protobuf | 3.31.1 | BSD-3-Clause | [protocolbuffers/protobuf](https://github.com/protocolbuffers/protobuf), [license](https://github.com/protocolbuffers/protobuf/blob/main/LICENSE) |
+| Grpc.Net.Client / Grpc.Net.Common / Grpc.Core.Api / Grpc.Auth | 2.71.0 | Apache-2.0 | [grpc/grpc-dotnet](https://github.com/grpc/grpc-dotnet), [license](https://github.com/grpc/grpc-dotnet/blob/master/LICENSE) |
+| Newtonsoft.Json (via Google.Apis) | 13.0.4 | MIT | [JamesNK/Newtonsoft.Json](https://github.com/JamesNK/Newtonsoft.Json), [license](https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md) |
+| System.Management / System.CodeDom (via Google.Api.Gax) | 7.0.2 / 7.0.0 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
 | System.Security.Cryptography.ProtectedData | 10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
 | Microsoft.Extensions.* (including DependencyInjection, Hosting and Logging), Microsoft.Bcl.AsyncInterfaces, System.Memory.Data | 10.0.9–10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
 | SkiaSharp and native assets | 3.119.4 | MIT package; native third-party notices apply | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [license](https://github.com/mono/SkiaSharp/blob/main/LICENSE.md) |
@@ -38,7 +46,6 @@ Test packages are used during development but are not included in the normal pub
 | coverlet.collector | 10.0.1 | MIT | [coverlet-coverage/coverlet](https://github.com/coverlet-coverage/coverlet), [license](https://github.com/coverlet-coverage/coverlet/blob/master/LICENSE) |
 | xunit / xunit.analyzers | 2.9.3 / 1.18.0 | Apache-2.0 | [xunit/xunit](https://github.com/xunit/xunit), [license](https://github.com/xunit/xunit/blob/main/LICENSE) |
 | xunit.runner.visualstudio | 3.1.5 | Apache-2.0 | [xunit/visualstudio.xunit](https://github.com/xunit/visualstudio.xunit), [license](https://github.com/xunit/visualstudio.xunit/blob/main/LICENSE) |
-| Newtonsoft.Json (test transitive) | 13.0.3 | MIT | [JamesNK/Newtonsoft.Json](https://github.com/JamesNK/Newtonsoft.Json), [license](https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md) |
 
 ## MIT license text used by the listed MIT components
 
@@ -52,6 +59,9 @@ Principal attributions taken from NuGet metadata and upstream license files:
 - Inter font: Copyright (c) 2016 The Inter Project Authors; SIL OFL-1.1 applies, not MIT.
 - xUnit.net: Copyright (C) .NET Foundation; Apache-2.0 applies, not MIT.
 - Model Context Protocol C# SDK: © Model Context Protocol a Series of LF Projects, LLC.; Apache-2.0 applies, not MIT.
+- AWS SDK for .NET: Copyright Amazon.com, Inc. or its affiliates; Apache-2.0 applies, not MIT.
+- Google Cloud client libraries, Google API client libraries and gRPC for .NET: Copyright Google LLC and The gRPC Authors; Apache-2.0 (GAX and Protocol Buffers: BSD-3-Clause) applies, not MIT.
+- Newtonsoft.Json: Copyright (c) 2007 James Newton-King.
 
 All other copyright notices belong to the respective authors and rights holders identified in the upstream repositories, NuGet package metadata, and bundled native notices.
 

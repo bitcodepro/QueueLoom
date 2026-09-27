@@ -22,6 +22,12 @@ public sealed record ServiceBusEntityRuntime
     public ServiceBusMessageCounts MessageCounts { get; }
     public bool IsEmulatorSample { get; init; }
 
+    /// <summary>The service does not report counts for this entity, so every counter is unknown rather than zero.</summary>
+    public bool CountsUnavailable { get; init; }
+
+    /// <summary>Only Azure Service Bus reports transfer dead-letter counts.</summary>
+    public bool HasTransferDeadLetterCount { get; init; } = true;
+
     public long SizeInBytes { get; }
 
     public DateTimeOffset? CreatedAt { get; }

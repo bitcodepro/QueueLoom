@@ -9,13 +9,15 @@ namespace QueueLoom.Mcp;
 /// <param name="ReadOnly">When true, only read tools are offered; nothing can change Service Bus.</param>
 public sealed record McpServerSettings(bool ReadOnly = false);
 
-/// <summary>Runs QueueLoom as an MCP server so LLM clients can inspect Service Bus and, with approval, change it.</summary>
+/// <summary>Runs QueueLoom as an MCP server so LLM clients can inspect message queues and, with approval, change them.</summary>
 public static class QueueLoomMcpServer
 {
     public const string Instructions =
-        "QueueLoom inspects Azure Service Bus namespaces saved by the user. Start with list_environments, then get_entities " +
-        "or scan_dead_letters. peek_messages and search_dead_letters only read: they never lock or remove messages. " +
-        "delete_dead_letter_messages, purge_dead_letters and send_message change Service Bus; each call is shown to the user, " +
+        "QueueLoom inspects message queues saved by the user: Azure Service Bus namespaces, Amazon SQS / SNS regions and " +
+        "Google Cloud Pub/Sub projects. Start with list_environments, then get_entities or scan_dead_letters. peek_messages and " +
+        "search_dead_letters only read: they never remove messages (SQS and Pub/Sub cannot peek, so messages are received and " +
+        "immediately released, which counts as a delivery). Pub/Sub reports no message counts. " +
+        "delete_dead_letter_messages, purge_dead_letters and send_message change messages; each call is shown to the user, " +
         "who must approve it in QueueLoom before anything happens. Always pass a clear 'reason'. If a change is not approved, " +
         "report that to the user and do not retry it unasked.";
 
@@ -48,7 +50,7 @@ public static class QueueLoomMcpServer
             options.ServerInfo = new Implementation
             {
                 Name = "QueueLoom",
-                Title = "QueueLoom — Azure Service Bus",
+                Title = "QueueLoom — message queues",
                 Version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0"
             };
             options.ServerInstructions = settings.ReadOnly

@@ -213,7 +213,7 @@
                     <CheckBox IsChecked="{Binding IsMarked}" IsVisible="{Binding CanDelete}"
                               MinWidth="0" Padding="0" VerticalAlignment="Center"
                               AutomationProperties.Name="{Binding MessageId, StringFormat='Select message {0}'}" />
-                    <TextBlock Grid.Column="1" Text="{Binding SequenceNumber}" Classes="muted" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding SequenceDisplay}" Classes="muted" VerticalAlignment="Center" />
                     <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">
                       <Border Classes="envDot" HorizontalAlignment="Left"
                               controls:ToneAssist.Background="{Binding EnvironmentTone}" />

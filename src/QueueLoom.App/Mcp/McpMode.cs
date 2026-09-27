@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Infrastructure.Azure;
+using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Logging;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Infrastructure.Security;
@@ -55,9 +56,8 @@ internal static class McpMode
                 services.AddSingleton(paths);
                 services.AddSingleton<IProfileRepository, JsonProfileRepository>();
                 services.AddSingleton<ISecretVault, EncryptedFileSecretVault>();
-                services.AddSingleton<IServiceBusWorkspace>(provider => new AzureServiceBusWorkspace(
-                    provider.GetRequiredService<ISecretVault>(),
-                    backupStore: new DeadLetterJsonBackupStore(paths)));
+                services.AddSingleton<IServiceBusWorkspace>(provider =>
+                    MessagingWorkspaces.Create(provider.GetRequiredService<ISecretVault>(), paths));
                 services.AddSingleton<IActivityJournal>(_ => new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")));
                 services.AddSingleton(approver);
             },

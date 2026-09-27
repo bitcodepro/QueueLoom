@@ -58,6 +58,9 @@ public sealed partial class MainWindowViewModel
     public bool HasMessages => Messages.Count > 0;
     public bool HasEntities => Entities.Count > 0;
     public bool UsesSampledCounts => _topology?.UsesSampledCounts == true;
+
+    /// <summary>Only Azure Service Bus (and not its emulator) has transfer dead-letter queues.</summary>
+    public bool SupportsTransferDeadLetter => _topology is { SupportsTransferDeadLetter: true, UsesSampledCounts: false };
     public string EmptyMessagesText => !IsConnected ? "Connect an environment to browse messages." : "Select a source and Peek, or search dead letters.";
     public string BrowsePageStatus => _browseSource is null ? DeadLetterSearchStatus :
         $"{Messages.Count:N0} loaded · {RetainedBrowseBytes / 1024d:N1} KiB retained · " +
@@ -124,11 +127,18 @@ public sealed partial class MainWindowViewModel
         var profile = _browseProfile ?? throw new InvalidOperationException("Select a source again.");
         var source = _browseSource ?? throw new InvalidOperationException("Select a source again.");
         if (ConnectedProfileId != profile.Id) throw new InvalidOperationException("Reconnect the source environment first.");
+        // SQS and Pub/Sub cannot continue from a position: ask for everything shown so far plus 100 more
+        // and keep the new ones. Their messages are listed oldest first.
+        var positional = Messages.Count == 0 || Messages[0].Message.HasSequenceNumber;
+        var requested = positional ? 100 : Math.Min(BrowseMessagesRequest.MaximumMaxMessages, Messages.Count + 100);
         var page = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, _browseSubQueue,
-            maxMessages: 100, fromSequenceNumber: _browseCursor), token).ConfigureAwait(true);
+            maxMessages: requested, fromSequenceNumber: positional ? _browseCursor : null), token).ConfigureAwait(true);
         var seen = Messages.Select(m => m.Message.SequenceNumber).ToHashSet();
         var bytes = RetainedBrowseBytes;
-        foreach (var message in page.OrderBy(m => m.SequenceNumber))
+        var ordered = page.All(m => m.HasSequenceNumber)
+            ? page.OrderBy(m => m.SequenceNumber)
+            : page.OrderBy(m => m.EnqueuedAt ?? DateTimeOffset.MaxValue).ThenBy(m => m.Properties.MessageId, StringComparer.Ordinal);
+        foreach (var message in ordered)
         {
             if (Messages.Count >= 1000 || bytes + message.Body.Length > 32 * 1024 * 1024)
             { _browseExhausted = true; _browseDisplayLimit = true; break; }
@@ -138,7 +148,7 @@ public sealed partial class MainWindowViewModel
             _browseCursor = message.SequenceNumber == long.MaxValue ? null : message.SequenceNumber + 1;
             if (message.SequenceNumber == long.MaxValue) _browseExhausted = true;
         }
-        _browseExhausted |= page.Count < 100;
+        _browseExhausted |= page.Count < requested;
         SelectedMessage ??= Messages.FirstOrDefault();
         NotifyBrowseFeatures();
     }

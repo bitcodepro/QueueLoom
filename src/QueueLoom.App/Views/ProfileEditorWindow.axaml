@@ -1,12 +1,13 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:QueueLoom.App.ViewModels"
+        xmlns:controls="using:QueueLoom.App.Controls"
         x:Class="QueueLoom.App.Views.ProfileEditorWindow"
         x:DataType="vm:ProfileEditorViewModel"
         Title="{Binding DialogTitle}"
-        Width="620"
-        Height="720"
-        MinWidth="540"
+        Width="700"
+        Height="780"
+        MinWidth="600"
         MinHeight="620"
         WindowStartupLocation="CenterOwner"
         CanResize="True">
@@ -14,12 +15,38 @@
     <Border Grid.Row="0" Padding="28,24" BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
       <StackPanel Spacing="6">
         <TextBlock Text="{Binding DialogTitle}" FontSize="24" FontWeight="SemiBold" />
-        <TextBlock Text="Connection strings never enter profile metadata or logs." Classes="muted" />
+        <TextBlock Text="{Binding SecretNote}" Classes="muted" />
       </StackPanel>
     </Border>
 
     <ScrollViewer Grid.Row="1">
       <StackPanel Margin="28,22" Spacing="16">
+        <StackPanel Spacing="7">
+          <TextBlock Text="SERVICE" Classes="eyebrow" />
+          <ListBox x:Name="ProviderPicker" Classes="providerPicker"
+                   ItemsSource="{Binding ProviderOptions}"
+                   SelectedItem="{Binding SelectedProvider}"
+                   IsEnabled="{Binding CanChangeProvider}"
+                   AutomationProperties.Name="Messaging service">
+            <ListBox.ItemsPanel>
+              <ItemsPanelTemplate>
+                <UniformGrid Columns="3" />
+              </ItemsPanelTemplate>
+            </ListBox.ItemsPanel>
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ProviderOption">
+                <StackPanel Spacing="8" AutomationProperties.Name="{Binding Title}">
+                  <controls:ProviderBadge Provider="{Binding Provider}" />
+                  <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding Description}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <TextBlock Text="The service of a saved environment cannot be changed. Add a new environment instead."
+                     Classes="muted" FontSize="12" IsVisible="{Binding !CanChangeProvider}" />
+        </StackPanel>
+
         <StackPanel Spacing="7">
           <TextBlock Text="DISPLAY NAME" Classes="eyebrow" />
           <TextBox Text="{Binding Name}" PlaceholderText="Payments · Dev" />
@@ -28,11 +55,12 @@
         <Grid ColumnDefinitions="*,14,*">
           <StackPanel Grid.Column="0" Spacing="7">
             <TextBlock Text="ENVIRONMENT" Classes="eyebrow" />
-            <ComboBox ItemsSource="{Binding EnvironmentKinds}" SelectedItem="{Binding Environment}" />
+            <ComboBox ItemsSource="{Binding EnvironmentKinds}" SelectedItem="{Binding Environment}" HorizontalAlignment="Stretch" />
           </StackPanel>
           <StackPanel Grid.Column="2" Spacing="7">
             <TextBlock Text="ACCESS" Classes="eyebrow" />
-            <ComboBox ItemsSource="{Binding AccessModes}" SelectedItem="{Binding AccessMode}" IsEnabled="{Binding !IsProduction}" />
+            <ComboBox ItemsSource="{Binding AccessModes}" SelectedItem="{Binding AccessMode}" IsEnabled="{Binding !IsProduction}"
+                      HorizontalAlignment="Stretch" />
           </StackPanel>
         </Grid>
 
@@ -42,10 +70,18 @@
         </StackPanel>
 
         <StackPanel Spacing="7">
-          <TextBlock Text="AUTHENTICATION" Classes="eyebrow" />
-          <ComboBox ItemsSource="{Binding AuthenticationKinds}" SelectedItem="{Binding AuthenticationKind}" />
+          <TextBlock Text="SIGN IN WITH" Classes="eyebrow" />
+          <ComboBox ItemsSource="{Binding AuthenticationOptions}" SelectedItem="{Binding SelectedAuthentication}"
+                    HorizontalAlignment="Stretch" AutomationProperties.Name="Sign-in method">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:AuthenticationOption">
+                <TextBlock Text="{Binding Label}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
         </StackPanel>
 
+        <!-- Azure Service Bus -->
         <Border Classes="card" IsVisible="{Binding IsConnectionString}">
           <StackPanel Spacing="12">
             <TextBlock Text="Namespace SAS" FontSize="16" FontWeight="SemiBold" />
@@ -85,6 +121,84 @@
                 <TextBox Text="{Binding ClientId}" PlaceholderText="App / managed identity" />
               </StackPanel>
             </Grid>
+          </StackPanel>
+        </Border>
+
+        <!-- Amazon SQS / SNS -->
+        <Border Classes="card" IsVisible="{Binding IsAws}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="AWS account" FontSize="16" FontWeight="SemiBold" />
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="REGION" Classes="eyebrow" />
+                <AutoCompleteBox Text="{Binding AwsRegion}" ItemsSource="{Binding AwsRegions}" FilterMode="StartsWith"
+                                 MinimumPrefixLength="0" PlaceholderText="eu-west-1" AutomationProperties.Name="AWS region" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="ENDPOINT · OPTIONAL" Classes="eyebrow" />
+                <TextBox Text="{Binding AwsServiceUrl}" PlaceholderText="http://localhost:4566 (LocalStack)"
+                         AutomationProperties.Name="AWS endpoint" />
+              </StackPanel>
+            </Grid>
+
+            <StackPanel Spacing="12" IsVisible="{Binding IsAwsAccessKey}">
+              <TextBlock Text="{Binding AwsAccessKeyHint}" Classes="muted" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="ACCESS KEY ID" Classes="eyebrow" />
+                  <TextBox Text="{Binding AwsAccessKeyId}" PlaceholderText="AKIA…" AutomationProperties.Name="Access key ID" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="SECRET ACCESS KEY" Classes="eyebrow" />
+                  <TextBox Text="{Binding AwsSecretAccessKey}" PasswordChar="●" RevealPassword="False"
+                           AutomationProperties.Name="Secret access key" />
+                </StackPanel>
+              </Grid>
+              <StackPanel Spacing="7">
+                <TextBlock Text="SESSION TOKEN · OPTIONAL" Classes="eyebrow" />
+                <TextBox Text="{Binding AwsSessionToken}" PasswordChar="●" RevealPassword="False"
+                         PlaceholderText="Only for temporary credentials" AutomationProperties.Name="Session token" />
+              </StackPanel>
+            </StackPanel>
+
+            <StackPanel Spacing="7" IsVisible="{Binding IsAwsDefaultCredentials}">
+              <TextBlock Text="PROFILE · OPTIONAL" Classes="eyebrow" />
+              <TextBox Text="{Binding AwsProfileName}" PlaceholderText="default" AutomationProperties.Name="AWS profile" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="Uses a profile from ~/.aws/credentials or ~/.aws/config, or the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables when empty." />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <!-- Google Cloud Pub/Sub -->
+        <Border Classes="card" IsVisible="{Binding IsGoogle}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Google Cloud project" FontSize="16" FontWeight="SemiBold" />
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="PROJECT ID" Classes="eyebrow" />
+                <TextBox Text="{Binding GoogleProjectId}" PlaceholderText="orders-prod-4821" AutomationProperties.Name="Project ID" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="EMULATOR · OPTIONAL" Classes="eyebrow" />
+                <TextBox Text="{Binding GoogleEmulatorHost}" PlaceholderText="localhost:8085" AutomationProperties.Name="Emulator address" />
+              </StackPanel>
+            </Grid>
+
+            <StackPanel Spacing="8" IsVisible="{Binding IsGoogleServiceAccountKey}">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="SERVICE ACCOUNT KEY" Classes="eyebrow" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="Load key file…" Classes="quiet" Click="LoadKeyFileClick" />
+              </Grid>
+              <TextBox Text="{Binding GoogleServiceAccountKey}" AcceptsReturn="True" TextWrapping="Wrap" Height="90"
+                       FontFamily="{StaticResource MonoFontFamily}" FontSize="11"
+                       PlaceholderText="{}{ &quot;type&quot;: &quot;service_account&quot;, … }"
+                       AutomationProperties.Name="Service account key" />
+              <TextBlock Text="{Binding GoogleKeySummary}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding !IsGoogleServiceAccountKey}"
+                       Text="Uses the credentials of gcloud auth application-default login or GOOGLE_APPLICATION_CREDENTIALS. The emulator needs none." />
           </StackPanel>
         </Border>
 

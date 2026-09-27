@@ -47,7 +47,7 @@ public sealed class DesktopApprover(TimeSpan? timeout = null) : IOperationApprov
     {
         var window = new ConfirmDialogWindow(new ConfirmDialogViewModel(
             $"Approve: {request.Action}",
-            $"An AI assistant connected through MCP asks to change Service Bus.\n\n{request.Details}",
+            $"An AI assistant connected through MCP asks to change messages.\n\n{request.Details}",
             isDangerous: true,
             requiredText: request.IsProduction ? request.EnvironmentName : null,
             confirmLabel: "Approve",

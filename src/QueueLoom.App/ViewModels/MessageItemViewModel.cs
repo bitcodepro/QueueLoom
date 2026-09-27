@@ -75,6 +75,11 @@ public sealed class MessageItemViewModel : ObservableObject
 
     public long SequenceNumber => Message.SequenceNumber;
 
+    /// <summary>SQS and Pub/Sub have no sequence numbers; their messages are told apart by message ID.</summary>
+    public string SequenceDisplay => Message.HasSequenceNumber
+        ? Message.SequenceNumber.ToString(System.Globalization.CultureInfo.CurrentCulture)
+        : "—";
+
     public string MessageId => Message.Properties.MessageId ?? "(no MessageId)";
 
     public string Subject => Message.Properties.Subject ?? "—";

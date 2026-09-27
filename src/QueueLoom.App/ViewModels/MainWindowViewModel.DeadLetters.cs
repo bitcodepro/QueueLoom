@@ -748,7 +748,7 @@ public sealed partial class MainWindowViewModel
         var scope = string.Join("\n", targets.Take(20).Select(t => $"• {t.Source.Path} / {t.SubQueue}"));
         if (targets.Count > 20) scope += $"\n… and {targets.Count - 20} additional sources";
         var confirmed = await _dialogs.ConfirmAsync("Review backup and purge",
-            $"Environment: {profile.Name}\nNamespace: {profile.FullyQualifiedNamespace}\n" +
+            $"Environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n" +
             $"Sources: {targets.Count}\nKnown messages: {knownCount:N0} (latest scan; may be stale)\n" +
             $"Hard limit: {limit:N0} per source\nBackup folder: {BackupRootDirectory}\n\n{scope}\n\n" +
             "This receives and permanently deletes messages after backup. New arrivals can be included up to the limit. " +
@@ -888,7 +888,9 @@ public sealed partial class MainWindowViewModel
         await LoadBrowsePageAsync(cancellationToken).ConfigureAwait(true);
         MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
         NavigateTo(NavigationPage.DeadLetters);
-        StatusText = $"Peeked {Messages.Count:N0} messages without acquiring locks";
+        StatusText = profile.Provider == MessagingProvider.AzureServiceBus
+            ? $"Peeked {Messages.Count:N0} messages without acquiring locks"
+            : $"Read {Messages.Count:N0} messages and released them unchanged";
         AddActivity(
             "Info",
             "Peek",

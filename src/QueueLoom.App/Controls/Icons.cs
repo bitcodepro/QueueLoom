@@ -25,6 +25,9 @@ public static class Icons
         "Theme" => Theme,
         "Search" => Search,
         "Plug" => Plug,
+        "AzureServiceBus" => Azure,
+        "AmazonSqsSns" => Aws,
+        "GooglePubSub" => GoogleCloud,
         _ => null
     };
 
@@ -60,6 +63,16 @@ public static class Icons
 
     public static Geometry Plug { get; } = Parse(
         "M8,2 H10 V7 H14 V2 H16 V7 H18 V12 C18,14.8 16.1,17.1 13,17.8 V22 H11 V17.8 C7.9,17.1 6,14.8 6,12 V7 H8 Z");
+
+    /// <summary>Provider marks: plain shapes that tell the clouds apart, not the vendors' logos.</summary>
+    public static Geometry Azure { get; } = Parse(
+        "M9.6,3 H14.2 L8.1,21 H2 Z M15.2,8.4 L22,21 H10.6 L14.4,17.3 H17.2 L13.4,11.6 Z");
+
+    public static Geometry Aws { get; } = Parse(
+        "M2.5,13.2 C7.6,17.4 16.4,17.4 21.5,13.2 L22.6,14.9 C16.8,19.9 7.2,19.9 1.4,14.9 Z M16.6,10.4 L22.8,11.2 L20.7,17 Z M5,4 H7.2 L9,9.4 L10.8,4 H13 L10,12 H8 Z");
+
+    public static Geometry GoogleCloud { get; } = Parse(
+        "F0 M12,1.8 L20.9,6.9 V17.1 L12,22.2 L3.1,17.1 V6.9 Z M12,7.2 A4.8,4.8 0 1 0 12,16.8 A4.8,4.8 0 1 0 12,7.2 Z");
 
     private static Geometry Parse(string data) => Geometry.Parse(data);
 }

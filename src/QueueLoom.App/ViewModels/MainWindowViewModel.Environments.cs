@@ -57,12 +57,36 @@ public sealed partial class MainWindowViewModel
         ? _connectedProfile?.Name ?? "Connected environment"
         : "No environment connected";
 
-    public string ConnectedAuthenticationLabel => _connectedProfile?.Authentication.Kind switch
+    public string ConnectedAuthenticationLabel => _connectedProfile?.AuthenticationDisplayName ?? "Not connected";
+
+    /// <summary>
+    /// Service Bus can peek. SQS and Pub/Sub cannot, so QueueLoom receives messages, holds them for a moment
+    /// and hands them back unchanged.
+    /// </summary>
+    public string BrowseModeLabel => ConnectedProvider switch
     {
-        AuthenticationKind.ConnectionString => "SAS connection string",
-        AuthenticationKind.EntraId => $"Entra ID · {_connectedProfile.Authentication.EntraId?.CredentialKind}",
-        _ => "Not connected"
+        MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub => "Receive and release",
+        _ => "Non-destructive Peek"
     };
+
+    public string BrowseModeDescription => ConnectedProvider switch
+    {
+        MessagingProvider.AmazonSqsSns =>
+            "SQS has no peek. Messages are received, hidden for up to 3 minutes and returned unchanged; their receive count goes up by one.",
+        MessagingProvider.GooglePubSub =>
+            "Pub/Sub has no peek. Messages are pulled, held for up to 3 minutes and returned unchanged; with a dead-letter policy each read counts as a delivery attempt.",
+        _ => "Messages are peeked without locking or changing them."
+    };
+
+    public string DeadLetterCountCaption => ConnectedProvider switch
+    {
+        MessagingProvider.GooglePubSub => "Pub/Sub does not report counts",
+        MessagingProvider.AmazonSqsSns => "Approximate SQS counts",
+        _ => "DLQ + transfer DLQ"
+    };
+
+    /// <summary>The cloud of the connected environment, shown as a badge in the top bar.</summary>
+    public MessagingProvider? ConnectedProvider => IsConnected ? _connectedProfile?.Provider : null;
 
     public string ConnectionLabel => IsConnected
         ? $"CONNECTED · {_connectedProfile?.Name ?? "environment"}"
@@ -70,7 +94,7 @@ public sealed partial class MainWindowViewModel
 
     public Tone ConnectionTone => IsConnected ? Tone.Success : Tone.Neutral;
 
-    public string ConnectedNamespace => _connectedProfile?.FullyQualifiedNamespace
+    public string ConnectedNamespace => _connectedProfile?.EndpointDisplay
         ?? (IsConnected ? "Namespace connection" : "Connect an environment to begin");
 
     private async Task AddEnvironmentAsync(CancellationToken cancellationToken)
@@ -98,8 +122,9 @@ public sealed partial class MainWindowViewModel
 
         var secretKey = ProfileSecretKey.ConnectionString(result.Profile.Id);
         string? removedConnectionString = null;
-        var removesConnectionString = selected.Profile.Authentication.Kind == AuthenticationKind.ConnectionString &&
-                                      result.Profile.Authentication.Kind == AuthenticationKind.EntraId;
+        // Switching to a method without a stored secret (for example to Entra ID) removes the old secret.
+        var removesConnectionString = selected.Profile.Authentication.Kind.UsesStoredSecret() &&
+                                      !result.Profile.Authentication.Kind.UsesStoredSecret();
         if (removesConnectionString)
         {
             removedConnectionString = await _secretVault.RetrieveAsync(secretKey, cancellationToken)
@@ -525,6 +550,10 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(ConnectionLabel));
         OnPropertyChanged(nameof(ConnectionTone));
         OnPropertyChanged(nameof(ConnectedNamespace));
+        OnPropertyChanged(nameof(ConnectedProvider));
+        OnPropertyChanged(nameof(BrowseModeLabel));
+        OnPropertyChanged(nameof(BrowseModeDescription));
+        OnPropertyChanged(nameof(DeadLetterCountCaption));
         OnPropertyChanged(nameof(IsSelectedProfileConnected));
         OnPropertyChanged(nameof(EnvironmentActionLabel));
         OnPropertyChanged(nameof(EnvironmentActionCommand));

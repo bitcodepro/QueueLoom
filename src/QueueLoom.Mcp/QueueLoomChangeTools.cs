@@ -228,7 +228,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 profile.Name,
                 profile.Environment == EnvironmentKind.Production,
                 $"Requested by: {client}\nEnvironment: {profile.Name} ({profile.EnvironmentDisplayName})\n" +
-                $"Namespace: {profile.FullyQualifiedNamespace}\n\nReason given: {reason.Trim()}\n\n{details}"),
+                $"{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\nReason given: {reason.Trim()}\n\n{details}"),
             server,
             cancellationToken);
     }

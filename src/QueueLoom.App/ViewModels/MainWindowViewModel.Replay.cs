@@ -72,7 +72,7 @@ public sealed partial class MainWindowViewModel
         }
         if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token).ConfigureAwait(true)) return;
         if (!CanWrite || ConnectedProfileId != profile.Id) throw new InvalidOperationException("Environment or write access changed.");
-        var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.FullyQualifiedNamespace).ConfigureAwait(true);
+        var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay).ConfigureAwait(true);
         await ExecuteReplayPlanAsync(plan, token).ConfigureAwait(true);
     }
 
@@ -86,7 +86,7 @@ public sealed partial class MainWindowViewModel
 
     private Task<bool> ConfirmReplayAsync(ServiceBusProfile profile, ServiceBusEntityReference destination,
         int count, bool preserve, int rate, CancellationToken token) => _dialogs.ConfirmAsync("Review batch replay",
-        $"Destination environment: {profile.Name}\nNamespace: {profile.FullyQualifiedNamespace}\nDestination: {destination.Path}\n" +
+        $"Destination environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\nDestination: {destination.Path}\n" +
         $"Batch size: {count} (resume skips acknowledged items)\nRate: {rate}/second\n" +
         $"Message IDs: {(preserve ? "preserved; duplicate detection may suppress delivery" : "new stable IDs assigned to the batch")}\n\n" +
         "All selected messages are copied to this destination, including messages from other environments. " +

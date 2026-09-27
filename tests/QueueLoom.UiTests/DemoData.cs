@@ -27,6 +27,32 @@ internal static class DemoData
         AuthenticationSettings.Entra(),
         ProfileAccessMode.ReadOnly);
 
+    public static readonly ServiceBusProfile AwsStaging = new ServiceBusProfile(
+        Guid.Parse("33333333-3333-3333-3333-333333333333"),
+        "Payments on AWS",
+        EnvironmentKind.Test,
+        null,
+        null,
+        new AuthenticationSettings(AuthenticationKind.AwsAccessKey),
+        ProfileAccessMode.ReadWrite)
+    {
+        Provider = MessagingProvider.AmazonSqsSns,
+        Aws = new AwsSettings("eu-central-1")
+    };
+
+    public static readonly ServiceBusProfile GoogleDevelopment = new ServiceBusProfile(
+        Guid.Parse("44444444-4444-4444-4444-444444444444"),
+        "Shipping on GCP",
+        EnvironmentKind.Development,
+        null,
+        null,
+        new AuthenticationSettings(AuthenticationKind.GoogleApplicationDefault),
+        ProfileAccessMode.ReadWrite)
+    {
+        Provider = MessagingProvider.GooglePubSub,
+        GooglePubSub = new GooglePubSubSettings("shipping-dev-2231")
+    };
+
     public static ServiceBusTopology Topology { get; } = new(
         new DateTimeOffset(2026, 9, 26, 9, 30, 0, TimeSpan.Zero),
         [

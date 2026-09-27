@@ -6,7 +6,16 @@ namespace QueueLoom.Mcp;
 
 // Shapes returned to MCP clients. Names are stable: models and prompts depend on them.
 
-public sealed record EnvironmentInfo(string Name, string Id, string Kind, string? Namespace, string Authentication, string AccessMode);
+/// <param name="Namespace">Where the environment lives: Service Bus namespace, AWS region or Google Cloud project.</param>
+/// <param name="Service">Azure Service Bus, Amazon SQS / SNS or Google Cloud Pub/Sub.</param>
+public sealed record EnvironmentInfo(
+    string Name,
+    string Id,
+    string Kind,
+    string? Namespace,
+    string Authentication,
+    string AccessMode,
+    string Service);
 
 public sealed record EntityInfo(
     string Kind,
@@ -54,9 +63,10 @@ internal static class McpMapping
         profile.Name,
         profile.Id.ToString("D"),
         profile.EnvironmentDisplayName,
-        profile.FullyQualifiedNamespace,
-        profile.Authentication.Kind == AuthenticationKind.ConnectionString ? "Connection string" : "Microsoft Entra ID",
-        profile.AccessMode.ToString());
+        profile.EndpointDisplay,
+        profile.AuthenticationDisplayName,
+        profile.AccessMode.ToString(),
+        profile.Provider.DisplayName());
 
     public static string SubQueueName(ServiceBusSubQueue subQueue) => subQueue switch
     {
