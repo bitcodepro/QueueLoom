@@ -10,6 +10,8 @@ This inventory was prepared from the restored NuGet dependency graph for the cur
 |---|---:|---|---|
 | Avalonia, Avalonia.Desktop, Avalonia.Themes.Fluent, Avalonia.Fonts.Inter, and Avalonia platform packages | 12.1.1 | MIT | [AvaloniaUI/Avalonia](https://github.com/AvaloniaUI/Avalonia), [license](https://github.com/AvaloniaUI/Avalonia/blob/main/licence.md) |
 | Avalonia.AvaloniaEdit | 12.0.0 | MIT | [AvaloniaUI/AvaloniaEdit](https://github.com/AvaloniaUI/AvaloniaEdit), [license](https://github.com/AvaloniaUI/AvaloniaEdit/blob/master/LICENSE) |
+| ModelContextProtocol / ModelContextProtocol.Core | 2.2.0 | Apache-2.0 | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk), [license](https://github.com/modelcontextprotocol/csharp-sdk/blob/main/LICENSE) |
+| Microsoft.Extensions.AI.Abstractions | 10.8.3 | MIT | [dotnet/extensions](https://github.com/dotnet/extensions), [license](https://github.com/dotnet/extensions/blob/main/LICENSE) |
 | Avalonia.BuildServices (build-time, transitive) | 11.3.2 | MIT | [AvaloniaUI/Avalonia.BuildServices](https://github.com/AvaloniaUI/Avalonia.BuildServices) |
 | Azure.Identity | 1.21.0 | MIT | [Azure SDK for .NET — Identity](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/identity/Azure.Identity), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
 | Azure.Messaging.ServiceBus | 7.20.2 | MIT | [Azure SDK for .NET — Service Bus](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/servicebus/Azure.Messaging.ServiceBus), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
@@ -17,7 +19,7 @@ This inventory was prepared from the restored NuGet dependency graph for the cur
 | Microsoft.Azure.Amqp | 2.7.0 | MIT | [Azure/azure-amqp](https://github.com/Azure/azure-amqp), [license](https://github.com/Azure/azure-amqp/blob/master/LICENSE) |
 | Microsoft.Identity.Client / Extensions.Msal / IdentityModel.Abstractions | 4.84.2 / 4.84.2 / 8.14.0 | MIT | [AzureAD/microsoft-authentication-library-for-dotnet](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet), [license](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet/blob/main/LICENSE) |
 | System.Security.Cryptography.ProtectedData | 10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
-| Microsoft.Extensions.* (including DependencyInjection and Logging), Microsoft.Bcl.AsyncInterfaces, System.Memory.Data | 10.0.9–10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
+| Microsoft.Extensions.* (including DependencyInjection, Hosting and Logging), Microsoft.Bcl.AsyncInterfaces, System.Memory.Data | 10.0.9–10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
 | SkiaSharp and native assets | 3.119.4 | MIT package; native third-party notices apply | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [license](https://github.com/mono/SkiaSharp/blob/main/LICENSE.md) |
 | HarfBuzzSharp and native assets | 8.3.1.3 | MIT package; bundled HarfBuzz notice applies | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [HarfBuzz license](https://github.com/harfbuzz/harfbuzz/blob/main/COPYING) |
 | MicroCom.Runtime | 0.11.6 | MIT | [kekekeks/MicroCom](https://github.com/kekekeks/MicroCom), [license](https://github.com/kekekeks/MicroCom/blob/master/LICENSE) |
@@ -49,6 +51,7 @@ Principal attributions taken from NuGet metadata and upstream license files:
 - Tmds.DBus.Protocol: Tom Deseyn and contributors.
 - Inter font: Copyright (c) 2016 The Inter Project Authors; SIL OFL-1.1 applies, not MIT.
 - xUnit.net: Copyright (C) .NET Foundation; Apache-2.0 applies, not MIT.
+- Model Context Protocol C# SDK: © Model Context Protocol a Series of LF Projects, LLC.; Apache-2.0 applies, not MIT.
 
 All other copyright notices belong to the respective authors and rights holders identified in the upstream repositories, NuGet package metadata, and bundled native notices.
 

@@ -10,6 +10,7 @@ using QueueLoom.App.Controls;
 using QueueLoom.App.Models;
 using NavigationPage = QueueLoom.App.Models.NavigationPage;
 using QueueLoom.App.ViewModels;
+using QueueLoom.App.Views;
 using QueueLoom.Core.Settings;
 
 namespace QueueLoom.UiTests;
@@ -188,6 +189,57 @@ public sealed class MainWindowUiTests
     });
 
     [Fact]
+    public Task DesktopApproval_ProductionNeedsTheTypedNameAndDenyRejects() => UiSession.RunAsync(async () =>
+    {
+        var approver = new QueueLoom.App.Mcp.DesktopApprover();
+        ConfirmDialogWindow? window = null;
+        approver.WindowOpened += opened => window = opened;
+        var request = new QueueLoom.Mcp.ApprovalRequest("Delete dead-letter messages", "Orders", IsProduction: true, "2 messages");
+
+        var approval = approver.RequestAsync(request, null!, CancellationToken.None);
+        await SettleAsync();
+        Assert.NotNull(window);
+        var approve = window!.GetVisualDescendants().OfType<Button>().Single(button => button.IsEffectivelyVisible && Equals(button.Content, "Approve"));
+        Assert.False(approve.IsEffectivelyEnabled);
+        ((ConfirmDialogViewModel)window.DataContext!).ConfirmationText = "Orders";
+        await SettleAsync();
+        Assert.True(approve.IsEffectivelyEnabled);
+        approve.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Assert.True((await approval).Approved);
+
+        window = null;
+        var denial = approver.RequestAsync(request with { IsProduction = false }, null!, CancellationToken.None);
+        await SettleAsync();
+        window!.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Deny"))
+            .RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Assert.False((await denial).Approved);
+    });
+
+    [Fact]
+    public Task DesktopApproval_TimesOutAsDenied() => UiSession.RunAsync(async () =>
+    {
+        var approver = new QueueLoom.App.Mcp.DesktopApprover(TimeSpan.FromMilliseconds(200));
+        var decision = approver.RequestAsync(
+            new QueueLoom.Mcp.ApprovalRequest("Send a message", "Dev", false, "1 message"), null!, CancellationToken.None);
+        while (!decision.IsCompleted)
+        {
+            await SettleAsync();
+        }
+
+        Assert.False((await decision).Approved);
+        Assert.Contains("Nobody approved", (await decision).Reason, StringComparison.Ordinal);
+    });
+
+    private static async Task SettleAsync()
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            await Task.Delay(20);
+        }
+    }
+
+    [Fact]
     public Task FormatJsonError_PointsTheEditorAtTheFailingLine() => UiSession.RunAsync(async () =>
     {
         await using var fixture = await WindowFixture.OpenAsync();
@@ -230,6 +282,8 @@ public sealed class MainWindowUiTests
         await using var fixture = await WindowFixture.OpenAsync();
         await fixture.OpenDeadLettersAsync();
         fixture.ViewModel.Messages[0].IsMarked = true;
+        fixture.ViewModel.Messages[1].IsMarked = true;
+        fixture.ViewModel.DeadLetterSearchQuery = "order";
         fixture.ViewModel.NewMessageCommand.Execute(null);
         foreach (var theme in new[] { AppThemePreference.Dark, AppThemePreference.Light })
         {
@@ -249,5 +303,28 @@ public sealed class MainWindowUiTests
             }
         }
         fixture.ViewModel.ThemePreference = AppThemePreference.Dark;
+
+        // The window an MCP client's change request opens.
+        var approver = new QueueLoom.App.Mcp.DesktopApprover();
+        ConfirmDialogWindow? approval = null;
+        approver.WindowOpened += opened => approval = opened;
+        var pending = approver.RequestAsync(new QueueLoom.Mcp.ApprovalRequest(
+            "Delete dead-letter messages",
+            "Local emulator",
+            false,
+            "Requested by: Claude Desktop\nEnvironment: Local emulator (Development)\nNamespace: localhost\n\n" +
+            "Reason given: These two orders failed validation after the 18:00 deployment and were replayed manually.\n\n" +
+            "2 dead-lettered message(s) will be backed up locally and then permanently deleted. Other messages stay in the queue.\n\n" +
+            "• orders (dlq): 2\n\nFirst messages:\n  #101 order-1001\n  #102 order-1002"), null!, CancellationToken.None);
+        await fixture.SettleAsync();
+        approval!.Width = 640;
+        await fixture.SettleAsync();
+        using (var frame = approval.CaptureRenderedFrame())
+        await using (var file = File.Create(Path.Combine(directory, "mcp-approval.png")))
+        {
+            frame?.Save(file, new Avalonia.Media.Imaging.PngBitmapEncoderOptions());
+        }
+        approval.Close();
+        await pending;
     });
 }

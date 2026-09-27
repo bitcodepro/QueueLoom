@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\QueueLoom.Core\QueueLoom.Core.csproj" />
     <ProjectReference Include="..\..\src\QueueLoom.Infrastructure\QueueLoom.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\QueueLoom.App\QueueLoom.App.csproj" />
+    <ProjectReference Include="..\..\src\QueueLoom.Mcp\QueueLoom.Mcp.csproj" />
   </ItemGroup>
 
 </Project>

@@ -107,6 +107,24 @@
           </StackPanel>
         </Border>
       </Grid>
+
+      <Border Classes="card">
+        <Grid ColumnDefinitions="*,16,1.1*">
+          <StackPanel Spacing="10">
+            <TextBlock Text="AI assistants (MCP)" Classes="sectionTitle" />
+            <TextBlock Classes="muted" TextWrapping="Wrap"
+                       Text="Claude, Cursor, VS Code and other MCP clients can list entities, scan and search dead letters through QueueLoom. Reading is always allowed. Deleting, purging and sending wait until you press Approve in a QueueLoom window." />
+            <TextBlock Classes="muted" TextWrapping="Wrap" FontSize="12"
+                       Text="Add this entry to the client's MCP configuration (for Claude Desktop: Settings → Developer → Edit Config). Add &quot;--read-only&quot; to the args to hide the change tools entirely." />
+            <Button Content="Copy configuration" Classes="quiet" HorizontalAlignment="Left"
+                    Command="{Binding CopyTextCommand}" CommandParameter="{Binding McpClientConfig}" />
+          </StackPanel>
+          <Border Grid.Column="2" Classes="callout">
+            <SelectableTextBlock Text="{Binding McpClientConfig}" FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
+                                 TextWrapping="Wrap" />
+          </Border>
+        </Grid>
+      </Border>
     </StackPanel>
   </ScrollViewer>
 </UserControl>

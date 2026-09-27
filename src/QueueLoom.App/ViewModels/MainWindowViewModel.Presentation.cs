@@ -64,6 +64,26 @@ public sealed partial class MainWindowViewModel
 
     public bool HasActivity => Activity.Count > 0;
 
+    /// <summary>The "mcpServers" entry that makes Claude Desktop, Cursor and other MCP clients start QueueLoom.</summary>
+    public string McpClientConfig { get; } = BuildMcpClientConfig();
+
+    private static string BuildMcpClientConfig()
+    {
+        var process = Environment.ProcessPath ?? "QueueLoom.exe";
+        var runsThroughDotnet = Path.GetFileNameWithoutExtension(process).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        string[] arguments = runsThroughDotnet
+            ? [Path.Combine(AppContext.BaseDirectory, "QueueLoom.dll"), "--mcp"]
+            : ["--mcp"];
+        var server = new Dictionary<string, object>
+        {
+            ["command"] = process,
+            ["args"] = arguments
+        };
+        return System.Text.Json.JsonSerializer.Serialize(
+            new Dictionary<string, object> { ["mcpServers"] = new Dictionary<string, object> { ["queueloom"] = server } },
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+    }
+
     private void InitializePresentation()
     {
         NavigateCommand = new RelayCommand<string>(key =>

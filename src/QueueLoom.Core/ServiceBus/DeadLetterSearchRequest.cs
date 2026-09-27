@@ -11,6 +11,29 @@ public sealed record DeadLetterSearchTarget(
         KnownMessageCount >= 0;
 }
 
+public static class DeadLetterSearchTargets
+{
+    /// <summary>
+    /// Every dead-letter and transfer dead-letter queue in the topology. Runtime counters are eventually
+    /// consistent, so zero-count sources are included and a fresh message cannot be skipped.
+    /// </summary>
+    public static DeadLetterSearchTarget[] ForTopology(ServiceBusTopology topology)
+    {
+        ArgumentNullException.ThrowIfNull(topology);
+        var sources = topology.Queues.Select(queue => (queue.Reference, queue.Runtime.MessageCounts))
+            .Concat(topology.Topics.SelectMany(topic => topic.Subscriptions)
+                .Select(subscription => (subscription.Reference, subscription.Runtime.MessageCounts)));
+        return sources
+            .SelectMany(source => new[]
+            {
+                new DeadLetterSearchTarget(source.Reference, ServiceBusSubQueue.DeadLetter, source.MessageCounts.DeadLetter),
+                new DeadLetterSearchTarget(source.Reference, ServiceBusSubQueue.TransferDeadLetter, source.MessageCounts.TransferDeadLetter)
+            })
+            .Where(target => !topology.UsesSampledCounts || target.SubQueue != ServiceBusSubQueue.TransferDeadLetter)
+            .ToArray();
+    }
+}
+
 public sealed record DeadLetterSearchRequest
 {
     public const int DefaultBatchSize = 100;

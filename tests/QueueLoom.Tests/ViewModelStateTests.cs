@@ -688,7 +688,7 @@ public sealed partial class ViewModelStateTests
             dialogs ?? new FakeDialogService(),
             backupRepository);
 
-    private static ServiceBusProfile CreateProfile(
+    internal static ServiceBusProfile CreateProfile(
         string name,
         EnvironmentKind environment,
         ProfileAccessMode accessMode = ProfileAccessMode.ReadOnly) =>
@@ -722,7 +722,7 @@ public sealed partial class ViewModelStateTests
             Tone.Accent,
             new DeadLetterEntitySnapshot(entity, 1));
 
-    private static BrowsedMessage SearchMessage(
+    internal static BrowsedMessage SearchMessage(
         ServiceBusEntityReference source,
         long sequenceNumber,
         string enqueuedAt) =>
@@ -754,7 +754,7 @@ public sealed partial class ViewModelStateTests
             DateTimeOffset.UtcNow,
             message.BodySize);
 
-    private sealed class FakeProfileRepository(
+    internal sealed class FakeProfileRepository(
         IReadOnlyList<ServiceBusProfile> profiles,
         Guid? selectedProfileId) : IProfileRepository
     {
@@ -847,7 +847,7 @@ public sealed partial class ViewModelStateTests
         }
     }
 
-    private sealed class FakeWorkspace : IServiceBusWorkspace
+    internal sealed class FakeWorkspace : IServiceBusWorkspace
     {
         public Dictionary<Guid, DeadLetterSnapshot> Snapshots { get; } = [];
 
