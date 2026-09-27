@@ -55,15 +55,37 @@ public sealed class McpProcessTests
         Assert.Contains(tools, tool => tool.Name == "delete_dead_letter_messages");
     }
 
-    private static async Task<McpClient> StartAsync(string dataDirectory, params string[] arguments)
+    [Fact]
+    public async Task WindowsGuiExecutable_SpeaksMcpOverRedirectedStdio()
+    {
+        // Users point Claude Desktop at QueueLoom.exe, a GUI-subsystem (WinExe) apphost, not at "dotnet QueueLoom.dll".
+        var executable = Path.Combine(AppContext.BaseDirectory, "QueueLoom.exe");
+        if (!OperatingSystem.IsWindows() || !File.Exists(executable))
+        {
+            return;
+        }
+
+        using var data = new TemporaryDirectory();
+        await using var client = await StartAsync(data.Path, executable, ["--mcp", "--read-only"]);
+
+        Assert.Equal("QueueLoom", client.ServerInfo.Name);
+        Assert.NotEmpty(await client.ListToolsAsync());
+    }
+
+    private static Task<McpClient> StartAsync(string dataDirectory, params string[] arguments)
     {
         var app = Path.Combine(AppContext.BaseDirectory, "QueueLoom.dll");
         Assert.True(File.Exists(app), $"The app was not copied to {app}.");
+        return StartAsync(dataDirectory, "dotnet", [app, .. arguments]);
+    }
+
+    private static async Task<McpClient> StartAsync(string dataDirectory, string command, string[] arguments)
+    {
         var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = "QueueLoom",
-            Command = "dotnet",
-            Arguments = [app, .. arguments],
+            Command = command,
+            Arguments = arguments,
             EnvironmentVariables = new Dictionary<string, string?>
             {
                 ["QUEUELOOM_DATA_DIRECTORY"] = dataDirectory,
