@@ -224,7 +224,7 @@ public sealed partial class MainWindowViewModel
 
                     var topology = await _workspace.GetTopologyAsync(forceRefresh: true, searchToken)
                         .ConfigureAwait(true);
-                    var targets = BuildDeadLetterSearchTargets(topology);
+                    var targets = DeadLetterSearchTargets.ForTopology(topology);
                     if (targets.Length == 0)
                     {
                         continue;
@@ -362,34 +362,6 @@ public sealed partial class MainWindowViewModel
             $"{sourceFailures:N0} source errors | {environmentFailures:N0} environment errors | " +
             $"{timedOutEnvironments:N0} timeouts");
         ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
-    }
-
-    private static DeadLetterSearchTarget[] BuildDeadLetterSearchTargets(ServiceBusTopology topology)
-    {
-        var targets = new List<DeadLetterSearchTarget>();
-        foreach (var queue in topology.Queues)
-        {
-            AddDeadLetterSearchTargets(targets, queue.Reference, queue.Runtime.MessageCounts);
-        }
-        foreach (var subscription in topology.Topics.SelectMany(topic => topic.Subscriptions))
-        {
-            AddDeadLetterSearchTargets(targets, subscription.Reference, subscription.Runtime.MessageCounts);
-        }
-        return targets.Where(target => !topology.UsesSampledCounts || target.SubQueue != ServiceBusSubQueue.TransferDeadLetter).ToArray();
-    }
-
-    private static void AddDeadLetterSearchTargets(
-        ICollection<DeadLetterSearchTarget> targets,
-        ServiceBusEntityReference source,
-        ServiceBusMessageCounts counts)
-    {
-        // Runtime counters are eventually consistent. Include zero-count sources so a
-        // newly dead-lettered message cannot be skipped by a stale topology snapshot.
-        targets.Add(new DeadLetterSearchTarget(source, ServiceBusSubQueue.DeadLetter, counts.DeadLetter));
-        targets.Add(new DeadLetterSearchTarget(
-            source,
-            ServiceBusSubQueue.TransferDeadLetter,
-            counts.TransferDeadLetter));
     }
 
     private void ClearDeadLetterSearch()
