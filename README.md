@@ -1,6 +1,21 @@
 # QueueLoom
 
-Desktop client for Azure Service Bus: browse queues, topics and subscriptions, find dead-letter messages, and back them up, delete, replay or resend them.
+Desktop client for Azure Service Bus: browse queues, topics and subscriptions, find dead-letter messages, and back them up, delete, replay or resend them. AI assistants can use it too, through MCP.
+
+![Messages / DLQ: two search results ticked for deletion, with the message inspector below](docs/images/messages-dark.png)
+
+<table>
+  <tr>
+    <td><img src="docs/images/explorer-light.png" alt="Explorer in the light theme: queues, topics and subscriptions with live counters"></td>
+    <td><img src="docs/images/backups-dark.png" alt="Backups: saved dead letters with the stored message"></td>
+    <td><img src="docs/images/composer-light.png" alt="Composer with a highlighted JSON body and broker properties"></td>
+  </tr>
+  <tr>
+    <td align="center">Explorer (light theme)</td>
+    <td align="center">Backups</td>
+    <td align="center">Composer</td>
+  </tr>
+</table>
 
 ## Install
 
@@ -73,11 +88,54 @@ The original message is not changed.
 
 Hover over a sidebar item or a button to see its shortcut.
 
+## AI assistants (MCP)
+
+`QueueLoom.exe --mcp` runs QueueLoom as a [Model Context Protocol](https://modelcontextprotocol.io) server, so Claude, Cursor, VS Code Copilot and other MCP clients can work with your saved environments. The assistant uses the same profiles, encrypted credentials, backups and activity log as the app.
+
+| Tool | What it does | Approval |
+|---|---|---|
+| `list_environments` | Saved environments and their kind (e.g. Production) | — |
+| `get_entities` | Queues, topics and subscriptions with message counts | — |
+| `scan_dead_letters` | Non-empty dead-letter queues | — |
+| `peek_messages` | Messages with body and properties, without locking them | — |
+| `search_dead_letters` | Dead letters containing a text | — |
+| `delete_dead_letter_messages` | Back up and delete exactly the listed dead letters | **required** |
+| `purge_dead_letters` | Back up and delete up to N messages from one dead-letter queue | **required** |
+| `send_message` | Send a message to a queue or topic | **required** |
+
+Reading is always allowed and never locks or removes messages. For every change, QueueLoom opens this window on your desktop and waits up to 5 minutes. The assistant cannot press the buttons; production environments also ask you to type the environment name:
+
+<img src="docs/images/mcp-approval.png" alt="QueueLoom asking to approve a deletion requested by an AI assistant" width="560">
+
+> Message bodies and properties that the assistant reads are sent to your AI provider like any other chat content. Message text can also contain instructions aimed at the model; this is one reason every change needs your approval. Use `--read-only` or a read-only environment for namespaces whose data must not leave your machine.
+
+Approved changes get the same safeguards as in the app: a local backup before every deletion, and an entry in **Activity** marked `MCP`. Without a desktop session (for example over SSH on Linux), QueueLoom asks through the client's own approval prompt (MCP elicitation) and refuses the change if the client has none.
+
+**Set up.** **Overview → AI assistants (MCP) → Copy configuration** copies an entry with the correct path. For example, in Claude Desktop (**Settings → Developer → Edit Config**) or Cursor (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "queueloom": {
+      "command": "C:\\Tools\\QueueLoom\\QueueLoom.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+- **Claude Code:** `claude mcp add queueloom -- "C:\Tools\QueueLoom\QueueLoom.exe" --mcp`
+- **VS Code** (`.vscode/mcp.json`): use `"servers"` instead of `"mcpServers"` and add `"type": "stdio"`.
+- **Read-only:** add `"--read-only"` to `args` and the change tools are not offered at all.
+
+Then ask, for example: *"Which queues in Staging have dead letters? Find the ones mentioning order 1042 and delete them."* The assistant searches on its own, and QueueLoom asks you before deleting.
+
 ## Safety
 
 - **Read-only environments stay read-only** until you press **Unlock 10 min**. The unlock applies only to the connected environment; production asks you to type its name.
 - **Nothing is deleted without a backup.** Purges and selective deletes write each message to a local JSON file first. The confirmation lists the environment, the queues and the count.
 - **Peek and scans never settle messages.** Search, browse and monitoring only read.
+- **AI assistants need your approval for every change** in a QueueLoom window (see above).
 - **Replay sends copies.** The original messages and backups stay unchanged, and uncertain deliveries are flagged instead of retried.
 
 ## Data and limits
@@ -105,7 +163,9 @@ dotnet test QueueLoom.slnx -c Release      # unit tests and headless UI tests
 dotnet publish src/QueueLoom.App/QueueLoom.App.csproj -p:PublishProfile=win-x64-single-file -o artifacts/publish
 ```
 
-Set `QUEUELOOM_SCREENSHOT_DIR` before `dotnet test` to save screenshots of every page in both themes.
+Set `QUEUELOOM_SCREENSHOT_DIR` before `dotnet test` to save screenshots of every page in both themes (the images above come from there).
+
+The MCP tools live in `src/QueueLoom.Mcp`; `tests/QueueLoom.Tests/McpServerTests.cs` drives them with a real MCP client, and `McpProcessTests.cs` starts `QueueLoom --mcp` over stdio.
 
 **Releases are automatic.** Every merge to `main` is tested, built and published as the next version, taken from the latest `vX.Y.Z` tag:
 
