@@ -675,6 +675,67 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("The queue itself is not changed", dialogs.Confirmations[0].Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Backups_are_grouped_by_environment_topic_and_queue_and_a_whole_topic_can_be_deleted()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var prod = CreateProfile("Production", EnvironmentKind.Production);
+        DeadLetterBackupSummary Backup(ServiceBusProfile profile, ServiceBusEntityReference source, long number) =>
+            new(Path.Combine(Path.GetTempPath(), "backups", $"{profile.Name}-{source.Path.Replace('/', '_')}-{number}.json"),
+                profile.Id, profile.Name, profile.Environment.ToString(), null, source, ServiceBusSubQueue.DeadLetter,
+                number, $"m-{number}", null, null, null, DateTimeOffset.UnixEpoch.AddMinutes(number), 10);
+        var billing = ServiceBusEntityReference.Subscription("events", "billing");
+        var shipping = ServiceBusEntityReference.Subscription("events", "shipping");
+        var orders = ServiceBusEntityReference.Queue("orders");
+        var backups = new ListBackupRepository(
+            Backup(dev, billing, 1), Backup(dev, billing, 2), Backup(dev, shipping, 3),
+            Backup(dev, orders, 4), Backup(prod, billing, 5));
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([dev, prod], dev.Id), new FakeWorkspace(), dialogs, backups);
+        await viewModel.InitializeAsync();
+        await viewModel.RefreshBackupsCommand.ExecuteAsync();
+
+        Assert.Equal(
+            ["All backups:5", "Development · DEV:4", "events:3", "billing:2", "shipping:1", "orders:1", "Production · PROD:1", "events:1", "billing:1"],
+            viewModel.BackupGroups.Select(group => $"{group.Title}:{group.Count}"));
+
+        viewModel.SelectedBackupGroup = viewModel.BackupGroups.First(group =>
+            group.Kind == BackupGroupKind.Topic && group.Key.Contains(dev.Id.ToString(), StringComparison.Ordinal));
+        Assert.Equal(3, viewModel.FilteredBackupMessages.Count);
+        Assert.Equal("Delete 3 backups…", viewModel.DeleteVisibleBackupsLabel);
+
+        await viewModel.DeleteVisibleBackupsCommand.ExecuteAsync();
+
+        Assert.Contains("topic 'events'", Assert.Single(dialogs.Confirmations).Message, StringComparison.Ordinal);
+        Assert.Equal([1L, 2, 3], backups.Deleted.Select(item => item.SequenceNumber).Order());
+        Assert.Equal([4L, 5], viewModel.BackupMessages.Select(item => item.Summary.SequenceNumber).Order());
+        Assert.Equal(BackupGroupKind.All, viewModel.SelectedBackupGroup?.Kind);
+        Assert.DoesNotContain(viewModel.BackupGroups, group => group.Key.StartsWith($"topic:{dev.Id}", StringComparison.Ordinal));
+
+        dialogs.ConfirmResult = false;
+        await viewModel.DeleteVisibleBackupsCommand.ExecuteAsync();
+        Assert.Equal(3, backups.Deleted.Count);
+    }
+
+    private sealed class ListBackupRepository(params DeadLetterBackupSummary[] summaries) : IDeadLetterBackupRepository
+    {
+        public string RootDirectory => Path.Combine(Path.GetTempPath(), "backups");
+
+        public List<DeadLetterBackupSummary> Deleted { get; } = [];
+
+        public Task<IReadOnlyList<DeadLetterBackupSummary>> ListAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<DeadLetterBackupSummary>>(summaries.Except(Deleted).ToArray());
+
+        public Task<BrowsedMessage> LoadAsync(DeadLetterBackupSummary summary, CancellationToken cancellationToken = default) =>
+            Task.FromResult(SearchMessage(summary.Source, summary.SequenceNumber, "2026-08-12T10:00:00Z"));
+
+        public Task DeleteAsync(DeadLetterBackupSummary summary, CancellationToken cancellationToken = default)
+        {
+            Deleted.Add(summary);
+            return Task.CompletedTask;
+        }
+    }
+
     private static MainWindowViewModel CreateViewModel(
         IProfileRepository repository,
         IServiceBusWorkspace workspace,

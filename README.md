@@ -38,7 +38,7 @@ The badge next to each environment (**AZURE**, **AWS**, **GCP**) shows its cloud
 - **Delete only the messages you need.** Tick the found messages and press **Delete N messages…**; the others stay in the queue.
 - **Empty a dead-letter queue**, with a limit on how many messages to remove.
 - **Resend a message.** **Open as draft** copies it to **Composer**, where you can edit it and send it.
-- **Restore from backups** or replay copies to any queue or topic.
+- **Restore from backups** or replay copies to any queue or topic. On **Backups**, pick a group on the left (an environment, a topic with its subscriptions, a subscription or a queue) and delete all its backups at once.
 - **Watch dead-letter counts** on **Monitors** while the app is open.
 
 QueueLoom never deletes anything without a local backup, and it asks for confirmation first. Production environments are read-only until you press **Unlock 10 min** and type the environment name.

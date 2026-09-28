@@ -22,7 +22,7 @@
     </Grid>
 
     <Border Grid.Row="2" Classes="card" Padding="12">
-      <Grid ColumnDefinitions="*,12,Auto" VerticalAlignment="Center">
+      <Grid ColumnDefinitions="*,12,Auto,12,Auto" VerticalAlignment="Center">
         <TextBox Classes="search" Text="{Binding BackupFilterText}"
                  PlaceholderText="Filter by environment, source, Message ID, Correlation ID, or subject…  (Ctrl+F)"
                  AutomationProperties.Name="Filter backups">
@@ -33,6 +33,9 @@
         </TextBox>
         <TextBlock Grid.Column="2" Text="{Binding VisibleBackupCount, StringFormat='{}{0:N0} messages'}"
                    Classes="muted" VerticalAlignment="Center" />
+        <Button Grid.Column="4" Content="{Binding DeleteVisibleBackupsLabel}" Classes="danger"
+                Command="{Binding DeleteVisibleBackupsCommand}"
+                ToolTip.Tip="Delete every backup shown: the chosen group on the left, narrowed by the filter" />
       </Grid>
     </Border>
 
@@ -63,8 +66,36 @@
       </StackPanel>
     </Expander>
 
-    <Grid Grid.Row="4" ColumnDefinitions="1.15*,8,*" MinHeight="320">
-      <Border Grid.Column="0" Classes="card flush" MinWidth="320">
+    <Grid Grid.Row="4" ColumnDefinitions="220,8,1.35*,8,*" MinHeight="320">
+      <!-- Groups: all backups, environments, topics with their subscriptions, queues -->
+      <Border Grid.Column="0" Classes="card flush">
+        <Grid RowDefinitions="Auto,*">
+          <Border Classes="tableHeader" Padding="14,0">
+            <TextBlock Text="GROUPS" Classes="eyebrow" VerticalAlignment="Center" />
+          </Border>
+          <ListBox Grid.Row="1" ItemsSource="{Binding BackupGroups}" SelectedItem="{Binding SelectedBackupGroup}"
+                   IsEnabled="{Binding !IsBusy}" Margin="6" AutomationProperties.Name="Backup groups">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:BackupGroupItemViewModel">
+                <Grid ColumnDefinitions="*,Auto" Margin="{Binding IndentMargin}" AutomationProperties.Name="{Binding Title}">
+                  <StackPanel Spacing="1" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" FontSize="9"
+                               controls:ToneAssist.Foreground="{Binding Tone}" />
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding Title}" />
+                  </StackPanel>
+                  <TextBlock Grid.Column="1" Text="{Binding Count, StringFormat='{}{0:N0}'}" Classes="numeric muted"
+                             VerticalAlignment="Center" Margin="8,0,0,0" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+
+      <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" Background="Transparent" />
+
+      <Border Grid.Column="2" Classes="card flush" MinWidth="320">
         <Grid RowDefinitions="Auto,*,Auto">
           <Border Classes="tableHeader" Padding="14,0">
             <Grid ColumnDefinitions="56,1.2*,1.5*,96,96">
@@ -121,9 +152,9 @@
         </Grid>
       </Border>
 
-      <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" Background="Transparent" />
+      <GridSplitter Grid.Column="3" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" Background="Transparent" />
 
-      <Border Grid.Column="2" Classes="card" MinWidth="300">
+      <Border Grid.Column="4" Classes="card" MinWidth="300">
         <Grid>
           <controls:EmptyState IsVisible="{Binding !HasLoadedBackupMessage}"
                                Icon="{x:Static controls:Icons.Backups}"
