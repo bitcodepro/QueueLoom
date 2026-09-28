@@ -122,8 +122,12 @@ public sealed partial class MainWindowViewModel
         Activity.CollectionChanged += OnActivityChanged;
     }
 
-    private void OnFilteredBackupsChanged(object? sender, NotifyCollectionChangedEventArgs args) =>
+    private void OnFilteredBackupsChanged(object? sender, NotifyCollectionChangedEventArgs args)
+    {
         OnPropertyChanged(nameof(HasVisibleBackups));
+        OnPropertyChanged(nameof(DeleteVisibleBackupsLabel));
+        DeleteVisibleBackupsCommand.NotifyCanExecuteChanged();
+    }
 
     private void OnFilteredDlqSourcesChanged(object? sender, NotifyCollectionChangedEventArgs args) =>
         OnPropertyChanged(nameof(HasVisibleDlqSources));

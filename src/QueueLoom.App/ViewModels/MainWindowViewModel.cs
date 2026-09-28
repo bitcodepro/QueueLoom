@@ -46,6 +46,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private ServiceBusSubQueue? _preferredDlqSourceSubQueue;
     private MessageItemViewModel? _selectedMessage;
     private BackupMessageItemViewModel? _selectedBackup;
+    private BackupGroupItemViewModel? _selectedBackupGroup;
     private MessageItemViewModel? _selectedBackupMessage;
     private string _backupFilterText = string.Empty;
     private string _backupStatus = "Open the Backups page to inspect local purge backups.";
@@ -214,6 +215,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         DeleteSelectedBackupCommand = new AsyncRelayCommand(
             token => RunOperationAsync("Deleting local backup", DeleteSelectedBackupAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedBackup is not null && _backupRepository is not null);
+        DeleteVisibleBackupsCommand = new AsyncRelayCommand(
+            token => RunOperationAsync("Deleting local backups", DeleteVisibleBackupsAsync, token, allowCancellation: false),
+            () => !IsBusy && FilteredBackupMessages.Count > 0 && _backupRepository is not null);
         OpenBackupAsDraftCommand = new RelayCommand(
             OpenBackupAsDraft,
             () => !IsBusy && CanOpenBackupAsDraft);
@@ -253,6 +257,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
     public ObservableCollection<BackupMessageItemViewModel> FilteredBackupMessages { get; } = [];
 
+    /// <summary>All backups, environments, topics with their subscriptions, and queues, with counts.</summary>
+    public ObservableCollection<BackupGroupItemViewModel> BackupGroups { get; } = [];
+
     public ObservableCollection<DestinationItemViewModel> Destinations { get; } = [];
 
     public ObservableCollection<ActivityItemViewModel> Activity { get; } = [];
@@ -291,6 +298,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     public AsyncRelayCommand RefreshBackupsCommand { get; }
     public AsyncRelayCommand LoadSelectedBackupCommand { get; }
     public AsyncRelayCommand DeleteSelectedBackupCommand { get; }
+    public AsyncRelayCommand DeleteVisibleBackupsCommand { get; }
     public RelayCommand OpenBackupAsDraftCommand { get; }
     public AsyncRelayCommand SendDraftCommand { get; }
     public AsyncRelayCommand ToggleMonitorCommand { get; }
@@ -545,6 +553,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         RefreshBackupsCommand.NotifyCanExecuteChanged();
         LoadSelectedBackupCommand.NotifyCanExecuteChanged();
         DeleteSelectedBackupCommand.NotifyCanExecuteChanged();
+        DeleteVisibleBackupsCommand.NotifyCanExecuteChanged();
         OpenBackupAsDraftCommand.NotifyCanExecuteChanged();
         SendDraftCommand.NotifyCanExecuteChanged();
         ToggleMonitorCommand.NotifyCanExecuteChanged();
@@ -611,6 +620,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             RefreshBackupsCommand,
             LoadSelectedBackupCommand,
             DeleteSelectedBackupCommand,
+            DeleteVisibleBackupsCommand,
             PurgeEnvironmentDeadLettersCommand,
             PurgeTopicDeadLettersCommand,
             PurgeSelectedDeadLettersCommand,

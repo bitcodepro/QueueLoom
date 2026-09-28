@@ -19,6 +19,23 @@ public sealed partial class MainWindowViewModel
 
     public bool HasSelectedBackup => SelectedBackup is not null;
 
+    public BackupGroupItemViewModel? SelectedBackupGroup
+    {
+        get => _selectedBackupGroup;
+        set
+        {
+            if (SetProperty(ref _selectedBackupGroup, value))
+            {
+                ApplyBackupFilter();
+            }
+        }
+    }
+
+    /// <summary>"Delete 12 backups…": everything the chosen group and the filter text show.</summary>
+    public string DeleteVisibleBackupsLabel => FilteredBackupMessages.Count == 1
+        ? "Delete 1 backup…"
+        : $"Delete {FilteredBackupMessages.Count:N0} backups…";
+
     public MessageItemViewModel? SelectedBackupMessage
     {
         get => _selectedBackupMessage;
@@ -88,6 +105,7 @@ public sealed partial class MainWindowViewModel
         {
             BackupMessages.Add(new BackupMessageItemViewModel(summary));
         }
+        RebuildBackupGroups();
         ApplyBackupFilter(selectedPath);
         BackupStatus = BackupMessages.Count == 0
             ? $"No backup messages found in {repository.RootDirectory}"
@@ -103,9 +121,11 @@ public sealed partial class MainWindowViewModel
     {
         preferredPath ??= SelectedBackup?.FilePath;
         var query = BackupFilterText.Trim();
+        var group = SelectedBackupGroup;
+        var inGroup = group is null ? BackupMessages : BackupMessages.Where(group.Contains);
         var filtered = string.IsNullOrWhiteSpace(query)
-            ? BackupMessages
-            : BackupMessages.Where(item =>
+            ? inGroup
+            : inGroup.Where(item =>
                 item.ProfileName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 item.EnvironmentLabel.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 item.Summary.Environment.Contains(query, StringComparison.OrdinalIgnoreCase) ||
@@ -124,6 +144,85 @@ public sealed partial class MainWindowViewModel
                              string.Equals(item.FilePath, preferredPath, StringComparison.OrdinalIgnoreCase))
                          ?? FilteredBackupMessages.FirstOrDefault();
         OnPropertyChanged(nameof(VisibleBackupCount));
+    }
+
+    private void RebuildBackupGroups()
+    {
+        var selectedKey = SelectedBackupGroup?.Key;
+        var groups = BackupGroupItemViewModel.Build(BackupMessages);
+        BackupGroups.Clear();
+        foreach (var group in groups)
+        {
+            BackupGroups.Add(group);
+        }
+
+        // Keep the chosen group while it still has backups; otherwise fall back to all of them.
+        _selectedBackupGroup = BackupGroups.FirstOrDefault(group => group.Key == selectedKey) ?? BackupGroups[0];
+        OnPropertyChanged(nameof(SelectedBackupGroup));
+    }
+
+    private async Task DeleteVisibleBackupsAsync(CancellationToken cancellationToken)
+    {
+        var repository = _backupRepository ?? throw new InvalidOperationException("Backup storage is unavailable.");
+        var targets = FilteredBackupMessages.ToArray();
+        if (targets.Length == 0)
+        {
+            throw new InvalidOperationException("There are no backups to delete.");
+        }
+
+        var group = SelectedBackupGroup;
+        var scope = group is null or { Kind: BackupGroupKind.All } ? "all environments" : $"{group.KindLabel.ToLowerInvariant()} '{group.Title}'";
+        var filterNote = string.IsNullOrWhiteSpace(BackupFilterText) ? string.Empty : $" matching '{BackupFilterText.Trim()}'";
+        var sources = targets
+            .GroupBy(item => $"{item.ProfileName} · {item.SourceDisplay}")
+            .OrderByDescending(item => item.Count())
+            .Take(8)
+            .Select(item => $"• {item.Key}: {item.Count():N0}");
+        var confirmed = await _dialogs.ConfirmAsync(
+            "Delete local backups",
+            $"Delete {targets.Length:N0} local backup file(s) from {scope}{filterNote}?\n\n" +
+            string.Join("\n", sources) +
+            (targets.Select(item => item.SourceDisplay).Distinct().Count() > 8 ? "\n• …" : string.Empty) +
+            "\n\nThe queues themselves are not changed. Deleted files cannot be restored by QueueLoom.",
+            isDangerous: true,
+            cancellationToken: cancellationToken).ConfigureAwait(true);
+        if (!confirmed)
+        {
+            BackupStatus = "Backup deletion cancelled";
+            return;
+        }
+
+        var deleted = 0;
+        var failed = 0;
+        foreach (var item in targets)
+        {
+            try
+            {
+                await repository.DeleteAsync(item.Summary, CancellationToken.None).ConfigureAwait(true);
+                BackupMessages.Remove(item);
+                deleted++;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                failed++;
+            }
+        }
+
+        SelectedBackupMessage = null;
+        RebuildBackupGroups();
+        ApplyBackupFilter();
+        if (SelectedBackup?.IsReadable == true)
+        {
+            await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        BackupStatus = failed == 0
+            ? $"Deleted {deleted:N0} local backup(s). The queues were not changed."
+            : $"Deleted {deleted:N0} local backup(s); {failed:N0} could not be deleted. Refresh to see what is left.";
+        AddActivity(
+            failed == 0 ? "Warning" : "Error",
+            "Local backups deleted",
+            $"{deleted:N0} deleted, {failed:N0} failed · {scope}{filterNote}");
     }
 
     private async Task LoadSelectedBackupAsync(CancellationToken cancellationToken)
@@ -158,14 +257,14 @@ public sealed partial class MainWindowViewModel
 
         await repository.DeleteAsync(selected.Summary, cancellationToken).ConfigureAwait(true);
         BackupMessages.Remove(selected);
-        FilteredBackupMessages.Remove(selected);
-        SelectedBackup = FilteredBackupMessages.FirstOrDefault();
         SelectedBackupMessage = null;
+        RebuildBackupGroups();
+        ApplyBackupFilter();
         if (SelectedBackup?.IsReadable == true)
         {
             await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
         }
-        BackupStatus = $"Deleted local backup {selected.FileName}. Azure was not changed.";
+        BackupStatus = $"Deleted local backup {selected.FileName}. The queue was not changed.";
         OnPropertyChanged(nameof(VisibleBackupCount));
         AddActivity(
             "Warning",
