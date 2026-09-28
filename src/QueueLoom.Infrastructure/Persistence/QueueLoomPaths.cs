@@ -21,14 +21,35 @@ public sealed record QueueLoomPaths(
         var rootOverride = Environment.GetEnvironmentVariable("QUEUELOOM_DATA_DIRECTORY");
         var persistentPaths = ForRoot(string.IsNullOrWhiteSpace(rootOverride) ? Path.Combine(localData, "QueueLoom") : rootOverride);
         var backupOverride = Environment.GetEnvironmentVariable("QUEUELOOM_BACKUP_DIRECTORY");
-        var legacyBackups = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
         return persistentPaths with
         {
-            // Keep existing portable backups visible, without moving or deleting user data.
-            BackupsDirectory = !string.IsNullOrWhiteSpace(backupOverride) ? Path.GetFullPath(backupOverride) :
-                string.IsNullOrWhiteSpace(rootOverride) && Directory.Exists(legacyBackups)
-                    ? legacyBackups : persistentPaths.BackupsDirectory
+            // Backups live in a "backups" folder next to the program on every OS, so they are easy to find
+            // and travel with a portable copy. Where that folder cannot be written (for example Program Files),
+            // they fall back to the data folder.
+            BackupsDirectory = !string.IsNullOrWhiteSpace(backupOverride)
+                ? Path.GetFullPath(backupOverride)
+                : IsWritableDirectory(ProgramBackupsDirectory) ? ProgramBackupsDirectory : persistentPaths.BackupsDirectory
         };
+    }
+
+    /// <summary>The "backups" folder next to the running program (the directory of the executable).</summary>
+    public static string ProgramBackupsDirectory => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
+
+    internal static bool IsWritableDirectory(string directory)
+    {
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var probe = Path.Combine(directory, $".write-test-{Guid.NewGuid():N}");
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose))
+            {
+            }
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     public static QueueLoomPaths ForRoot(string rootDirectory)

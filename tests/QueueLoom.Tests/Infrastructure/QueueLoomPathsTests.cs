@@ -8,13 +8,24 @@ namespace QueueLoom.Tests.Infrastructure;
 public sealed class QueueLoomPathsTests
 {
     [Fact]
-    public void CreateDefault_UsesPersistentStorageUnlessLegacyBackupsExist()
+    public void CreateDefault_KeepsBackupsNextToTheProgram()
     {
         var paths = QueueLoomPaths.CreateDefault();
 
-        var legacy = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
-        Assert.Equal(Directory.Exists(legacy) ? legacy : Path.Combine(paths.RootDirectory, "backups"), paths.BackupsDirectory);
-        Assert.NotEqual(paths.RootDirectory, paths.BackupsDirectory);
+        Assert.Equal(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups")), paths.BackupsDirectory);
+        Assert.Equal(QueueLoomPaths.ProgramBackupsDirectory, paths.BackupsDirectory);
+        Assert.True(Directory.Exists(paths.BackupsDirectory));
+    }
+
+    [Fact]
+    public void A_folder_that_cannot_be_written_is_not_used_for_backups()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var file = Path.Combine(temporaryDirectory.Path, "not-a-folder");
+        File.WriteAllText(file, "x");
+
+        Assert.True(QueueLoomPaths.IsWritableDirectory(Path.Combine(temporaryDirectory.Path, "backups")));
+        Assert.False(QueueLoomPaths.IsWritableDirectory(Path.Combine(file, "backups")));
     }
 
     [Fact]
