@@ -102,7 +102,7 @@ Add `"--read-only"` to `args` if the assistant should never be able to change an
 
 ## Where data is stored
 
-Settings, encrypted credentials, backups and logs are kept in `%LOCALAPPDATA%\QueueLoom`. Backups contain message bodies in plain text.
+Backups are saved in the `backups` folder next to `QueueLoom.exe` (on Linux and macOS, next to the program file). If that folder cannot be written, for example under Program Files, they go to the data folder instead. Settings, encrypted credentials and logs are kept in `%LOCALAPPDATA%\QueueLoom`. Backups contain message bodies in plain text.
 
 ---
 
