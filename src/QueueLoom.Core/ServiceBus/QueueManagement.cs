@@ -20,7 +20,8 @@ public sealed record QueueSettings(
 /// Also create a dead-letter queue and connect it (SQS redrive policy, RabbitMQ dead-letter routing, Kafka ".DLT"
 /// topic). Service Bus queues always have one.
 /// </param>
-public sealed record QueueDefinition(string Name, QueueSettings Settings, bool CreateDeadLetterQueue = true);
+/// <param name="TopicName">The topic a new subscription reads from (Pub/Sub, where subscriptions are what is managed).</param>
+public sealed record QueueDefinition(string Name, QueueSettings Settings, bool CreateDeadLetterQueue = true, string? TopicName = null);
 
 /// <summary>Which settings a service lets QueueLoom set when creating a queue, and which it can change later.</summary>
 public sealed record QueueManagementCapabilities(
@@ -31,6 +32,12 @@ public sealed record QueueManagementCapabilities(
     string? UpdateNote = null)
 {
     public bool CanUpdate => OnUpdate != QueueSettingFlags.None;
+
+    /// <summary>
+    /// The managed things are subscriptions of topics (Pub/Sub): a new one is created on the selected topic, and
+    /// changing or deleting applies to the selected subscription.
+    /// </summary>
+    public bool ManagesSubscriptions { get; init; }
 }
 
 [Flags]

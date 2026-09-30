@@ -12,6 +12,7 @@
     <StackPanel Spacing="4">
       <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
       <TextBlock Text="{Binding EnvironmentName, StringFormat='Environment: {0}'}" Classes="muted" />
+      <TextBlock Text="{Binding TopicName, StringFormat='Reads from topic: {0}'}" Classes="muted" IsVisible="{Binding HasTopicName}" />
     </StackPanel>
 
     <StackPanel Spacing="7" IsVisible="{Binding IsNew}">
@@ -36,7 +37,7 @@
                        AutomationProperties.Name="Maximum deliveries" />
       </StackPanel>
       <StackPanel Grid.Column="2" Spacing="7" IsVisible="{Binding ShowLockDuration}">
-        <TextBlock Text="LOCK · SECONDS" Classes="eyebrow" />
+        <TextBlock Text="{Binding LockLabel}" Classes="eyebrow" />
         <NumericUpDown Value="{Binding LockSeconds}" Minimum="0" Maximum="43200" FormatString="0" PlaceholderText="default"
                        AutomationProperties.Name="Lock duration in seconds" />
       </StackPanel>

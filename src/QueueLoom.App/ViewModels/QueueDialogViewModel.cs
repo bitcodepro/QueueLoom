@@ -28,9 +28,11 @@ public sealed class QueueDialogViewModel : ObservableObject
     private string _error = string.Empty;
 
     /// <summary>Creates the dialog for a new queue (<paramref name="existing"/> null) or for changing one.</summary>
-    public QueueDialogViewModel(QueueManagementCapabilities capabilities, string environmentName, string? existing = null, QueueSettings? current = null)
+    public QueueDialogViewModel(QueueManagementCapabilities capabilities, string environmentName, string? existing = null,
+        QueueSettings? current = null, string? topicName = null)
     {
         _capabilities = capabilities;
+        TopicName = topicName;
         EnvironmentName = environmentName;
         IsNew = existing is null;
         _name = existing ?? string.Empty;
@@ -48,6 +50,14 @@ public sealed class QueueDialogViewModel : ObservableObject
     }
 
     public bool IsNew { get; }
+
+    /// <summary>The topic a new Pub/Sub subscription reads from.</summary>
+    public string? TopicName { get; }
+
+    public bool HasTopicName => IsNew && !string.IsNullOrEmpty(TopicName);
+
+    /// <summary>Pub/Sub calls the lock an acknowledgement deadline.</summary>
+    public string LockLabel => _capabilities.ManagesSubscriptions ? "ACK DEADLINE · SECONDS" : "LOCK · SECONDS";
 
     public string EnvironmentName { get; }
 
@@ -127,9 +137,12 @@ public sealed class QueueDialogViewModel : ObservableObject
 
     public bool ShowCreateDeadLetterQueue => IsNew && _capabilities.CanCreateDeadLetterQueue;
 
-    public string DeadLetterQueueLabel => KindName == "topic"
-        ? $"Also create the dead-letter topic {DisplayName}.DLT"
-        : $"Also create a dead-letter queue and send failed messages there";
+    public string DeadLetterQueueLabel => KindName switch
+    {
+        "topic" => $"Also create the dead-letter topic {DisplayName}.DLT",
+        "subscription" => $"Also create the dead-letter topic {DisplayName}-dead-letter, with a subscription to read it",
+        _ => "Also create a dead-letter queue and send failed messages there"
+    };
 
     public string Error
     {
@@ -177,7 +190,9 @@ public sealed class QueueDialogViewModel : ObservableObject
     }
 
     public QueueDefinition? TryBuildDefinition() =>
-        TryBuildSettings() is { } settings ? new QueueDefinition(Name.Trim(), settings, ShowCreateDeadLetterQueue && CreateDeadLetterQueue) : null;
+        TryBuildSettings() is { } settings
+            ? new QueueDefinition(Name.Trim(), settings, ShowCreateDeadLetterQueue && CreateDeadLetterQueue, TopicName)
+            : null;
 
     private bool Shows(QueueSettingFlags flag) => ((IsNew ? _capabilities.OnCreate : _capabilities.OnUpdate) & flag) != 0;
 }

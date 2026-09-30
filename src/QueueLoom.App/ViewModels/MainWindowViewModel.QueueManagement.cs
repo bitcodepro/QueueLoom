@@ -31,13 +31,26 @@ public sealed partial class MainWindowViewModel
         ? $"Create, change or delete a {QueueKindName}"
         : $"Unlock write access to create, change or delete a {QueueKindName}";
 
-    private bool IsManageableSelection => SelectedEntity is { IsQueue: true };
+    private bool ManagesSubscriptions => _workspace.QueueManagement?.ManagesSubscriptions == true;
+
+    private bool IsManageableSelection => ManagesSubscriptions ? SelectedEntity is { IsSubscription: true } : SelectedEntity is { IsQueue: true };
+
+    /// <summary>Pub/Sub creates subscriptions on a topic: the selected topic, or the topic of the selected subscription.</summary>
+    private string? SelectedTopicName => SelectedEntity switch
+    {
+        { IsTopic: true } topic => topic.Name,
+        { IsSubscription: true } subscription => subscription.ParentPath,
+        _ => null
+    };
+
+    private EntityItemViewModel RequireManageableSelection() =>
+        IsManageableSelection ? SelectedEntity! : throw new InvalidOperationException($"Select a {QueueKindName} first.");
 
     private void InitializeQueueManagement()
     {
         CreateQueueCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync($"Creating a {QueueKindName}", CreateQueueAsync, token),
-            () => !IsBusy && CanManageQueues && CanWrite);
+            () => !IsBusy && CanManageQueues && CanWrite && (!ManagesSubscriptions || SelectedTopicName is not null));
         EditQueueSettingsCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync($"Changing {SelectedEntity?.Name}", EditQueueSettingsAsync, token),
             () => !IsBusy && CanManageQueues && CanWrite && IsManageableSelection && _workspace.QueueManagement?.CanUpdate == true);
@@ -62,7 +75,10 @@ public sealed partial class MainWindowViewModel
     private async Task CreateQueueAsync(CancellationToken cancellationToken)
     {
         var (profile, capabilities) = RequireQueueManagement();
-        var dialog = new QueueDialogViewModel(capabilities, profile.Name);
+        var topic = capabilities.ManagesSubscriptions
+            ? SelectedTopicName ?? throw new InvalidOperationException("Select the topic the new subscription should read from.")
+            : null;
+        var dialog = new QueueDialogViewModel(capabilities, profile.Name, topicName: topic);
         if (await _dialogs.EditQueueAsync(dialog, cancellationToken).ConfigureAwait(true) is not QueueDefinition definition)
         {
             StatusText = $"No {QueueKindName} was created";
@@ -72,15 +88,17 @@ public sealed partial class MainWindowViewModel
         RecordOperationIntent($"Create {QueueKindName} started", definition.Name, null);
         await _workspace.CreateQueueAsync(definition, cancellationToken).ConfigureAwait(true);
         await RefreshAfterQueueChangeAsync(cancellationToken).ConfigureAwait(true);
-        SelectedEntity = Entities.FirstOrDefault(entity => entity.IsQueue && entity.Name == definition.Name) ?? SelectedEntity;
+        SelectedEntity = Entities.FirstOrDefault(entity => (entity.IsQueue || entity.IsSubscription) && entity.Name == definition.Name) ?? SelectedEntity;
         StatusText = $"Created {QueueKindName} {definition.Name}" + (definition.CreateDeadLetterQueue ? " and its dead-letter queue" : string.Empty);
-        AddActivity("Success", $"{Capitalized(QueueKindName)} created", $"{profile.Name} · {definition.Name}", ServiceBusEntityReference.Queue(definition.Name));
+        AddActivity("Success", $"{Capitalized(QueueKindName)} created", $"{profile.Name} · {definition.Name}",
+            definition.TopicName is { } parent ? ServiceBusEntityReference.Subscription(parent, definition.Name) : ServiceBusEntityReference.Queue(definition.Name));
     }
 
     private async Task EditQueueSettingsAsync(CancellationToken cancellationToken)
     {
         var (profile, capabilities) = RequireQueueManagement();
-        var queue = SelectedEntity is { IsQueue: true } entity ? entity.Name : throw new InvalidOperationException($"Select a {QueueKindName} first.");
+        var selected = RequireManageableSelection();
+        var queue = selected.Name;
         var current = await _workspace.GetQueueSettingsAsync(queue, cancellationToken).ConfigureAwait(true);
         var dialog = new QueueDialogViewModel(capabilities, profile.Name, queue, current);
         if (await _dialogs.EditQueueAsync(dialog, cancellationToken).ConfigureAwait(true) is not QueueSettings settings)
@@ -89,17 +107,17 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        RecordOperationIntent($"Change {QueueKindName} started", queue, ServiceBusEntityReference.Queue(queue));
+        RecordOperationIntent($"Change {QueueKindName} started", queue, selected.Reference);
         await _workspace.UpdateQueueSettingsAsync(queue, settings, cancellationToken).ConfigureAwait(true);
         await RefreshAfterQueueChangeAsync(cancellationToken).ConfigureAwait(true);
         StatusText = $"Saved the settings of {queue}";
-        AddActivity("Success", $"{Capitalized(QueueKindName)} settings changed", $"{profile.Name} · {queue}", ServiceBusEntityReference.Queue(queue));
+        AddActivity("Success", $"{Capitalized(QueueKindName)} settings changed", $"{profile.Name} · {queue}", selected.Reference);
     }
 
     private async Task DeleteQueueAsync(CancellationToken cancellationToken)
     {
         var (profile, _) = RequireQueueManagement();
-        var entity = SelectedEntity is { IsQueue: true } selected ? selected : throw new InvalidOperationException($"Select a {QueueKindName} first.");
+        var entity = RequireManageableSelection();
         var messages = entity.Active + entity.DeadLetters;
         var confirmed = await _dialogs.ConfirmAsync(
             $"Delete {QueueKindName} {entity.Name}",

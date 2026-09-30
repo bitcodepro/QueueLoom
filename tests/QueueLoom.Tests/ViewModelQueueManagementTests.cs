@@ -86,6 +86,53 @@ public sealed partial class ViewModelStateTests
         Assert.DoesNotContain(viewModel.Entities, entity => entity.Name == "invoices");
     }
 
+    [Fact]
+    public async Task SubscriptionManagement_CreatesOnTheSelectedTopicAndChangesTheSelectedSubscription()
+    {
+        var pubSubLike = new QueueManagementCapabilities("subscription",
+            QueueSettingFlags.MessageTimeToLive | QueueSettingFlags.LockDuration,
+            QueueSettingFlags.LockDuration, CanCreateDeadLetterQueue: true) { ManagesSubscriptions = true };
+        var profile = CreateProfile("Events", EnvironmentKind.Development, ProfileAccessMode.ReadWrite) with { AllowQueueManagement = true };
+        var workspace = new FakeWorkspace
+        {
+            QueueManagement = pubSubLike,
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [],
+                [new ServiceBusTopic("events", ServiceBusEntityRuntime.Empty,
+                    [new ServiceBusSubscription("events", "billing", ServiceBusEntityRuntime.Empty)])])
+        };
+        var dialogs = new FakeDialogService
+        {
+            FillQueueDialog = dialog =>
+            {
+                if (dialog.IsNew)
+                {
+                    dialog.Name = "invoices";
+                }
+                else
+                {
+                    dialog.LockSeconds = 60;
+                }
+            }
+        };
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+
+        viewModel.SelectedEntity = null;
+        Assert.False(viewModel.CreateQueueCommand.CanExecute(null));
+        viewModel.SelectedEntity = viewModel.Entities.Single(entity => entity.IsTopic);
+        Assert.True(viewModel.CreateQueueCommand.CanExecute(null));
+        Assert.False(viewModel.EditQueueSettingsCommand.CanExecute(null));
+        await viewModel.CreateQueueCommand.ExecuteAsync();
+        Assert.Equal("events", Assert.Single(workspace.CreatedQueues).TopicName);
+        Assert.Equal("Reads from topic: events", $"Reads from topic: {dialogs.QueueDialogs[0].TopicName}");
+        Assert.Equal("ACK DEADLINE · SECONDS", dialogs.QueueDialogs[0].LockLabel);
+
+        viewModel.SelectedEntity = viewModel.Entities.Single(entity => entity.IsSubscription && entity.Name == "billing");
+        await viewModel.EditQueueSettingsCommand.ExecuteAsync();
+        Assert.Equal(("billing", new QueueSettings(LockDuration: TimeSpan.FromSeconds(60))), Assert.Single(workspace.UpdatedQueues));
+    }
+
     [Theory]
     [InlineData("", "Enter a name.")]
     [InlineData("-orders", "Use letters, digits")]
