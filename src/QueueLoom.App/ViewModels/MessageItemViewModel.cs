@@ -44,7 +44,7 @@ public sealed class MessageItemViewModel : ObservableObject
         _bodyDisplay = new Lazy<string>(CreateBodyDisplay);
         _applicationPropertiesJson = new Lazy<string>(CreateApplicationPropertiesJson);
         _propertiesJson = new Lazy<string>(CreatePropertiesJson);
-        _decoded = new Lazy<DecodedBody?>(() => BodyDecoder.Decode(Message.Body, Message.Properties.ContentType));
+        _decoded = new Lazy<DecodedBody?>(() => BodyDecoder.Decode(Message.Body, Message.Properties.ContentType, Message.Schema));
     }
 
     public BrowsedMessage Message { get; }

@@ -28,8 +28,32 @@ public static class BodyDecoder
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    public static DecodedBody? Decode(ReadOnlyMemory<byte> body, string? contentType = null)
+    /// <summary>
+    /// The registry schema id of a body in the Confluent wire format: a zero magic byte, then the id as a 4-byte
+    /// big-endian integer, then the Avro, Protobuf or JSON payload.
+    /// </summary>
+    public static bool TryReadSchemaId(ReadOnlySpan<byte> body, out int schemaId)
     {
+        schemaId = 0;
+        if (body.Length < 5 || body[0] != 0)
+        {
+            return false;
+        }
+        schemaId = BinaryPrimitives.ReadInt32BigEndian(body[1..5]);
+        return schemaId > 0;
+    }
+
+    public static DecodedBody? Decode(ReadOnlyMemory<byte> body, string? contentType = null, MessageSchema? schema = null)
+    {
+        if (TryReadSchemaId(body.Span, out var schemaId))
+        {
+            var registry = DecodeRegistryFramed(body[5..], schemaId, schema?.Id == schemaId ? schema : null);
+            if (registry is not null)
+            {
+                return registry;
+            }
+        }
+
         var steps = new List<string>();
         string? note = null;
         var current = body;
@@ -91,6 +115,83 @@ public static class BodyDecoder
         }
 
         return steps.Count > 0 ? new DecodedBody([.. steps, "binary"], HexDump(final), false, note) : null;
+    }
+
+    /// <summary>
+    /// A body framed for a Schema Registry. With the schema, Avro is read field by field and Protobuf skips its
+    /// message indexes; without it only JSON payloads are recognised, so random binary starting with a zero byte
+    /// is not mistaken for a framed message.
+    /// </summary>
+    private static DecodedBody? DecodeRegistryFramed(ReadOnlyMemory<byte> payload, int schemaId, MessageSchema? schema)
+    {
+        var span = payload.Span;
+        if (schema is null)
+        {
+            return TryText(span, out var plain) && TryIndentJson(plain, out var framedJson)
+                ? new DecodedBody(["Schema Registry", "JSON"], framedJson, true,
+                    $"Schema id {schemaId}. Set the Schema Registry URL of this environment to see the schema.")
+                : null;
+        }
+
+        switch (schema.Type)
+        {
+            case MessageSchemaType.Json:
+                return TryText(span, out var text) && TryIndentJson(text, out var json)
+                    ? new DecodedBody(["Schema Registry", "JSON"], json, true, $"Schema id {schemaId} (JSON Schema).")
+                    : null;
+            case MessageSchemaType.Protobuf:
+                var position = 0;
+                if (!Protobuf.TryReadVarint(span, ref position, out var rawCount))
+                {
+                    return null;
+                }
+                var count = (long)(rawCount >> 1) ^ -(long)(rawCount & 1);
+                for (var index = 0L; index < count; index++)
+                {
+                    if (!Protobuf.TryReadVarint(span, ref position, out _))
+                    {
+                        return null;
+                    }
+                }
+                var message = ProtobufMessageName(schema.Text);
+                return Protobuf.TryToJson(span[position..], requireMessage: false, out var protobuf)
+                    ? new DecodedBody(["Schema Registry", "Protobuf"], protobuf, true,
+                        $"Schema id {schemaId}{(message is null ? string.Empty : $", message {message}")}. Fields are shown by number, as in the .proto file.")
+                    : null;
+            default:
+                try
+                {
+                    using var document = JsonDocument.Parse(schema.Text);
+                    var avro = new AvroSchema(document.RootElement);
+                    var reader = new AvroReader(span.ToArray(), 0);
+                    using var stream = new MemoryStream();
+                    using (var writer = new Utf8JsonWriter(stream, Indented))
+                    {
+                        avro.Write(writer, avro.Root, reader);
+                    }
+                    var name = document.RootElement.ValueKind == JsonValueKind.Object &&
+                               document.RootElement.TryGetProperty("name", out var named)
+                        ? named.GetString()
+                        : null;
+                    var note = $"Schema id {schemaId}{(name is null ? string.Empty : $", record {name}")}." +
+                               (reader.AtEnd ? string.Empty : " The body is longer than the schema describes; it may have been written with another schema.");
+                    return new DecodedBody(["Schema Registry", "Avro"], Encoding.UTF8.GetString(stream.ToArray()), true, note);
+                }
+                catch (Exception exception) when (exception is FormatException or JsonException or InvalidDataException
+                                                      or ArgumentException or OverflowException or IndexOutOfRangeException
+                                                      or InvalidOperationException or KeyNotFoundException)
+                {
+                    return new DecodedBody(["Schema Registry", "Avro"], HexDump(span), false,
+                        $"Schema id {schemaId}: the body does not match the schema ({exception.Message}).");
+                }
+        }
+    }
+
+    /// <summary>The first message declared in a .proto file, which Confluent serializers use when no index is given.</summary>
+    private static string? ProtobufMessageName(string proto)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(proto, @"\bmessage\s+([A-Za-z_][A-Za-z0-9_]*)");
+        return match.Success ? match.Groups[1].Value : null;
     }
 
     private static bool IsGzip(ReadOnlySpan<byte> span) => span.Length > 18 && span[0] == 0x1F && span[1] == 0x8B && span[2] == 8;
@@ -385,7 +486,7 @@ public static class BodyDecoder
             }
         }
 
-        private static bool TryReadVarint(ReadOnlySpan<byte> data, ref int position, out ulong value)
+        internal static bool TryReadVarint(ReadOnlySpan<byte> data, ref int position, out ulong value)
         {
             value = 0;
             for (var shift = 0; shift < 64; shift += 7)

@@ -315,6 +315,17 @@ public static partial class ProfileValidator
             errors.Add(new ValidationError("profile.kafka.dlq_suffix.invalid",
                 "Dead-letter topic endings cannot be empty or contain spaces.", nameof(profile.Kafka)));
         }
+        if (settings.SchemaRegistryUrl is { } registry &&
+            (!Uri.TryCreate(registry, UriKind.Absolute, out var registryUri) || registryUri.Scheme is not ("http" or "https")))
+        {
+            errors.Add(new ValidationError("profile.kafka.schema_registry.invalid",
+                "The Schema Registry URL must start with http:// or https://, for example http://localhost:8081.", nameof(profile.Kafka)));
+        }
+        if (settings.SchemaRegistryUserName is not null && settings.SchemaRegistryUrl is null)
+        {
+            errors.Add(new ValidationError("profile.kafka.schema_registry.user_without_url",
+                "Enter the Schema Registry URL for its user name.", nameof(profile.Kafka)));
+        }
     }
 
     [GeneratedRegex("^[a-z]{2}(-[a-z]+)+-[0-9]+$")]

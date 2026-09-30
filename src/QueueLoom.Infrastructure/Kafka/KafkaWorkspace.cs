@@ -25,6 +25,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     private ClientConfig? _config;
     private IAdminClient? _admin;
     private IProducer<byte[]?, byte[]>? _producer;
+    private SchemaRegistryClient? _schemaRegistry;
     private KafkaTopologyIndex _index = KafkaTopologyIndex.Empty;
 
     public KafkaWorkspace(ISecretVault secretVault, TimeProvider? timeProvider = null, DeadLetterJsonBackupStore? backupStore = null)
@@ -71,6 +72,14 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                                   ?? throw new InvalidOperationException("The Kafka password is missing. Edit the environment and enter it again.");
         }
 
+        if (settings.SchemaRegistryUrl is { } registryUrl)
+        {
+            var registryPassword = settings.SchemaRegistryUserName is null
+                ? null
+                : await _secretVault.RetrieveAsync(ProfileSecretKey.SchemaRegistryPassword(profile.Id), cancellationToken).ConfigureAwait(false);
+            _schemaRegistry = new SchemaRegistryClient(registryUrl, settings.SchemaRegistryUserName, registryPassword);
+        }
+
         _config = config;
         _index = KafkaTopologyIndex.Empty with { Suffixes = settings.EffectiveDeadLetterSuffixes };
         _admin = new AdminClientBuilder(new AdminClientConfig(config)).Build();
@@ -103,6 +112,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         _producer = null;
         _admin?.Dispose();
         _admin = null;
+        _schemaRegistry?.Dispose();
+        _schemaRegistry = null;
         _config = null;
         return ValueTask.CompletedTask;
     }
@@ -254,39 +265,58 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 
         public int MaximumBatchSize => MaximumBatch;
 
-        public Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken) =>
-            Task.Run<IReadOnlyList<LeasedMessage>>(() =>
+        public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
+        {
+            var messages = await Task.Run(() => Receive(maxMessages, cancellationToken), cancellationToken).ConfigureAwait(false);
+            if (owner._schemaRegistry is not { } registry)
             {
-                var consumer = Open();
-                var messages = new List<LeasedMessage>();
-                var limit = Math.Clamp(maxMessages, 1, MaximumBatch);
-                while (messages.Count < limit && _finished.Count < _end.Count)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var result = consumer.Consume(TimeSpan.FromSeconds(1));
-                    if (result is null)
-                    {
-                        break;
-                    }
-                    var partition = result.Partition.Value;
-                    if (_finished.Contains(partition))
-                    {
-                        // Written after reading started; this read stops at the end it saw.
-                        continue;
-                    }
-                    if (result.IsPartitionEOF || result.Offset.Value >= _end[partition])
-                    {
-                        _finished.Add(partition);
-                        continue;
-                    }
-                    messages.Add(ToLeased(result));
-                    if (result.Offset.Value >= _end[partition] - 1)
-                    {
-                        _finished.Add(partition);
-                    }
-                }
                 return messages;
-            }, cancellationToken);
+            }
+
+            for (var index = 0; index < messages.Count; index++)
+            {
+                var message = messages[index].Message;
+                if (BodyDecoder.TryReadSchemaId(message.Body.Span, out var schemaId) &&
+                    await registry.GetAsync(schemaId, cancellationToken).ConfigureAwait(false) is { } schema)
+                {
+                    messages[index] = messages[index] with { Message = message with { Schema = schema } };
+                }
+            }
+            return messages;
+        }
+
+        private List<LeasedMessage> Receive(int maxMessages, CancellationToken cancellationToken)
+        {
+            var consumer = Open();
+            var messages = new List<LeasedMessage>();
+            var limit = Math.Clamp(maxMessages, 1, MaximumBatch);
+            while (messages.Count < limit && _finished.Count < _end.Count)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var result = consumer.Consume(TimeSpan.FromSeconds(1));
+                if (result is null)
+                {
+                    break;
+                }
+                var partition = result.Partition.Value;
+                if (_finished.Contains(partition))
+                {
+                    // Written after reading started; this read stops at the end it saw.
+                    continue;
+                }
+                if (result.IsPartitionEOF || result.Offset.Value >= _end[partition])
+                {
+                    _finished.Add(partition);
+                    continue;
+                }
+                messages.Add(ToLeased(result));
+                if (result.Offset.Value >= _end[partition] - 1)
+                {
+                    _finished.Add(partition);
+                }
+            }
+            return messages;
+        }
 
         public Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {

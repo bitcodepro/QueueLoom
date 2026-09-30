@@ -286,6 +286,18 @@
               <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
                          Text="A topic named like another one plus one of these endings is shown as its dead-letter queue, for example orders.DLT for orders." />
             </StackPanel>
+            <StackPanel Spacing="7">
+              <TextBlock Text="SCHEMA REGISTRY (OPTIONAL)" Classes="eyebrow" />
+              <Grid ColumnDefinitions="2*,14,*,14,*">
+                <TextBox Grid.Column="0" Text="{Binding SchemaRegistryUrl}" PlaceholderText="http://schema-registry:8081"
+                         AutomationProperties.Name="Schema Registry URL" />
+                <TextBox Grid.Column="2" Text="{Binding SchemaRegistryUserName}" PlaceholderText="User or API key"
+                         AutomationProperties.Name="Schema Registry user" />
+                <TextBox Grid.Column="4" Text="{Binding SchemaRegistryPassword}" PasswordChar="•" PlaceholderText="Password or secret"
+                         AutomationProperties.Name="Schema Registry password" />
+              </Grid>
+              <TextBlock Text="{Binding SchemaRegistryHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
           </StackPanel>
         </Border>
 

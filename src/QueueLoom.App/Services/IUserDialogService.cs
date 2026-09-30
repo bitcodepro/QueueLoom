@@ -47,4 +47,11 @@ public interface IUserDialogService
 public sealed record ProfileEditorResult(
     ServiceBusProfile Profile,
     string? ConnectionString,
-    bool ReplacesConnectionString);
+    bool ReplacesConnectionString)
+{
+    /// <summary>A new Kafka Schema Registry password to store, if one was entered.</summary>
+    public string? SchemaRegistryPassword { get; init; }
+
+    /// <summary>The registry no longer needs a password, so the stored one is removed.</summary>
+    public bool RemovesSchemaRegistryPassword { get; init; }
+}
