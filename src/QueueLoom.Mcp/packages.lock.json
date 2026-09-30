@@ -32,6 +32,12 @@
           "Microsoft.Extensions.Options": "10.0.11"
         }
       },
+      "Microsoft.NET.ILLink.Tasks": {
+        "type": "Direct",
+        "requested": "[10.0.12, )",
+        "resolved": "10.0.12",
+        "contentHash": "TAIL+a3ZwsY9iWioFxJAal2ViYg5OpnU8GWX4ihChjA4U2pjzoBkqmquwX3sG252PZB6213nz0WpXMYIazoEcw=="
+      },
       "ModelContextProtocol": {
         "type": "Direct",
         "requested": "[2.2.0, )",
@@ -322,6 +328,13 @@
       },
       "queueloom.core": {
         "type": "Project"
+      }
+    },
+    "net10.0/osx-arm64": {
+      "System.Diagnostics.EventLog": {
+        "type": "Transitive",
+        "resolved": "10.0.11",
+        "contentHash": "QTXEoQBzz00SFWbo7nAg1Ogd4f99lwqcO9uAJ7MYSLEUR28f6As32QktrqG2Fr9cfAfd1GjLyGYspE7Ipj7P6w=="
       }
     }
   }

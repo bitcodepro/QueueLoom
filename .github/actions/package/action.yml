@@ -1,0 +1,41 @@
+name: Package QueueLoom
+description: >-
+  Publishes the self-contained single-file app for one platform and packages it with a SHA-256 checksum:
+  a ZIP for Windows, a .tar.gz for Linux and a ZIP with QueueLoom.app for macOS.
+
+inputs:
+  rid:
+    description: .NET runtime identifier, one of win-x64, linux-x64, osx-arm64 or osx-x64.
+    required: true
+  version:
+    description: Semantic version stamped into the app and used in the file name, e.g. 1.2.3 or 1.2.3-rc.1.
+    required: true
+
+outputs:
+  archive:
+    description: Path of the package.
+    value: ${{ steps.package.outputs.archive }}
+  checksum:
+    description: Path of the .sha256 file.
+    value: ${{ steps.package.outputs.checksum }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish single-file app
+      shell: pwsh
+      run: >-
+        dotnet publish src/QueueLoom.App/QueueLoom.App.csproj
+        -c Release -r ${{ inputs.rid }} --self-contained
+        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
+        -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false
+        -p:Version=${{ inputs.version }}
+        -o artifacts/publish
+
+    - name: Package with checksum
+      id: package
+      shell: pwsh
+      env:
+        RID: ${{ inputs.rid }}
+        VERSION: ${{ inputs.version }}
+      run: ./.github/scripts/package.ps1 -Rid $env:RID -Version $env:VERSION

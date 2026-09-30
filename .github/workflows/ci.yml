@@ -1,6 +1,6 @@
 name: CI
 
-# Pull requests: build and test on Windows and Linux, and attach the Windows build.
+# Pull requests: build and test on Windows and Linux, and attach packages for Windows, Linux and macOS.
 # Merges to main: the same, then publish the next version as a GitHub Release.
 #   The patch number is bumped by default; put [minor] or [major] in the first line of the
 #   merge commit (the pull request title when squash-merging) for a bigger bump,
@@ -122,47 +122,27 @@ jobs:
           name: test-results-emulators
           path: TestResults
 
-  publish-windows:
-    name: Publish Windows package
+  packages:
+    name: Packages
     if: github.event_name == 'pull_request'
     needs: build-and-test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
+    uses: ./.github/workflows/package.yml
+    with:
+      version: 0.0.0-pr.${{ github.event.pull_request.number }}
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
-      - name: Package
-        id: package
-        uses: ./.github/actions/package-windows
-        with:
-          version: 0.0.0-pr.${{ github.event.pull_request.number }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: QueueLoom-win-x64
-          path: ${{ steps.package.outputs.zip }}
-
-  release:
-    name: Release
+  version:
+    name: Next version
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: [build-and-test, emulator-tests]
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: release
-      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      skip: ${{ steps.version.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
 
       - name: Compute next version
         id: version
@@ -171,19 +151,34 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: ./.github/scripts/next-version.ps1 -Bump '${{ inputs.bump || 'auto' }}' -CommitMessage $env:COMMIT_MESSAGE
 
-      - name: Package
-        id: package
-        if: steps.version.outputs.skip != 'true'
-        uses: ./.github/actions/package-windows
+  release-packages:
+    name: Release packages
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  release:
+    name: Release
+    needs: [version, release-packages]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          version: ${{ steps.version.outputs.version }}
+          pattern: QueueLoom-*
+          path: packages
+          merge-multiple: true
 
       - name: Create tag and GitHub Release
-        if: steps.version.outputs.skip != 'true'
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create '${{ steps.version.outputs.tag }}'
-          '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.checksum }}'
-          --target '${{ github.sha }}' --title '${{ steps.version.outputs.tag }}' --generate-notes
+          gh release create '${{ needs.version.outputs.tag }}' packages/*
+          --repo '${{ github.repository }}' --target '${{ github.sha }}'
+          --title '${{ needs.version.outputs.tag }}' --generate-notes
