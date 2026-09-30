@@ -1153,5 +1153,18 @@ public sealed partial class ViewModelStateTests
             bool isError = false,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public List<ResendDialogViewModel> ResendDialogs { get; } = [];
+
+        /// <summary>What the operator picks in the resend dialog; null cancels. Defaults to the dialog's defaults.</summary>
+        public Func<ResendDialogViewModel, ResendOptions?>? ResendChoice { get; set; }
+
+        public Task<ResendOptions?> ChooseResendOptionsAsync(
+            ResendDialogViewModel viewModel,
+            CancellationToken cancellationToken = default)
+        {
+            ResendDialogs.Add(viewModel);
+            return Task.FromResult(ResendChoice is null ? viewModel.ToOptions() : ResendChoice(viewModel));
+        }
     }
 }

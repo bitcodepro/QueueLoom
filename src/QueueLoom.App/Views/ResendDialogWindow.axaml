@@ -1,0 +1,56 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.ResendDialogWindow"
+        x:DataType="vm:ResendDialogViewModel"
+        Title="{Binding Title}"
+        Width="640"
+        MaxHeight="780"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+  <StackPanel Margin="26" Spacing="16">
+    <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" />
+
+    <StackPanel Spacing="7">
+      <TextBlock Text="SEND TO" Classes="eyebrow" />
+      <ComboBox ItemsSource="{Binding DestinationOptions}" SelectedItem="{Binding Destination}"
+                HorizontalAlignment="Stretch" AutomationProperties.Name="Destination">
+        <ComboBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:ResendDestinationOption">
+            <TextBlock Text="{Binding Label}" />
+          </DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+    </StackPanel>
+
+    <StackPanel Spacing="7">
+      <TextBlock Text="ORIGINALS" Classes="eyebrow" />
+      <RadioButton GroupName="resendMode" IsChecked="{Binding Copies}" Content="Keep them: send copies only" />
+      <RadioButton GroupName="resendMode" IsChecked="{Binding Moves}" IsEnabled="{Binding CanMove}"
+                   Content="Move them: send, then back up and remove the originals from the DLQ" />
+      <TextBlock Text="Only dead-lettered messages can be moved; untick active messages to enable it."
+                 Classes="muted" FontSize="12" IsVisible="{Binding !CanMove}" />
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" Spacing="8">
+      <NumericUpDown Value="{Binding MessagesPerSecond}" Minimum="1" Maximum="100" Width="120"
+                     AutomationProperties.Name="Messages per second" />
+      <TextBlock Text="messages per second" Classes="muted" VerticalAlignment="Center" />
+    </StackPanel>
+
+    <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
+      <TextBlock Text="{Binding Summary}" Classes="muted" TextWrapping="Wrap" MaxWidth="570" />
+    </ScrollViewer>
+
+    <StackPanel Spacing="7" IsVisible="{Binding RequiresTypedConfirmation}">
+      <TextBlock Text="{Binding EnvironmentName, StringFormat='TYPE {0} TO CONFIRM'}" Classes="eyebrow" />
+      <TextBox Text="{Binding TypedConfirmation}" AutomationProperties.Name="Environment name" />
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+      <Button Content="Cancel" Classes="quiet" Click="CancelClick" />
+      <Button Content="{Binding ConfirmLabel}" Classes="danger" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" />
+    </StackPanel>
+  </StackPanel>
+</Window>

@@ -80,8 +80,10 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasMarkedMessages));
         OnPropertyChanged(nameof(HasDeletableMessages));
         OnPropertyChanged(nameof(DeleteMarkedMessagesLabel));
+        OnPropertyChanged(nameof(ResendMarkedMessagesLabel));
         OnPropertyChanged(nameof(AreAllMessagesMarked));
         DeleteMarkedMessagesCommand.NotifyCanExecuteChanged();
+        ResendMarkedMessagesCommand?.NotifyCanExecuteChanged();
     }
 
     private async Task DeleteMarkedMessagesAsync(CancellationToken cancellationToken)
@@ -209,11 +211,16 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    private void ApplyDeletedMessages(Guid profileId, DeleteDeadLetterMessagesResult result)
-    {
-        var deleted = result.Messages
+    private void ApplyDeletedMessages(Guid profileId, DeleteDeadLetterMessagesResult result) =>
+        ApplyDeletedMessages(profileId, result.Messages
             .Where(message => message.Outcome == DeadLetterMessageDeletionOutcome.Deleted)
-            .Select(message => (message.Message.Source, message.Message.SubQueue, message.Message.SequenceNumber))
+            .Select(message => message.Message));
+
+    /// <summary>Drops removed messages from the list and lowers the scanned DLQ counters to match.</summary>
+    private void ApplyDeletedMessages(Guid profileId, IEnumerable<DeadLetterMessageKey> removed)
+    {
+        var deleted = removed
+            .Select(message => (message.Source, message.SubQueue, message.SequenceNumber))
             .ToHashSet();
         foreach (var item in Messages
                      .Where(item => deleted.Contains((item.Message.Source, item.Message.SubQueue, item.Message.SequenceNumber)))

@@ -279,6 +279,27 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.LocalStack)]
+    public async Task Moving_a_dead_letter_sends_it_back_and_removes_the_backed_up_original()
+    {
+        await DeadLetterAsync(_orders, "retry me");
+        await DeadLetterAsync(_orders, "leave me");
+        await _workspace.GetTopologyAsync(forceRefresh: true);
+        var orders = ServiceBusEntityReference.Queue(_orders);
+        var dead = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+        var retry = dead.Single(message => message.CreateDraft().Body.Content == "retry me");
+
+        var result = await DeadLetterResender.ResendAsync(_workspace,
+            [new ResendItem(retry, DeadLetterResender.OriginalDestination(retry.Source), retry.CreateDraft())], ResendMode.Move);
+
+        Assert.Equal(ResendOutcome.Moved, Assert.Single(result.Items).Outcome);
+        Assert.NotEmpty(Directory.GetFiles(result.BackupDirectory!, "0*.json", SearchOption.AllDirectories));
+        Assert.Equal("retry me", Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders)))
+            .CreateDraft().Body.Content);
+        Assert.Equal("leave me", Assert.Single(await _workspace.BrowseMessagesAsync(
+            new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter))).CreateDraft().Body.Content);
+    }
+
+    [EmulatorFact(Emulators.LocalStack)]
     public async Task A_read_only_environment_cannot_send()
     {
         await _workspace.GetTopologyAsync(forceRefresh: true);

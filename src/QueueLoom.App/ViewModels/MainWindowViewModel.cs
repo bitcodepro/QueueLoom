@@ -97,6 +97,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private string _draftTimeToLiveSeconds = string.Empty;
     private string _draftApplicationProperties = "{}";
     private string _draftOriginNotice = "New message";
+    private bool _draftMovesOriginal;
     private Guid? _draftProfileId;
     private string? _draftProfileName;
     private bool _lastDlqScanHadFailures;
@@ -236,6 +237,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializePreferences();
         InitializePresentation();
         InitializeMessageDeletion();
+        InitializeResend();
         RefreshDeadLetterEnvironmentFilters();
     }
 
@@ -625,6 +627,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             PurgeTopicDeadLettersCommand,
             PurgeSelectedDeadLettersCommand,
             DeleteMarkedMessagesCommand,
+            ResendMarkedMessagesCommand,
             SendDraftCommand,
             ToggleMonitorCommand,
             UnlockWritesCommand
