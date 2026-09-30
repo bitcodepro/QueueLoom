@@ -81,7 +81,7 @@ public static class TopicRouting
                 return new RuleResult(rule, RoutingOutcome.Receives, $"{rule.SqlExpression} is true.");
             }
             var failed = steps.Where(step => step.Result != true).Take(3)
-                .Select(step => step.Actual is null ? $"{step.Text} is not true" : $"{step.Text}: {step.Actual}")
+                .Select(step => $"{step.Text} is {(step.Result == false ? "false" : "unknown")}" + (step.Actual is null ? string.Empty : $" ({step.Actual})"))
                 .ToArray();
             return new RuleResult(rule, RoutingOutcome.Skips, failed.Length > 0 ? string.Join("; ", failed) : $"{rule.SqlExpression} is not true.");
         }

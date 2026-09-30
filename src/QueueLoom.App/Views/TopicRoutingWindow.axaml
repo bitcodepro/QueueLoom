@@ -101,7 +101,7 @@
                     </Border>
                   </Grid>
                   <TextBlock Text="{Binding Warning}" Classes="warning" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasWarning}" />
-                  <TextBlock Text="{Binding ResultText}" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasResult}"
+                  <TextBlock Text="{Binding ResultText}" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasResultText}"
                              Classes.muted="{Binding Receives}" />
                   <ItemsControl ItemsSource="{Binding Rules}">
                     <ItemsControl.ItemTemplate>

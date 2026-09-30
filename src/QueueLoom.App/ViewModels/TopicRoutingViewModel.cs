@@ -66,6 +66,7 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
                 OnPropertyChanged(nameof(IsUnknown));
                 OnPropertyChanged(nameof(ResultLabel));
                 OnPropertyChanged(nameof(ResultText));
+                OnPropertyChanged(nameof(HasResultText));
             }
         }
     }
@@ -86,7 +87,10 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
         _ => string.Empty
     };
 
-    public string ResultText => Result?.Summary ?? string.Empty;
+    /// <summary>Why it receives the message or not; empty when the warning above already says it.</summary>
+    public string ResultText => Result is null || Result.Summary == Warning ? string.Empty : Result.Summary;
+
+    public bool HasResultText => ResultText.Length > 0;
 }
 
 /// <summary>
