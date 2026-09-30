@@ -56,6 +56,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     Theme = updated.Theme.ToString(),
                     SavedSearches = updated.SavedSearches.ToList(),
                     SystemNotifications = updated.SystemNotifications,
+                    KeepInTray = updated.KeepInTray,
                     AlertWebhookUrl = updated.AlertWebhookUrl,
                     BackupRetentionDays = updated.BackupRetentionDays
                 },
@@ -124,6 +125,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
             {
                 SavedSearches = document.SavedSearches ?? [],
                 SystemNotifications = document.SystemNotifications ?? AppSettings.Default.SystemNotifications,
+                KeepInTray = document.KeepInTray,
                 AlertWebhookUrl = document.AlertWebhookUrl,
                 BackupRetentionDays = document.BackupRetentionDays
             }.Normalize();
@@ -141,6 +143,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         public string? Theme { get; set; }
         public List<SavedSearch>? SavedSearches { get; set; }
         public bool? SystemNotifications { get; set; }
+        public bool KeepInTray { get; set; }
         public string? AlertWebhookUrl { get; set; }
         public int BackupRetentionDays { get; set; }
     }

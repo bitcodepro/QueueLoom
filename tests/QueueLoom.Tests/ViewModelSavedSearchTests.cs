@@ -69,10 +69,12 @@ public sealed partial class ViewModelStateTests
             SavedSearches = [search, new SavedSearch(" ", "ignored")],
             SystemNotifications = false,
             AlertWebhookUrl = "https://hooks.slack.com/services/T/B/X",
-            BackupRetentionDays = 30
+            BackupRetentionDays = 30,
+            KeepInTray = true
         });
         var loaded = await store.LoadAsync();
 
+        Assert.True(loaded.KeepInTray);
         Assert.Equal([search], loaded.SavedSearches);
         Assert.False(loaded.SystemNotifications);
         Assert.Equal("https://hooks.slack.com/services/T/B/X", loaded.AlertWebhookUrl);

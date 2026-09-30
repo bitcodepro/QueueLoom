@@ -18,6 +18,18 @@ public sealed partial class MainWindowViewModel
         set => SetProperty(ref _systemNotifications, value);
     }
 
+    private bool _keepInTray;
+
+    /// <summary>Closing the window hides QueueLoom in the system tray; monitors and scheduled resends keep running.</summary>
+    public bool KeepInTray
+    {
+        get => _keepInTray;
+        set => SetProperty(ref _keepInTray, value);
+    }
+
+    /// <summary>The tray icon's tooltip: whether monitors run and what they last found.</summary>
+    public string TrayToolTip => IsMonitoring ? $"QueueLoom · {MonitorStatus}" : "QueueLoom · monitors are off";
+
     /// <summary>Slack or Teams incoming-webhook address; empty turns webhook alerts off.</summary>
     public string AlertWebhookUrl
     {

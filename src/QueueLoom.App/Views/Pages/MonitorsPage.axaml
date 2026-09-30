@@ -46,6 +46,8 @@
             <TextBlock Text="Alerts outside QueueLoom" Classes="sectionTitle" />
             <CheckBox IsChecked="{Binding SystemNotifications}"
                       Content="Show a system notification when new dead letters appear and QueueLoom is in the background" />
+            <CheckBox IsChecked="{Binding KeepInTray}"
+                      Content="Keep running in the system tray when the window is closed, so monitors and scheduled resends go on" />
             <StackPanel Spacing="7">
               <TextBlock Text="SLACK OR TEAMS WEBHOOK · OPTIONAL" Classes="eyebrow" />
               <TextBox Text="{Binding AlertWebhookUrl}" PlaceholderText="https://hooks.slack.com/services/…"
