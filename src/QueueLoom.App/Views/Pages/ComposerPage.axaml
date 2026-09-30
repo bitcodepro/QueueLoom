@@ -20,6 +20,8 @@
         <TextBlock Text="{Binding DraftSizeText}" Classes="muted" VerticalAlignment="Center" />
         <Button Content="Format JSON" Classes="quiet" Command="{Binding FormatJsonCommand}"
                 ToolTip.Tip="Indent the JSON body and point at the first syntax error (Ctrl+Shift+F)" />
+        <Button Content="Check routing" Classes="quiet" Command="{Binding CheckDraftRoutingCommand}" IsVisible="{Binding SupportsRouting}"
+                ToolTip.Tip="Before sending to a topic: which subscriptions would receive this message" />
         <Button Content="{Binding SendDraftLabel}" Classes="primary" Command="{Binding SendDraftCommand}"
                 ToolTip.Tip="Send one message to the selected destination" />
       </StackPanel>

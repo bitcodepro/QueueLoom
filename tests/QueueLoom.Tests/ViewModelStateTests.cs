@@ -1078,6 +1078,34 @@ public sealed partial class ViewModelStateTests
 
         public QueueManagementCapabilities? QueueManagement { get; set; }
 
+        public bool SupportsSubscriptionRules { get; set; }
+
+        public Dictionary<string, List<QueueLoom.Core.Routing.SubscriptionRules>> TopicRules { get; } = [];
+
+        public List<string> RuleChanges { get; } = [];
+
+        public Task<IReadOnlyList<QueueLoom.Core.Routing.SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<QueueLoom.Core.Routing.SubscriptionRules>>(TopicRules.TryGetValue(topic, out var rules) ? rules.ToArray() : []);
+
+        public Task SaveSubscriptionRuleAsync(string topic, string subscription, QueueLoom.Core.Routing.SubscriptionRule rule, bool replace,
+            CancellationToken cancellationToken = default)
+        {
+            RuleChanges.Add($"{(replace ? "replace" : "add")} {topic}/{subscription}/{rule.Name}");
+            var list = TopicRules[topic];
+            var index = list.FindIndex(item => item.Subscription == subscription);
+            list[index] = list[index] with { Rules = list[index].Rules.Where(item => item.Name != rule.Name).Append(rule).ToArray() };
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default)
+        {
+            RuleChanges.Add($"delete {topic}/{subscription}/{rule}");
+            var list = TopicRules[topic];
+            var index = list.FindIndex(item => item.Subscription == subscription);
+            list[index] = list[index] with { Rules = list[index].Rules.Where(item => item.Name != rule).ToArray() };
+            return Task.CompletedTask;
+        }
+
         public List<QueueDefinition> CreatedQueues { get; } = [];
 
         public List<(string Queue, QueueSettings Settings)> UpdatedQueues { get; } = [];
@@ -1244,6 +1272,25 @@ public sealed partial class ViewModelStateTests
         public List<ResendDialogViewModel> ResendDialogs { get; } = [];
 
         public List<CompareDialogViewModel> Comparisons { get; } = [];
+
+        public List<TopicRoutingViewModel> RoutingDialogs { get; } = [];
+
+        public Func<TopicRoutingViewModel, Task>? OnRouting { get; set; }
+
+        public Func<RuleEditorViewModel, QueueLoom.Core.Routing.SubscriptionRule?>? RuleEdit { get; set; }
+
+        public async Task ShowTopicRoutingAsync(TopicRoutingViewModel viewModel, CancellationToken cancellationToken = default)
+        {
+            RoutingDialogs.Add(viewModel);
+            await viewModel.LoadAsync(cancellationToken);
+            if (OnRouting is not null)
+            {
+                await OnRouting(viewModel);
+            }
+        }
+
+        public Task<QueueLoom.Core.Routing.SubscriptionRule?> EditRuleAsync(RuleEditorViewModel viewModel, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RuleEdit?.Invoke(viewModel));
 
         public Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default)
         {
