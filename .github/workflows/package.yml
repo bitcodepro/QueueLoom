@@ -1,0 +1,57 @@
+name: Package
+
+# Builds the self-contained app for every platform and uploads one artifact per platform
+# (QueueLoom-<rid>) holding the package and its .sha256 file. Called by ci.yml and release.yml.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version stamped into the app and the file names.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  package:
+    name: Package (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+          - rid: linux-x64
+            os: ubuntu-latest
+          # macOS packages are built on macOS: the app bundle has to be signed there.
+          - rid: osx-arm64
+            os: macos-latest
+          - rid: osx-x64
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Package
+        id: package
+        uses: ./.github/actions/package
+        with:
+          rid: ${{ matrix.rid }}
+          version: ${{ inputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QueueLoom-${{ matrix.rid }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error

@@ -255,6 +255,33 @@ public sealed class MultiProviderTests
     }
 
     [Fact]
+    public void Pubsub_counts_from_cloud_monitoring_fill_active_and_dead_letter_columns()
+    {
+        const string project = "orders-prod-4821";
+        var deadLetterTopic = new TopicName(project, "events-dlq").ToString();
+        var subscriptions = new[]
+        {
+            Subscription(project, "billing", "events", deadLetterTopic),
+            Subscription(project, "shipping", "events", null),
+            Subscription(project, "dlq-reader", "events-dlq", null)
+        };
+        var undelivered = new Dictionary<string, long> { ["billing"] = 12, ["dlq-reader"] = 4 };
+
+        var result = GooglePubSubTopology.Build(project, ["events", "events-dlq"], subscriptions, DateTimeOffset.UnixEpoch, undelivered);
+
+        Assert.True(result.Topology.HasMessageCounts);
+        Assert.False(result.Topology.UsesSampledCounts);
+        var events = result.Topology.Topics.Single(topic => topic.Name == "events");
+        var billing = events.Subscriptions.Single(item => item.Name == "billing").Runtime;
+        Assert.False(billing.CountsUnavailable);
+        Assert.Equal(12, billing.MessageCounts.Active);
+        Assert.Equal(4, billing.MessageCounts.DeadLetter);
+        var shipping = events.Subscriptions.Single(item => item.Name == "shipping").Runtime;
+        Assert.Equal(0, shipping.MessageCounts.Active);
+        Assert.False(shipping.CountsUnavailable);
+    }
+
+    [Fact]
     public void Search_targets_skip_sources_without_a_dead_letter_queue_and_transfer_queues_outside_Azure()
     {
         var topology = new ServiceBusTopology(DateTimeOffset.UnixEpoch,

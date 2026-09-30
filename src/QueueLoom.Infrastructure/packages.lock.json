@@ -40,6 +40,16 @@
           "Microsoft.Azure.Amqp": "2.7.0"
         }
       },
+      "Google.Cloud.Monitoring.V3": {
+        "type": "Direct",
+        "requested": "[3.16.0, )",
+        "resolved": "3.16.0",
+        "contentHash": "/Qzwf6JhuJz2sAW2IqH4IQGak3T0hB8QciT+YlZDvpr2SKYns6zY9EBKAPb1I2xTt03Yom9oFYM2neMyye7JAg==",
+        "dependencies": {
+          "Google.Api.Gax.Grpc": "[4.12.1, 5.0.0)",
+          "Google.LongRunning": "[3.5.0, 4.0.0)"
+        }
+      },
       "Google.Cloud.PubSub.V1": {
         "type": "Direct",
         "requested": "[3.38.0, )",
@@ -154,6 +164,14 @@
         "type": "Transitive",
         "resolved": "3.5.0",
         "contentHash": "CTLBAQ7WxsLoA4lovpvhF4MRUJH64smrIjuD/0jDrLs6zpbpf+f8Ur8ekRKv67kwlpN6Ug0q7EuT2csWDEczlQ==",
+        "dependencies": {
+          "Google.Api.Gax.Grpc": "[4.12.1, 5.0.0)"
+        }
+      },
+      "Google.LongRunning": {
+        "type": "Transitive",
+        "resolved": "3.5.0",
+        "contentHash": "W8xO6FA+rG8WjKOsyIjTKjeKLcyCrjBBYeEdZ4QBkKQcxmRczbrfKhKQmdorb2V35CqXeeTbue5Na6Zkgyv8ow==",
         "dependencies": {
           "Google.Api.Gax.Grpc": "[4.12.1, 5.0.0)"
         }

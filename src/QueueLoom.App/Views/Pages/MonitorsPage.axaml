@@ -8,7 +8,7 @@
     <StackPanel Margin="{StaticResource PageMargin}" Spacing="18">
       <StackPanel Spacing="4">
         <TextBlock Text="Monitors" Classes="pageTitle" />
-        <TextBlock Text="Azure counter polling; local emulators use bounded Peek. No message locks are acquired." Classes="muted" />
+        <TextBlock Text="Polls dead-letter counters. Services without counters (Pub/Sub, local emulators) are counted by reading and releasing messages." Classes="muted" />
       </StackPanel>
 
       <Grid ColumnDefinitions="1.25*,16,*">
@@ -41,6 +41,21 @@
             <TextBlock Text="Minimum interval is 15 seconds. Single-source mode pins the explicit target shown above. A scan is skipped while another workspace operation is active."
                        Classes="muted" TextWrapping="Wrap" />
             <Button Content="{Binding MonitorButtonLabel}" Classes="primary" Command="{Binding ToggleMonitorCommand}" HorizontalAlignment="Left" />
+
+            <Border Classes="divider" />
+            <TextBlock Text="Alerts outside QueueLoom" Classes="sectionTitle" />
+            <CheckBox IsChecked="{Binding SystemNotifications}"
+                      Content="Show a system notification when new dead letters appear and QueueLoom is in the background" />
+            <StackPanel Spacing="7">
+              <TextBlock Text="SLACK OR TEAMS WEBHOOK · OPTIONAL" Classes="eyebrow" />
+              <TextBox Text="{Binding AlertWebhookUrl}" PlaceholderText="https://hooks.slack.com/services/…"
+                       AutomationProperties.Name="Alert webhook address" />
+              <TextBlock Text="{Binding AlertWebhookError}" Classes="danger" FontSize="12" TextWrapping="Wrap"
+                         IsVisible="{Binding HasAlertWebhookError}" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="Alerts name the environment and the queue or subscription, never message contents." />
+            </StackPanel>
+            <Button Content="Send test alert" Classes="quiet" Command="{Binding SendTestAlertCommand}" HorizontalAlignment="Left" />
           </StackPanel>
         </Border>
 

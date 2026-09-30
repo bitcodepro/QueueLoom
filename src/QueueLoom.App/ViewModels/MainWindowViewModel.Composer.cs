@@ -67,8 +67,44 @@ public sealed partial class MainWindowViewModel
     public string DraftOriginNotice
     {
         get => _draftOriginNotice;
-        private set => SetProperty(ref _draftOriginNotice, value);
+        private set
+        {
+            // The notice changes whenever the draft's origin changes, so the resend choice follows it.
+            if (SetProperty(ref _draftOriginNotice, value))
+            {
+                DraftMovesOriginal = false;
+                OnPropertyChanged(nameof(CanMoveDraftOriginal));
+            }
+        }
     }
+
+    /// <summary>The draft came from a dead-letter queue, so sending can also remove the original.</summary>
+    public bool CanMoveDraftOriginal => _draftSourceMessage is { IsDeadLetter: true } && !_draftSourceIsLocalBackup;
+
+    /// <summary>
+    /// False: send a copy and keep the original (the default). True: send, then back up the original and remove it
+    /// from the dead-letter queue.
+    /// </summary>
+    public bool DraftMovesOriginal
+    {
+        get => _draftMovesOriginal;
+        set
+        {
+            if (SetProperty(ref _draftMovesOriginal, value))
+            {
+                OnPropertyChanged(nameof(DraftKeepsOriginal));
+                OnPropertyChanged(nameof(SendDraftLabel));
+            }
+        }
+    }
+
+    public bool DraftKeepsOriginal
+    {
+        get => !DraftMovesOriginal;
+        set => DraftMovesOriginal = !value;
+    }
+
+    public string SendDraftLabel => CanMoveDraftOriginal && DraftMovesOriginal ? "Send and remove original" : "Send message";
 
     public bool HasDraftEnvironmentMismatch =>
         IsConnected && _draftProfileId != _workspace.ConnectedProfileId;
@@ -174,7 +210,7 @@ public sealed partial class MainWindowViewModel
             : ServiceBusEntityReference.Queue(selected.Source.Name);
         SelectedDestination = Destinations.FirstOrDefault(item => item.Reference == destination);
         DraftOriginNotice = originNotice ?? (selected.IsDeadLetter
-            ? "DLQ draft · resend sends a copy. Original remains in DLQ."
+            ? "DLQ draft · choose below whether the original stays in the DLQ."
             : "Peeked active-message draft · Send creates a new copy and leaves the original message unchanged.");
         if (destination.Kind == ServiceBusEntityKind.Topic)
         {
@@ -199,6 +235,9 @@ public sealed partial class MainWindowViewModel
             ? "Send a copy reconstructed from the local backup? The backup JSON remains unchanged."
             : _draftSourceMessage switch
         {
+            { IsDeadLetter: true } when DraftMovesOriginal =>
+                "Send this message, then back up the original and remove it from the DLQ? " +
+                "If the send fails, the original stays where it is.",
             { IsDeadLetter: true } =>
                 "Send the edited copy? The original message stays in DLQ.",
             not null =>
@@ -231,22 +270,51 @@ public sealed partial class MainWindowViewModel
                 "Write access expired while the confirmation was open. Unlock writes again and review the send.");
         }
 
-        if (_draftSourceMessage is not null && _draftSourceMessage.IsDeadLetter)
+        if (_draftSourceMessage is not null && _draftSourceMessage.IsDeadLetter && !_draftSourceIsLocalBackup)
         {
-            await _workspace.ResubmitDeadLetterAsync(
-                new ResubmitDeadLetterRequest(
-                    _draftSourceMessage.Source,
-                    _draftSourceMessage.SequenceNumber,
-                    destination.Reference,
-                    draft,
-                    DeadLetterDisposition.KeepOriginal),
-                cancellationToken).ConfigureAwait(true);
-            StatusText = "Copy accepted · original remains in DLQ";
-            AddActivity(
-                "Success",
-                "DLQ copy send accepted",
-                $"{profile.Name} · {destination.Reference.DisplayName}",
-                destination.Reference);
+            var original = _draftSourceMessage;
+            var mode = DraftMovesOriginal ? ResendMode.Move : ResendMode.Copy;
+            var result = await DeadLetterResender.ResendAsync(
+                    _workspace,
+                    [new ResendItem(original, destination.Reference, draft)],
+                    mode,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(true);
+            var item = result.Items[0];
+            switch (item.Outcome)
+            {
+                case ResendOutcome.Failed:
+                    throw new InvalidOperationException(item.Detail ?? "The message could not be sent.");
+                case ResendOutcome.Cancelled:
+                    StatusText = "Send cancelled";
+                    return;
+                case ResendOutcome.Moved:
+                    RemoveResentOriginals(result);
+                    // The original is gone; sending the draft again is a new message, not another move.
+                    _draftSourceMessage = null;
+                    DraftOriginNotice = "Sent · the original was backed up and removed. Sending again creates a new message.";
+                    StatusText = "Message sent · original backed up and removed from the DLQ";
+                    AddActivity("Success", "DLQ message moved",
+                        $"{profile.Name} · {original.Source.DisplayName} → {destination.Reference.DisplayName} · backup {result.BackupDirectory}",
+                        destination.Reference);
+                    break;
+                case ResendOutcome.SentOriginalKept:
+                    StatusText = "Message sent · the original is still in the DLQ";
+                    AddActivity("Warning", "DLQ message sent, original kept",
+                        $"{profile.Name} · {destination.Reference.DisplayName} · {item.Detail}", destination.Reference);
+                    await _dialogs.ShowMessageAsync("Original not removed",
+                        $"The message was sent to {destination.Reference.DisplayName}, but the original could not be removed.\n\n{item.Detail}",
+                        isError: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
+                    break;
+                default:
+                    StatusText = "Copy accepted · original remains in DLQ";
+                    AddActivity(
+                        "Success",
+                        "DLQ copy send accepted",
+                        $"{profile.Name} · {destination.Reference.DisplayName}",
+                        destination.Reference);
+                    break;
+            }
         }
         else
         {

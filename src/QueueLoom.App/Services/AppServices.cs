@@ -44,6 +44,10 @@ public static class AppServices
         services.AddSingleton<INotificationService, WindowNotificationService>();
         services.AddSingleton<IThemeService, AvaloniaThemeService>();
         services.AddSingleton<GitHubUpdateChecker>(_ => new GitHubUpdateChecker());
+        services.AddSingleton<IMonitorAlertService>(provider => new MonitorAlertService(
+            provider.GetRequiredService<TopLevelAccessor>(),
+            new HttpClient { Timeout = TimeSpan.FromSeconds(15) },
+            provider.GetService<Microsoft.Extensions.Logging.ILogger<MonitorAlertService>>()));
 
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

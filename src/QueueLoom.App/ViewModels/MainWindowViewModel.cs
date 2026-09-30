@@ -97,6 +97,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private string _draftTimeToLiveSeconds = string.Empty;
     private string _draftApplicationProperties = "{}";
     private string _draftOriginNotice = "New message";
+    private bool _draftMovesOriginal;
     private Guid? _draftProfileId;
     private string? _draftProfileName;
     private bool _lastDlqScanHadFailures;
@@ -117,7 +118,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         IAppLauncher? launcher = null,
         INotificationService? notifications = null,
         IThemeService? theme = null,
-        ILogger<MainWindowViewModel>? logger = null)
+        ILogger<MainWindowViewModel>? logger = null,
+        IMonitorAlertService? alerts = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -236,6 +238,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializePreferences();
         InitializePresentation();
         InitializeMessageDeletion();
+        InitializeResend();
+        InitializeExport();
+        InitializeSavedSearches();
+        InitializeAlerts(alerts);
+        InitializeRetention();
         RefreshDeadLetterEnvironmentFilters();
     }
 
@@ -377,6 +384,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         {
             LoadActivityHistory();
             await ReloadProfilesAsync(token).ConfigureAwait(true);
+            try
+            {
+                await DeleteOldBackupsAsync(automatic: true, token).ConfigureAwait(true);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Start-up must not fail because an old backup could not be listed or removed.
+                AddActivity("Warning", "Old backups not cleaned up", SanitizeException(exception));
+            }
             StatusText = Profiles.Count == 0
                 ? "Add your first environment to begin"
                 : "Choose an environment and connect";
@@ -625,6 +641,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             PurgeTopicDeadLettersCommand,
             PurgeSelectedDeadLettersCommand,
             DeleteMarkedMessagesCommand,
+            ResendMarkedMessagesCommand,
+            ExportMessagesCommand,
+            SendTestAlertCommand,
+            DeleteOldBackupsCommand,
             SendDraftCommand,
             ToggleMonitorCommand,
             UnlockWritesCommand

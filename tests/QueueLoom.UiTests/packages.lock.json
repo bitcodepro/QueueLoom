@@ -300,6 +300,15 @@
           "Google.Api.Gax.Grpc": "[4.12.1, 5.0.0)"
         }
       },
+      "Google.Cloud.Monitoring.V3": {
+        "type": "Transitive",
+        "resolved": "3.16.0",
+        "contentHash": "/Qzwf6JhuJz2sAW2IqH4IQGak3T0hB8QciT+YlZDvpr2SKYns6zY9EBKAPb1I2xTt03Yom9oFYM2neMyye7JAg==",
+        "dependencies": {
+          "Google.Api.Gax.Grpc": "[4.12.1, 5.0.0)",
+          "Google.LongRunning": "[3.5.0, 4.0.0)"
+        }
+      },
       "Google.Cloud.PubSub.V1": {
         "type": "Transitive",
         "resolved": "3.38.0",
@@ -307,6 +316,14 @@
         "dependencies": {
           "Google.Api.Gax.Grpc": "[4.13.1, 5.0.0)",
           "Google.Cloud.Iam.V1": "[3.5.0, 4.0.0)"
+        }
+      },
+      "Google.LongRunning": {
+        "type": "Transitive",
+        "resolved": "3.5.0",
+        "contentHash": "W8xO6FA+rG8WjKOsyIjTKjeKLcyCrjBBYeEdZ4QBkKQcxmRczbrfKhKQmdorb2V35CqXeeTbue5Na6Zkgyv8ow==",
+        "dependencies": {
+          "Google.Api.Gax.Grpc": "[4.12.1, 5.0.0)"
         }
       },
       "Google.Protobuf": {
@@ -883,6 +900,7 @@
           "AWSSDK.SimpleNotificationService": "[4.0.100.15, )",
           "Azure.Identity": "[1.21.0, )",
           "Azure.Messaging.ServiceBus": "[7.20.2, )",
+          "Google.Cloud.Monitoring.V3": "[3.16.0, )",
           "Google.Cloud.PubSub.V1": "[3.38.0, )",
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.11, )",
           "QueueLoom.Core": "[1.0.0-rc.1, )",

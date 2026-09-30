@@ -4,6 +4,8 @@ using Google.Api.Gax.Grpc;
 using Google.Api.Gax.ResourceNames;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.PubSub.V1;
+using Monitoring = Google.Cloud.Monitoring.V3;
+using WellKnownTypes = Google.Protobuf.WellKnownTypes;
 using Google.Protobuf;
 using Grpc.Core;
 using QueueLoom.Core.Abstractions;
@@ -33,6 +35,7 @@ public sealed class GooglePubSubWorkspace : LeasedMessagingWorkspace
     private readonly ISecretVault _secretVault;
     private PublisherServiceApiClient? _publisher;
     private SubscriberServiceApiClient? _subscriber;
+    private Monitoring.MetricServiceClient? _metrics;
     private string _projectId = string.Empty;
     private IReadOnlyDictionary<(string Topic, string Subscription), Subscription> _subscriptions =
         new Dictionary<(string, string), Subscription>();
@@ -72,6 +75,12 @@ public sealed class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
         _publisher = await publisherBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
         _subscriber = await subscriberBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
+        // Counts come from Cloud Monitoring. The emulator has none, and without monitoring.timeSeries.list
+        // permission the counts fall back to reading dead letters, as before.
+        _metrics = string.IsNullOrWhiteSpace(settings.EmulatorHost)
+            ? await new Monitoring.MetricServiceClientBuilder { GoogleCredential = publisherBuilder.GoogleCredential }
+                .BuildAsync(cancellationToken).ConfigureAwait(false)
+            : null;
         _projectId = settings.ProjectId.Trim();
 
         // Proves the endpoint, the credentials and pubsub.topics.list without touching messages.
@@ -88,6 +97,7 @@ public sealed class GooglePubSubWorkspace : LeasedMessagingWorkspace
     {
         _publisher = null;
         _subscriber = null;
+        _metrics = null;
         _subscriptions = new Dictionary<(string, string), Subscription>();
         _deadLetterReaders = new Dictionary<string, Subscription>();
         return ValueTask.CompletedTask;
@@ -109,7 +119,8 @@ public sealed class GooglePubSubWorkspace : LeasedMessagingWorkspace
             subscriptions.Add(subscription);
         }
 
-        var index = GooglePubSubTopology.Build(_projectId, topicIds, subscriptions, TimeProvider.GetUtcNow());
+        var undelivered = await ReadUndeliveredCountsAsync(cancellationToken).ConfigureAwait(false);
+        var index = GooglePubSubTopology.Build(_projectId, topicIds, subscriptions, TimeProvider.GetUtcNow(), undelivered);
         _subscriptions = index.Subscriptions;
         _deadLetterReaders = index.DeadLetterReaders;
         return index.Topology;
@@ -186,6 +197,47 @@ public sealed class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
         await Publisher.PublishAsync(new TopicName(_projectId, destination.Name), [pubsubMessage], cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The latest pubsub.googleapis.com/subscription/num_undelivered_messages per subscription ID, or null when
+    /// Cloud Monitoring is not available (emulator, missing permission). The metric trails by a minute or two.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, long>?> ReadUndeliveredCountsAsync(CancellationToken cancellationToken)
+    {
+        if (_metrics is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var now = TimeProvider.GetUtcNow();
+            var counts = new Dictionary<string, long>(StringComparer.Ordinal);
+            var series = _metrics.ListTimeSeriesAsync(
+                new ProjectName(_projectId),
+                "metric.type = \"pubsub.googleapis.com/subscription/num_undelivered_messages\" AND resource.type = \"pubsub_subscription\"",
+                new Monitoring.TimeInterval
+                {
+                    StartTime = WellKnownTypes.Timestamp.FromDateTimeOffset(now.AddMinutes(-10)),
+                    EndTime = WellKnownTypes.Timestamp.FromDateTimeOffset(now)
+                },
+                Monitoring.ListTimeSeriesRequest.Types.TimeSeriesView.Full);
+            await foreach (var item in series.WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                if (item.Resource.Labels.TryGetValue("subscription_id", out var subscriptionId) && item.Points.Count > 0)
+                {
+                    // Points come newest first.
+                    counts[subscriptionId] = Math.Max(0, item.Points[0].Value.Int64Value);
+                }
+            }
+            return counts;
+        }
+        catch (RpcException exception) when (exception.StatusCode is StatusCode.PermissionDenied or StatusCode.Unauthenticated
+                                                 or StatusCode.Unavailable or StatusCode.NotFound or StatusCode.InvalidArgument)
+        {
+            return null;
+        }
     }
 
     internal static BrowsedMessage ToBrowsedMessage(
@@ -363,7 +415,8 @@ internal sealed record GooglePubSubTopology(
         string projectId,
         IEnumerable<string> topicIds,
         IReadOnlyCollection<Subscription> subscriptions,
-        DateTimeOffset fetchedAt)
+        DateTimeOffset fetchedAt,
+        IReadOnlyDictionary<string, long>? undelivered = null)
     {
         var byTopic = subscriptions
             .GroupBy(subscription => subscription.Topic, StringComparer.Ordinal)
@@ -425,11 +478,7 @@ internal sealed record GooglePubSubTopology(
                 return new ServiceBusSubscription(
                     topicId,
                     subscriptionId,
-                    new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
-                    {
-                        CountsUnavailable = true,
-                        HasTransferDeadLetterCount = false
-                    },
+                    Runtime(subscription, hasDeadLetters ? deadLetterReaders[deadLetterTopic!] : null),
                     subscription.State == Subscription.Types.State.Active
                         ? ServiceBusEntityStatus.Active
                         : ServiceBusEntityStatus.Unknown)
@@ -441,19 +490,44 @@ internal sealed record GooglePubSubTopology(
 
             topics.Add(new ServiceBusTopic(
                 topicId,
-                new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty) { CountsUnavailable = true, HasTransferDeadLetterCount = false },
+                new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
+                {
+                    CountsUnavailable = undelivered is null,
+                    HasTransferDeadLetterCount = false
+                },
                 mapped,
                 ServiceBusEntityStatus.Active));
         }
 
-        // Pub/Sub reports no counts; scans and monitors count dead letters by reading them (see the base class).
+        // Without Cloud Monitoring there are no counts; scans and monitors then count dead letters by reading them.
         var topology = new ServiceBusTopology(fetchedAt, topics: topics)
         {
             SupportsTransferDeadLetter = false,
-            HasMessageCounts = false,
-            UsesSampledCounts = true
+            HasMessageCounts = undelivered is not null,
+            UsesSampledCounts = undelivered is null
         };
         return new GooglePubSubTopology(topology, index, deadLetterReaders);
+
+        // Active: the subscription's undelivered messages. Dead letters: those of the subscription reading its
+        // dead-letter topic, which covers every subscription that shares the topic.
+        ServiceBusEntityRuntime Runtime(Subscription subscription, Subscription? deadLetterReader)
+        {
+            if (undelivered is null)
+            {
+                return new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
+                {
+                    CountsUnavailable = true,
+                    HasTransferDeadLetterCount = false
+                };
+            }
+
+            return new ServiceBusEntityRuntime(new ServiceBusMessageCounts(
+                active: undelivered.GetValueOrDefault(subscription.SubscriptionName.SubscriptionId),
+                deadLetter: deadLetterReader is null ? 0 : undelivered.GetValueOrDefault(deadLetterReader.SubscriptionName.SubscriptionId)))
+            {
+                HasTransferDeadLetterCount = false
+            };
+        }
     }
 
     /// <summary>

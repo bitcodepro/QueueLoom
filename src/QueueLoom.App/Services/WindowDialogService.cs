@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using QueueLoom.App.ViewModels;
 using QueueLoom.App.Views;
@@ -48,6 +49,30 @@ public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogSer
                         confirmLabel: "Close")),
                 cancellationToken)
             .ConfigureAwait(true);
+    }
+
+    public Task<ResendOptions?> ChooseResendOptionsAsync(
+        ResendDialogViewModel viewModel,
+        CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<ResendOptions?>(new ResendDialogWindow(viewModel), cancellationToken);
+
+    public async Task<string?> ChooseSaveFileAsync(
+        string title,
+        string suggestedFileName,
+        IReadOnlyList<(string Name, string Pattern)> fileTypes,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var file = await owner.Window.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedFileName,
+            ShowOverwritePrompt = true,
+            FileTypeChoices = fileTypes
+                .Select(type => new FilePickerFileType(type.Name) { Patterns = [type.Pattern] })
+                .ToArray()
+        }).ConfigureAwait(true);
+        return file?.TryGetLocalPath();
     }
 
     public Task<bool> PromptForUpdateAsync(

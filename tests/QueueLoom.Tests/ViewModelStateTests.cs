@@ -741,13 +741,15 @@ public sealed partial class ViewModelStateTests
         IServiceBusWorkspace workspace,
         IUserDialogService? dialogs = null,
         IDeadLetterBackupRepository? backupRepository = null,
-        ISecretVault? secretVault = null) =>
+        ISecretVault? secretVault = null,
+        QueueLoom.App.Services.IMonitorAlertService? alerts = null) =>
         new(
             repository,
             secretVault ?? new FakeSecretVault(),
             workspace,
             dialogs ?? new FakeDialogService(),
-            backupRepository);
+            backupRepository,
+            alerts: alerts);
 
     internal static ServiceBusProfile CreateProfile(
         string name,
@@ -1153,5 +1155,28 @@ public sealed partial class ViewModelStateTests
             bool isError = false,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        /// <summary>The file the operator picks in a save dialog; null cancels.</summary>
+        public string? SaveFilePath { get; set; }
+
+        public Task<string?> ChooseSaveFileAsync(
+            string title,
+            string suggestedFileName,
+            IReadOnlyList<(string Name, string Pattern)> fileTypes,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(SaveFilePath);
+
+        public List<ResendDialogViewModel> ResendDialogs { get; } = [];
+
+        /// <summary>What the operator picks in the resend dialog; null cancels. Defaults to the dialog's defaults.</summary>
+        public Func<ResendDialogViewModel, ResendOptions?>? ResendChoice { get; set; }
+
+        public Task<ResendOptions?> ChooseResendOptionsAsync(
+            ResendDialogViewModel viewModel,
+            CancellationToken cancellationToken = default)
+        {
+            ResendDialogs.Add(viewModel);
+            return Task.FromResult(ResendChoice is null ? viewModel.ToOptions() : ResendChoice(viewModel));
+        }
     }
 }

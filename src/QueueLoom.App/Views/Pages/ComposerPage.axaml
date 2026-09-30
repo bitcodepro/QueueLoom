@@ -9,12 +9,18 @@
       <StackPanel Spacing="4">
         <TextBlock Text="Composer" Classes="pageTitle" />
         <TextBlock Text="{Binding DraftOriginNotice}" Classes="muted" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="16" IsVisible="{Binding CanMoveDraftOriginal}" Margin="0,4,0,0">
+          <RadioButton GroupName="draftResendMode" IsChecked="{Binding DraftKeepsOriginal}"
+                       Content="Send a copy (keep the original in the DLQ)" />
+          <RadioButton GroupName="draftResendMode" IsChecked="{Binding DraftMovesOriginal}"
+                       Content="Move (send, then back up and remove the original)" />
+        </StackPanel>
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Bottom">
         <TextBlock Text="{Binding DraftSizeText}" Classes="muted" VerticalAlignment="Center" />
         <Button Content="Format JSON" Classes="quiet" Command="{Binding FormatJsonCommand}"
                 ToolTip.Tip="Indent the JSON body and point at the first syntax error (Ctrl+Shift+F)" />
-        <Button Content="Send message" Classes="primary" Command="{Binding SendDraftCommand}"
+        <Button Content="{Binding SendDraftLabel}" Classes="primary" Command="{Binding SendDraftCommand}"
                 ToolTip.Tip="Send one message to the selected destination" />
       </StackPanel>
     </Grid>

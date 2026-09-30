@@ -21,6 +21,20 @@ public interface IUserDialogService
         string message,
         bool isError = false,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Asks where and how to resend messages. Null means cancelled.</summary>
+    Task<ResendOptions?> ChooseResendOptionsAsync(
+        ResendDialogViewModel viewModel,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<ResendOptions?>(viewModel.CanConfirm ? viewModel.ToOptions() : null);
+
+    /// <summary>Asks where to save a file. Null means cancelled.</summary>
+    Task<string?> ChooseSaveFileAsync(
+        string title,
+        string suggestedFileName,
+        IReadOnlyList<(string Name, string Pattern)> fileTypes,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
 }
 
 public sealed record ProfileEditorResult(

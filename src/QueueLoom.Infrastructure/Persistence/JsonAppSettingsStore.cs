@@ -53,7 +53,11 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 new SettingsDocument
                 {
                     MonitorIntervalSeconds = updated.MonitorIntervalSeconds,
-                    Theme = updated.Theme.ToString()
+                    Theme = updated.Theme.ToString(),
+                    SavedSearches = updated.SavedSearches.ToList(),
+                    SystemNotifications = updated.SystemNotifications,
+                    AlertWebhookUrl = updated.AlertWebhookUrl,
+                    BackupRetentionDays = updated.BackupRetentionDays
                 },
                 SerializerOptions);
             paths.EnsureCreated();
@@ -116,7 +120,13 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                         Enum.IsDefined(parsed)
                 ? parsed
                 : AppSettings.Default.Theme;
-            return new AppSettings(document.MonitorIntervalSeconds, theme).Normalize();
+            return new AppSettings(document.MonitorIntervalSeconds, theme)
+            {
+                SavedSearches = document.SavedSearches ?? [],
+                SystemNotifications = document.SystemNotifications ?? AppSettings.Default.SystemNotifications,
+                AlertWebhookUrl = document.AlertWebhookUrl,
+                BackupRetentionDays = document.BackupRetentionDays
+            }.Normalize();
         }
         catch (JsonException)
         {
@@ -129,5 +139,9 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         public int SchemaVersion { get; set; } = 1;
         public int MonitorIntervalSeconds { get; set; } = DefaultMonitorIntervalSeconds;
         public string? Theme { get; set; }
+        public List<SavedSearch>? SavedSearches { get; set; }
+        public bool? SystemNotifications { get; set; }
+        public string? AlertWebhookUrl { get; set; }
+        public int BackupRetentionDays { get; set; }
     }
 }
