@@ -2,11 +2,12 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <AssemblyName>QueueLoom</AssemblyName>
-    <Product>QueueLoom — Azure Service Bus Operations Console</Product>
+    <Product>QueueLoom — Message Queue Operations Console</Product>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\queueloom.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <!-- Avalonia's documented telemetry opt-out currently reads the license store
          before honoring the environment flag. Clearing the telemetry-only marker
@@ -22,6 +23,11 @@
     <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- queueloom.svg is the source of every icon; .github/scripts/package.ps1 adds the .icns and 256 px PNG to the macOS and Linux packages. -->
+    <AvaloniaResource Include="Assets\queueloom.ico;Assets\queueloom-128.png" />
   </ItemGroup>
 
   <ItemGroup>

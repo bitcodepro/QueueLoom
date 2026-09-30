@@ -25,7 +25,7 @@ Download the package for your system from [Releases](../../releases). No .NET in
 |---|---|---|
 | Windows | `QueueLoom-<version>-win-x64.zip` | unzip, run `QueueLoom.exe` |
 | macOS (Apple silicon / Intel) | `QueueLoom-<version>-osx-arm64.zip` / `-osx-x64.zip` | unzip, move `QueueLoom.app` to Applications; the first time, right-click it → **Open** (the app is not notarized by Apple) |
-| Linux | `QueueLoom-<version>-linux-x64.tar.gz` | `tar -xzf` it, run `./QueueLoom` |
+| Linux | `QueueLoom-<version>-linux-x64.tar.gz` | `tar -xzf` it, run `./QueueLoom`; `./install-desktop-entry.sh` adds it to the application menu |
 
 ## Getting started
 

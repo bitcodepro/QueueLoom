@@ -3,8 +3,8 @@
   Packages the published app in artifacts/publish for one platform and writes a SHA-256 checksum.
 .DESCRIPTION
   win-x64:   QueueLoom-<version>-win-x64.zip       with QueueLoom.exe
-  linux-x64: QueueLoom-<version>-linux-x64.tar.gz  with the QueueLoom executable
-  osx-*:     QueueLoom-<version>-<rid>.zip          with QueueLoom.app (ad-hoc signed; must run on macOS)
+  linux-x64: QueueLoom-<version>-linux-x64.tar.gz  with the QueueLoom executable, icon and install-desktop-entry.sh
+  osx-*:     QueueLoom-<version>-<rid>.zip          with QueueLoom.app and its icon (ad-hoc signed; must run on macOS)
   README, LICENSE and third-party notices are included. Writes archive and checksum to $env:GITHUB_OUTPUT.
 #>
 param(
@@ -18,6 +18,7 @@ $staging = "artifacts/package-$Rid"
 Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $staging | Out-Null
 $docs = 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
+$assets = 'src/QueueLoom.App/Assets'
 # Native symbol files are not needed at runtime and triple the download size.
 $files = Get-ChildItem $publish -File | Where-Object { $_.Extension -notin '.pdb', '.dbg', '.dSYM' }
 
@@ -31,7 +32,9 @@ switch -Wildcard ($Rid) {
     'linux-*' {
         $files | Copy-Item -Destination $staging
         Copy-Item $docs -Destination $staging
-        chmod +x "$staging/QueueLoom"
+        Copy-Item "$assets/queueloom-256.png" "$staging/queueloom.png"
+        Copy-Item '.github/scripts/install-desktop-entry.sh' -Destination $staging
+        chmod +x "$staging/QueueLoom" "$staging/install-desktop-entry.sh"
         $name = "QueueLoom-$Version-$Rid.tar.gz"
         tar -czf "artifacts/$name" -C $staging .
         if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
@@ -43,6 +46,7 @@ switch -Wildcard ($Rid) {
         New-Item -ItemType Directory -Force $macOS, "$bundle/Contents/Resources" | Out-Null
         $files | Copy-Item -Destination $macOS
         chmod +x "$macOS/QueueLoom"
+        Copy-Item "$assets/queueloom.icns" "$bundle/Contents/Resources/QueueLoom.icns"
         $shortVersion = ($Version -split '-')[0]
         @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -54,6 +58,7 @@ switch -Wildcard ($Rid) {
   <key>CFBundleIdentifier</key><string>io.github.bitcodepro.queueloom</string>
   <key>CFBundleExecutable</key><string>QueueLoom</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>QueueLoom</string>
   <key>CFBundleShortVersionString</key><string>$shortVersion</string>
   <key>CFBundleVersion</key><string>$Version</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
