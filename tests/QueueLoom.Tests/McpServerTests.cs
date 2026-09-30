@@ -29,10 +29,10 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.Equal(
-            ["delete_dead_letter_messages", "get_entities", "list_environments", "peek_messages", "purge_dead_letters",
-             "scan_dead_letters", "search_dead_letters", "send_message"],
+            ["delete_dead_letter_messages", "export_messages", "get_entities", "list_environments", "peek_messages",
+             "purge_dead_letters", "resend_dead_letters", "scan_dead_letters", "search_dead_letters", "send_message"],
             tools.Select(tool => tool.Name).Order());
-        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters" })
+        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages" })
         {
             Assert.True(tools.Single(tool => tool.Name == name).ProtocolTool.Annotations?.ReadOnlyHint);
         }
@@ -48,7 +48,7 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.DoesNotContain(tools, tool => tool.ProtocolTool.Annotations?.ReadOnlyHint != true);
-        Assert.Equal(5, tools.Count);
+        Assert.Equal(6, tools.Count);
     }
 
     [Fact]
@@ -98,6 +98,102 @@ public sealed class McpServerTests
         var delete = Assert.Single(server.Workspace.DeleteRequests);
         Assert.Equal([2L], delete.Messages.Select(message => message.SequenceNumber));
         Assert.Equal([ProfileAccessMode.ReadWrite, ProfileAccessMode.ReadOnly], server.Workspace.AccessModeChanges);
+    }
+
+    [Fact]
+    public async Task ResendMove_SendsTheOriginalsBackAndThenRemovesThem()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+
+        var result = await server.CallAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 3L, messageId = (string?)null } },
+            ["mode"] = "move",
+            ["reason"] = "The consumer bug is fixed"
+        });
+
+        var request = Assert.Single(server.Approver.Requests);
+        Assert.Equal("Move dead-letter messages", request.Action);
+        Assert.Contains("to orders: 1", request.Details, StringComparison.Ordinal);
+        Assert.True(result.GetProperty("approved").GetBoolean());
+        var sent = Assert.Single(server.Workspace.SentMessages);
+        Assert.Equal("orders", sent.Destination.Name);
+        Assert.Equal("correlation-42", sent.Message.Properties.CorrelationId);
+        Assert.Equal([3L], Assert.Single(server.Workspace.DeleteRequests).Messages.Select(message => message.SequenceNumber));
+        Assert.Equal([ProfileAccessMode.ReadWrite, ProfileAccessMode.ReadOnly], server.Workspace.AccessModeChanges);
+    }
+
+    [Fact]
+    public async Task ResendCopy_KeepsTheOriginalsAndReportsMissingMessages()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+
+        var result = await server.CallAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[]
+            {
+                new { entity = "orders", subQueue = "dlq", sequenceNumber = 2L, messageId = (string?)null },
+                new { entity = "orders", subQueue = "dlq", sequenceNumber = 99L, messageId = (string?)null }
+            },
+            ["mode"] = "copy",
+            ["reason"] = "Replay for the new consumer"
+        });
+
+        Assert.Contains("1 listed message(s) were not found", Assert.Single(server.Approver.Requests).Details, StringComparison.Ordinal);
+        Assert.Single(server.Workspace.SentMessages);
+        Assert.Empty(server.Workspace.DeleteRequests);
+        Assert.Contains("1 not found", result.GetProperty("summary").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ResendWithUnknownMode_IsRejectedBeforeAskingTheUser()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 2L, messageId = (string?)null } },
+            ["mode"] = "teleport",
+            ["reason"] = "Retry"
+        });
+
+        Assert.Contains("'copy' or 'move'", error, StringComparison.Ordinal);
+        Assert.Empty(server.Approver.Requests);
+    }
+
+    [Fact]
+    public async Task Export_WritesTheMessagesToTheExportFolderWithoutApproval()
+    {
+        await using var server = await McpTestServer.StartAsync();
+
+        var result = await server.CallAsync("export_messages", new()
+        {
+            ["entity"] = "orders",
+            ["format"] = "csv",
+            ["fileName"] = "../../outside/orders.csv"
+        });
+
+        var path = result.GetProperty("path").GetString()!;
+        Assert.Equal(server.ExportDirectory, Path.GetDirectoryName(path));
+        Assert.Equal("orders.csv", Path.GetFileName(path));
+        Assert.Equal(2, result.GetProperty("count").GetInt32());
+        Assert.Equal(3, File.ReadAllLines(path).Length);
+        Assert.Empty(server.Approver.Requests);
+        Assert.Empty(server.Workspace.AccessModeChanges);
+    }
+
+    [Fact]
+    public async Task Export_OfASearchNeverOverwritesAnEarlierFile()
+    {
+        await using var server = await McpTestServer.StartAsync();
+
+        var first = await server.CallAsync("export_messages", new() { ["query"] = "correlation-42", ["fileName"] = "found" });
+        var second = await server.CallAsync("export_messages", new() { ["query"] = "correlation-42", ["fileName"] = "found" });
+
+        Assert.EndsWith("found.json", first.GetProperty("path").GetString(), StringComparison.Ordinal);
+        Assert.EndsWith("found (2).json", second.GetProperty("path").GetString(), StringComparison.Ordinal);
+        using var json = JsonDocument.Parse(File.ReadAllText(second.GetProperty("path").GetString()!));
+        Assert.Equal(1, json.RootElement.GetArrayLength());
     }
 
     [Fact]
@@ -199,6 +295,7 @@ public sealed class McpServerTests
         public required McpClient Client { get; init; }
         public required FakeWorkspace Workspace { get; init; }
         public RecordingApprover Approver { get; private init; } = new(false);
+        public required string ExportDirectory { get; init; }
         private Task Run { init => _run = value; }
         private CancellationTokenSource Stop { init => _stop = value; }
 
@@ -227,8 +324,9 @@ public sealed class McpServerTests
             var clientToServer = new Pipe();
             var serverToClient = new Pipe();
             var stop = new CancellationTokenSource();
+            var exportDirectory = Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "mcp-exports", Guid.NewGuid().ToString("N"));
             var run = QueueLoomMcpServer.RunAsync(
-                new McpServerSettings(readOnly),
+                new McpServerSettings(readOnly, exportDirectory),
                 services =>
                 {
                     services.AddSingleton<IProfileRepository>(new FakeProfileRepository([profile], profile.Id));
@@ -252,6 +350,7 @@ public sealed class McpServerTests
                 Client = client,
                 Workspace = workspace,
                 Approver = recording,
+                ExportDirectory = exportDirectory,
                 Run = run,
                 Stop = stop
             };
@@ -283,6 +382,10 @@ public sealed class McpServerTests
             {
             }
             _stop.Dispose();
+            if (Directory.Exists(ExportDirectory))
+            {
+                Directory.Delete(ExportDirectory, recursive: true);
+            }
         }
 
         private static string Text(CallToolResult result) =>

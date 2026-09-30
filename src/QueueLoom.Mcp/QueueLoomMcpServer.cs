@@ -6,8 +6,13 @@ using ModelContextProtocol.Protocol;
 
 namespace QueueLoom.Mcp;
 
-/// <param name="ReadOnly">When true, only read tools are offered; nothing can change Service Bus.</param>
-public sealed record McpServerSettings(bool ReadOnly = false);
+/// <param name="ReadOnly">When true, only read tools are offered; nothing can change the queues.</param>
+/// <param name="ExportDirectory">Where export_messages writes its files; a QueueLoom folder in the temp directory when null.</param>
+public sealed record McpServerSettings(bool ReadOnly = false, string? ExportDirectory = null)
+{
+    public string ResolvedExportDirectory =>
+        Path.GetFullPath(ExportDirectory ?? Path.Combine(Path.GetTempPath(), "QueueLoom", "exports"));
+}
 
 /// <summary>Runs QueueLoom as an MCP server so LLM clients can inspect message queues and, with approval, change them.</summary>
 public static class QueueLoomMcpServer
@@ -16,8 +21,8 @@ public static class QueueLoomMcpServer
         "QueueLoom inspects message queues saved by the user: Azure Service Bus namespaces, Amazon SQS / SNS regions and " +
         "Google Cloud Pub/Sub projects. Start with list_environments, then get_entities or scan_dead_letters. peek_messages and " +
         "search_dead_letters only read: they never remove messages (SQS and Pub/Sub cannot peek, so messages are received and " +
-        "immediately released, which counts as a delivery). Pub/Sub reports no message counts. " +
-        "delete_dead_letter_messages, purge_dead_letters and send_message change messages; each call is shown to the user, " +
+        "immediately released, which counts as a delivery). export_messages saves messages to a JSON or CSV file on this computer. " +
+        "delete_dead_letter_messages, purge_dead_letters, resend_dead_letters and send_message change messages; each call is shown to the user, " +
         "who must approve it in QueueLoom before anything happens. Always pass a clear 'reason'. If a change is not approved, " +
         "report that to the user and do not retry it unasked.";
 
@@ -43,6 +48,7 @@ public static class QueueLoomMcpServer
         builder.Logging.ClearProviders();
         configureLogging?.Invoke(builder.Logging);
         configureServices(builder.Services);
+        builder.Services.AddSingleton(settings);
         builder.Services.AddSingleton<McpWorkspaceSession>();
 
         var mcp = builder.Services.AddMcpServer(options =>

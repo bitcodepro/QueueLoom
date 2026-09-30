@@ -99,8 +99,8 @@ QueueLoom can act as an [MCP](https://modelcontextprotocol.io) server, so an ass
 - **Claude Code:** `claude mcp add queueloom -- "C:\Tools\QueueLoom\QueueLoom.exe" --mcp`
 
 **What the assistant may do:**
-- **Read freely:** list environments and queues, scan and search dead letters, view messages. Reading never removes anything.
-- **Change only with your approval:** delete messages, empty a dead-letter queue or send a message. QueueLoom shows you this window, and nothing happens until you press **Approve**:
+- **Read freely:** list environments and queues, scan and search dead letters, view messages, and export them to a JSON or CSV file (saved in the `exports` folder of the data folder). Reading never removes anything.
+- **Change only with your approval:** delete messages, empty a dead-letter queue, resend dead letters (as copies or as a move) or send a message. QueueLoom shows you this window, and nothing happens until you press **Approve**:
 
 <img src="docs/images/mcp-approval.png" alt="QueueLoom asking to approve a deletion requested by an AI assistant" width="520">
 

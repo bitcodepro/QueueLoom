@@ -53,6 +53,9 @@ public sealed record MessageListInfo(string Environment, string Summary, IReadOn
 
 public sealed record MessageSelection(string Entity, string SubQueue, long SequenceNumber, string? MessageId);
 
+/// <param name="Path">Full path of the file that was written.</param>
+public sealed record ExportInfo(string Environment, string Path, int Count, string Format, string Summary);
+
 public sealed record ChangeResult(string Environment, bool Approved, string Summary, string? BackupDirectory, IReadOnlyList<string> Details);
 
 internal static class McpMapping
