@@ -39,6 +39,8 @@ public sealed partial class MainWindowViewModel
         MonitorIntervalSeconds = settings.MonitorIntervalSeconds;
         ThemePreference = settings.Theme;
         LoadSavedSearches(settings.SavedSearches);
+        SystemNotifications = settings.SystemNotifications;
+        AlertWebhookUrl = settings.AlertWebhookUrl ?? string.Empty;
     }
 
     private void InitializePreferences()

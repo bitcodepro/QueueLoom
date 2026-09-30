@@ -456,6 +456,10 @@ public sealed partial class MainWindowViewModel
                     var previousCount = existing.Count;
                     existing.Count = count;
                     existing.LastDetectedAt = detectedAt;
+                    if (count > previousCount)
+                    {
+                        RaiseMonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount);
+                    }
                     AddActivity(
                         "Warning",
                         "DLQ count changed",
@@ -474,6 +478,7 @@ public sealed partial class MainWindowViewModel
                 detectedAt);
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
+            RaiseMonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null);
             AddActivity(
                 "Warning",
                 "DLQ detected",

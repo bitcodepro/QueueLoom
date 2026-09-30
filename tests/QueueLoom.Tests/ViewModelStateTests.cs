@@ -741,13 +741,15 @@ public sealed partial class ViewModelStateTests
         IServiceBusWorkspace workspace,
         IUserDialogService? dialogs = null,
         IDeadLetterBackupRepository? backupRepository = null,
-        ISecretVault? secretVault = null) =>
+        ISecretVault? secretVault = null,
+        QueueLoom.App.Services.IMonitorAlertService? alerts = null) =>
         new(
             repository,
             secretVault ?? new FakeSecretVault(),
             workspace,
             dialogs ?? new FakeDialogService(),
-            backupRepository);
+            backupRepository,
+            alerts: alerts);
 
     internal static ServiceBusProfile CreateProfile(
         string name,

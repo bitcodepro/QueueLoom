@@ -129,6 +129,16 @@ public sealed partial class MainWindow : Window
                 var theme = _viewModel.ThemePreference;
                 _ = SavePreferenceBestEffortAsync(() => _settingsStore.SaveThemeAsync(theme));
                 break;
+            case nameof(MainWindowViewModel.SystemNotifications):
+                var system = _viewModel.SystemNotifications;
+                _ = SavePreferenceBestEffortAsync(() =>
+                    _settingsStore.UpdateAsync(settings => settings with { SystemNotifications = system }));
+                break;
+            case nameof(MainWindowViewModel.AlertWebhookUrl) when !_viewModel.HasAlertWebhookError:
+                var webhook = string.IsNullOrWhiteSpace(_viewModel.AlertWebhookUrl) ? null : _viewModel.AlertWebhookUrl.Trim();
+                _ = SavePreferenceBestEffortAsync(() =>
+                    _settingsStore.UpdateAsync(settings => settings with { AlertWebhookUrl = webhook }));
+                break;
             case nameof(MainWindowViewModel.SavedSearches):
                 var searches = _viewModel.SavedSearches.ToArray();
                 _ = SavePreferenceBestEffortAsync(() =>

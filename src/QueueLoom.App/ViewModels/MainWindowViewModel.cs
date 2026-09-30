@@ -118,7 +118,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         IAppLauncher? launcher = null,
         INotificationService? notifications = null,
         IThemeService? theme = null,
-        ILogger<MainWindowViewModel>? logger = null)
+        ILogger<MainWindowViewModel>? logger = null,
+        IMonitorAlertService? alerts = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -240,6 +241,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeResend();
         InitializeExport();
         InitializeSavedSearches();
+        InitializeAlerts(alerts);
         RefreshDeadLetterEnvironmentFilters();
     }
 
@@ -631,6 +633,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             DeleteMarkedMessagesCommand,
             ResendMarkedMessagesCommand,
             ExportMessagesCommand,
+            SendTestAlertCommand,
             SendDraftCommand,
             ToggleMonitorCommand,
             UnlockWritesCommand
