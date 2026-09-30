@@ -214,7 +214,20 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
                    BootstrapServers = Emulators.KafkaServers, GroupId = group, EnableAutoCommit = false
                }).Build())
         {
-            consumer.Commit([new TopicPartitionOffset(_payments, 0, 1)]);
+            // A fresh broker creates its offsets topic on the first commit and answers "not coordinator" meanwhile.
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    consumer.Commit([new TopicPartitionOffset(_payments, 0, 1)]);
+                    break;
+                }
+                catch (KafkaException exception) when (attempt < 60 && exception.Error.Code is ErrorCode.NotCoordinatorForGroup
+                                                           or ErrorCode.GroupLoadInProgress or ErrorCode.GroupCoordinatorNotAvailable)
+                {
+                    await Task.Delay(500);
+                }
+            }
         }
 
         var topology = await _workspace.GetTopologyAsync(forceRefresh: true);

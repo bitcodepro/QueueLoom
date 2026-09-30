@@ -120,8 +120,18 @@ public sealed partial class ViewModelStateTests
         await WaitUntilAsync(() => viewModel.IsBusy && viewModel.CancelCurrentOperationCommand.CanExecute(null));
         Assert.True(viewModel.ShowCancelCurrentOperation);
 
+        // The operation may end inside Cancel() on some systems, so what the operator saw is recorded as it changes.
+        var statuses = new List<string>();
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(MainWindowViewModel.StatusText))
+            {
+                statuses.Add(viewModel.StatusText);
+            }
+        };
         viewModel.CancelCurrentOperationCommand.Execute(null);
-        Assert.Equal("Cancelling…", viewModel.CancelOperationLabel);
+        Assert.Equal("Cancelling…", statuses.First());
+        Assert.True(viewModel.CancelOperationLabel == "Cancelling…" || !viewModel.IsBusy);
         Assert.False(viewModel.ShowCancelCurrentOperation);
         Assert.False(viewModel.CancelCurrentOperationCommand.CanExecute(null));
         await connection;
