@@ -121,7 +121,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         IThemeService? theme = null,
         ILogger<MainWindowViewModel>? logger = null,
         IMonitorAlertService? alerts = null,
-        IDeadLetterHistoryStore? history = null)
+        IDeadLetterHistoryStore? history = null,
+        IScheduledResendStore? scheduledResends = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -245,6 +246,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeSavedSearches();
         InitializeAlerts(alerts);
         InitializeHistory(history);
+        InitializeScheduledResends(scheduledResends);
         InitializeQueueManagement();
         InitializeRetention();
         InitializeReasons();
@@ -626,6 +628,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
         _monitorCancellation?.Cancel();
         _writeUnlockCancellation?.Cancel();
+        await StopScheduledResendsAsync().ConfigureAwait(true);
         _currentOperationCancellation?.Cancel();
 
         var commands = new[]

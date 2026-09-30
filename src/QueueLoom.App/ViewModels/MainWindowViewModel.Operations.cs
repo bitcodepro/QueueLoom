@@ -114,7 +114,11 @@ public sealed partial class MainWindowViewModel
         PropertyChanged += (_, args) =>
         {
             if (args.PropertyName is nameof(IsBusy) or nameof(IsConnected) or nameof(ConnectedProfileId) or nameof(CanWrite))
+            {
                 NotifyBrowseFeatures();
+                if (args.PropertyName is not nameof(IsBusy)) UpdateScheduledStatuses();
+                RunScheduledResendCommand?.NotifyCanExecuteChanged();
+            }
         };
     }
 

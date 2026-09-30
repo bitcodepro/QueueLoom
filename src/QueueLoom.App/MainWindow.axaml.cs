@@ -95,6 +95,7 @@ public sealed partial class MainWindow : Window
         _theme?.Apply(settings.Theme);
         viewModel.ApplyPreferences(settings);
         await viewModel.InitializeAsync();
+        viewModel.StartScheduledResends();
     }
 
     private async Task ShowStartupErrorAsync(Exception exception)

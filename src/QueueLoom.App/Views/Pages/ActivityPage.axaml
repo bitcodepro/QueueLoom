@@ -5,9 +5,39 @@
              x:Class="QueueLoom.App.Views.Pages.ActivityPage"
              x:DataType="vm:MainWindowViewModel">
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
-    <StackPanel Spacing="4">
-      <TextBlock Text="Activity" Classes="pageTitle" />
-      <TextBlock Text="Local history of connections, scans, sends and purges. Right-click a row to copy." Classes="muted" />
+    <StackPanel Spacing="14">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Activity" Classes="pageTitle" />
+        <TextBlock Text="Local history of connections, scans, sends and purges. Right-click a row to copy." Classes="muted" />
+      </StackPanel>
+      <!-- Resends waiting for their time -->
+      <Border Classes="card" IsVisible="{Binding HasScheduledResends}">
+        <StackPanel Spacing="10">
+          <StackPanel Spacing="3">
+            <TextBlock Text="Scheduled resends" Classes="sectionTitle" />
+            <TextBlock Classes="muted" TextWrapping="Wrap"
+                       Text="Each one runs when it is due while QueueLoom is open, connected to its environment with write access on." />
+          </StackPanel>
+          <ItemsControl ItemsSource="{Binding ScheduledResends}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:ScheduledResendItemViewModel">
+                <Grid ColumnDefinitions="*,12,Auto,8,Auto" Margin="0,4">
+                  <StackPanel Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Title}" />
+                    <TextBlock Classes="muted" FontSize="12" TextTrimming="CharacterEllipsis">
+                      <Run Text="{Binding When}" />
+                      <Run Text=" · " />
+                      <Run Text="{Binding Status}" />
+                    </TextBlock>
+                  </StackPanel>
+                  <Button Grid.Column="2" Content="Run now" Classes="quiet" Command="{Binding RunNow}" CommandParameter="{Binding}" />
+                  <Button Grid.Column="4" Content="Cancel" Classes="quiet" Command="{Binding Cancel}" CommandParameter="{Binding}" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
     </StackPanel>
     <Border Grid.Row="2" Classes="card flush">
       <Grid RowDefinitions="Auto,*">

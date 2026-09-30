@@ -37,6 +37,7 @@ public static class AppServices
         services.AddSingleton<IActivityJournal>(_ => new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")));
         services.AddSingleton<IDeadLetterHistoryStore>(_ =>
             new JsonLinesDeadLetterHistoryStore(Path.Combine(paths.RootDirectory, "dlq-history.jsonl")));
+        services.AddSingleton<QueueLoom.Core.ServiceBus.IScheduledResendStore>(_ => new JsonScheduledResendStore(paths));
         services.AddSingleton<IBatchReplayStore>(_ => new BatchReplayStore(Path.Combine(paths.RootDirectory, "replay")));
 
         services.AddSingleton<TopLevelAccessor>();
