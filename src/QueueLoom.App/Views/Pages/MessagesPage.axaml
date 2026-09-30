@@ -240,13 +240,16 @@
               </ListBox.ItemTemplate>
             </ListBox>
             <Border Grid.Row="2" Classes="tableFooter">
-              <Grid ColumnDefinitions="*,Auto,8,Auto,8,Auto">
+              <Grid ColumnDefinitions="*,Auto,8,Auto,8,Auto,8,Auto">
                 <TextBlock Text="{Binding BrowsePageStatus}" Classes="muted" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <Button Grid.Column="1" Content="Load next 100" Command="{Binding LoadMoreMessagesCommand}" Classes="quiet copyAction" />
-                <Button Grid.Column="3" Content="{Binding ResendMarkedMessagesLabel}" Classes="quiet copyAction"
+                <Button Grid.Column="3" Content="{Binding ExportMessagesLabel}" Classes="quiet copyAction"
+                        Command="{Binding ExportMessagesCommand}"
+                        ToolTip.Tip="Save the ticked messages, or all listed ones, to a JSON or CSV file" />
+                <Button Grid.Column="5" Content="{Binding ResendMarkedMessagesLabel}" Classes="quiet copyAction"
                         Command="{Binding ResendMarkedMessagesCommand}" IsVisible="{Binding HasDeletableMessages}"
                         ToolTip.Tip="Send the ticked messages again, as copies or moving them out of the DLQ. Requires write access." />
-                <Button Grid.Column="5" Content="{Binding DeleteMarkedMessagesLabel}" Classes="danger copyAction"
+                <Button Grid.Column="7" Content="{Binding DeleteMarkedMessagesLabel}" Classes="danger copyAction"
                         Command="{Binding DeleteMarkedMessagesCommand}" IsVisible="{Binding HasDeletableMessages}"
                         ToolTip.Tip="Back up and permanently delete exactly the ticked dead-letter messages. Requires write access." />
               </Grid>

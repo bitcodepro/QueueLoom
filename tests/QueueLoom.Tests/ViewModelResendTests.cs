@@ -116,3 +116,32 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("original remains in DLQ", viewModel.StatusText, StringComparison.Ordinal);
     }
 }
+
+public sealed partial class ViewModelStateTests
+{
+    [Fact]
+    public async Task Export_WritesTheTickedMessagesOrAllOfThem()
+    {
+        var (viewModel, _, dialogs) = await CreateSearchedViewModelAsync(ProfileAccessMode.ReadWrite);
+        await using var _ = viewModel;
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        dialogs.SaveFilePath = Path.Combine(directory.Path, "all.json");
+        Assert.Equal("Export all…", viewModel.ExportMessagesLabel);
+
+        await viewModel.ExportMessagesCommand.ExecuteAsync();
+        using (var all = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(dialogs.SaveFilePath)))
+        {
+            Assert.Equal(3, all.RootElement.GetArrayLength());
+        }
+
+        viewModel.Messages.First().IsMarked = true;
+        Assert.Equal("Export 1…", viewModel.ExportMessagesLabel);
+        dialogs.SaveFilePath = Path.Combine(directory.Path, "one.csv");
+        await viewModel.ExportMessagesCommand.ExecuteAsync();
+        Assert.Equal(2, (await File.ReadAllLinesAsync(dialogs.SaveFilePath)).Length);
+
+        dialogs.SaveFilePath = null;
+        await viewModel.ExportMessagesCommand.ExecuteAsync();
+        Assert.Equal("Export cancelled", viewModel.StatusText);
+    }
+}

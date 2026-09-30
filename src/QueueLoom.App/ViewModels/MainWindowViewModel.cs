@@ -238,6 +238,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializePresentation();
         InitializeMessageDeletion();
         InitializeResend();
+        InitializeExport();
         RefreshDeadLetterEnvironmentFilters();
     }
 
@@ -628,6 +629,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             PurgeSelectedDeadLettersCommand,
             DeleteMarkedMessagesCommand,
             ResendMarkedMessagesCommand,
+            ExportMessagesCommand,
             SendDraftCommand,
             ToggleMonitorCommand,
             UnlockWritesCommand

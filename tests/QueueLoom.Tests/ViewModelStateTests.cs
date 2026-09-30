@@ -1154,6 +1154,16 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        /// <summary>The file the operator picks in a save dialog; null cancels.</summary>
+        public string? SaveFilePath { get; set; }
+
+        public Task<string?> ChooseSaveFileAsync(
+            string title,
+            string suggestedFileName,
+            IReadOnlyList<(string Name, string Pattern)> fileTypes,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(SaveFilePath);
+
         public List<ResendDialogViewModel> ResendDialogs { get; } = [];
 
         /// <summary>What the operator picks in the resend dialog; null cancels. Defaults to the dialog's defaults.</summary>

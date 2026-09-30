@@ -81,6 +81,8 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasDeletableMessages));
         OnPropertyChanged(nameof(DeleteMarkedMessagesLabel));
         OnPropertyChanged(nameof(ResendMarkedMessagesLabel));
+        OnPropertyChanged(nameof(ExportMessagesLabel));
+        ExportMessagesCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(AreAllMessagesMarked));
         DeleteMarkedMessagesCommand.NotifyCanExecuteChanged();
         ResendMarkedMessagesCommand?.NotifyCanExecuteChanged();
