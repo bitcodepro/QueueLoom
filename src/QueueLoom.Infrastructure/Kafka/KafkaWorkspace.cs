@@ -119,13 +119,23 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 .Select(topic =>
                 {
                     long retained = 0;
+                    string? countError = null;
                     foreach (var partition in topic.Partitions)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var marks = consumer.QueryWatermarkOffsets(new TopicPartition(topic.Topic, partition.PartitionId), RequestTimeout);
+                        var marks = QueryWatermarks(consumer, new TopicPartition(topic.Topic, partition.PartitionId), cancellationToken);
+                        if (marks is null)
+                        {
+                            countError = "counts unavailable: a partition has no leader right now";
+                            retained = 0;
+                            break;
+                        }
                         retained += Math.Max(0, marks.High.Value - marks.Low.Value);
                     }
-                    return new KafkaTopicInfo(topic.Topic, topic.Partitions.Select(partition => partition.PartitionId).ToArray(), retained);
+                    return new KafkaTopicInfo(topic.Topic, topic.Partitions.Select(partition => partition.PartitionId).ToArray(), retained)
+                    {
+                        CountError = countError
+                    };
                 })
                 .ToArray();
             return new KafkaTopologyIndex(topics, suffixes);
@@ -176,6 +186,33 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             throw new InvalidOperationException($"Kafka did not accept the message: {exception.Error.Reason}", exception);
         }
     }
+
+    /// <summary>
+    /// Watermarks of one partition. A topic that was just created, or is being deleted or moved, can briefly have no
+    /// leader; that is retried a few times and then reported as unknown rather than failing the whole topology.
+    /// </summary>
+    private static WatermarkOffsets? QueryWatermarks(IConsumer<byte[]?, byte[]?> consumer, TopicPartition partition, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return consumer.QueryWatermarkOffsets(partition, RequestTimeout);
+            }
+            catch (KafkaException exception) when (IsTransient(exception.Error.Code))
+            {
+                if (attempt == 4)
+                {
+                    return null;
+                }
+                cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(250 * (attempt + 1)));
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+    }
+
+    private static bool IsTransient(ErrorCode code) => code is ErrorCode.NotLeaderForPartition or ErrorCode.LeaderNotAvailable
+        or ErrorCode.UnknownTopicOrPart or ErrorCode.Local_UnknownPartition or ErrorCode.Local_UnknownTopic;
 
     private IConsumer<byte[]?, byte[]?> CreateConsumer() =>
         new ConsumerBuilder<byte[]?, byte[]?>(new ConsumerConfig(Config)

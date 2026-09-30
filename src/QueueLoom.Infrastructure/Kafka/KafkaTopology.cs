@@ -4,7 +4,11 @@ using QueueLoom.Core.ServiceBus;
 namespace QueueLoom.Infrastructure.Kafka;
 
 /// <param name="Retained">Messages the cluster still keeps: the sum of high minus low watermarks of all partitions.</param>
-internal sealed record KafkaTopicInfo(string Name, IReadOnlyList<int> Partitions, long Retained);
+internal sealed record KafkaTopicInfo(string Name, IReadOnlyList<int> Partitions, long Retained)
+{
+    /// <summary>Why <see cref="Retained"/> is not known, for example while a new topic has no partition leader yet.</summary>
+    public string? CountError { get; init; }
+}
 
 /// <summary>Kafka topics and which of them are dead-letter topics, by name.</summary>
 internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, IReadOnlyList<string> Suffixes)
@@ -36,6 +40,10 @@ internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, 
             var deadLetter = DeadLetterTopicOf(topic.Name) is { } name ? Find(name) : null;
             var partitions = topic.Partitions.Count == 1 ? "1 partition" : $"{topic.Partitions.Count.ToString(CultureInfo.CurrentCulture)} partitions";
             var note = SourceOf(topic.Name) is { } source ? $"Dead-letter topic of {source} · {partitions}" : partitions;
+            if (topic.CountError is not null || deadLetter?.CountError is not null)
+            {
+                note += $" · {topic.CountError ?? deadLetter!.CountError}";
+            }
             return new ServiceBusQueue(topic.Name,
                 new ServiceBusEntityRuntime(new ServiceBusMessageCounts(active: topic.Retained, deadLetter: deadLetter?.Retained ?? 0))
                 { HasTransferDeadLetterCount = false },
