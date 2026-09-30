@@ -370,6 +370,30 @@
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
+    <!-- Dead-letter reason chips on Messages -->
+    <Style Selector="Button.reasonChip">
+      <Setter Property="Padding" Value="10,4" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+    <Style Selector="Button.reasonChip.selected">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+    </Style>
+    <Style Selector="Button.reasonChip Border.chipCount">
+      <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="6,0" />
+    </Style>
+    <Style Selector="Button.reasonChip.selected Border.chipCount">
+      <Setter Property="Background" Value="{DynamicResource DangerBorderBrush}" />
+    </Style>
+
     <!-- Cloud picker in the environment editor -->
     <Style Selector="ListBox.providerPicker ListBoxItem">
       <Setter Property="Padding" Value="12" />

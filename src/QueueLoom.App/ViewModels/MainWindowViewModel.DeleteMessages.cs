@@ -76,6 +76,7 @@ public sealed partial class MainWindowViewModel
 
     private void NotifyMarkedMessages()
     {
+        RebuildDeadLetterReasons();
         OnPropertyChanged(nameof(MarkedMessageCount));
         OnPropertyChanged(nameof(HasMarkedMessages));
         OnPropertyChanged(nameof(HasDeletableMessages));

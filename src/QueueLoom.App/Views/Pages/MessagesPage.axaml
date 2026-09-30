@@ -201,7 +201,7 @@
           <RowDefinition Height="0.55*" />
         </Grid.RowDefinitions>
         <Border Grid.Row="0" Classes="card flush" MinHeight="150">
-          <Grid RowDefinitions="Auto,*,Auto">
+          <Grid RowDefinitions="Auto,Auto,*,Auto">
             <Border Classes="tableHeader" Padding="14,0">
               <Grid ColumnDefinitions="32,64,56,1.1*,1.6*,0.9*,146">
                 <CheckBox IsChecked="{Binding AreAllMessagesMarked}" IsVisible="{Binding HasDeletableMessages}"
@@ -216,11 +216,42 @@
                 <TextBlock Grid.Column="6" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
               </Grid>
             </Border>
-            <controls:EmptyState Grid.Row="1" IsVisible="{Binding !HasMessages}"
+            <!-- Why these messages were dead-lettered; a click ticks all messages with that reason -->
+            <Border Grid.Row="1" Padding="12,8" IsVisible="{Binding HasDeadLetterReasons}"
+                    BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+              <Grid ColumnDefinitions="Auto,10,*">
+                <StackPanel VerticalAlignment="Center" Spacing="1">
+                  <TextBlock Text="REASONS" Classes="eyebrow" />
+                  <TextBlock Text="{Binding DeadLetterReasonsSummary}" Classes="muted" FontSize="11" />
+                </StackPanel>
+                <ItemsControl Grid.Column="2" ItemsSource="{Binding DeadLetterReasons}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <WrapPanel ItemSpacing="6" LineSpacing="6" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:DeadLetterReasonItemViewModel">
+                      <Button Classes="reasonChip" Classes.selected="{Binding IsSelected}"
+                              Command="{Binding Select}" CommandParameter="{Binding}" ToolTip.Tip="{Binding ToolTip}"
+                              AutomationProperties.Name="{Binding Label}">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <TextBlock Text="{Binding Reason}" MaxWidth="260" TextTrimming="CharacterEllipsis" />
+                          <Border Classes="chipCount">
+                            <TextBlock Text="{Binding Count, StringFormat={}{0:N0}}" FontSize="11" FontWeight="SemiBold" />
+                          </Border>
+                        </StackPanel>
+                      </Button>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </Grid>
+            </Border>
+            <controls:EmptyState Grid.Row="2" IsVisible="{Binding !HasMessages}"
                                  Icon="{x:Static controls:Icons.Messages}"
                                  Title="No messages loaded"
                                  Description="{Binding EmptyMessagesText}" />
-            <ListBox Grid.Row="1" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6"
+            <ListBox Grid.Row="2" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6"
                      Classes="messageRows" IsEnabled="{Binding !IsBusy}" IsVisible="{Binding HasMessages}"
                      AutomationProperties.Name="Messages">
               <ListBox.ItemTemplate>
@@ -265,7 +296,7 @@
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
-            <Border Grid.Row="2" Classes="tableFooter">
+            <Border Grid.Row="3" Classes="tableFooter">
               <Grid ColumnDefinitions="*,Auto,8,Auto,8,Auto,8,Auto">
                 <TextBlock Text="{Binding BrowsePageStatus}" Classes="muted" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <Button Grid.Column="1" Content="Load next 100" Command="{Binding LoadMoreMessagesCommand}" Classes="quiet copyAction" />
