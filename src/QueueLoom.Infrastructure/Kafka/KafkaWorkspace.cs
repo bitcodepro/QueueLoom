@@ -180,6 +180,13 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         return channel;
     }
 
+    protected override ILeasedMessageChannel OpenBrowseChannel(ServiceBusTopology topology, BrowseMessagesRequest request)
+    {
+        var channel = (KafkaChannel)OpenChannel(topology, request.Source, request.SubQueue);
+        channel.StartAt(request.Start, request.LoadAll ? LoadAllLimit : request.MaxMessages);
+        return channel;
+    }
+
     protected override async Task SendCoreAsync(ServiceBusTopology topology, ServiceBusEntityReference destination, MessageDraft message,
         CancellationToken cancellationToken)
     {
@@ -246,8 +253,9 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     }
 
     /// <summary>
-    /// Reads a topic from the oldest retained message up to the end it had when reading started. "Releasing" does
-    /// nothing, since reading changes nothing; "settling" deletes records, which Kafka allows only from the oldest on.
+    /// Reads a topic up to the end it had when reading started: by default from the oldest retained message, or from a
+    /// time, an offset, or only the newest messages. "Releasing" does nothing, since reading changes nothing;
+    /// "settling" deletes records, which Kafka allows only from the oldest on.
     /// </summary>
     private sealed class KafkaChannel(
         KafkaWorkspace owner,
@@ -260,6 +268,16 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         private readonly Dictionary<int, long> _deletableFrom = [];
         private readonly HashSet<int> _finished = [];
         private IConsumer<byte[]?, byte[]?>? _consumer;
+        private BrowseStart _start = BrowseStart.Oldest;
+        private int _newestCount;
+        private Queue<LeasedMessage>? _newest;
+
+        /// <summary>Sets where browsing starts; <paramref name="count"/> is how many of the newest messages to keep.</summary>
+        public void StartAt(BrowseStart start, int count)
+        {
+            _start = start;
+            _newestCount = count;
+        }
 
         public string PhysicalName => topic.Name;
 
@@ -287,9 +305,32 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 
         private List<LeasedMessage> Receive(int maxMessages, CancellationToken cancellationToken)
         {
+            if (_start.Kind != BrowseStartKind.Newest)
+            {
+                return ReceiveRange(Math.Clamp(maxMessages, 1, MaximumBatch), cancellationToken);
+            }
+
+            // The newest messages: each partition's tail is read whole, then the latest ones by time are kept.
+            if (_newest is null)
+            {
+                var tail = ReceiveRange(int.MaxValue, cancellationToken);
+                _newest = new Queue<LeasedMessage>(tail
+                    .OrderByDescending(message => message.Message.EnqueuedAt ?? DateTimeOffset.MinValue)
+                    .ThenByDescending(message => message.Message.Position?.Offset ?? 0)
+                    .Take(Math.Max(1, _newestCount)));
+            }
+            var batch = new List<LeasedMessage>();
+            while (batch.Count < Math.Clamp(maxMessages, 1, MaximumBatch) && _newest.TryDequeue(out var next))
+            {
+                batch.Add(next);
+            }
+            return batch;
+        }
+
+        private List<LeasedMessage> ReceiveRange(int limit, CancellationToken cancellationToken)
+        {
             var consumer = Open();
             var messages = new List<LeasedMessage>();
-            var limit = Math.Clamp(maxMessages, 1, MaximumBatch);
             while (messages.Count < limit && _finished.Count < _end.Count)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -381,15 +422,22 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             }
 
             _consumer = owner.CreateConsumer();
+            var byTime = _start is { Kind: BrowseStartKind.FromTime, Time: { } time }
+                ? _consumer.OffsetsForTimes(
+                        topic.Partitions.Select(partition => new TopicPartitionTimestamp(topic.Name, partition, new Timestamp(time.UtcDateTime))),
+                        RequestTimeout)
+                    .ToDictionary(offset => offset.Partition.Value, offset => offset.Offset.Value)
+                : null;
             var assignments = new List<TopicPartitionOffset>();
             foreach (var partition in topic.Partitions)
             {
                 var marks = _consumer.QueryWatermarkOffsets(new TopicPartition(topic.Name, partition), RequestTimeout);
-                _end[partition] = marks.High.Value;
+                var (from, to) = Range(partition, marks.Low.Value, marks.High.Value, byTime);
+                _end[partition] = to;
                 _deletableFrom[partition] = marks.Low.Value;
-                if (marks.High.Value > marks.Low.Value)
+                if (to > from)
                 {
-                    assignments.Add(new TopicPartitionOffset(topic.Name, partition, marks.Low));
+                    assignments.Add(new TopicPartitionOffset(topic.Name, partition, new Offset(from)));
                 }
                 else
                 {
@@ -398,6 +446,25 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             }
             _consumer.Assign(assignments);
             return _consumer;
+        }
+
+        /// <summary>The offsets [from, to) to read in one partition.</summary>
+        private (long From, long To) Range(int partition, long low, long high, IReadOnlyDictionary<int, long>? byTime)
+        {
+            long? position = _start.Positions?.TryGetValue(partition, out var saved) == true ? saved : null;
+            var (from, to) = _start.Kind switch
+            {
+                BrowseStartKind.Newest => (0L, Math.Min(position ?? high, high)),
+                BrowseStartKind.FromTime => (position ?? (byTime?.TryGetValue(partition, out var at) == true && at >= 0 ? at : high), high),
+                BrowseStartKind.FromOffset when _start.Partition is { } only && only != partition => (high, high),
+                BrowseStartKind.FromOffset => (position ?? _start.Offset ?? low, high),
+                _ => (position ?? low, high)
+            };
+            if (_start.Kind == BrowseStartKind.Newest)
+            {
+                from = to - Math.Max(1, _newestCount);
+            }
+            return (Math.Clamp(from, low, high), to);
         }
 
         private LeasedMessage ToLeased(ConsumeResult<byte[]?, byte[]?> result)

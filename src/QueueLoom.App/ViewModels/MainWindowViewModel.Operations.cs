@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using QueueLoom.App.Services;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Diagnostics;
+using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.App.Serialization;
 using QueueLoom.Core.Validation;
@@ -107,6 +108,7 @@ public sealed partial class MainWindowViewModel
             OpenBackupsFolderAsync,
             () => _backupRepository is not null && _launcher is not null);
         InitializeReplayFeatures();
+        InitializeLogReading();
         Messages.CollectionChanged += (_, _) => NotifyBrowseFeatures();
         Entities.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasEntities));
         PropertyChanged += (_, args) =>
@@ -129,15 +131,26 @@ public sealed partial class MainWindowViewModel
         if (ConnectedProfileId != profile.Id) throw new InvalidOperationException("Reconnect the source environment first.");
         // SQS and Pub/Sub cannot continue from a position: ask for everything shown so far plus 100 more
         // and keep the new ones. Their messages are listed oldest first.
-        var positional = Messages.Count == 0 || Messages[0].Message.HasSequenceNumber;
+        // Kafka continues from each partition's position, so it pages like a sequence.
+        var log = profile.Provider == MessagingProvider.Kafka;
+        var positional = log || Messages.Count == 0 || Messages[0].Message.HasSequenceNumber;
         var requested = positional ? 100 : Math.Min(BrowseMessagesRequest.MaximumMaxMessages, Messages.Count + 100);
         var page = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, _browseSubQueue,
-            maxMessages: requested, fromSequenceNumber: positional ? _browseCursor : null), token).ConfigureAwait(true);
+            maxMessages: requested, fromSequenceNumber: positional && !log ? _browseCursor : null)
+        {
+            Start = log ? NextLogStart() : BrowseStart.Oldest
+        }, token).ConfigureAwait(true);
+        if (log)
+        {
+            AdvanceLogPositions(page);
+        }
         var seen = Messages.Select(m => m.Message.SequenceNumber).ToHashSet();
         var bytes = RetainedBrowseBytes;
         var ordered = page.All(m => m.HasSequenceNumber)
             ? page.OrderBy(m => m.SequenceNumber)
-            : page.OrderBy(m => m.EnqueuedAt ?? DateTimeOffset.MaxValue).ThenBy(m => m.Properties.MessageId, StringComparer.Ordinal);
+            : log && _browseStart.Kind == BrowseStartKind.Newest
+                ? page.OrderByDescending(m => m.EnqueuedAt ?? DateTimeOffset.MinValue).ThenByDescending(m => m.Position?.Offset ?? 0)
+                : page.OrderBy(m => m.EnqueuedAt ?? DateTimeOffset.MaxValue).ThenBy(m => m.Properties.MessageId, StringComparer.Ordinal);
         foreach (var message in ordered)
         {
             if (Messages.Count >= 1000 || bytes + message.Body.Length > 32 * 1024 * 1024)
@@ -157,7 +170,9 @@ public sealed partial class MainWindowViewModel
     {
         OnPropertyChanged(nameof(HasMessages)); OnPropertyChanged(nameof(EmptyMessagesText));
         OnPropertyChanged(nameof(CanLoadMoreMessages)); OnPropertyChanged(nameof(BrowsePageStatus));
+        OnPropertyChanged(nameof(ShowLogReadBar));
         LoadMoreMessagesCommand?.NotifyCanExecuteChanged();
+        ReadLogCommand?.NotifyCanExecuteChanged();
         FormatJsonCommand?.NotifyCanExecuteChanged(); GenerateMessageIdCommand?.NotifyCanExecuteChanged();
         AddApplicationPropertyCommand?.NotifyCanExecuteChanged();
         NotifyReplayFeatures();

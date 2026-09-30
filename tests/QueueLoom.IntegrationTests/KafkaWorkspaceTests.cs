@@ -176,6 +176,34 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
         Assert.DoesNotContain((await _workspace.GetTopologyAsync(forceRefresh: true)).Queues, queue => queue.Name.StartsWith(name, StringComparison.Ordinal));
     }
 
+    [EmulatorFact(Emulators.Kafka)]
+    public async Task Reading_starts_at_the_newest_a_time_or_an_offset_and_pages_on()
+    {
+        var start = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        for (var index = 0; index < 5; index++)
+        {
+            await _producer.ProduceAsync(_payments, new Message<string?, string>
+            {
+                Value = $"p-{index}",
+                Timestamp = new Timestamp(start.AddMinutes(index).UtcDateTime),
+                Headers = new Headers { { "MessageId", Encoding.UTF8.GetBytes($"p-{index}") } }
+            });
+        }
+        var payments = ServiceBusEntityReference.Queue(_payments);
+        async Task<string[]> ReadAsync(BrowseStart from, int count = 100) =>
+            (await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(payments, maxMessages: count) { Start = from }))
+            .Select(message => message.Properties.MessageId!).ToArray();
+
+        Assert.Equal(["p-4", "p-3"], await ReadAsync(new BrowseStart(BrowseStartKind.Newest), 2));
+        Assert.Equal(["p-2", "p-1"], await ReadAsync(new BrowseStart(BrowseStartKind.Newest) { Positions = new Dictionary<int, long> { [0] = 3 } }, 2));
+        Assert.Equal(["p-3", "p-4"], await ReadAsync(new BrowseStart(BrowseStartKind.FromOffset, Offset: 3)));
+        Assert.Empty(await ReadAsync(new BrowseStart(BrowseStartKind.FromOffset, Offset: 3, Partition: 1)));
+        Assert.Equal(["p-2", "p-3", "p-4"], await ReadAsync(new BrowseStart(BrowseStartKind.FromTime, Time: start.AddMinutes(1.5))));
+        Assert.Equal(["p-1", "p-2"], await ReadAsync(BrowseStart.Oldest with { Positions = new Dictionary<int, long> { [0] = 1 } }, 2));
+        var positioned = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(payments, maxMessages: 1));
+        Assert.Equal(new LogPosition(0, 0), positioned[0].Position);
+    }
+
     private async Task ProduceAsync(string topic, params string[] ids)
     {
         foreach (var id in ids)

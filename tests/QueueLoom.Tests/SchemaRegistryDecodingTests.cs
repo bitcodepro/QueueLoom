@@ -110,3 +110,29 @@ public sealed class SchemaRegistryDecodingTests
         }
     }
 }
+
+public sealed class LogReadStartTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void RelativeTimes_CountBackFromNow()
+    {
+        Assert.Equal(Now.AddMinutes(-30), QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromTime, "30m", Now).Time);
+        Assert.Equal(Now.AddHours(-2), QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromTime, "2h", Now).Time);
+        Assert.Equal(Now.AddDays(-1), QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromTime, "1d", Now).Time);
+    }
+
+    [Fact]
+    public void Offsets_MayNameAPartition()
+    {
+        Assert.Equal(new BrowseStart(BrowseStartKind.FromOffset, Offset: 1500),
+            QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromOffset, "1500", Now));
+        Assert.Equal(new BrowseStart(BrowseStartKind.FromOffset, Offset: 1500, Partition: 2),
+            QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromOffset, " 2:1500 ", Now));
+        Assert.Throws<InvalidOperationException>(() =>
+            QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromOffset, "-1", Now));
+        Assert.Throws<InvalidOperationException>(() =>
+            QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromTime, "yesterday-ish", Now));
+    }
+}

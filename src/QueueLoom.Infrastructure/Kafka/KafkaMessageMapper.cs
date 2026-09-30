@@ -55,7 +55,7 @@ internal static class KafkaMessageMapper
             enqueuedAt: message.Timestamp.Type == TimestampType.NotAvailable ? null : new DateTimeOffset(message.Timestamp.UtcDateTime),
             deadLetterReason: reason,
             deadLetterErrorDescription: description)
-        { HasSequenceNumber = false };
+        { HasSequenceNumber = false, Position = new LogPosition(result.Partition.Value, result.Offset.Value) };
     }
 
     /// <summary>The topic a dead-lettered message came from, when the dead-letter headers say so.</summary>
