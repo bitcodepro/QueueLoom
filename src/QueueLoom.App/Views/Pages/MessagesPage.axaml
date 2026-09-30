@@ -316,9 +316,12 @@
               </ListBox.ItemTemplate>
             </ListBox>
             <Border Grid.Row="3" Classes="tableFooter">
-              <Grid ColumnDefinitions="*,Auto,8,Auto,8,Auto,8,Auto">
+              <Grid ColumnDefinitions="*,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
                 <TextBlock Text="{Binding BrowsePageStatus}" Classes="muted" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
                 <Button Grid.Column="1" Content="Load next 100" Command="{Binding LoadMoreMessagesCommand}" Classes="quiet copyAction" />
+                <Button Grid.Column="9" Content="Compare 2" Command="{Binding CompareMarkedMessagesCommand}" Classes="quiet copyAction"
+                        IsVisible="{Binding CanCompareMarkedMessages}"
+                        ToolTip.Tip="Show how the two ticked messages differ: body lines and properties" />
                 <Button Grid.Column="3" Content="{Binding ExportMessagesLabel}" Classes="quiet copyAction"
                         Command="{Binding ExportMessagesCommand}"
                         ToolTip.Tip="Save the ticked messages, or all listed ones, to a JSON or CSV file" />

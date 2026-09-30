@@ -78,6 +78,9 @@ public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogSer
     public Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         ShowDialogAsync<object?>(new QueueDialogWindow(viewModel), cancellationToken);
 
+    public Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<object?>(new CompareDialogWindow(viewModel), cancellationToken);
+
     public Task<UpdateDialogResult> ShowUpdateAsync(
         UpdateDialogViewModel viewModel,
         IAppLauncher? launcher,

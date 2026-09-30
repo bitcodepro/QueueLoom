@@ -1233,6 +1233,14 @@ public sealed partial class ViewModelStateTests
 
         public List<ResendDialogViewModel> ResendDialogs { get; } = [];
 
+        public List<CompareDialogViewModel> Comparisons { get; } = [];
+
+        public Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default)
+        {
+            Comparisons.Add(viewModel);
+            return Task.CompletedTask;
+        }
+
         /// <summary>What the operator picks in the resend dialog; null cancels. Defaults to the dialog's defaults.</summary>
         public Func<ResendDialogViewModel, ResendOptions?>? ResendChoice { get; set; }
 

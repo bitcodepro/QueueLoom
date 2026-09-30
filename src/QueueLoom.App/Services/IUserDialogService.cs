@@ -35,6 +35,9 @@ public interface IUserDialogService
     Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         Task.FromResult<object?>(viewModel.IsNew ? viewModel.TryBuildDefinition() : viewModel.TryBuildSettings());
 
+    /// <summary>Shows two messages side by side.</summary>
+    Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
     /// <summary>Asks where to save a file. Null means cancelled.</summary>
     Task<string?> ChooseSaveFileAsync(
         string title,

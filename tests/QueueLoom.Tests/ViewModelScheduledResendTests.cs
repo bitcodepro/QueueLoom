@@ -177,3 +177,24 @@ public sealed partial class ViewModelStateTests
         }
     }
 }
+
+public sealed partial class ViewModelStateTests
+{
+    [Fact]
+    public async Task CompareMarked_IsOfferedForExactlyTwoMessages()
+    {
+        var (viewModel, _, dialogs) = await CreateSearchedViewModelAsync(ProfileAccessMode.ReadWrite);
+        await using var _ = viewModel;
+        viewModel.Messages[0].IsMarked = true;
+        Assert.False(viewModel.CompareMarkedMessagesCommand.CanExecute(null));
+        viewModel.Messages[1].IsMarked = true;
+        Assert.True(viewModel.CanCompareMarkedMessages);
+
+        await viewModel.CompareMarkedMessagesCommand.ExecuteAsync();
+
+        var comparison = Assert.Single(dialogs.Comparisons);
+        Assert.Contains(viewModel.Messages[0].MessageId, comparison.LeftTitle, StringComparison.Ordinal);
+        viewModel.Messages[2].IsMarked = true;
+        Assert.False(viewModel.CompareMarkedMessagesCommand.CanExecute(null));
+    }
+}
