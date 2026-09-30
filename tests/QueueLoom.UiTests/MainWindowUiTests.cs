@@ -181,7 +181,7 @@ public sealed class MainWindowUiTests
         Assert.True(fixture.ViewModel.Messages[0].IsMarked);
 
         var selectAll = fixture.Window.GetVisualDescendants().OfType<CheckBox>()
-            .Single(box => box.DataContext is MainWindowViewModel);
+            .Single(box => box.DataContext is MainWindowViewModel && box.Content is null && box.IsEffectivelyVisible);
         Assert.Null(selectAll.IsChecked);
         selectAll.IsChecked = true;
         await fixture.SettleAsync();

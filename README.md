@@ -15,6 +15,16 @@ A desktop app for Windows, macOS and Linux for message queues in **Azure Service
     <td align="center">Add environment</td>
     <td align="center">Dead-letter history</td>
   </tr>
+  <tr>
+    <td><img src="docs/images/compare-messages.png" alt="Two dead letters compared line by line"></td>
+    <td><img src="docs/images/resend-dialog.png" alt="Resend with find and replace, scheduled for 03:00"></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td align="center">Compare two messages</td>
+    <td align="center">Find and replace, resend later</td>
+    <td></td>
+  </tr>
 </table>
 
 ## Install
