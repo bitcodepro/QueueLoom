@@ -38,6 +38,13 @@ public interface IUserDialogService
     /// <summary>Shows two messages side by side.</summary>
     Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
+    /// <summary>Asks which file to open. Null means cancelled.</summary>
+    Task<string?> ChooseOpenFileAsync(
+        string title,
+        IReadOnlyList<(string Name, string Pattern)> fileTypes,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
+
     /// <summary>Asks where to save a file. Null means cancelled.</summary>
     Task<string?> ChooseSaveFileAsync(
         string title,

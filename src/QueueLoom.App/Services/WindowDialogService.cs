@@ -75,6 +75,23 @@ public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogSer
         return file?.TryGetLocalPath();
     }
 
+    public async Task<string?> ChooseOpenFileAsync(
+        string title,
+        IReadOnlyList<(string Name, string Pattern)> fileTypes,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var files = await owner.Window.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            FileTypeFilter = fileTypes
+                .Select(type => new FilePickerFileType(type.Name) { Patterns = [type.Pattern] })
+                .ToArray()
+        }).ConfigureAwait(true);
+        return files.Count == 0 ? null : files[0].TryGetLocalPath();
+    }
+
     public Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         ShowDialogAsync<object?>(new QueueDialogWindow(viewModel), cancellationToken);
 
