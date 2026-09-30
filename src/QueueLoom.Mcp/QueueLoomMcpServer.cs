@@ -18,10 +18,10 @@ public sealed record McpServerSettings(bool ReadOnly = false, string? ExportDire
 public static class QueueLoomMcpServer
 {
     public const string Instructions =
-        "QueueLoom inspects message queues saved by the user: Azure Service Bus namespaces, Amazon SQS / SNS regions and " +
-        "Google Cloud Pub/Sub projects. Start with list_environments, then get_entities or scan_dead_letters. peek_messages and " +
-        "search_dead_letters only read: they never remove messages (SQS and Pub/Sub cannot peek, so messages are received and " +
-        "immediately released, which counts as a delivery). export_messages saves messages to a JSON or CSV file on this computer. " +
+        "QueueLoom inspects message queues saved by the user: Azure Service Bus namespaces, Amazon SQS / SNS regions, " +
+        "Google Cloud Pub/Sub projects, RabbitMQ virtual hosts and Kafka clusters. Start with list_environments, then get_entities or scan_dead_letters. peek_messages and " +
+        "search_dead_letters only read: they never remove messages (SQS, Pub/Sub and RabbitMQ cannot peek, so messages are received and " +
+        "immediately released; on SQS and Pub/Sub that counts as a delivery). In RabbitMQ, topics are exchanges and the subject is the routing key. export_messages saves messages to a JSON or CSV file on this computer. " +
         "delete_dead_letter_messages, purge_dead_letters, resend_dead_letters and send_message change messages; each call is shown to the user, " +
         "who must approve it in QueueLoom before anything happens. Always pass a clear 'reason'. If a change is not approved, " +
         "report that to the user and do not retry it unasked.";

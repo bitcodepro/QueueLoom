@@ -1,0 +1,245 @@
+using System.Net.Http.Headers;
+using System.Text;
+using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Monitoring;
+using QueueLoom.Core.Profiles;
+using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Persistence;
+using QueueLoom.Infrastructure.RabbitMq;
+using RabbitMQ.Client;
+
+namespace QueueLoom.IntegrationTests;
+
+/// <summary>
+/// Runs the RabbitMQ workspace against a real broker (rabbitmq:4-management) in a virtual host of its own:
+/// "orders" and "payments" dead-letter through the direct exchange "dlx" into the shared queue "dead-letters";
+/// "invoices" is a quorum queue with a delivery limit that dead-letters into "invoices.dlq" by the default exchange.
+/// </summary>
+public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
+{
+    private readonly TemporaryDirectory _directory = new();
+    private readonly InMemorySecretVault _vault = new();
+    private readonly string _vhost = Emulators.Unique("queueloom");
+    private HttpClient _management = null!;
+    private IConnection _connection = null!;
+    private IChannel _setup = null!;
+    private RabbitMqWorkspace _workspace = null!;
+
+    public async Task InitializeAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.RabbitMq)))
+        {
+            return;
+        }
+
+        _management = new HttpClient(new HttpClientHandler { UseProxy = false })
+        {
+            BaseAddress = new Uri($"http://{Emulators.RabbitMqHost}:{Emulators.RabbitMqPort + 10000}/")
+        };
+        _management.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String("guest:guest"u8.ToArray()));
+        (await _management.PutAsync($"api/vhosts/{_vhost}", null)).EnsureSuccessStatusCode();
+        (await _management.PutAsync($"api/permissions/{_vhost}/guest",
+            new StringContent("""{"configure":".*","write":".*","read":".*"}""", Encoding.UTF8, "application/json"))).EnsureSuccessStatusCode();
+
+        _connection = await new ConnectionFactory
+        {
+            HostName = Emulators.RabbitMqHost, Port = Emulators.RabbitMqPort, VirtualHost = _vhost
+        }.CreateConnectionAsync();
+        _setup = await _connection.CreateChannelAsync();
+        await _setup.ExchangeDeclareAsync("dlx", ExchangeType.Direct, durable: true);
+        await _setup.ExchangeDeclareAsync("events", ExchangeType.Topic, durable: true);
+        await _setup.QueueDeclareAsync("dead-letters", durable: true, exclusive: false, autoDelete: false);
+        await _setup.QueueBindAsync("dead-letters", "dlx", "failed");
+        foreach (var queue in new[] { "orders", "payments" })
+        {
+            await _setup.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false, arguments: new Dictionary<string, object?>
+            {
+                ["x-dead-letter-exchange"] = "dlx",
+                ["x-dead-letter-routing-key"] = "failed"
+            });
+        }
+        await _setup.QueueBindAsync("orders", "events", "order.*");
+        await _setup.QueueDeclareAsync("invoices.dlq", durable: true, exclusive: false, autoDelete: false);
+        await _setup.QueueDeclareAsync("invoices", durable: true, exclusive: false, autoDelete: false, arguments: new Dictionary<string, object?>
+        {
+            ["x-queue-type"] = "quorum",
+            ["x-delivery-limit"] = 2,
+            ["x-dead-letter-exchange"] = string.Empty,
+            ["x-dead-letter-routing-key"] = "invoices.dlq"
+        });
+
+        var profile = ServiceBusProfile.CreateNew("RabbitMQ", EnvironmentKind.Development,
+                new AuthenticationSettings(AuthenticationKind.RabbitMqPassword), accessMode: ProfileAccessMode.ReadWrite) with
+        {
+            Provider = MessagingProvider.RabbitMq,
+            RabbitMq = new RabbitMqSettings(Emulators.RabbitMqHost, "guest", _vhost, Emulators.RabbitMqPort, Emulators.RabbitMqPort + 10000)
+        };
+        await _vault.StoreAsync(ProfileSecretKey.ConnectionString(profile.Id), "guest");
+        _workspace = new RabbitMqWorkspace(_vault, backupStore: new DeadLetterJsonBackupStore(QueueLoomPaths.ForRoot(_directory.Path)),
+            httpHandler: new HttpClientHandler { UseProxy = false });
+        await _workspace.ConnectAsync(profile);
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (_workspace is not null)
+        {
+            await _workspace.DisposeAsync();
+        }
+        if (_connection is not null)
+        {
+            await _setup.CloseAsync();
+            await _connection.CloseAsync();
+            await _management.DeleteAsync($"api/vhosts/{_vhost}");
+            _management.Dispose();
+        }
+        _directory.Dispose();
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Topology_follows_dead_letter_exchanges_and_marks_the_shared_queue()
+    {
+        await PublishAsync("orders", "o-1");
+        await RejectAsync("orders", 1);
+
+        var topology = await WaitForAsync(t => t.Queues.Single(queue => queue.Name == "orders").Runtime.MessageCounts.DeadLetter == 1);
+
+        var orders = topology.Queues.Single(queue => queue.Name == "orders");
+        Assert.True(orders.HasDeadLetterQueue);
+        Assert.Contains("Shares dead-letter queue dead-letters", orders.Note, StringComparison.Ordinal);
+        Assert.Equal("Dead-letter queue of orders, payments", topology.Queues.Single(queue => queue.Name == "dead-letters").Note);
+        Assert.Contains("Quorum queue, delivery limit 2", topology.Queues.Single(queue => queue.Name == "invoices").Note, StringComparison.Ordinal);
+        Assert.False(topology.Queues.Single(queue => queue.Name == "dead-letters").HasDeadLetterQueue);
+        Assert.Equal(["dlx", "events"], topology.Topics.Select(topic => topic.Name));
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Dead_letters_of_a_shared_queue_are_read_per_source_and_stay_in_place()
+    {
+        await PublishAsync("orders", "o-1", "o-2");
+        await PublishAsync("payments", "p-1");
+        await RejectAsync("orders", 2);
+        await RejectAsync("payments", 1);
+
+        var orders = ServiceBusEntityReference.Queue("orders");
+        var first = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+        var second = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+
+        Assert.Equal(["o-1", "o-2"], first.Select(message => message.Properties.MessageId).Order());
+        Assert.Equal(2, second.Count);
+        var message = first[0];
+        Assert.Equal("Rejected by a consumer", message.DeadLetterReason);
+        Assert.StartsWith("From orders", message.DeadLetterErrorDescription, StringComparison.Ordinal);
+        Assert.Equal("orders", message.Properties.Subject);
+        Assert.Equal("{\"id\":\"o-1\"}", Encoding.UTF8.GetString(first.Single(item => item.Properties.MessageId == "o-1").Body.Span));
+        Assert.Equal(3u, (await _setup.QueueDeclarePassiveAsync("dead-letters")).MessageCount);
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Deleting_and_moving_dead_letters_touch_only_the_chosen_ones()
+    {
+        await PublishAsync("orders", "o-1", "o-2", "o-3");
+        await RejectAsync("orders", 3);
+        var orders = ServiceBusEntityReference.Queue("orders");
+        var dead = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+
+        var deletion = await _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
+            [new DeadLetterMessageKey(orders, ServiceBusSubQueue.DeadLetter, 0, "o-2")]));
+        Assert.Equal(1, deletion.DeletedCount);
+
+        var move = dead.Single(message => message.Properties.MessageId == "o-3");
+        var result = await DeadLetterResender.ResendAsync(_workspace,
+            [new ResendItem(move, DeadLetterResender.OriginalDestination(orders), move.CreateDraft())], ResendMode.Move);
+        Assert.Equal(1, result.MovedCount);
+
+        var left = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+        Assert.Equal(["o-1"], left.Select(message => message.Properties.MessageId));
+        var active = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders));
+        var resent = Assert.Single(active);
+        Assert.Equal("o-3", resent.Properties.MessageId);
+        Assert.DoesNotContain(resent.ApplicationProperties, property => property.Name.StartsWith("x-death", StringComparison.Ordinal));
+        Assert.Contains(Directory.EnumerateFiles(deletion.BackupDirectory, "*.json", SearchOption.AllDirectories),
+            file => File.ReadAllText(file).Contains("o-2", StringComparison.Ordinal));
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Reading_a_quorum_queue_does_not_use_up_its_delivery_limit()
+    {
+        await PublishAsync("invoices", "i-1");
+        var invoices = ServiceBusEntityReference.Queue("invoices");
+
+        for (var round = 0; round < 4; round++)
+        {
+            Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+        }
+
+        Assert.Equal(1u, (await _setup.QueueDeclarePassiveAsync("invoices")).MessageCount);
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("invoices.dlq")).MessageCount);
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Sending_to_an_exchange_uses_the_subject_as_routing_key_and_reports_unroutable_messages()
+    {
+        var events = ServiceBusEntityReference.Topic("events");
+        MessageDraft Draft(string subject) => new(new EditableMessageBody("{}", MessageBodyFormat.Json),
+            new EditableMessageProperties(MessageId: Guid.NewGuid().ToString("N"), Subject: subject, ContentType: "application/json"),
+            [new MessageApplicationProperty("tenant", ApplicationPropertyType.String, "acme")]);
+
+        await _workspace.SendMessageAsync(new SendMessageRequest(events, Draft("order.created")));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _workspace.SendMessageAsync(new SendMessageRequest(events, Draft("invoice.created"))));
+
+        Assert.Contains("no queue bound for routing key 'invoice.created'", error.Message, StringComparison.Ordinal);
+        var received = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"))));
+        Assert.Equal("acme", received.ApplicationProperties.Single(property => property.Name == "tenant").Value);
+        Assert.Equal("order.created", received.Properties.Subject);
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Snapshot_counts_dead_letters_per_queue()
+    {
+        await PublishAsync("orders", "o-1", "o-2");
+        await RejectAsync("orders", 2);
+        await WaitForAsync(t => t.Queues.Single(queue => queue.Name == "orders").Runtime.MessageCounts.DeadLetter == 2);
+
+        var snapshot = await _workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+
+        Assert.Equal(2, snapshot.Entities.Single(entity => entity.Entity.Name == "orders").Count);
+        Assert.DoesNotContain(snapshot.Entities, entity => entity.Entity.Name == "dead-letters");
+    }
+
+    private async Task PublishAsync(string queue, params string[] ids)
+    {
+        foreach (var id in ids)
+        {
+            await _setup.BasicPublishAsync(string.Empty, queue, true,
+                new BasicProperties { MessageId = id, ContentType = "application/json", Persistent = true },
+                Encoding.UTF8.GetBytes($$"""{"id":"{{id}}"}"""));
+        }
+    }
+
+    /// <summary>Rejects messages the way a failing consumer does, so RabbitMQ dead-letters them.</summary>
+    private async Task RejectAsync(string queue, int count)
+    {
+        await using var channel = await _connection.CreateChannelAsync();
+        for (var index = 0; index < count; index++)
+        {
+            var message = await channel.BasicGetAsync(queue, autoAck: false) ?? throw new InvalidOperationException("Nothing to reject.");
+            await channel.BasicRejectAsync(message.DeliveryTag, requeue: false);
+        }
+    }
+
+    /// <summary>The management API refreshes its counters every few seconds.</summary>
+    private async Task<ServiceBusTopology> WaitForAsync(Func<ServiceBusTopology, bool> condition)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var topology = await _workspace.GetTopologyAsync(forceRefresh: true);
+            if (condition(topology) || attempt == 40)
+            {
+                return topology;
+            }
+            await Task.Delay(500);
+        }
+    }
+}

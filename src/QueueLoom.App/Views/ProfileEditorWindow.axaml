@@ -202,6 +202,86 @@
           </StackPanel>
         </Border>
 
+        <!-- RabbitMQ -->
+        <Border Classes="card" IsVisible="{Binding IsRabbitMq}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="RabbitMQ broker" FontSize="16" FontWeight="SemiBold" />
+            <Grid ColumnDefinitions="*,14,120,14,120">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="HOST" Classes="eyebrow" />
+                <TextBox Text="{Binding RabbitHost}" PlaceholderText="rabbit.internal" AutomationProperties.Name="RabbitMQ host" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="AMQP PORT" Classes="eyebrow" />
+                <NumericUpDown Value="{Binding RabbitAmqpPort}" Minimum="1" Maximum="65535" FormatString="0" ShowButtonSpinner="False"
+                               AutomationProperties.Name="AMQP port" />
+              </StackPanel>
+              <StackPanel Grid.Column="4" Spacing="7">
+                <TextBlock Text="MANAGEMENT PORT" Classes="eyebrow" />
+                <NumericUpDown Value="{Binding RabbitManagementPort}" Minimum="1" Maximum="65535" FormatString="0" ShowButtonSpinner="False"
+                               AutomationProperties.Name="Management port" />
+              </StackPanel>
+            </Grid>
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="VIRTUAL HOST" Classes="eyebrow" />
+                <TextBox Text="{Binding RabbitVirtualHost}" PlaceholderText="/" AutomationProperties.Name="Virtual host" />
+              </StackPanel>
+              <CheckBox Grid.Column="2" IsChecked="{Binding RabbitUseTls}" Content="Use TLS (amqps and https)" VerticalAlignment="Bottom" />
+            </Grid>
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="USER NAME" Classes="eyebrow" />
+                <TextBox Text="{Binding RabbitUserName}" PlaceholderText="queueloom" AutomationProperties.Name="RabbitMQ user name" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="PASSWORD" Classes="eyebrow" />
+                <TextBox Text="{Binding BrokerPassword}" PasswordChar="•" AutomationProperties.Name="RabbitMQ password" />
+              </StackPanel>
+            </Grid>
+            <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                       Text="QueueLoom lists queues through the management plugin, so the user needs the monitoring (or management) tag and read permission on the virtual host." />
+          </StackPanel>
+        </Border>
+
+        <!-- Apache Kafka -->
+        <Border Classes="card" IsVisible="{Binding IsKafka}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Kafka cluster" FontSize="16" FontWeight="SemiBold" />
+            <StackPanel Spacing="7">
+              <TextBlock Text="BOOTSTRAP SERVERS" Classes="eyebrow" />
+              <TextBox Text="{Binding KafkaBootstrapServers}" PlaceholderText="broker-1:9092,broker-2:9092"
+                       AutomationProperties.Name="Bootstrap servers" />
+            </StackPanel>
+            <CheckBox IsChecked="{Binding KafkaUseTls}" Content="Use TLS" />
+            <StackPanel Spacing="12" IsVisible="{Binding IsKafkaSasl}">
+              <Grid ColumnDefinitions="160,14,*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="SASL MECHANISM" Classes="eyebrow" />
+                  <ComboBox ItemsSource="{Binding KafkaSaslMechanisms}" SelectedItem="{Binding KafkaSaslMechanism}"
+                            HorizontalAlignment="Stretch" AutomationProperties.Name="SASL mechanism" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="USER NAME" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaUserName}" AutomationProperties.Name="Kafka user name" />
+                </StackPanel>
+                <StackPanel Grid.Column="4" Spacing="7">
+                  <TextBlock Text="PASSWORD" Classes="eyebrow" />
+                  <TextBox Text="{Binding BrokerPassword}" PasswordChar="•" AutomationProperties.Name="Kafka password" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Spacing="7">
+              <TextBlock Text="DEAD-LETTER TOPICS END WITH" Classes="eyebrow" />
+              <TextBox Text="{Binding KafkaDeadLetterSuffixes}" AutomationProperties.Name="Dead-letter topic endings" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="A topic named like another one plus one of these endings is shown as its dead-letter queue, for example orders.DLT for orders." />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
         <Border Background="{DynamicResource DangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding IsProduction}">
           <TextBlock Text="PROD profiles are always persisted read-only. Write access can only be unlocked temporarily in the active session."
                      Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />

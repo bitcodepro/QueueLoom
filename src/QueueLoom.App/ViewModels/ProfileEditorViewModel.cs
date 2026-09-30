@@ -13,7 +13,7 @@ public sealed record ProviderOption(MessagingProvider Provider, string Title, st
 /// <summary>A sign-in method with the label shown in the editor.</summary>
 public sealed record AuthenticationOption(AuthenticationKind Kind, string Label);
 
-public sealed class ProfileEditorViewModel : ObservableObject
+public sealed partial class ProfileEditorViewModel : ObservableObject
 {
     private readonly ServiceBusProfile? _existing;
     private ProviderOption _selectedProvider;
@@ -60,6 +60,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
         _accessMode = existing?.AccessMode
             ?? (_environment == EnvironmentKind.Production ? ProfileAccessMode.ReadOnly : ProfileAccessMode.ReadWrite);
 
+        InitializeBrokers(existing);
         _selectedProvider = ProviderOptions.First(option => option.Provider == (existing?.Provider ?? MessagingProvider.AzureServiceBus));
         ApplyProvider(existing?.Authentication.Kind);
     }
@@ -70,7 +71,9 @@ public sealed class ProfileEditorViewModel : ObservableObject
     [
         new(MessagingProvider.AzureServiceBus, "Azure Service Bus", "Queues, topics and subscriptions of a namespace"),
         new(MessagingProvider.AmazonSqsSns, "Amazon SQS / SNS", "SQS queues and SNS topics of an account region"),
-        new(MessagingProvider.GooglePubSub, "Google Cloud Pub/Sub", "Topics and subscriptions of a project")
+        new(MessagingProvider.GooglePubSub, "Google Cloud Pub/Sub", "Topics and subscriptions of a project"),
+        new(MessagingProvider.RabbitMq, "RabbitMQ", "Queues and exchanges of a virtual host"),
+        new(MessagingProvider.Kafka, "Apache Kafka", "Topics of a cluster, with dead-letter topics")
     ];
 
     /// <summary>The cloud cannot change for a saved environment: its secret and history belong to that cloud.</summary>
@@ -323,6 +326,7 @@ public sealed class ProfileEditorViewModel : ObservableObject
     {
         MessagingProvider.AmazonSqsSns => "Access keys never enter profile metadata or logs.",
         MessagingProvider.GooglePubSub => "Service account keys never enter profile metadata or logs.",
+        MessagingProvider.RabbitMq or MessagingProvider.Kafka => "Passwords never enter profile metadata or logs.",
         _ => "Connection strings never enter profile metadata or logs."
     };
 
@@ -340,6 +344,8 @@ public sealed class ProfileEditorViewModel : ObservableObject
         {
             MessagingProvider.AmazonSqsSns => BuildAws(),
             MessagingProvider.GooglePubSub => BuildGoogle(),
+            MessagingProvider.RabbitMq => BuildRabbitMq(),
+            MessagingProvider.Kafka => BuildKafka(),
             _ => BuildAzure()
         };
         if (built is null)
@@ -482,6 +488,8 @@ public sealed class ProfileEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(IsAzure));
         OnPropertyChanged(nameof(IsAws));
         OnPropertyChanged(nameof(IsGoogle));
+        OnPropertyChanged(nameof(IsRabbitMq));
+        OnPropertyChanged(nameof(IsKafka));
         OnPropertyChanged(nameof(SecretNote));
         NotifyAuthenticationChanged();
     }
@@ -497,6 +505,8 @@ public sealed class ProfileEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(HasExistingSecret));
         OnPropertyChanged(nameof(AwsAccessKeyHint));
         OnPropertyChanged(nameof(GoogleKeySummary));
+        OnPropertyChanged(nameof(IsKafkaSasl));
+        OnPropertyChanged(nameof(BrokerPasswordHint));
     }
 
     private static string Label(AuthenticationKind kind) => kind switch
@@ -507,6 +517,9 @@ public sealed class ProfileEditorViewModel : ObservableObject
         AuthenticationKind.AwsDefaultCredentials => "AWS profile or default credentials",
         AuthenticationKind.GoogleServiceAccountKey => "Service account key (JSON)",
         AuthenticationKind.GoogleApplicationDefault => "Application Default Credentials",
+        AuthenticationKind.RabbitMqPassword => "User name and password",
+        AuthenticationKind.KafkaNone => "No sign-in",
+        AuthenticationKind.KafkaSaslPassword => "SASL user name and password",
         _ => kind.ToString()
     };
 

@@ -7,7 +7,7 @@ namespace QueueLoom.Infrastructure.Messaging;
 
 /// <summary>
 /// The workspace the app talks to. It forwards every call to the workspace of the connected environment's
-/// provider (Azure Service Bus, Amazon SQS / SNS or Google Pub/Sub), so pages and the MCP server stay
+/// provider (Azure Service Bus, Amazon SQS / SNS, Google Pub/Sub, RabbitMQ or Kafka), so pages and the MCP server stay
 /// provider-agnostic.
 /// </summary>
 public sealed class MultiProviderWorkspace : IServiceBusWorkspace
@@ -148,6 +148,7 @@ public static class MessagingWorkspaces
         {
             MessagingProvider.AmazonSqsSns => new Aws.AwsSqsSnsWorkspace(secretVault, backupStore: backupStore),
             MessagingProvider.GooglePubSub => new Google.GooglePubSubWorkspace(secretVault, backupStore: backupStore),
+            MessagingProvider.RabbitMq => new RabbitMq.RabbitMqWorkspace(secretVault, backupStore: backupStore),
             _ => new Azure.AzureServiceBusWorkspace(secretVault, backupStore: backupStore)
         });
     }

@@ -23,12 +23,19 @@ internal static class Emulators
     public const string PubSub = "QUEUELOOM_PUBSUB_EMULATOR";
     public const string ServiceBus = "QUEUELOOM_SERVICEBUS_EMULATOR";
 
+    /// <summary>host:port of a RabbitMQ broker with the management plugin on port + 10000, user guest/guest.</summary>
+    public const string RabbitMq = "QUEUELOOM_RABBITMQ";
+
     public static string LocalStackUrl => Environment.GetEnvironmentVariable(LocalStack)!;
 
     public static string PubSubHost => Environment.GetEnvironmentVariable(PubSub)!;
 
     /// <summary>The emulator's connection string, with UseDevelopmentEmulator=true.</summary>
     public static string ServiceBusConnectionString => Environment.GetEnvironmentVariable(ServiceBus)!;
+
+    public static string RabbitMqHost => Environment.GetEnvironmentVariable(RabbitMq)!.Split(':')[0];
+
+    public static int RabbitMqPort => int.Parse(Environment.GetEnvironmentVariable(RabbitMq)!.Split(':')[1], System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>A short random suffix so tests never see each other's queues and topics.</summary>
     public static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid().ToString("N")[..8]}";

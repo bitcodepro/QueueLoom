@@ -83,7 +83,9 @@ public sealed partial class MainWindowViewModel
                 topic.Runtime,
                 topic.Status,
                 requiresSession: false,
-                indent: 0));
+                indent: 0,
+                topic.Note,
+                topology.TopicKindName));
             foreach (var subscription in topic.Subscriptions)
             {
                 _allEntities.Add(new EntityItemViewModel(

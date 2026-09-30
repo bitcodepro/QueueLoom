@@ -62,6 +62,8 @@ public sealed class ProviderBadge : Border
     {
         MessagingProvider.AmazonSqsSns => "ProviderAws",
         MessagingProvider.GooglePubSub => "ProviderGcp",
+        MessagingProvider.RabbitMq => "ProviderRabbit",
+        MessagingProvider.Kafka => "ProviderKafka",
         _ => "ProviderAzure"
     };
 

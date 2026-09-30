@@ -40,6 +40,10 @@
           <SolidColorBrush x:Key="ProviderAwsSoftBrush" Color="#382710" />
           <SolidColorBrush x:Key="ProviderGcpBrush" Color="#5BC27A" />
           <SolidColorBrush x:Key="ProviderGcpSoftBrush" Color="#133324" />
+          <SolidColorBrush x:Key="ProviderRabbitBrush" Color="#F47BB5" />
+          <SolidColorBrush x:Key="ProviderRabbitSoftBrush" Color="#3A1830" />
+          <SolidColorBrush x:Key="ProviderKafkaBrush" Color="#AE95FF" />
+          <SolidColorBrush x:Key="ProviderKafkaSoftBrush" Color="#241D44" />
           <!-- Fluent control overrides -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#101D2F" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#15263C" />
@@ -84,6 +88,10 @@
           <SolidColorBrush x:Key="ProviderAwsSoftBrush" Color="#FFF0DD" />
           <SolidColorBrush x:Key="ProviderGcpBrush" Color="#1B7A3B" />
           <SolidColorBrush x:Key="ProviderGcpSoftBrush" Color="#E2F4E7" />
+          <SolidColorBrush x:Key="ProviderRabbitBrush" Color="#B02D6E" />
+          <SolidColorBrush x:Key="ProviderRabbitSoftBrush" Color="#FCE6F1" />
+          <SolidColorBrush x:Key="ProviderKafkaBrush" Color="#5B3CC4" />
+          <SolidColorBrush x:Key="ProviderKafkaSoftBrush" Color="#EDE7FF" />
           <!-- Fluent control overrides -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#FFFFFF" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#F4F7FB" />

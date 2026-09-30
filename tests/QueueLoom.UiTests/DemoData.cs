@@ -53,6 +53,19 @@ internal static class DemoData
         GooglePubSub = new GooglePubSubSettings("shipping-dev-2231")
     };
 
+    public static readonly ServiceBusProfile RabbitStaging = new ServiceBusProfile(
+        Guid.Parse("55555555-5555-5555-5555-555555555555"),
+        "Billing on RabbitMQ",
+        EnvironmentKind.Test,
+        null,
+        null,
+        new AuthenticationSettings(AuthenticationKind.RabbitMqPassword),
+        ProfileAccessMode.ReadWrite)
+    {
+        Provider = MessagingProvider.RabbitMq,
+        RabbitMq = new RabbitMqSettings("rabbit.internal", "queueloom")
+    };
+
     public static ServiceBusTopology Topology { get; } = new(
         new DateTimeOffset(2026, 9, 26, 9, 30, 0, TimeSpan.Zero),
         [

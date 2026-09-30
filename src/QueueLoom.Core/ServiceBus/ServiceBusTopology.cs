@@ -16,6 +16,9 @@ public sealed record ServiceBusTopology
     public bool UsesSampledCounts { get; init; }
 
     /// <summary>Only Azure Service Bus has transfer dead-letter queues.</summary>
+    /// <summary>What the service calls a topic: "topic" by default, "exchange" for RabbitMQ.</summary>
+    public string TopicKindName { get; init; } = "topic";
+
     public bool SupportsTransferDeadLetter { get; init; } = true;
 
     /// <summary>Whether the service reports message counts at all (Google Pub/Sub does not).</summary>

@@ -39,6 +39,12 @@ public static partial class ProfileValidator
             case MessagingProvider.GooglePubSub:
                 ValidateGooglePubSub(profile, errors);
                 break;
+            case MessagingProvider.RabbitMq:
+                ValidateRabbitMq(profile, errors);
+                break;
+            case MessagingProvider.Kafka:
+                ValidateKafka(profile, errors);
+                break;
             default:
                 ValidateNamespace(profile, errors);
                 break;
@@ -149,7 +155,9 @@ public static partial class ProfileValidator
         }
 
         if (profile.Provider != MessagingProvider.AmazonSqsSns && profile.Aws is not null ||
-            profile.Provider != MessagingProvider.GooglePubSub && profile.GooglePubSub is not null)
+            profile.Provider != MessagingProvider.GooglePubSub && profile.GooglePubSub is not null ||
+            profile.Provider != MessagingProvider.RabbitMq && profile.RabbitMq is not null ||
+            profile.Provider != MessagingProvider.Kafka && profile.Kafka is not null)
         {
             errors.Add(new ValidationError(
                 "profile.provider.settings_unexpected",
@@ -250,6 +258,62 @@ public static partial class ProfileValidator
                 "profile.gcp.emulator.invalid",
                 "The emulator address must be host:port, for example localhost:8085.",
                 nameof(profile.GooglePubSub)));
+        }
+    }
+
+    private static void ValidateRabbitMq(ServiceBusProfile profile, ICollection<ValidationError> errors)
+    {
+        var settings = profile.RabbitMq;
+        if (settings is null || string.IsNullOrWhiteSpace(settings.Host))
+        {
+            errors.Add(new ValidationError("profile.rabbitmq.host.required",
+                "The RabbitMQ host is required, for example rabbit.internal or localhost.", nameof(profile.RabbitMq)));
+            return;
+        }
+        if (Uri.CheckHostName(settings.Host.Trim()) == UriHostNameType.Unknown)
+        {
+            errors.Add(new ValidationError("profile.rabbitmq.host.invalid",
+                "Enter only the host name, without amqp:// or a port.", nameof(profile.RabbitMq)));
+        }
+        if (string.IsNullOrWhiteSpace(settings.UserName))
+        {
+            errors.Add(new ValidationError("profile.rabbitmq.user.required", "The RabbitMQ user name is required.", nameof(profile.RabbitMq)));
+        }
+        if (string.IsNullOrWhiteSpace(settings.VirtualHost))
+        {
+            errors.Add(new ValidationError("profile.rabbitmq.vhost.required",
+                "The virtual host is required; the default one is \"/\".", nameof(profile.RabbitMq)));
+        }
+        if (settings.AmqpPort is < 1 or > 65_535 || settings.ManagementPort is < 1 or > 65_535)
+        {
+            errors.Add(new ValidationError("profile.rabbitmq.port.invalid", "Ports must be between 1 and 65535.", nameof(profile.RabbitMq)));
+        }
+    }
+
+    private static void ValidateKafka(ServiceBusProfile profile, ICollection<ValidationError> errors)
+    {
+        var settings = profile.Kafka;
+        if (settings is null || string.IsNullOrWhiteSpace(settings.BootstrapServers))
+        {
+            errors.Add(new ValidationError("profile.kafka.servers.required",
+                "At least one bootstrap server is required, for example broker-1:9092.", nameof(profile.Kafka)));
+            return;
+        }
+        if (settings.BootstrapServers.Split(',', StringSplitOptions.TrimEntries).Any(server => !HostAndPortPattern().IsMatch(server)))
+        {
+            errors.Add(new ValidationError("profile.kafka.servers.invalid",
+                "List the servers as host:port separated by commas, for example broker-1:9092,broker-2:9092.", nameof(profile.Kafka)));
+        }
+        var usesSasl = profile.Authentication?.Kind == AuthenticationKind.KafkaSaslPassword;
+        if (usesSasl && (settings.SaslMechanism is null || string.IsNullOrWhiteSpace(settings.UserName)))
+        {
+            errors.Add(new ValidationError("profile.kafka.sasl.incomplete",
+                "SASL sign-in needs a mechanism and a user name.", nameof(profile.Kafka)));
+        }
+        if (settings.DeadLetterSuffixes?.Any(suffix => string.IsNullOrWhiteSpace(suffix) || suffix.Any(char.IsWhiteSpace)) == true)
+        {
+            errors.Add(new ValidationError("profile.kafka.dlq_suffix.invalid",
+                "Dead-letter topic endings cannot be empty or contain spaces.", nameof(profile.Kafka)));
         }
     }
 

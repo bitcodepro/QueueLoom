@@ -98,6 +98,8 @@
               <StackPanel Grid.Column="0" Spacing="7">
                 <TextBlock Text="SUBJECT" Classes="eyebrow" />
                 <TextBox AutomationProperties.Name="Subject" Text="{Binding DraftSubject}" />
+                <TextBlock Text="{Binding SubjectHint}" Classes="muted" FontSize="11" TextWrapping="Wrap"
+                           IsVisible="{Binding HasSubjectHint}" />
               </StackPanel>
               <StackPanel Grid.Column="2" Spacing="7">
                 <TextBlock Text="CONTENT TYPE" Classes="eyebrow" />
