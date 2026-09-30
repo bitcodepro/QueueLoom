@@ -129,6 +129,11 @@ public sealed partial class MainWindow : Window
                 var theme = _viewModel.ThemePreference;
                 _ = SavePreferenceBestEffortAsync(() => _settingsStore.SaveThemeAsync(theme));
                 break;
+            case nameof(MainWindowViewModel.SavedSearches):
+                var searches = _viewModel.SavedSearches.ToArray();
+                _ = SavePreferenceBestEffortAsync(() =>
+                    _settingsStore.UpdateAsync(settings => settings with { SavedSearches = searches }));
+                break;
         }
     }
 

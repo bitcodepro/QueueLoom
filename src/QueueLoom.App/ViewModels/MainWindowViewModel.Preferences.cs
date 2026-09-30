@@ -38,6 +38,7 @@ public sealed partial class MainWindowViewModel
         ArgumentNullException.ThrowIfNull(settings);
         MonitorIntervalSeconds = settings.MonitorIntervalSeconds;
         ThemePreference = settings.Theme;
+        LoadSavedSearches(settings.SavedSearches);
     }
 
     private void InitializePreferences()

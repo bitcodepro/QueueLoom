@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:QueueLoom.App.ViewModels"
+             xmlns:settings="using:QueueLoom.Core.Settings"
              xmlns:views="using:QueueLoom.App.Views"
              xmlns:controls="using:QueueLoom.App.Controls"
              x:Class="QueueLoom.App.Views.Pages.MessagesPage"
@@ -17,7 +18,7 @@
     </Grid>
 
     <Border Grid.Row="2" Classes="card" Padding="12,10">
-      <Grid ColumnDefinitions="*,8,Auto,8,Auto">
+      <Grid ColumnDefinitions="*,8,150,8,Auto,8,Auto,8,Auto,8,Auto">
         <TextBox Grid.Column="0" Classes="search"
                  Text="{Binding DeadLetterSearchQuery}"
                  PlaceholderText="Correlation ID, Message ID, subject, body, or application property  (Ctrl+F)"
@@ -32,10 +33,35 @@
             <KeyBinding Gesture="Enter" Command="{Binding SearchDeadLettersCommand}" />
           </TextBox.KeyBindings>
         </TextBox>
-        <Button Grid.Column="2" Content="Search DLQ" Classes="primary"
+        <ComboBox Grid.Column="2" ItemsSource="{Binding SearchWindowOptions}" SelectedItem="{Binding SearchWindow}"
+                  HorizontalAlignment="Stretch" IsEnabled="{Binding !IsBusy}"
+                  ToolTip.Tip="Only show messages enqueued within this time" AutomationProperties.Name="Enqueued within">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:SearchWindowOption">
+              <TextBlock Text="{Binding Label}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <Button Grid.Column="4" Content="Search DLQ" Classes="primary"
                 Command="{Binding SearchDeadLettersCommand}" ToolTip.Tip="Search dead letters (Enter)" />
-        <Button Grid.Column="4" Content="Clear results" Classes="quiet"
-                Command="{Binding ClearDeadLetterSearchCommand}" />
+        <Button Grid.Column="6" Content="Save search" Classes="quiet"
+                Command="{Binding SaveSearchCommand}"
+                ToolTip.Tip="Keep this text, environment and time window to run again later" />
+        <ComboBox Grid.Column="8" Width="190" ItemsSource="{Binding SavedSearches}" SelectedItem="{Binding SelectedSavedSearch}"
+                  PlaceholderText="Saved searches" IsEnabled="{Binding HasSavedSearches}"
+                  AutomationProperties.Name="Saved searches">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="settings:SavedSearch">
+              <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <StackPanel Grid.Column="10" Orientation="Horizontal" Spacing="6">
+          <Button Content="Forget" Classes="quiet" Command="{Binding DeleteSavedSearchCommand}"
+                  ToolTip.Tip="Remove the chosen saved search" IsVisible="{Binding HasSavedSearches}" />
+          <Button Content="Clear results" Classes="quiet"
+                  Command="{Binding ClearDeadLetterSearchCommand}" />
+        </StackPanel>
       </Grid>
     </Border>
 

@@ -188,8 +188,9 @@ public sealed partial class MainWindowViewModel
             }
         }
 
+        var windowed = ApplySearchWindow(results, out var outsideWindow);
         Messages.Clear();
-        foreach (var result in results
+        foreach (var result in windowed
                      .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
                      .ThenBy(result => result.Message.SequenceNumber)
                      .ThenBy(result => result.ProfileName, StringComparer.OrdinalIgnoreCase))
@@ -204,7 +205,8 @@ public sealed partial class MainWindowViewModel
         DeadLetterSearchStatus =
             $"{Messages.Count:N0} matches | {scannedMessages:N0} messages inspected | " +
             $"{searchedTargets:N0} sources | oldest first{qualifier}" +
-            (timedOutEnvironments > 0 ? $" | {timedOutEnvironments:N0} environment timeouts" : string.Empty);
+            (timedOutEnvironments > 0 ? $" | {timedOutEnvironments:N0} environment timeouts" : string.Empty) +
+            (outsideWindow > 0 ? $" | {outsideWindow:N0} older matches hidden ({SearchWindow.Label.ToLowerInvariant()})" : string.Empty);
         MessageListTitle = $"Search timeline | {scopeName} | body search reads up to the first 1 MiB";
         StatusText = $"Found {Messages.Count:N0} matching dead-letter messages in {scopeName}";
         AddActivity(

@@ -97,6 +97,7 @@ public sealed partial class MainWindowViewModel
             {
                 SearchDeadLettersCommand.NotifyCanExecuteChanged();
                 ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+                SaveSearchCommand?.NotifyCanExecuteChanged();
             }
         }
     }
