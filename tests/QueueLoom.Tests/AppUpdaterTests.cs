@@ -31,10 +31,11 @@ public sealed class AppUpdaterTests : IDisposable
     [Fact]
     public void MacTarget_IsTheAppBundle()
     {
-        var target = AppUpdater.TargetFor("osx-arm64", "/Applications/QueueLoom.app/Contents/MacOS/QueueLoom");
+        var applications = Path.Combine(_root, "Applications");
+        var target = AppUpdater.TargetFor("osx-arm64", Path.Combine(applications, "QueueLoom.app", "Contents", "MacOS", "QueueLoom"));
 
-        Assert.Equal("/Applications/QueueLoom.app", target.Bundle);
-        Assert.Equal("/Applications", target.InstallDirectory);
+        Assert.Equal(Path.Combine(applications, "QueueLoom.app"), target.Bundle);
+        Assert.Equal(applications, target.InstallDirectory);
     }
 
     [Fact]
