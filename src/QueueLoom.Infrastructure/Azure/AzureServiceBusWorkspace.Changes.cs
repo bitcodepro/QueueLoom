@@ -68,12 +68,6 @@ public sealed partial class AzureServiceBusWorkspace
 
         var profile = GetConnectedProfile();
         var startedAt = _timeProvider.GetUtcNow();
-        foreach (var source in request.Targets.Select(target => target.Source).Distinct())
-        {
-            // Validate the entire request before creating a backup session or deleting
-            // from an earlier target. Mixed session/non-session scopes are all-or-none.
-            await EnsureSessionlessMessageSourceAsync(source, cancellationToken).ConfigureAwait(false);
-        }
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterPurgeSourceResult>(request.Targets.Count);
@@ -137,10 +131,6 @@ public sealed partial class AzureServiceBusWorkspace
         var profile = GetConnectedProfile();
         var startedAt = _timeProvider.GetUtcNow();
         var groups = request.BySubQueue.ToArray();
-        foreach (var source in groups.Select(group => group.Key.Source).Distinct())
-        {
-            await EnsureSessionlessMessageSourceAsync(source, cancellationToken).ConfigureAwait(false);
-        }
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterMessageDeletionResult>(request.Messages.Count);

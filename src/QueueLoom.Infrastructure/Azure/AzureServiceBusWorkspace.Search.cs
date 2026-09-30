@@ -25,7 +25,14 @@ public sealed partial class AzureServiceBusWorkspace
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
 
-        await EnsureSessionlessMessageSourceAsync(request.Source, cancellationToken).ConfigureAwait(false);
+        // Dead-letter queues never use sessions, even when their queue or subscription does. Only active
+        // messages of a session-enabled entity have to be read session by session.
+        if (request.SubQueue == ServiceBusSubQueue.Active &&
+            await RequiresSessionAsync(request.Source, cancellationToken).ConfigureAwait(false))
+        {
+            return await BrowseSessionsAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
         var client = GetMessagingClient();
         var options = new ServiceBusReceiverOptions
         {
@@ -196,7 +203,6 @@ public sealed partial class AzureServiceBusWorkspace
     {
         try
         {
-            await EnsureSessionlessMessageSourceAsync(target.Source, cancellationToken).ConfigureAwait(false);
             var options = new ServiceBusReceiverOptions
             {
                 ReceiveMode = ServiceBusReceiveMode.PeekLock,

@@ -66,7 +66,6 @@ public sealed partial class AzureServiceBusWorkspace
     {
         if (_isEmulator)
         {
-            await EnsureSessionlessMessageSourceAsync(source, cancellationToken).ConfigureAwait(false);
             return [CreateSnapshot(source, ServiceBusSubQueue.DeadLetter,
                         await SampleEmulatorCountAsync(source, SubQueue.DeadLetter, cancellationToken).ConfigureAwait(false), null)];
         }

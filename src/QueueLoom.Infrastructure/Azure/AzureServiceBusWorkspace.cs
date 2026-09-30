@@ -27,8 +27,8 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
     private const int InteractiveMaximumRetries = 2;
     private const int PurgeEmptyReceiveConfirmations = 2;
     private const int BackupWriteConcurrency = 4;
-    private const string SessionEnabledEntityError =
-        "Session-enabled queues and subscriptions are not supported by the current safe message workflow. No messages were changed.";
+    private static readonly TimeSpan SessionAcceptWait = TimeSpan.FromSeconds(2);
+    private const int MaximumSessionsPerBrowse = 100;
 
     private readonly ISecretVault _secretVault;
     private readonly DeadLetterJsonBackupStore _backupStore;

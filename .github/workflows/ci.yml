@@ -65,7 +65,7 @@ jobs:
           path: TestResults
 
   emulator-tests:
-    name: Emulator tests (SQS / SNS, Pub/Sub)
+    name: Emulator tests (Service Bus, SQS / SNS, Pub/Sub)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,11 +74,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Start LocalStack and the Pub/Sub emulator
+      - name: Start LocalStack, the Pub/Sub emulator and the Service Bus emulator
         run: |
           docker run -d --name localstack -p 4566:4566 -e SERVICES=sqs,sns localstack/localstack:4.14
           docker run -d --name pubsub -p 8085:8085 gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
             gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=queueloom-test
+          docker network create servicebus
+          docker run -d --name sqlserver --network servicebus -e ACCEPT_EULA=Y -e 'MSSQL_SA_PASSWORD=QueueLoom!Test123' \
+            mcr.microsoft.com/mssql/server:2022-latest
 
       - name: Restore and build (locked)
         run: |
@@ -87,20 +90,27 @@ jobs:
 
       - name: Wait for the emulators
         run: |
-          for attempt in $(seq 1 60); do
+          # The Service Bus emulator needs SQL Server up; the build above gave it time to start.
+          docker run -d --name servicebus --network servicebus -p 5672:5672 -p 5300:5300 \
+            -e SQL_SERVER=sqlserver -e 'MSSQL_SA_PASSWORD=QueueLoom!Test123' -e ACCEPT_EULA=Y \
+            -v "$PWD/tests/QueueLoom.IntegrationTests/ServiceBusEmulatorConfig.json:/ServiceBus_Emulator/ConfigFiles/Config.json" \
+            mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
+          for attempt in $(seq 1 90); do
             if curl -sf http://localhost:4566/_localstack/health | grep -q '"sqs": "\(available\|running\)"' &&
-               curl -sf http://localhost:8085 >/dev/null; then
+               curl -sf http://localhost:8085 >/dev/null &&
+               curl -sf http://localhost:5300/health | grep -q healthy; then
               exit 0
             fi
             sleep 2
           done
-          docker logs localstack | tail -20; docker logs pubsub | tail -20
+          docker logs localstack | tail -20; docker logs pubsub | tail -20; docker logs servicebus | tail -20
           exit 1
 
       - name: Test against the emulators
         env:
           QUEUELOOM_LOCALSTACK_URL: http://localhost:4566
           QUEUELOOM_PUBSUB_EMULATOR: localhost:8085
+          QUEUELOOM_SERVICEBUS_EMULATOR: Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
         run: >-
           dotnet test QueueLoom.slnx -c Release --no-build --logger trx --results-directory TestResults
           --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests"

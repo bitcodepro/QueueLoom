@@ -16,7 +16,7 @@ namespace QueueLoom.Infrastructure.Azure;
 /// <summary>Reading queues, topics and subscriptions and mapping them to QueueLoom's model.</summary>
 public sealed partial class AzureServiceBusWorkspace
 {
-    private async Task EnsureSessionlessMessageSourceAsync(
+    private async Task<bool> RequiresSessionAsync(
         ServiceBusEntityReference source,
         CancellationToken cancellationToken)
     {
@@ -42,10 +42,7 @@ public sealed partial class AzureServiceBusWorkspace
             };
         }
 
-        if (requiresSession.Value)
-        {
-            throw new NotSupportedException(SessionEnabledEntityError);
-        }
+        return requiresSession.Value;
     }
 
     internal static bool? TryGetRequiresSession(

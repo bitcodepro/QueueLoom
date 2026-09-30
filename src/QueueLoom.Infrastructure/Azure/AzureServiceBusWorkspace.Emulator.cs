@@ -28,23 +28,25 @@ public sealed partial class AzureServiceBusWorkspace
         return count;
     }
 
-    private async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, CancellationToken token) =>
+    // Active messages of a session-enabled entity can only be peeked session by session; the sample counts
+    // its dead letters, which never use sessions, and leaves the active count at zero.
+    private async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, bool requiresSession, CancellationToken token) =>
         new(new ServiceBusMessageCounts(
-            active: await SampleEmulatorCountAsync(source, SubQueue.None, token).ConfigureAwait(false),
+            active: requiresSession ? 0 : await SampleEmulatorCountAsync(source, SubQueue.None, token).ConfigureAwait(false),
             deadLetter: await SampleEmulatorCountAsync(source, SubQueue.DeadLetter, token).ConfigureAwait(false))) { IsEmulatorSample = true };
 
     private async Task<ServiceBusTopology> SampleEmulatorTopologyAsync(ServiceBusTopology topology, CancellationToken token)
     {
         var queues = new List<ServiceBusQueue>();
         foreach (var queue in topology.Queues)
-            queues.Add(queue.RequiresSession ? queue : queue with { Runtime = await SampleEmulatorRuntimeAsync(queue.Reference, token).ConfigureAwait(false) });
+            queues.Add(queue with { Runtime = await SampleEmulatorRuntimeAsync(queue.Reference, queue.RequiresSession, token).ConfigureAwait(false) });
         var topics = new List<ServiceBusTopic>();
         foreach (var topic in topology.Topics)
         {
             var subscriptions = new List<ServiceBusSubscription>();
             foreach (var subscription in topic.Subscriptions)
-                subscriptions.Add(subscription.RequiresSession ? subscription : subscription with
-                { Runtime = await SampleEmulatorRuntimeAsync(subscription.Reference, token).ConfigureAwait(false) });
+                subscriptions.Add(subscription with
+                { Runtime = await SampleEmulatorRuntimeAsync(subscription.Reference, subscription.RequiresSession, token).ConfigureAwait(false) });
             topics.Add(new ServiceBusTopic(topic.Name, topic.Runtime, subscriptions, topic.Status));
         }
         return new ServiceBusTopology(_timeProvider.GetUtcNow(), queues, topics) { UsesSampledCounts = true };
