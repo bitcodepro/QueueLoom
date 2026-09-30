@@ -1,0 +1,78 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        xmlns:core="using:QueueLoom.Core.ServiceBus"
+        x:Class="QueueLoom.App.Views.CompareDialogWindow"
+        x:DataType="vm:CompareDialogViewModel"
+        Title="Compare messages"
+        Width="1000" Height="720" MinWidth="640" MinHeight="420"
+        WindowStartupLocation="CenterOwner">
+  <Window.Styles>
+    <Style Selector="Border.diffLine.removed">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+    </Style>
+    <Style Selector="Border.diffLine.added">
+      <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}" />
+    </Style>
+    <Style Selector="Border.propertyRow.differs">
+      <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}" />
+    </Style>
+  </Window.Styles>
+  <Grid Margin="22" RowDefinitions="Auto,12,*,12,Auto">
+    <StackPanel Spacing="6">
+      <TextBlock Text="Compare messages" FontSize="22" FontWeight="SemiBold" />
+      <Grid ColumnDefinitions="Auto,8,*">
+        <Border Background="{DynamicResource DangerSoftBrush}" CornerRadius="4" Padding="6,1">
+          <TextBlock Text="− FIRST" FontSize="11" FontWeight="SemiBold" />
+        </Border>
+        <TextBlock Grid.Column="2" Text="{Binding LeftTitle}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                   ToolTip.Tip="{Binding LeftTitle}" />
+      </Grid>
+      <Grid ColumnDefinitions="Auto,8,*">
+        <Border Background="{DynamicResource SuccessSoftBrush}" CornerRadius="4" Padding="6,1">
+          <TextBlock Text="+ SECOND" FontSize="11" FontWeight="SemiBold" />
+        </Border>
+        <TextBlock Grid.Column="2" Text="{Binding RightTitle}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                   ToolTip.Tip="{Binding RightTitle}" />
+      </Grid>
+      <TextBlock Text="{Binding Summary}" Classes="muted" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <TabControl Grid.Row="2">
+      <TabItem Header="Body">
+        <ListBox ItemsSource="{Binding Lines}" Classes="tableRows" AutomationProperties.Name="Body differences">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:DiffLineViewModel">
+              <Border Classes="diffLine" Classes.removed="{Binding IsRemoved}" Classes.added="{Binding IsAdded}" Padding="4,0">
+                <Grid ColumnDefinitions="44,44,18,*">
+                  <TextBlock Text="{Binding LeftNumber}" Classes="muted" FontFamily="{StaticResource MonoFontFamily}" FontSize="12" />
+                  <TextBlock Grid.Column="1" Text="{Binding RightNumber}" Classes="muted" FontFamily="{StaticResource MonoFontFamily}" FontSize="12" />
+                  <TextBlock Grid.Column="2" Text="{Binding Marker}" FontFamily="{StaticResource MonoFontFamily}" FontSize="12" FontWeight="SemiBold" />
+                  <SelectableTextBlock Grid.Column="3" Text="{Binding Text}" FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
+                                       TextWrapping="NoWrap" />
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </TabItem>
+      <TabItem Header="Properties">
+        <ListBox ItemsSource="{Binding Properties}" Classes="tableRows" AutomationProperties.Name="Property differences">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="core:PropertyDifference">
+              <Border Classes="propertyRow" Classes.differs="{Binding Differs}" Padding="6,4">
+                <Grid ColumnDefinitions="200,12,*,12,*">
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                  <SelectableTextBlock Grid.Column="2" Text="{Binding Left}" TextWrapping="Wrap" />
+                  <SelectableTextBlock Grid.Column="4" Text="{Binding Right}" TextWrapping="Wrap" />
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </TabItem>
+    </TabControl>
+
+    <Button Grid.Row="4" Content="Close" Classes="quiet" HorizontalAlignment="Right" Click="CloseClick" />
+  </Grid>
+</Window>

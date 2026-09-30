@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
@@ -5,7 +7,14 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>A destination choice in the resend dialog; no reference means "back to where each message came from".</summary>
 public sealed record ResendDestinationOption(string Label, ServiceBusEntityReference? Reference);
 
-public sealed record ResendOptions(ServiceBusEntityReference? Destination, ResendMode Mode, int MessagesPerSecond);
+/// <param name="Rewrite">Find and replace applied to every message before it is sent; null for none.</param>
+/// <param name="SendAt">When to send; null sends now.</param>
+public sealed record ResendOptions(
+    ServiceBusEntityReference? Destination,
+    ResendMode Mode,
+    int MessagesPerSecond,
+    MessageRewrite? Rewrite = null,
+    DateTimeOffset? SendAt = null);
 
 /// <summary>Options for resending the ticked messages: destination, copy or move, and pace.</summary>
 public sealed class ResendDialogViewModel : ObservableObject
@@ -16,14 +25,24 @@ public sealed class ResendDialogViewModel : ObservableObject
     private bool _moves;
     private int _messagesPerSecond = DefaultMessagesPerSecond;
     private string _typedConfirmation = string.Empty;
+    private string _findText = string.Empty;
+    private string _replaceText = string.Empty;
+    private bool _replaceInBody = true;
+    private bool _replaceInProperties;
+    private bool _matchCase = true;
+    private bool _sendLater;
+    private string _sendAtText = "30m";
+    private readonly Func<DateTimeOffset> _now;
 
     public ResendDialogViewModel(
         IReadOnlyList<BrowsedMessage> messages,
         IEnumerable<ServiceBusEntityReference> destinations,
         string environmentName,
         bool requiresTypedConfirmation,
-        bool canRemoveOriginals = true)
+        bool canRemoveOriginals = true,
+        Func<DateTimeOffset>? now = null)
     {
+        _now = now ?? (() => DateTimeOffset.Now);
         CanRemoveOriginals = canRemoveOriginals;
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
@@ -99,6 +118,109 @@ public sealed class ResendDialogViewModel : ObservableObject
         set => SetProperty(ref _messagesPerSecond, Math.Clamp(value, 1, 100));
     }
 
+    public string FindText
+    {
+        get => _findText;
+        set => SetRewrite(ref _findText, value ?? string.Empty);
+    }
+
+    public string ReplaceText
+    {
+        get => _replaceText;
+        set => SetRewrite(ref _replaceText, value ?? string.Empty);
+    }
+
+    public bool ReplaceInBody
+    {
+        get => _replaceInBody;
+        set => SetRewrite(ref _replaceInBody, value);
+    }
+
+    public bool ReplaceInProperties
+    {
+        get => _replaceInProperties;
+        set => SetRewrite(ref _replaceInProperties, value);
+    }
+
+    public bool MatchCase
+    {
+        get => _matchCase;
+        set => SetRewrite(ref _matchCase, value);
+    }
+
+    /// <summary>The find and replace to apply, or null when nothing is to be replaced.</summary>
+    public MessageRewrite? Rewrite
+    {
+        get
+        {
+            var rewrite = new MessageRewrite(FindText, ReplaceText, ReplaceInBody, ReplaceInProperties, MatchCase);
+            return rewrite.IsEmpty ? null : rewrite;
+        }
+    }
+
+    /// <summary>"Changes 3 of 5 messages", with a warning when a JSON body would no longer be valid JSON.</summary>
+    public string RewritePreview
+    {
+        get
+        {
+            if (Rewrite is not { } rewrite)
+            {
+                return "Optional. Replaces text in the bodies and text properties of every message before it is sent.";
+            }
+            var changed = 0;
+            var broken = 0;
+            foreach (var message in Messages.Where(message => !message.IsBodyTruncated))
+            {
+                var draft = message.CreateDraft();
+                var after = rewrite.Apply(draft, out var didChange);
+                changed += didChange ? 1 : 0;
+                broken += MessageRewrite.BreaksJson(draft, after) ? 1 : 0;
+            }
+            return $"Changes {changed:N0} of {Messages.Count:N0} messages." +
+                   (broken > 0 ? $" {broken:N0} JSON bodies would no longer be valid JSON." : string.Empty);
+        }
+    }
+
+    public bool SendNow
+    {
+        get => !_sendLater;
+        set => SendLater = !value;
+    }
+
+    public bool SendLater
+    {
+        get => _sendLater;
+        set
+        {
+            if (SetProperty(ref _sendLater, value))
+            {
+                OnPropertyChanged(nameof(SendNow));
+                NotifySchedule();
+            }
+        }
+    }
+
+    /// <summary>"30m", "2h", "03:00" (the next time the clock shows it) or a date and time.</summary>
+    public string SendAtText
+    {
+        get => _sendAtText;
+        set
+        {
+            if (SetProperty(ref _sendAtText, value ?? string.Empty))
+            {
+                NotifySchedule();
+            }
+        }
+    }
+
+    public DateTimeOffset? SendAt => SendLater ? ParseWhen(SendAtText, _now()) : null;
+
+    public string SendAtDescription => !SendLater
+        ? string.Empty
+        : SendAt is { } at
+            ? $"Sends {at.ToLocalTime():ddd d MMM HH:mm} ({Until(at - _now())}). QueueLoom must be open then, connected to {EnvironmentName} with write access on; until then the resend waits. It is listed on Activity, where it can be run early or cancelled."
+            : "Enter how long to wait (30m, 2h), a time (03:00) or a date and time (2026-10-01 03:00).";
+
     public bool RequiresTypedConfirmation { get; }
 
     public string TypedConfirmation
@@ -113,10 +235,17 @@ public sealed class ResendDialogViewModel : ObservableObject
         }
     }
 
-    public bool CanConfirm => !RequiresTypedConfirmation ||
-                              string.Equals(TypedConfirmation.Trim(), EnvironmentName, StringComparison.Ordinal);
+    public bool CanConfirm => (!RequiresTypedConfirmation ||
+                               string.Equals(TypedConfirmation.Trim(), EnvironmentName, StringComparison.Ordinal)) &&
+                              (!SendLater || SendAt is not null);
 
-    public string ConfirmLabel => Moves ? "Send and remove originals" : "Send copies";
+    public string ConfirmLabel => (SendLater, Moves) switch
+    {
+        (true, true) => "Schedule the move",
+        (true, false) => "Schedule copies",
+        (false, true) => "Send and remove originals",
+        _ => "Send copies"
+    };
 
     public string Summary
     {
@@ -136,9 +265,65 @@ public sealed class ResendDialogViewModel : ObservableObject
                 ? "Every message is sent first. Then the originals that were sent are backed up and removed from their " +
                   "dead-letter queues. If a send fails, that original stays where it is."
                 : "Copies are sent; the originals stay where they are.";
-            return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{fanOut}";
+            var rewrite = Rewrite is null ? string.Empty : $"\n\nFind and replace: {RewritePreview}";
+            return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{fanOut}{rewrite}";
         }
     }
 
-    public ResendOptions ToOptions() => new(Destination.Reference, Moves ? ResendMode.Move : ResendMode.Copy, MessagesPerSecond);
+    public ResendOptions ToOptions() =>
+        new(Destination.Reference, Moves ? ResendMode.Move : ResendMode.Copy, MessagesPerSecond, Rewrite, SendAt);
+
+    /// <summary>Parses "30m", "2h", "1d", "03:00" (the next time the clock shows it) or a date and time.</summary>
+    public static DateTimeOffset? ParseWhen(string? text, DateTimeOffset now)
+    {
+        var value = text?.Trim() ?? string.Empty;
+        var relative = Regex.Match(value, @"^(\d+)\s*(m|min|h|d)$", RegexOptions.IgnoreCase);
+        if (relative.Success)
+        {
+            var amount = int.Parse(relative.Groups[1].Value, CultureInfo.InvariantCulture);
+            var span = relative.Groups[2].Value.ToLowerInvariant() switch
+            {
+                "h" => TimeSpan.FromHours(amount),
+                "d" => TimeSpan.FromDays(amount),
+                _ => TimeSpan.FromMinutes(amount)
+            };
+            return amount > 0 && span <= TimeSpan.FromDays(30) ? now + span : null;
+        }
+        if (TimeOnly.TryParseExact(value, ["H:mm", "HH:mm"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var clock))
+        {
+            var local = now.ToLocalTime();
+            var today = new DateTimeOffset(local.Date + clock.ToTimeSpan(), local.Offset);
+            return today > local ? today : today.AddDays(1);
+        }
+        if (DateTimeOffset.TryParse(value, CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out var at) ||
+            DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out at))
+        {
+            return at > now && at - now <= TimeSpan.FromDays(30) ? at : null;
+        }
+        return null;
+    }
+
+    private static string Until(TimeSpan span) => span.TotalMinutes < 60
+        ? $"in {Math.Max(1, (int)Math.Round(span.TotalMinutes))} min"
+        : span.TotalHours < 48
+            ? $"in {(int)span.TotalHours} h {span.Minutes} min"
+            : $"in {(int)span.TotalDays} days";
+
+    private void NotifySchedule()
+    {
+        OnPropertyChanged(nameof(SendAt));
+        OnPropertyChanged(nameof(SendAtDescription));
+        OnPropertyChanged(nameof(CanConfirm));
+        OnPropertyChanged(nameof(ConfirmLabel));
+    }
+
+    private void SetRewrite<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
+    {
+        if (SetProperty(ref field, value, propertyName))
+        {
+            OnPropertyChanged(nameof(Rewrite));
+            OnPropertyChanged(nameof(RewritePreview));
+            OnPropertyChanged(nameof(Summary));
+        }
+    }
 }

@@ -26,7 +26,7 @@ public sealed partial class KafkaWorkspace
     }
 
     public override Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
-        ManageAsync(async _ =>
+        ManageAsync(async token =>
         {
             ArgumentNullException.ThrowIfNull(definition);
             var configs = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -44,7 +44,26 @@ public sealed partial class KafkaWorkspace
                 topics.Add(new TopicSpecification { Name = definition.Name + ".DLT", NumPartitions = 1, ReplicationFactor = -1 });
             }
             await Administer(() => Admin.CreateTopicsAsync(topics)).ConfigureAwait(false);
+            await WaitUntilVisibleAsync(topics.Select(topic => topic.Name).ToArray(), token).ConfigureAwait(false);
         }, cancellationToken);
+
+    /// <summary>
+    /// A new topic reaches every broker's metadata a moment after it is created; waiting here keeps the refresh that
+    /// follows from missing it.
+    /// </summary>
+    private async Task WaitUntilVisibleAsync(IReadOnlyCollection<string> names, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            var metadata = await Task.Run(() => Admin.GetMetadata(RequestTimeout), cancellationToken).ConfigureAwait(false);
+            if (names.All(name => metadata.Topics.Any(topic => topic.Topic == name && topic.Error.Code == ErrorCode.NoError &&
+                                                               topic.Partitions.Count > 0 && topic.Partitions.All(partition => partition.Leader >= 0))))
+            {
+                return;
+            }
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
         ManageAsync(async token =>

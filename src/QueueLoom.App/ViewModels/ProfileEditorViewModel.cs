@@ -370,7 +370,12 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
             return false;
         }
 
-        result = new ProfileEditorResult(profile, newSecret, newSecret is not null);
+        var (registryPassword, removeRegistryPassword) = SchemaRegistrySecret(profile);
+        result = new ProfileEditorResult(profile, newSecret, newSecret is not null)
+        {
+            SchemaRegistryPassword = registryPassword,
+            RemovesSchemaRegistryPassword = removeRegistryPassword
+        };
         return true;
     }
 

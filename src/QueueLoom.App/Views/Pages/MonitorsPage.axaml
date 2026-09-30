@@ -46,6 +46,8 @@
             <TextBlock Text="Alerts outside QueueLoom" Classes="sectionTitle" />
             <CheckBox IsChecked="{Binding SystemNotifications}"
                       Content="Show a system notification when new dead letters appear and QueueLoom is in the background" />
+            <CheckBox IsChecked="{Binding KeepInTray}"
+                      Content="Keep running in the system tray when the window is closed, so monitors and scheduled resends go on" />
             <StackPanel Spacing="7">
               <TextBlock Text="SLACK OR TEAMS WEBHOOK · OPTIONAL" Classes="eyebrow" />
               <TextBox Text="{Binding AlertWebhookUrl}" PlaceholderText="https://hooks.slack.com/services/…"
@@ -194,6 +196,29 @@
               </ItemsControl>
             </StackPanel>
           </Grid>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card" IsVisible="{Binding HasConsumerRows}">
+        <StackPanel Spacing="12">
+          <StackPanel Spacing="3">
+            <TextBlock Text="Consumers" Classes="sectionTitle" />
+            <TextBlock Text="{Binding ConsumerRowsCaption}" Classes="muted" TextWrapping="Wrap" />
+          </StackPanel>
+          <ItemsControl ItemsSource="{Binding ConsumerRows}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:EntityItemViewModel">
+                <Grid ColumnDefinitions="90,*,Auto" Margin="0,5">
+                  <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                             VerticalAlignment="Center" ToolTip.Tip="{Binding Name}" />
+                  <TextBlock Grid.Column="2" Text="{Binding ConsumersDisplay}" Margin="12,0,0,0" VerticalAlignment="Center"
+                             Classes.muted="{Binding !HasConsumerLag}" Classes.warning="{Binding HasConsumerLag}"
+                             ToolTip.Tip="{Binding ConsumersTip}" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
         </StackPanel>
       </Border>
     </StackPanel>

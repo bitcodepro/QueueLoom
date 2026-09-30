@@ -58,6 +58,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue);
 
+    /// <summary>The channel for browsing; services that keep a log (Kafka) start where the request asks.</summary>
+    protected virtual ILeasedMessageChannel OpenBrowseChannel(ServiceBusTopology topology, BrowseMessagesRequest request) =>
+        OpenChannel(topology, request.Source, request.SubQueue);
+
     protected abstract Task SendCoreAsync(
         ServiceBusTopology topology,
         ServiceBusEntityReference destination,
@@ -136,7 +140,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         // There is no position to continue from: every browse starts at whatever the service hands out
         // first. "Load more" therefore returns the first page again rather than duplicating messages.
         var topology = await GetTopologyCoreAsync(false, cancellationToken).ConfigureAwait(false);
-        var channel = OpenChannel(topology, request.Source, request.SubQueue);
+        var channel = OpenBrowseChannel(topology, request);
         var limit = request.LoadAll ? LoadAllLimit : request.MaxMessages;
         var held = new List<LeasedMessage>();
         try

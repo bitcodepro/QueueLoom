@@ -20,7 +20,7 @@ namespace QueueLoom.Infrastructure.Google;
 /// Topics and subscriptions of one Google Cloud project. Pub/Sub has no queues. The dead letters of a
 /// subscription are read from a subscription attached to the dead-letter topic of its dead-letter policy.
 /// </summary>
-public sealed class GooglePubSubWorkspace : LeasedMessagingWorkspace
+public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 {
     /// <summary>How long a pulled message stays unacknowledged while QueueLoom looks at it (Pub/Sub allows up to 600).</summary>
     internal const int HoldSeconds = 180;

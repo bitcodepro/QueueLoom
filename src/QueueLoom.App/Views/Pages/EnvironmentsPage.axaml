@@ -11,6 +11,10 @@
         <TextBlock Text="Service Bus namespaces, AWS regions, Google Cloud projects, RabbitMQ brokers and Kafka clusters. Secrets are encrypted on this device." Classes="muted" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
+        <Button Content="Import…" Classes="quiet" Command="{Binding ImportEnvironmentsCommand}"
+                ToolTip.Tip="Add environments from a file exported by QueueLoom. They start read-only; enter passwords and keys with Edit." />
+        <Button Content="Export…" Classes="quiet" Command="{Binding ExportEnvironmentsCommand}"
+                ToolTip.Tip="Save every environment's settings to a file to share or move. Passwords, keys and connection strings are not included." />
         <Button Content="Edit" Classes="quiet" Command="{Binding EditEnvironmentCommand}" />
         <Button Content="Delete" Classes="danger" Command="{Binding DeleteEnvironmentCommand}" />
         <Button Content="Add environment" Classes="primary" Command="{Binding AddEnvironmentCommand}" />

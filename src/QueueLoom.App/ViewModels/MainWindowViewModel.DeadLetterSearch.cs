@@ -9,6 +9,18 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>Searching dead-letter queues across environments.</summary>
 public sealed partial class MainWindowViewModel
 {
+    private bool _deepSearch;
+
+    /// <summary>
+    /// Deep search reads up to 20,000 dead letters per queue and keeps up to 20,000 matches, for large dead-letter
+    /// queues; it may take several minutes. The normal search stops at 1,000 per queue and 500 matches.
+    /// </summary>
+    public bool DeepSearch
+    {
+        get => _deepSearch;
+        set => SetProperty(ref _deepSearch, value);
+    }
+
     private async Task SearchDeadLettersAsync(CancellationToken cancellationToken)
     {
         ResetBrowsePaging();
@@ -28,7 +40,9 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException("The selected search scope contains no environments.");
         }
 
-        const int maximumResults = DeadLetterSearchRequest.DefaultMaximumResults;
+        var deep = DeepSearch;
+        var maximumResults = deep ? 20_000 : DeadLetterSearchRequest.DefaultMaximumResults;
+        var perTarget = deep ? 20_000 : DeadLetterSearchRequest.DefaultMaximumMessagesPerTarget;
         var connectedProfileBeforeSearch = _connectedProfile;
         var wasConnected = IsConnected && connectedProfileBeforeSearch is not null;
         var temporaryWriteExpiryBeforeSearch = connectedProfileBeforeSearch is not null &&
@@ -44,7 +58,7 @@ public sealed partial class MainWindowViewModel
         var incomplete = false;
         var restoreFailed = false;
         using var totalSearchTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        totalSearchTimeout.CancelAfter(TimeSpan.FromSeconds(60));
+        totalSearchTimeout.CancelAfter(deep ? TimeSpan.FromMinutes(15) : TimeSpan.FromSeconds(60));
         var searchToken = totalSearchTimeout.Token;
 
         try
@@ -84,13 +98,14 @@ public sealed partial class MainWindowViewModel
 
                     StatusText = $"Searching {targets.Length:N0} DLQ sources in {profile.Name}...";
                     using var environmentTimeout = CancellationTokenSource.CreateLinkedTokenSource(searchToken);
-                    environmentTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+                    environmentTimeout.CancelAfter(deep ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(30));
                     try
                     {
                         var search = await _workspace.SearchDeadLettersAsync(
                                 new DeadLetterSearchRequest(
                                     query,
                                     targets,
+                                    maximumMessagesPerTarget: perTarget,
                                     maximumResults: maximumResults - results.Count),
                                 environmentTimeout.Token)
                             .ConfigureAwait(true);
@@ -189,14 +204,10 @@ public sealed partial class MainWindowViewModel
         }
 
         var windowed = ApplySearchWindow(results, out var outsideWindow);
-        Messages.Clear();
-        foreach (var result in windowed
-                     .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
-                     .ThenBy(result => result.Message.SequenceNumber)
-                     .ThenBy(result => result.ProfileName, StringComparer.OrdinalIgnoreCase))
-        {
-            Messages.Add(result);
-        }
+        ReplaceMessages(windowed
+            .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
+            .ThenBy(result => result.Message.SequenceNumber)
+            .ThenBy(result => result.ProfileName, StringComparer.OrdinalIgnoreCase));
         SelectedMessage = Messages.FirstOrDefault();
         var scopeName = filter.ProfileId.HasValue ? filter.Name : "all environments";
         var qualifier = incomplete || restoreFailed

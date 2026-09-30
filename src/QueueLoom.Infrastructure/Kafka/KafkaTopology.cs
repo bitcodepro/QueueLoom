@@ -8,6 +8,12 @@ internal sealed record KafkaTopicInfo(string Name, IReadOnlyList<int> Partitions
 {
     /// <summary>Why <see cref="Retained"/> is not known, for example while a new topic has no partition leader yet.</summary>
     public string? CountError { get; init; }
+
+    /// <summary>The high watermark of each partition, for consumer lag.</summary>
+    public IReadOnlyDictionary<int, long> Ends { get; init; } = new Dictionary<int, long>();
+
+    /// <summary>Consumer groups with committed offsets on this topic.</summary>
+    public IReadOnlyList<ConsumerGroupLag> Groups { get; init; } = [];
 }
 
 /// <summary>Kafka topics and which of them are dead-letter topics, by name.</summary>
@@ -50,7 +56,8 @@ internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, 
                 ServiceBusEntityStatus.Active)
             {
                 HasDeadLetterQueue = deadLetter is not null,
-                Note = note
+                Note = note,
+                Consumers = topic.Groups.Count == 0 ? null : new ConsumerActivity(null, topic.Groups)
             };
         });
         return new ServiceBusTopology(fetchedAt, queues, [])

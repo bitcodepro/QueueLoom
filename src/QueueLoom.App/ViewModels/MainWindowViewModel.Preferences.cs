@@ -40,6 +40,7 @@ public sealed partial class MainWindowViewModel
         ThemePreference = settings.Theme;
         LoadSavedSearches(settings.SavedSearches);
         SystemNotifications = settings.SystemNotifications;
+        KeepInTray = settings.KeepInTray;
         AlertWebhookUrl = settings.AlertWebhookUrl ?? string.Empty;
         BackupRetentionDays = settings.BackupRetentionDays;
     }

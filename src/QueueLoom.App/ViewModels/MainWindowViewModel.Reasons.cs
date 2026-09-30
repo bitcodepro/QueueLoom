@@ -42,6 +42,7 @@ public sealed partial class MainWindowViewModel
         _updatingReasonSelection = true;
         try
         {
+            using var batch = BatchMessageUpdates();
             foreach (var message in Messages.Where(message => message.CanDelete))
             {
                 message.IsMarked = !untick &&

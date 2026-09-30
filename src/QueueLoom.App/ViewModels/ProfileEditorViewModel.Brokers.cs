@@ -18,6 +18,10 @@ public sealed partial class ProfileEditorViewModel
     private KafkaSaslMechanism _kafkaSaslMechanism = KafkaSaslMechanism.ScramSha512;
     private string _kafkaUserName = string.Empty;
     private string _kafkaDeadLetterSuffixes = string.Join(", ", KafkaSettings.DefaultDeadLetterSuffixes);
+    private string _schemaRegistryUrl = string.Empty;
+    private string _schemaRegistryUserName = string.Empty;
+    private string _schemaRegistryPassword = string.Empty;
+    private bool _hasExistingSchemaRegistryPassword;
 
     public bool IsRabbitMq => Provider == MessagingProvider.RabbitMq;
 
@@ -120,6 +124,30 @@ public sealed partial class ProfileEditorViewModel
         set => SetProperty(ref _kafkaDeadLetterSuffixes, value);
     }
 
+    /// <summary>Optional Confluent-compatible Schema Registry, used to decode Avro, Protobuf and JSON Schema bodies.</summary>
+    public string SchemaRegistryUrl
+    {
+        get => _schemaRegistryUrl;
+        set => SetProperty(ref _schemaRegistryUrl, value);
+    }
+
+    public string SchemaRegistryUserName
+    {
+        get => _schemaRegistryUserName;
+        set => SetProperty(ref _schemaRegistryUserName, value);
+    }
+
+    /// <summary>The registry password or API secret; it goes to the vault only.</summary>
+    public string SchemaRegistryPassword
+    {
+        get => _schemaRegistryPassword;
+        set => SetProperty(ref _schemaRegistryPassword, value);
+    }
+
+    public string SchemaRegistryHint => _hasExistingSchemaRegistryPassword
+        ? "Leave the password empty to keep the encrypted one. Clear the user name to stop signing in to the registry."
+        : "Optional. With a registry, bodies written by Confluent serializers are decoded with their schema. The password or API secret is kept in the vault.";
+
     private void InitializeBrokers(ServiceBusProfile? existing)
     {
         if (existing?.RabbitMq is { } rabbit)
@@ -138,6 +166,9 @@ public sealed partial class ProfileEditorViewModel
             _kafkaSaslMechanism = kafka.SaslMechanism ?? KafkaSaslMechanism.ScramSha512;
             _kafkaUserName = kafka.UserName ?? string.Empty;
             _kafkaDeadLetterSuffixes = string.Join(", ", kafka.EffectiveDeadLetterSuffixes);
+            _schemaRegistryUrl = kafka.SchemaRegistryUrl ?? string.Empty;
+            _schemaRegistryUserName = kafka.SchemaRegistryUserName ?? string.Empty;
+            _hasExistingSchemaRegistryPassword = kafka.SchemaRegistryUserName is not null;
         }
     }
 
@@ -175,9 +206,22 @@ public sealed partial class ProfileEditorViewModel
             KafkaUseTls,
             IsKafkaSasl ? KafkaSaslMechanism : null,
             IsKafkaSasl ? NullIfWhiteSpace(KafkaUserName) : null,
-            suffixes.SequenceEqual(KafkaSettings.DefaultDeadLetterSuffixes) ? null : suffixes);
+            suffixes.SequenceEqual(KafkaSettings.DefaultDeadLetterSuffixes) ? null : suffixes,
+            NullIfWhiteSpace(SchemaRegistryUrl)?.TrimEnd('/'),
+            NullIfWhiteSpace(SchemaRegistryUrl) is null ? null : NullIfWhiteSpace(SchemaRegistryUserName));
+        if (settings.SchemaRegistryUserName is not null && string.IsNullOrEmpty(SchemaRegistryPassword) && !_hasExistingSchemaRegistryPassword)
+        {
+            Error = "Enter the Schema Registry password or API secret.";
+            return null;
+        }
         return (NewProfile(new AuthenticationSettings(AuthenticationKind), null) with { Kafka = settings }, newSecret);
     }
+
+    /// <summary>What happens to the registry password in the vault: a new value, removal, or nothing.</summary>
+    private (string? Password, bool Remove) SchemaRegistrySecret(ServiceBusProfile profile) =>
+        profile.Kafka?.SchemaRegistryUserName is null
+            ? (null, _hasExistingSchemaRegistryPassword)
+            : (string.IsNullOrEmpty(SchemaRegistryPassword) ? null : SchemaRegistryPassword, false);
 
     private bool TakePassword(out string? newSecret)
     {

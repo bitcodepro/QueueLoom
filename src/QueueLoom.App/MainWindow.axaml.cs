@@ -75,6 +75,8 @@ public sealed partial class MainWindow : Window
             _initializationTask = InitializeAsync(_viewModel, _settingsStore);
             await _initializationTask;
             _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+            _viewModel.PropertyChanged += OnTrayRelevantPropertyChanged;
+            UpdateTray();
         }
         catch (Exception exception)
         {
@@ -95,6 +97,7 @@ public sealed partial class MainWindow : Window
         _theme?.Apply(settings.Theme);
         viewModel.ApplyPreferences(settings);
         await viewModel.InitializeAsync();
+        viewModel.StartScheduledResends();
     }
 
     private async Task ShowStartupErrorAsync(Exception exception)
@@ -131,6 +134,11 @@ public sealed partial class MainWindow : Window
             case nameof(MainWindowViewModel.ThemePreference):
                 var theme = _viewModel.ThemePreference;
                 _ = SavePreferenceBestEffortAsync(() => _settingsStore.SaveThemeAsync(theme));
+                break;
+            case nameof(MainWindowViewModel.KeepInTray):
+                var keepInTray = _viewModel.KeepInTray;
+                _ = SavePreferenceBestEffortAsync(() =>
+                    _settingsStore.UpdateAsync(settings => settings with { KeepInTray = keepInTray }));
                 break;
             case nameof(MainWindowViewModel.SystemNotifications):
                 var system = _viewModel.SystemNotifications;
@@ -245,6 +253,11 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+        // Closing by the operator hides to the tray when that is on; the operating system shutting down still quits.
+        if (args.CloseReason is WindowCloseReason.WindowClosing && HideToTrayInsteadOfClosing())
+        {
+            return;
+        }
         _shutdownInProgress = true;
 
         try
@@ -276,6 +289,8 @@ public sealed partial class MainWindow : Window
         finally
         {
             _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+            _viewModel.PropertyChanged -= OnTrayRelevantPropertyChanged;
+            RemoveTray();
             Opened -= OnOpened;
             try
             {

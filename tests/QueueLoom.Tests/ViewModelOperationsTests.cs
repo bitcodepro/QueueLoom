@@ -44,7 +44,7 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
-    public async Task PagingContinuesWithoutDuplicatesAndStopsAtDisplayLimit()
+    public async Task PagingContinuesWithoutDuplicatesUntilTheEnd()
     {
         var profile = CreateProfile("Test", EnvironmentKind.Test);
         var source = ServiceBusEntityReference.Queue("orders");
@@ -58,11 +58,13 @@ public sealed partial class ViewModelStateTests
         vm.SelectedDlqSource = Assert.Single(vm.FilteredDeadLetterSources);
         await vm.BrowseDlqSourceCommand.ExecuteAsync();
         Assert.Equal(100, vm.Messages.Count);
-        for (var i = 0; i < 9; i++) await vm.LoadMoreMessagesCommand.ExecuteAsync();
-        Assert.Equal(1000, vm.Messages.Count);
-        Assert.Equal(1000, vm.Messages.Select(m => m.SequenceNumber).Distinct().Count());
+        for (var i = 0; i < 10; i++) await vm.LoadMoreMessagesCommand.ExecuteAsync();
+        Assert.Equal(1100, vm.Messages.Count);
+        Assert.Equal(1100, vm.Messages.Select(m => m.SequenceNumber).Distinct().Count());
+        Assert.Equal(1001, workspace.BrowseRequests.Last().FromSequenceNumber);
+        await vm.LoadMoreMessagesCommand.ExecuteAsync();
         Assert.False(vm.CanLoadMoreMessages);
-        Assert.Equal(901, workspace.BrowseRequests.Last().FromSequenceNumber);
+        Assert.Contains("End of available messages", vm.BrowsePageStatus, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -35,4 +35,15 @@
     <ProjectReference Include="..\QueueLoom.Infrastructure\QueueLoom.Infrastructure.csproj" />
     <ProjectReference Include="..\QueueLoom.Mcp\QueueLoom.Mcp.csproj" />
   </ItemGroup>
+
+  <!--
+    librdkafka ships a musl build for Alpine next to the glibc ones. The linux-x64 package is a glibc app, so that
+    copy could never load and only adds about 12 MB. The two glibc builds stay: librdkafka.so uses the system's
+    libsasl2, and centos8-librdkafka.so is the self-contained fallback Confluent.Kafka loads where libsasl2 is missing.
+  -->
+  <Target Name="DropMuslLibrdkafka" AfterTargets="ComputeResolvedFilesToPublishList" Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'alpine-librdkafka.so'" />
+    </ItemGroup>
+  </Target>
 </Project>

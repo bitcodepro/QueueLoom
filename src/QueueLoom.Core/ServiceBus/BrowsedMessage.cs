@@ -93,6 +93,12 @@ public sealed record BrowsedMessage
     /// </summary>
     public bool HasSequenceNumber { get; init; } = true;
 
+    /// <summary>Partition and offset of a message in a log (Kafka); null elsewhere.</summary>
+    public LogPosition? Position { get; init; }
+
+    /// <summary>The registry schema of a body in the Confluent wire format, when one was found.</summary>
+    public MessageSchema? Schema { get; init; }
+
     public bool IsDeadLetter => SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter;
 
     public MessageDraft CreateDraft()

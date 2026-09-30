@@ -58,6 +58,7 @@ public sealed partial class MainWindowViewModel
             .Where(item => item.Outcome == DeadLetterMessageDeletionOutcome.Deleted)
             .Select(item => (item.Message.Source, item.Message.SequenceNumber))
             .ToHashSet();
+        using var batch = BatchMessageUpdates();
         foreach (var item in Messages.Where(item => removed.Contains((item.Message.Source, item.Message.SequenceNumber))).ToArray())
         {
             Messages.Remove(item);

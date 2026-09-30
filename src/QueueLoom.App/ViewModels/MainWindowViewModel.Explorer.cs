@@ -77,7 +77,8 @@ public sealed partial class MainWindowViewModel
                 queue.RequiresSession,
                 indent: 0,
                 queue.Note,
-                queueKindName: topology.QueueKindName));
+                queueKindName: topology.QueueKindName,
+                consumers: queue.Consumers));
         }
 
         foreach (var topic in topology.Topics)
@@ -111,6 +112,7 @@ public sealed partial class MainWindowViewModel
             ? null
             : Destinations.FirstOrDefault(item => item.Reference == previousDestination);
         ApplyEntityFilter();
+        RefreshConsumerRows();
         NotifyStatistics();
     }
 

@@ -32,6 +32,9 @@ public sealed record AppSettings(
     /// <summary>Slack or Microsoft Teams incoming-webhook address that receives monitor alerts, or null.</summary>
     public string? AlertWebhookUrl { get; init; }
 
+    /// <summary>Closing the window keeps QueueLoom running in the system tray, so monitors and scheduled resends go on.</summary>
+    public bool KeepInTray { get; init; }
+
     /// <summary>Backups older than this many days are deleted at start-up; 0 keeps them forever.</summary>
     public int BackupRetentionDays { get; init; }
 

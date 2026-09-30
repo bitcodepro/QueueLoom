@@ -5,10 +5,11 @@
         x:DataType="vm:ResendDialogViewModel"
         Title="{Binding Title}"
         Width="640"
-        MaxHeight="780"
+        MaxHeight="900"
         SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
         CanResize="True">
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
   <StackPanel Margin="26" Spacing="16">
     <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" />
 
@@ -39,7 +40,33 @@
       <TextBlock Text="messages per second" Classes="muted" VerticalAlignment="Center" />
     </StackPanel>
 
-    <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
+    <StackPanel Spacing="7">
+      <TextBlock Text="FIND AND REPLACE" Classes="eyebrow" />
+      <Grid ColumnDefinitions="*,10,*">
+        <TextBox Text="{Binding FindText}" PlaceholderText="Find" AutomationProperties.Name="Find" />
+        <TextBox Grid.Column="2" Text="{Binding ReplaceText}" PlaceholderText="Replace with" AutomationProperties.Name="Replace with" />
+      </Grid>
+      <WrapPanel ItemSpacing="16">
+        <CheckBox IsChecked="{Binding ReplaceInBody}" Content="In the body" />
+        <CheckBox IsChecked="{Binding ReplaceInProperties}" Content="In the subject, correlation ID and text properties" />
+        <CheckBox IsChecked="{Binding MatchCase}" Content="Match case" />
+      </WrapPanel>
+      <TextBlock Text="{Binding RewritePreview}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <StackPanel Spacing="7">
+      <TextBlock Text="WHEN" Classes="eyebrow" />
+      <StackPanel Orientation="Horizontal" Spacing="16">
+        <RadioButton GroupName="resendWhen" IsChecked="{Binding SendNow}" Content="Now" />
+        <RadioButton GroupName="resendWhen" IsChecked="{Binding SendLater}" Content="Later:" />
+        <TextBox Text="{Binding SendAtText}" Width="200" IsEnabled="{Binding SendLater}"
+                 PlaceholderText="30m, 2h, 03:00" AutomationProperties.Name="Send at" />
+      </StackPanel>
+      <TextBlock Text="{Binding SendAtDescription}" Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 IsVisible="{Binding SendLater}" />
+    </StackPanel>
+
+    <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
       <TextBlock Text="{Binding Summary}" Classes="muted" TextWrapping="Wrap" MaxWidth="570" />
     </ScrollViewer>
 
@@ -53,4 +80,5 @@
       <Button Content="{Binding ConfirmLabel}" Classes="danger" Click="ConfirmClick" IsEnabled="{Binding CanConfirm}" />
     </StackPanel>
   </StackPanel>
+  </ScrollViewer>
 </Window>

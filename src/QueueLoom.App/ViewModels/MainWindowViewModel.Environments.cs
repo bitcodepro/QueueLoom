@@ -203,6 +203,7 @@ public sealed partial class MainWindowViewModel
 
             await _profileRepository.UpsertAsync(result.Profile, cancellationToken).ConfigureAwait(true);
             await _profileRepository.SetSelectedProfileIdAsync(result.Profile.Id, cancellationToken).ConfigureAwait(true);
+            await SaveSchemaRegistryPasswordAsync(result, cancellationToken).ConfigureAwait(true);
         }
         catch (Exception saveException)
         {
@@ -269,6 +270,19 @@ public sealed partial class MainWindowViewModel
         }
     }
 
+    private async Task SaveSchemaRegistryPasswordAsync(ProfileEditorResult result, CancellationToken cancellationToken)
+    {
+        var key = ProfileSecretKey.SchemaRegistryPassword(result.Profile.Id);
+        if (result.SchemaRegistryPassword is { } password)
+        {
+            await _secretVault.StoreAsync(key, password, cancellationToken).ConfigureAwait(true);
+        }
+        else if (result.RemovesSchemaRegistryPassword)
+        {
+            await _secretVault.RemoveAsync(key, cancellationToken).ConfigureAwait(true);
+        }
+    }
+
     private async Task DeleteEnvironmentAsync(CancellationToken cancellationToken)
     {
         var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
@@ -313,6 +327,8 @@ public sealed partial class MainWindowViewModel
             }
             throw;
         }
+        await _secretVault.RemoveAsync(ProfileSecretKey.SchemaRegistryPassword(selected.Id), CancellationToken.None)
+            .ConfigureAwait(true);
         if (_writeUnlockProfileId == selected.Id)
         {
             await StopWriteUnlockTimerAsync().ConfigureAwait(true);
@@ -485,6 +501,7 @@ public sealed partial class MainWindowViewModel
         CancelWriteUnlockTimerWithoutWaiting();
         _topology = null;
         _allEntities.Clear();
+        RefreshConsumerRows();
         Entities.Clear();
         SelectedEntity = null;
         Destinations.Clear();

@@ -43,4 +43,6 @@ public sealed record BrowseMessagesRequest
     public long? FromSequenceNumber { get; }
 
     public bool LoadAll { get; }
+
+    public BrowseStart Start { get; init; } = BrowseStart.Oldest;
 }

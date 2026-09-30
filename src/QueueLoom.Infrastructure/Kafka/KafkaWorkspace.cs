@@ -18,6 +18,7 @@ namespace QueueLoom.Infrastructure.Kafka;
 public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 {
     private const int MaximumBatch = 100;
+    private const int MaximumConsumerGroups = 200;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
     private readonly ISecretVault _secretVault;
@@ -25,6 +26,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     private ClientConfig? _config;
     private IAdminClient? _admin;
     private IProducer<byte[]?, byte[]>? _producer;
+    private SchemaRegistryClient? _schemaRegistry;
     private KafkaTopologyIndex _index = KafkaTopologyIndex.Empty;
 
     public KafkaWorkspace(ISecretVault secretVault, TimeProvider? timeProvider = null, DeadLetterJsonBackupStore? backupStore = null)
@@ -71,6 +73,14 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                                   ?? throw new InvalidOperationException("The Kafka password is missing. Edit the environment and enter it again.");
         }
 
+        if (settings.SchemaRegistryUrl is { } registryUrl)
+        {
+            var registryPassword = settings.SchemaRegistryUserName is null
+                ? null
+                : await _secretVault.RetrieveAsync(ProfileSecretKey.SchemaRegistryPassword(profile.Id), cancellationToken).ConfigureAwait(false);
+            _schemaRegistry = new SchemaRegistryClient(registryUrl, settings.SchemaRegistryUserName, registryPassword);
+        }
+
         _config = config;
         _index = KafkaTopologyIndex.Empty with { Suffixes = settings.EffectiveDeadLetterSuffixes };
         _admin = new AdminClientBuilder(new AdminClientConfig(config)).Build();
@@ -103,6 +113,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         _producer = null;
         _admin?.Dispose();
         _admin = null;
+        _schemaRegistry?.Dispose();
+        _schemaRegistry = null;
         _config = null;
         return ValueTask.CompletedTask;
     }
@@ -120,6 +132,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 {
                     long retained = 0;
                     string? countError = null;
+                    var ends = new Dictionary<int, long>();
                     foreach (var partition in topic.Partitions)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -131,16 +144,81 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                             break;
                         }
                         retained += Math.Max(0, marks.High.Value - marks.Low.Value);
+                        ends[partition.PartitionId] = marks.High.Value;
                     }
                     return new KafkaTopicInfo(topic.Topic, topic.Partitions.Select(partition => partition.PartitionId).ToArray(), retained)
                     {
-                        CountError = countError
+                        CountError = countError,
+                        Ends = ends
                     };
                 })
                 .ToArray();
             return new KafkaTopologyIndex(topics, suffixes);
         }, cancellationToken).ConfigureAwait(false);
+        _index = await WithConsumerLagAsync(_index, cancellationToken).ConfigureAwait(false);
         return _index.ToTopology(TimeProvider.GetUtcNow());
+    }
+
+    /// <summary>
+    /// Adds each consumer group's lag: per partition, the high watermark minus the group's committed offset. Lag is
+    /// extra information, so a cluster that refuses to list groups (missing ACLs) still shows its topics.
+    /// </summary>
+    private async Task<KafkaTopologyIndex> WithConsumerLagAsync(KafkaTopologyIndex index, CancellationToken cancellationToken)
+    {
+        List<ConsumerGroupListing> groups;
+        try
+        {
+            groups = (await Admin.ListConsumerGroupsAsync(new ListConsumerGroupsOptions { RequestTimeout = RequestTimeout })
+                    .ConfigureAwait(false)).Valid
+                .Where(group => !group.GroupId.StartsWith("queueloom-reader-", StringComparison.Ordinal))
+                .OrderBy(group => group.GroupId, StringComparer.Ordinal)
+                .Take(MaximumConsumerGroups)
+                .ToList();
+        }
+        catch (KafkaException)
+        {
+            return index;
+        }
+
+        var lags = new Dictionary<string, List<ConsumerGroupLag>>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            List<ListConsumerGroupOffsetsResult> offsets;
+            try
+            {
+                offsets = await Admin.ListConsumerGroupOffsetsAsync(
+                        [new ConsumerGroupTopicPartitions(group.GroupId, null)],
+                        new ListConsumerGroupOffsetsOptions { RequestTimeout = RequestTimeout, RequireStableOffsets = false })
+                    .ConfigureAwait(false);
+            }
+            catch (KafkaException)
+            {
+                continue;
+            }
+
+            foreach (var topic in offsets.SelectMany(result => result.Partitions).Where(partition => partition.Offset.Value >= 0)
+                         .GroupBy(partition => partition.Topic, StringComparer.Ordinal))
+            {
+                if (index.Find(topic.Key) is not { } info)
+                {
+                    continue;
+                }
+                var lag = topic.Sum(partition => info.Ends.TryGetValue(partition.Partition.Value, out var end)
+                    ? Math.Max(0, end - partition.Offset.Value)
+                    : 0);
+                if (!lags.TryGetValue(topic.Key, out var list))
+                {
+                    lags[topic.Key] = list = [];
+                }
+                list.Add(new ConsumerGroupLag(group.GroupId, lag, group.State.ToString()));
+            }
+        }
+
+        return index with
+        {
+            Topics = index.Topics.Select(topic => lags.TryGetValue(topic.Name, out var list) ? topic with { Groups = list } : topic).ToArray()
+        };
     }
 
     protected override ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue)
@@ -166,6 +244,13 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         CloseChannels();
         var channel = new KafkaChannel(this, topic, source, subQueue, belongsTo: subQueue == ServiceBusSubQueue.DeadLetter ? source.Name : null);
         _channels.Add(channel);
+        return channel;
+    }
+
+    protected override ILeasedMessageChannel OpenBrowseChannel(ServiceBusTopology topology, BrowseMessagesRequest request)
+    {
+        var channel = (KafkaChannel)OpenChannel(topology, request.Source, request.SubQueue);
+        channel.StartAt(request.Start, request.LoadAll ? LoadAllLimit : request.MaxMessages);
         return channel;
     }
 
@@ -235,8 +320,9 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     }
 
     /// <summary>
-    /// Reads a topic from the oldest retained message up to the end it had when reading started. "Releasing" does
-    /// nothing, since reading changes nothing; "settling" deletes records, which Kafka allows only from the oldest on.
+    /// Reads a topic up to the end it had when reading started: by default from the oldest retained message, or from a
+    /// time, an offset, or only the newest messages. "Releasing" does nothing, since reading changes nothing;
+    /// "settling" deletes records, which Kafka allows only from the oldest on.
     /// </summary>
     private sealed class KafkaChannel(
         KafkaWorkspace owner,
@@ -249,44 +335,96 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         private readonly Dictionary<int, long> _deletableFrom = [];
         private readonly HashSet<int> _finished = [];
         private IConsumer<byte[]?, byte[]?>? _consumer;
+        private BrowseStart _start = BrowseStart.Oldest;
+        private int _newestCount;
+        private Queue<LeasedMessage>? _newest;
+
+        /// <summary>Sets where browsing starts; <paramref name="count"/> is how many of the newest messages to keep.</summary>
+        public void StartAt(BrowseStart start, int count)
+        {
+            _start = start;
+            _newestCount = count;
+        }
 
         public string PhysicalName => topic.Name;
 
         public int MaximumBatchSize => MaximumBatch;
 
-        public Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken) =>
-            Task.Run<IReadOnlyList<LeasedMessage>>(() =>
+        public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
+        {
+            var messages = await Task.Run(() => Receive(maxMessages, cancellationToken), cancellationToken).ConfigureAwait(false);
+            if (owner._schemaRegistry is not { } registry)
             {
-                var consumer = Open();
-                var messages = new List<LeasedMessage>();
-                var limit = Math.Clamp(maxMessages, 1, MaximumBatch);
-                while (messages.Count < limit && _finished.Count < _end.Count)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var result = consumer.Consume(TimeSpan.FromSeconds(1));
-                    if (result is null)
-                    {
-                        break;
-                    }
-                    var partition = result.Partition.Value;
-                    if (_finished.Contains(partition))
-                    {
-                        // Written after reading started; this read stops at the end it saw.
-                        continue;
-                    }
-                    if (result.IsPartitionEOF || result.Offset.Value >= _end[partition])
-                    {
-                        _finished.Add(partition);
-                        continue;
-                    }
-                    messages.Add(ToLeased(result));
-                    if (result.Offset.Value >= _end[partition] - 1)
-                    {
-                        _finished.Add(partition);
-                    }
-                }
                 return messages;
-            }, cancellationToken);
+            }
+
+            for (var index = 0; index < messages.Count; index++)
+            {
+                var message = messages[index].Message;
+                if (BodyDecoder.TryReadSchemaId(message.Body.Span, out var schemaId) &&
+                    await registry.GetAsync(schemaId, cancellationToken).ConfigureAwait(false) is { } schema)
+                {
+                    messages[index] = messages[index] with { Message = message with { Schema = schema } };
+                }
+            }
+            return messages;
+        }
+
+        private List<LeasedMessage> Receive(int maxMessages, CancellationToken cancellationToken)
+        {
+            if (_start.Kind != BrowseStartKind.Newest)
+            {
+                return ReceiveRange(Math.Clamp(maxMessages, 1, MaximumBatch), cancellationToken);
+            }
+
+            // The newest messages: each partition's tail is read whole, then the latest ones by time are kept.
+            if (_newest is null)
+            {
+                var tail = ReceiveRange(int.MaxValue, cancellationToken);
+                _newest = new Queue<LeasedMessage>(tail
+                    .OrderByDescending(message => message.Message.EnqueuedAt ?? DateTimeOffset.MinValue)
+                    .ThenByDescending(message => message.Message.Position?.Offset ?? 0)
+                    .Take(Math.Max(1, _newestCount)));
+            }
+            var batch = new List<LeasedMessage>();
+            while (batch.Count < Math.Clamp(maxMessages, 1, MaximumBatch) && _newest.TryDequeue(out var next))
+            {
+                batch.Add(next);
+            }
+            return batch;
+        }
+
+        private List<LeasedMessage> ReceiveRange(int limit, CancellationToken cancellationToken)
+        {
+            var consumer = Open();
+            var messages = new List<LeasedMessage>();
+            while (messages.Count < limit && _finished.Count < _end.Count)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var result = consumer.Consume(TimeSpan.FromSeconds(1));
+                if (result is null)
+                {
+                    break;
+                }
+                var partition = result.Partition.Value;
+                if (_finished.Contains(partition))
+                {
+                    // Written after reading started; this read stops at the end it saw.
+                    continue;
+                }
+                if (result.IsPartitionEOF || result.Offset.Value >= _end[partition])
+                {
+                    _finished.Add(partition);
+                    continue;
+                }
+                messages.Add(ToLeased(result));
+                if (result.Offset.Value >= _end[partition] - 1)
+                {
+                    _finished.Add(partition);
+                }
+            }
+            return messages;
+        }
 
         public Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
@@ -351,15 +489,22 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             }
 
             _consumer = owner.CreateConsumer();
+            var byTime = _start is { Kind: BrowseStartKind.FromTime, Time: { } time }
+                ? _consumer.OffsetsForTimes(
+                        topic.Partitions.Select(partition => new TopicPartitionTimestamp(topic.Name, partition, new Timestamp(time.UtcDateTime))),
+                        RequestTimeout)
+                    .ToDictionary(offset => offset.Partition.Value, offset => offset.Offset.Value)
+                : null;
             var assignments = new List<TopicPartitionOffset>();
             foreach (var partition in topic.Partitions)
             {
                 var marks = _consumer.QueryWatermarkOffsets(new TopicPartition(topic.Name, partition), RequestTimeout);
-                _end[partition] = marks.High.Value;
+                var (from, to) = Range(partition, marks.Low.Value, marks.High.Value, byTime);
+                _end[partition] = to;
                 _deletableFrom[partition] = marks.Low.Value;
-                if (marks.High.Value > marks.Low.Value)
+                if (to > from)
                 {
-                    assignments.Add(new TopicPartitionOffset(topic.Name, partition, marks.Low));
+                    assignments.Add(new TopicPartitionOffset(topic.Name, partition, new Offset(from)));
                 }
                 else
                 {
@@ -368,6 +513,25 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             }
             _consumer.Assign(assignments);
             return _consumer;
+        }
+
+        /// <summary>The offsets [from, to) to read in one partition.</summary>
+        private (long From, long To) Range(int partition, long low, long high, IReadOnlyDictionary<int, long>? byTime)
+        {
+            long? position = _start.Positions?.TryGetValue(partition, out var saved) == true ? saved : null;
+            var (from, to) = _start.Kind switch
+            {
+                BrowseStartKind.Newest => (0L, Math.Min(position ?? high, high)),
+                BrowseStartKind.FromTime => (position ?? (byTime?.TryGetValue(partition, out var at) == true && at >= 0 ? at : high), high),
+                BrowseStartKind.FromOffset when _start.Partition is { } only && only != partition => (high, high),
+                BrowseStartKind.FromOffset => (position ?? _start.Offset ?? low, high),
+                _ => (position ?? low, high)
+            };
+            if (_start.Kind == BrowseStartKind.Newest)
+            {
+                from = to - Math.Max(1, _newestCount);
+            }
+            return (Math.Clamp(from, low, high), to);
         }
 
         private LeasedMessage ToLeased(ConsumeResult<byte[]?, byte[]?> result)

@@ -35,6 +35,16 @@ public interface IUserDialogService
     Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         Task.FromResult<object?>(viewModel.IsNew ? viewModel.TryBuildDefinition() : viewModel.TryBuildSettings());
 
+    /// <summary>Shows two messages side by side.</summary>
+    Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    /// <summary>Asks which file to open. Null means cancelled.</summary>
+    Task<string?> ChooseOpenFileAsync(
+        string title,
+        IReadOnlyList<(string Name, string Pattern)> fileTypes,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
+
     /// <summary>Asks where to save a file. Null means cancelled.</summary>
     Task<string?> ChooseSaveFileAsync(
         string title,
@@ -47,4 +57,11 @@ public interface IUserDialogService
 public sealed record ProfileEditorResult(
     ServiceBusProfile Profile,
     string? ConnectionString,
-    bool ReplacesConnectionString);
+    bool ReplacesConnectionString)
+{
+    /// <summary>A new Kafka Schema Registry password to store, if one was entered.</summary>
+    public string? SchemaRegistryPassword { get; init; }
+
+    /// <summary>The registry no longer needs a password, so the stored one is removed.</summary>
+    public bool RemovesSchemaRegistryPassword { get; init; }
+}

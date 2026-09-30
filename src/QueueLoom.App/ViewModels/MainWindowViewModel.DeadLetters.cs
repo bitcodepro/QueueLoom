@@ -180,6 +180,7 @@ public sealed partial class MainWindowViewModel
         }
 
         ResetBrowsePaging();
+        BeginLogRead(profile);
         _browseProfile = profile;
         _browseSource = source;
         _browseSubQueue = subQueue;

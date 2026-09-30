@@ -80,6 +80,33 @@ public sealed class RabbitMqTopologyTests
         Assert.Equal("rabbit.internal:5671", result.Profile.EndpointDisplay);
     }
 
+    [Fact]
+    public void ConnectedConsumers_AreShownOnTheQueue()
+    {
+        using var document = JsonDocument.Parse("""{"name":"orders","type":"classic","messages_ready":4,"consumers":0}""");
+        var queue = RabbitQueueInfo.From(document.RootElement);
+        var topology = new RabbitMqTopologyIndex([queue, Queue("idle", "{}")], [], []).ToTopology(DateTimeOffset.UnixEpoch);
+
+        var orders = topology.Queues.Single(item => item.Name == "orders");
+        Assert.Equal(0, orders.Consumers!.Consumers);
+        Assert.Equal("no consumers", orders.Consumers.Summary);
+        Assert.Null(topology.Queues.Single(item => item.Name == "idle").Consumers);
+        var row = new EntityItemViewModel(orders.Reference, orders.Runtime, orders.Status, false, 0, consumers: orders.Consumers);
+        Assert.True(row.HasConsumerLag);
+    }
+
+    [Fact]
+    public void ConsumerGroupLag_IsSummarisedByTheGroupFurthestBehind()
+    {
+        var activity = new Core.ServiceBus.ConsumerActivity(null,
+            [new("billing", 1204, "Stable"), new("audit", 0, "Empty"), new("search", 12)]);
+
+        Assert.Equal(1204, activity.MaximumLag);
+        Assert.Equal($"3 groups, lag up to {1204:N0} (billing)", activity.Summary);
+        Assert.StartsWith($"billing: lag {1204:N0} (Stable)", activity.Details, StringComparison.Ordinal);
+        Assert.Equal("lag 5 (a)", new Core.ServiceBus.ConsumerActivity(null, [new("a", 5)]).Summary);
+    }
+
     private static RabbitQueueInfo Queue(string name, string arguments, string policy = "{}")
     {
         using var document = JsonDocument.Parse(

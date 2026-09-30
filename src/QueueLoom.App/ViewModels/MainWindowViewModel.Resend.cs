@@ -65,7 +65,8 @@ public sealed partial class MainWindowViewModel
             Destinations.Select(destination => destination.Reference),
             profile.Name,
             requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production,
-            canRemoveOriginals: CanDeleteSelectedMessages);
+            canRemoveOriginals: CanDeleteSelectedMessages,
+            now: () => Clock.GetLocalNow());
         var options = await _dialogs.ChooseResendOptionsAsync(dialog, cancellationToken).ConfigureAwait(true);
         if (options is null)
         {
@@ -81,8 +82,19 @@ public sealed partial class MainWindowViewModel
             .Select(message => new ResendItem(
                 message.Message,
                 options.Destination ?? DeadLetterResender.OriginalDestination(message.Message.Source),
-                message.Message.CreateDraft()))
+                options.Rewrite is { } rewrite ? rewrite.Apply(message.Message.CreateDraft()) : message.Message.CreateDraft()))
             .ToArray();
+        if (options.SendAt is { } sendAt)
+        {
+            ScheduleResend(profile, items, options, sendAt);
+            using var unmark = BatchMessageUpdates();
+            foreach (var item in marked)
+            {
+                item.IsMarked = false;
+            }
+            return;
+        }
+
         RecordOperationIntent(
             options.Mode == ResendMode.Move ? "Move selected messages started" : "Resend selected messages started",
             $"{items.Length:N0} messages · {options.Destination?.DisplayName ?? "back to their sources"}",
@@ -96,6 +108,7 @@ public sealed partial class MainWindowViewModel
             .ConfigureAwait(true);
 
         RemoveResentOriginals(result);
+        using var batch = BatchMessageUpdates();
         foreach (var item in marked.Where(item => Messages.Contains(item)))
         {
             item.IsMarked = false;

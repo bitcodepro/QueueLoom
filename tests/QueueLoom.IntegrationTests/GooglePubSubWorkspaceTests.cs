@@ -78,7 +78,8 @@ public sealed class GooglePubSubWorkspaceTests : IAsyncLifetime
             with
             {
                 Provider = MessagingProvider.GooglePubSub,
-                GooglePubSub = new GooglePubSubSettings(Project, Emulators.PubSubHost)
+                GooglePubSub = new GooglePubSubSettings(Project, Emulators.PubSubHost),
+                AllowQueueManagement = true
             };
         _workspace = new GooglePubSubWorkspace(
             new InMemorySecretVault(),
@@ -93,6 +94,31 @@ public sealed class GooglePubSubWorkspaceTests : IAsyncLifetime
             await _workspace.DisposeAsync();
         }
         _directory.Dispose();
+    }
+
+    [EmulatorFact(Emulators.PubSub)]
+    public async Task Subscriptions_are_created_with_a_dead_letter_topic_changed_and_deleted()
+    {
+        var name = Emulators.Unique("invoices");
+        Assert.True(_workspace.QueueManagement!.ManagesSubscriptions);
+
+        await _workspace.CreateQueueAsync(new QueueDefinition(name,
+            new QueueSettings(TimeSpan.FromDays(2), MaxDeliveryCount: 7, LockDuration: TimeSpan.FromSeconds(30)), TopicName: _events));
+
+        var topology = await _workspace.GetTopologyAsync(forceRefresh: true);
+        var created = topology.Topics.Single(topic => topic.Name == _events).Subscriptions.Single(subscription => subscription.Name == name);
+        Assert.True(created.HasDeadLetterQueue);
+        Assert.Contains(topology.Topics, topic => topic.Name == name + "-dead-letter");
+        Assert.Equal(new QueueSettings(TimeSpan.FromDays(2), 7, TimeSpan.FromSeconds(30)), await _workspace.GetQueueSettingsAsync(name));
+
+        await _workspace.UpdateQueueSettingsAsync(name, new QueueSettings(TimeSpan.FromHours(12), 20, TimeSpan.FromSeconds(60)));
+        Assert.Equal(new QueueSettings(TimeSpan.FromHours(12), 20, TimeSpan.FromSeconds(60)), await _workspace.GetQueueSettingsAsync(name));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _workspace.UpdateQueueSettingsAsync(name, new QueueSettings(MaxDeliveryCount: 2)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _workspace.UpdateQueueSettingsAsync(_audit, new QueueSettings(MaxDeliveryCount: 9)));
+
+        await _workspace.DeleteQueueAsync(name);
+        Assert.DoesNotContain((await _workspace.GetTopologyAsync(forceRefresh: true)).Topics.SelectMany(topic => topic.Subscriptions),
+            subscription => subscription.Name == name);
     }
 
     [EmulatorFact(Emulators.PubSub)]
