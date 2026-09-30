@@ -139,6 +139,11 @@ public sealed partial class MainWindow : Window
                 _ = SavePreferenceBestEffortAsync(() =>
                     _settingsStore.UpdateAsync(settings => settings with { AlertWebhookUrl = webhook }));
                 break;
+            case nameof(MainWindowViewModel.BackupRetentionDays):
+                var retention = _viewModel.BackupRetentionDays;
+                _ = SavePreferenceBestEffortAsync(() =>
+                    _settingsStore.UpdateAsync(settings => settings with { BackupRetentionDays = retention }));
+                break;
             case nameof(MainWindowViewModel.SavedSearches):
                 var searches = _viewModel.SavedSearches.ToArray();
                 _ = SavePreferenceBestEffortAsync(() =>
