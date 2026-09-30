@@ -1,6 +1,6 @@
 name: CI
 
-# Pull requests: build and test on Windows and Linux, and attach packages for Windows, Linux and macOS.
+# Pull requests: build and test on Windows, Linux and macOS, and attach packages for all three.
 # Merges to main: the same, then publish the next version as a GitHub Release.
 #   The patch number is bumped by default; put [minor] or [major] in the first line of the
 #   merge commit (the pull request title when squash-merging) for a bigger bump,
@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -64,6 +64,9 @@ jobs:
           name: test-results-${{ matrix.os }}
           path: TestResults
 
+  # Linux only: the emulators are Linux containers, which GitHub's Windows runners cannot run and its macOS
+  # runners have no Docker for. The code they test is the same .NET on every system; the per-system parts
+  # (paths, vault, notifications, updater) are covered by the build-and-test job above.
   emulator-tests:
     name: Emulator tests (Service Bus, SQS / SNS, Pub/Sub, RabbitMQ, Kafka)
     runs-on: ubuntu-latest
