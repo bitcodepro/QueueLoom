@@ -5,6 +5,7 @@ using QueueLoom.App.Commands;
 using QueueLoom.App.Models;
 using QueueLoom.App.Services;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
@@ -119,7 +120,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         INotificationService? notifications = null,
         IThemeService? theme = null,
         ILogger<MainWindowViewModel>? logger = null,
-        IMonitorAlertService? alerts = null)
+        IMonitorAlertService? alerts = null,
+        IDeadLetterHistoryStore? history = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -242,6 +244,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeExport();
         InitializeSavedSearches();
         InitializeAlerts(alerts);
+        InitializeHistory(history);
         InitializeRetention();
         InitializeReasons();
         RefreshDeadLetterEnvironmentFilters();
@@ -323,6 +326,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             }
 
             OnPropertyChanged(nameof(CurrentPage));
+            if (CurrentPage == NavigationPage.Monitors)
+            {
+                RefreshHistory();
+            }
             if (CurrentPage == NavigationPage.Backups && _backupRepository is not null)
             {
                 if (IsBusy)

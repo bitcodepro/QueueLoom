@@ -17,6 +17,7 @@ public sealed partial class MainWindowViewModel
         var snapshot = await _workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All, cancellationToken)
             .ConfigureAwait(true);
         CaptureDlqMeasurements(profile.Id, snapshot);
+        RecordDeadLetterHistory(profile, snapshot);
         _lastDlqScanHadFailures = snapshot.HasFailures;
         UpdateDeadLetterRows(profile, snapshot, replaceExisting: true);
         var failedSources = snapshot.Entities
@@ -68,6 +69,7 @@ public sealed partial class MainWindowViewModel
                     var snapshot = await _workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All, cancellationToken)
                         .ConfigureAwait(true);
                     CaptureDlqMeasurements(profile.Id, snapshot);
+                    RecordDeadLetterHistory(profile, snapshot);
                     UpdateDeadLetterRows(profile, snapshot, replaceExisting: false);
                     total = checked(total + snapshot.TotalCount);
                     successfulEnvironments++;

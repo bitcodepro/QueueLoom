@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Monitoring;
 using QueueLoom.Infrastructure.Azure;
 using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Logging;
@@ -34,6 +35,8 @@ public static class AppServices
             MessagingWorkspaces.Create(provider.GetRequiredService<ISecretVault>(), paths));
         services.AddSingleton<IDeadLetterBackupRepository>(_ => new JsonDeadLetterBackupRepository(paths));
         services.AddSingleton<IActivityJournal>(_ => new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")));
+        services.AddSingleton<IDeadLetterHistoryStore>(_ =>
+            new JsonLinesDeadLetterHistoryStore(Path.Combine(paths.RootDirectory, "dlq-history.jsonl")));
         services.AddSingleton<IBatchReplayStore>(_ => new BatchReplayStore(Path.Combine(paths.RootDirectory, "replay")));
 
         services.AddSingleton<TopLevelAccessor>();

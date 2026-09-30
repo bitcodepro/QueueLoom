@@ -30,6 +30,7 @@
           <SolidColorBrush x:Key="WarningBrush" Color="#FFB45E" />
           <SolidColorBrush x:Key="DangerBrush" Color="#FF6B82" />
           <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A1C2A" />
+          <SolidColorBrush x:Key="SuccessSoftBrush" Color="#133427" />
           <SolidColorBrush x:Key="DangerCardBrush" Color="#231722" />
           <SolidColorBrush x:Key="DangerBorderBrush" Color="#6C2A3B" />
           <SolidColorBrush x:Key="WarningSoftBrush" Color="#33260F" />
@@ -73,6 +74,7 @@
           <SolidColorBrush x:Key="WarningBrush" Color="#9A5B00" />
           <SolidColorBrush x:Key="DangerBrush" Color="#C42842" />
           <SolidColorBrush x:Key="DangerSoftBrush" Color="#FCE9EC" />
+          <SolidColorBrush x:Key="SuccessSoftBrush" Color="#E2F4EA" />
           <SolidColorBrush x:Key="DangerCardBrush" Color="#FFF5F7" />
           <SolidColorBrush x:Key="DangerBorderBrush" Color="#F0B6C0" />
           <SolidColorBrush x:Key="WarningSoftBrush" Color="#FFF3DF" />
@@ -218,6 +220,24 @@
       <Setter Property="CornerRadius" Value="20" />
       <Setter Property="Padding" Value="10,5" />
       <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.success">
+      <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+    </Style>
+    <Style Selector="Border.trend">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="8,2" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+    </Style>
+    <Style Selector="Border.trend.rising">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource DangerBrush}" />
+    </Style>
+    <Style Selector="Border.trend.falling">
+      <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource SuccessBrush}" />
     </Style>
     <Style Selector="Border.divider">
       <Setter Property="Height" Value="1" />
