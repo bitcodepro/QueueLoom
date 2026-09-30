@@ -109,6 +109,23 @@ public sealed class CloudProviderUiTests
             editor.Close();
         }
         fixture.ViewModel.ThemePreference = AppThemePreference.Dark;
+
+        // Resending: a DLQ draft in Composer and the dialog for the ticked messages.
+        await fixture.OpenDeadLettersAsync();
+        fixture.ViewModel.OpenMessageAsDraftCommand.Execute(null);
+        fixture.ViewModel.DraftMovesOriginal = true;
+        await fixture.SettleAsync();
+        Save(fixture.Window, Path.Combine(directory, "dark-composer-dlq.png"));
+        var resend = new ResendDialogWindow(new ResendDialogViewModel(
+            fixture.ViewModel.Messages.Select(message => message.Message).ToArray(),
+            fixture.ViewModel.Destinations.Select(destination => destination.Reference),
+            "Local emulator",
+            requiresTypedConfirmation: false)
+        { Moves = true });
+        resend.Show();
+        await fixture.SettleAsync();
+        Save(resend, Path.Combine(directory, "dark-resend-dialog.png"));
+        resend.Close();
     });
 
     private static bool Visible(Window window, string text) =>

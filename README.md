@@ -1,6 +1,6 @@
 # QueueLoom
 
-A Windows desktop app for message queues in **Azure Service Bus**, **Amazon SQS / SNS** and **Google Cloud Pub/Sub**. Browse queues, topics and subscriptions, find messages in dead-letter queues, and back up, delete, resend or restore them safely. AI assistants (Claude, Cursor, VS Code) can use it too, through MCP.
+A desktop app for Windows, macOS and Linux for message queues in **Azure Service Bus**, **Amazon SQS / SNS** and **Google Cloud Pub/Sub**. Browse queues, topics and subscriptions, find messages in dead-letter queues, and back up, delete, resend or restore them safely. AI assistants (Claude, Cursor, VS Code) can use it too, through MCP.
 
 ![QueueLoom: dead-letter search with two messages ticked for deletion](docs/images/messages-dark.png)
 
@@ -19,7 +19,13 @@ A Windows desktop app for message queues in **Azure Service Bus**, **Amazon SQS 
 
 ## Install
 
-Download `QueueLoom-<version>-win-x64.zip` from [Releases](../../releases), unzip it and run `QueueLoom.exe`. No .NET installation is needed.
+Download the package for your system from [Releases](../../releases). No .NET installation is needed.
+
+| System | Package | Start |
+|---|---|---|
+| Windows | `QueueLoom-<version>-win-x64.zip` | unzip, run `QueueLoom.exe` |
+| macOS (Apple silicon / Intel) | `QueueLoom-<version>-osx-arm64.zip` / `-osx-x64.zip` | unzip, move `QueueLoom.app` to Applications; the first time, right-click it → **Open** (the app is not notarized by Apple) |
+| Linux | `QueueLoom-<version>-linux-x64.tar.gz` | `tar -xzf` it, run `./QueueLoom` |
 
 ## Getting started
 
@@ -34,12 +40,14 @@ The badge next to each environment (**AZURE**, **AWS**, **GCP**) shows its cloud
 
 ## What you can do
 
-- **Find dead letters.** On **Messages / DLQ**, search by Message ID, Correlation ID, subject, body text or a property.
+- **Find dead letters.** On **Messages / DLQ**, search by Message ID, Correlation ID, subject, body text or a property, optionally only from the last hour, day or week. **Save search** keeps a search to run again with one click.
 - **Delete only the messages you need.** Tick the found messages and press **Delete N messages…**; the others stay in the queue.
+- **Resend.** Tick messages and press **Resend N messages…**: back to where they came from or to any queue or topic, as **copies** (the originals stay) or as a **move** (sent first, then the originals are backed up and removed from the DLQ). In **Composer**, **Open as draft** lets you edit one message before sending it the same two ways.
+- **Export** the ticked or listed messages to JSON or CSV.
 - **Empty a dead-letter queue**, with a limit on how many messages to remove.
-- **Resend a message.** **Open as draft** copies it to **Composer**, where you can edit it and send it.
-- **Restore from backups** or replay copies to any queue or topic. On **Backups**, pick a group on the left (an environment, a topic with its subscriptions, a subscription or a queue) and delete all its backups at once.
-- **Watch dead-letter counts** on **Monitors** while the app is open.
+- **Restore from backups** or replay copies to any queue or topic. On **Backups**, pick a group on the left (an environment, a topic with its subscriptions, a subscription or a queue) and delete all its backups at once, or keep backups for a set number of days.
+- **Watch dead-letter counts** on **Monitors** while the app is open. New dead letters can also show a system notification and post to a Slack or Microsoft Teams webhook.
+- **Session-enabled** Azure queues and subscriptions work too: their dead letters like any other, their active messages session by session.
 
 QueueLoom never deletes anything without a local backup, and it asks for confirmation first. Production environments are read-only until you press **Unlock 10 min** and type the environment name.
 
@@ -50,7 +58,7 @@ QueueLoom never deletes anything without a local backup, and it asks for confirm
 | Queues | SQS queues | none |
 | Topics and subscriptions | SNS topics and their subscriptions | topics and subscriptions |
 | Dead-letter queue | the queue in the redrive policy | a subscription on the dead-letter topic |
-| Counters | approximate, from SQS | not reported by Pub/Sub; dead letters are counted when you scan |
+| Counters | approximate, from SQS | from Cloud Monitoring (needs the Monitoring Viewer role); otherwise dead letters are counted when you scan |
 
 SQS and Pub/Sub cannot peek. To show messages, QueueLoom receives them and hands them back unchanged a moment later. This counts as one more receive (SQS) or delivery attempt (Pub/Sub), and in SQS FIFO queues it shows up to 10 messages per message group. For local testing, set the endpoint to [LocalStack](https://localstack.cloud) (`http://localhost:4566`) or the Pub/Sub emulator (`localhost:8085`).
 
@@ -102,8 +110,8 @@ Add `"--read-only"` to `args` if the assistant should never be able to change an
 
 ## Where data is stored
 
-Backups are saved in the `backups` folder next to `QueueLoom.exe` (on Linux and macOS, next to the program file). If that folder cannot be written, for example under Program Files, they go to the data folder instead. Settings, encrypted credentials and logs are kept in `%LOCALAPPDATA%\QueueLoom`. Backups contain message bodies in plain text.
+Backups are saved in the `backups` folder next to `QueueLoom.exe` (on Linux and macOS, next to the program file). If that folder cannot be written, for example under Program Files, they go to the data folder instead. Settings, encrypted credentials and logs are kept in `%LOCALAPPDATA%\QueueLoom` (`~/.local/share/QueueLoom` on Linux, `~/Library/Application Support/QueueLoom` on macOS). Backups contain message bodies in plain text.
 
 ---
 
-Build from source: `dotnet test QueueLoom.slnx` (.NET 10 SDK). Tests against LocalStack and the Pub/Sub emulator run when `QUEUELOOM_LOCALSTACK_URL` and `QUEUELOOM_PUBSUB_EMULATOR` are set. · [MIT License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)
+Build from source: `dotnet test QueueLoom.slnx` (.NET 10 SDK). Tests against LocalStack, the Pub/Sub emulator and the Service Bus emulator run when `QUEUELOOM_LOCALSTACK_URL`, `QUEUELOOM_PUBSUB_EMULATOR` and `QUEUELOOM_SERVICEBUS_EMULATOR` are set. · [MIT License](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md)

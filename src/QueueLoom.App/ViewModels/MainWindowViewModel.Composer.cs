@@ -210,7 +210,7 @@ public sealed partial class MainWindowViewModel
             : ServiceBusEntityReference.Queue(selected.Source.Name);
         SelectedDestination = Destinations.FirstOrDefault(item => item.Reference == destination);
         DraftOriginNotice = originNotice ?? (selected.IsDeadLetter
-            ? "DLQ draft · resend sends a copy. Original remains in DLQ."
+            ? "DLQ draft · choose below whether the original stays in the DLQ."
             : "Peeked active-message draft · Send creates a new copy and leaves the original message unchanged.");
         if (destination.Kind == ServiceBusEntityKind.Topic)
         {
