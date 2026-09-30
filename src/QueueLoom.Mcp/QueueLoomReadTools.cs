@@ -9,8 +9,10 @@ namespace QueueLoom.Mcp;
 
 /// <summary>Read-only tools. They never lock, settle or send messages, so they run without approval.</summary>
 [McpServerToolType]
-public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSettings settings)
+public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSettings settings, IServiceProvider services)
 {
+    private IDeadLetterHistoryStore? History => services.GetService(typeof(IDeadLetterHistoryStore)) as IDeadLetterHistoryStore;
+
     private const string EnvironmentDescription =
         "Saved environment name (see list_environments). Optional when only one environment is saved.";
 
@@ -57,11 +59,41 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var snapshot = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All, token), cancellationToken)
                 .ConfigureAwait(false);
+            History?.Append(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name));
             return new DeadLetterScanInfo(
                 profile.Name,
                 snapshot.CapturedAt,
                 snapshot.TotalCount,
                 snapshot.Entities.Where(entity => entity.Count > 0 || !entity.IsSuccessful).Select(McpMapping.ToInfo).ToArray());
+        });
+
+    [McpServerTool(Name = "get_dead_letter_history", Title = "Dead-letter history", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("How the number of dead-lettered messages in an environment changed over time, from QueueLoom's own records " +
+                 "(every monitor check and scan, kept 30 days). Returns the count now, at the start of the period and at its peak, " +
+                 "up to 48 points over time and the queues that changed most. Use it to answer 'when did this start' or 'is it getting worse'.")]
+    public Task<DeadLetterHistoryInfo> GetDeadLetterHistoryAsync(
+        [Description(EnvironmentDescription)] string? environment = null,
+        [Description("How many hours back to look, 1-720 (30 days). Default 24.")] int hours = 24,
+        CancellationToken cancellationToken = default) =>
+        McpGuard.RunAsync(async () =>
+        {
+            var history = History ?? throw new InvalidOperationException("Dead-letter history is not available in this QueueLoom.");
+            if (hours is < 1 or > 720)
+            {
+                throw new InvalidOperationException("Use 1-720 hours.");
+            }
+            var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var to = DateTimeOffset.UtcNow;
+            var from = to.AddHours(-hours);
+            var summary = DeadLetterHistory.Summarize(history.Read(profile.Id, from), from, to, maximumPoints: 48, maximumSources: 10);
+            return summary is null
+                ? new DeadLetterHistoryInfo(profile.Name, from, to, 0, null, null, null, null, [], [],
+                    "Nothing was recorded in this period. History grows while a QueueLoom monitor runs or when dead letters are scanned.")
+                : new DeadLetterHistoryInfo(profile.Name, from, to, summary.SampleCount, summary.Now, summary.Start, summary.Change,
+                    new DeadLetterHistoryPointInfo(summary.Peak.At, summary.Peak.Count),
+                    summary.Points.Select(point => new DeadLetterHistoryPointInfo(point.At, point.Count)).ToArray(),
+                    summary.Sources.Select(source => new DeadLetterTrendInfo(source.Name, source.Start, source.Now, source.Change)).ToArray(),
+                    null);
         });
 
     [McpServerTool(Name = "peek_messages", Title = "Peek messages", ReadOnly = true, Idempotent = true)]

@@ -29,15 +29,54 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.Equal(
-            ["delete_dead_letter_messages", "export_messages", "get_entities", "list_environments", "peek_messages",
+            ["delete_dead_letter_messages", "export_messages", "get_dead_letter_history", "get_entities", "list_environments", "peek_messages",
              "purge_dead_letters", "resend_dead_letters", "scan_dead_letters", "search_dead_letters", "send_message"],
             tools.Select(tool => tool.Name).Order());
-        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages" })
+        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages", "get_dead_letter_history" })
         {
             Assert.True(tools.Single(tool => tool.Name == name).ProtocolTool.Annotations?.ReadOnlyHint);
         }
         Assert.True(tools.Single(tool => tool.Name == "delete_dead_letter_messages").ProtocolTool.Annotations?.DestructiveHint);
         Assert.False(tools.Single(tool => tool.Name == "send_message").ProtocolTool.Annotations?.ReadOnlyHint ?? false);
+    }
+
+    [Fact]
+    public async Task DeadLetterHistory_ComesFromScansAndMonitorChecks()
+    {
+        await using var server = await McpTestServer.StartAsync();
+
+        var empty = await server.CallAsync("get_dead_letter_history");
+        Assert.Equal(0, empty.GetProperty("sampleCount").GetInt32());
+        Assert.Contains("Nothing was recorded", empty.GetProperty("note").GetString(), StringComparison.Ordinal);
+
+        await server.CallAsync("scan_dead_letters");
+        var history = await server.CallAsync("get_dead_letter_history", new() { ["hours"] = 6 });
+
+        Assert.Equal(1, history.GetProperty("sampleCount").GetInt32());
+        Assert.Equal(2, history.GetProperty("now").GetInt64());
+        Assert.Equal("orders", history.GetProperty("sources")[0].GetProperty("source").GetString());
+        Assert.Contains("1-720", await server.CallForErrorAsync("get_dead_letter_history", new() { ["hours"] = 5000 }), StringComparison.Ordinal);
+    }
+
+    public sealed class MemoryHistoryStore : IDeadLetterHistoryStore
+    {
+        private readonly List<DeadLetterHistorySample> _samples = [];
+
+        public void Append(DeadLetterHistorySample sample)
+        {
+            lock (_samples)
+            {
+                _samples.Add(sample);
+            }
+        }
+
+        public IReadOnlyList<DeadLetterHistorySample> Read(Guid profileId, DateTimeOffset since)
+        {
+            lock (_samples)
+            {
+                return _samples.Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray();
+            }
+        }
     }
 
     [Fact]
@@ -48,7 +87,7 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.DoesNotContain(tools, tool => tool.ProtocolTool.Annotations?.ReadOnlyHint != true);
-        Assert.Equal(6, tools.Count);
+        Assert.Equal(7, tools.Count);
     }
 
     [Fact]
@@ -320,6 +359,7 @@ public sealed class McpServerTests
             workspace.Snapshots[profile.Id] = new DeadLetterSnapshot(profile.Id, DateTimeOffset.UtcNow,
                 [new DeadLetterEntitySnapshot(Orders.Reference, 2)]);
             var recording = new RecordingApprover(approve);
+            var history = new MemoryHistoryStore();
 
             var clientToServer = new Pipe();
             var serverToClient = new Pipe();
@@ -331,6 +371,7 @@ public sealed class McpServerTests
                 {
                     services.AddSingleton<IProfileRepository>(new FakeProfileRepository([profile], profile.Id));
                     services.AddSingleton<IServiceBusWorkspace>(workspace);
+                    services.AddSingleton<IDeadLetterHistoryStore>(history);
                     services.AddSingleton(approver ?? recording);
                 },
                 input: clientToServer.Reader.AsStream(),
@@ -347,6 +388,7 @@ public sealed class McpServerTests
                 options);
             return new McpTestServer
             {
+                History = history,
                 Client = client,
                 Workspace = workspace,
                 Approver = recording,
@@ -355,6 +397,8 @@ public sealed class McpServerTests
                 Stop = stop
             };
         }
+
+        public required MemoryHistoryStore History { get; init; }
 
         public async Task<JsonElement> CallAsync(string tool, Dictionary<string, object?>? arguments = null)
         {

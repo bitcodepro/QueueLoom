@@ -1,3 +1,4 @@
+using QueueLoom.Core.Monitoring;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -60,6 +61,8 @@ internal static class McpMode
                 services.AddSingleton<IServiceBusWorkspace>(provider =>
                     MessagingWorkspaces.Create(provider.GetRequiredService<ISecretVault>(), paths));
                 services.AddSingleton<IActivityJournal>(_ => new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")));
+                services.AddSingleton<IDeadLetterHistoryStore>(_ =>
+                    new JsonLinesDeadLetterHistoryStore(Path.Combine(paths.RootDirectory, "dlq-history.jsonl")));
                 services.AddSingleton(approver);
             },
             logging =>

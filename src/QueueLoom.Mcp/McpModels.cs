@@ -30,6 +30,24 @@ public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, 
 
 public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? Count, string? Error);
 
+public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count);
+
+public sealed record DeadLetterTrendInfo(string Source, long Start, long Now, long Change);
+
+/// <param name="Note">Why there is nothing to show, when nothing was recorded.</param>
+public sealed record DeadLetterHistoryInfo(
+    string Environment,
+    DateTimeOffset From,
+    DateTimeOffset To,
+    int SampleCount,
+    long? Now,
+    long? Start,
+    long? Change,
+    DeadLetterHistoryPointInfo? Peak,
+    IReadOnlyList<DeadLetterHistoryPointInfo> Points,
+    IReadOnlyList<DeadLetterTrendInfo> Sources,
+    string? Note);
+
 public sealed record DeadLetterScanInfo(string Environment, DateTimeOffset CapturedAt, long TotalCount, IReadOnlyList<DeadLetterSourceInfo> Sources);
 
 public sealed record MessageInfo(
