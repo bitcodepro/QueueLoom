@@ -198,3 +198,32 @@ public sealed partial class ViewModelStateTests
         Assert.False(viewModel.CompareMarkedMessagesCommand.CanExecute(null));
     }
 }
+
+public sealed partial class ViewModelStateTests
+{
+    [Fact]
+    public async Task LargeDeadLetterLists_TickAndUntickInOnePass()
+    {
+        var profile = CreateProfile("Orders", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace());
+        var source = ServiceBusEntityReference.Queue("orders");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        viewModel.ReplaceMessages(Enumerable.Range(1, 30_000).Select(index => new MessageItemViewModel(new BrowsedMessage(source,
+            ServiceBusSubQueue.DeadLetter, index, new byte[] { 1 }, new EditableMessageProperties(MessageId: $"m-{index}"),
+            deadLetterReason: index % 3 == 0 ? "Timeout" : "Invalid"))));
+
+        viewModel.AreAllMessagesMarked = true;
+        Assert.Equal(30_000, viewModel.MarkedMessageCount);
+        Assert.Equal("Delete 30,000 messages…", viewModel.DeleteMarkedMessagesLabel);
+        viewModel.AreAllMessagesMarked = false;
+        Assert.False(viewModel.HasMarkedMessages);
+        var timeout = viewModel.DeadLetterReasons.Single(reason => reason.Reason == "Timeout");
+        timeout.Select!.Execute(timeout);
+        Assert.Equal(10_000, viewModel.MarkedMessageCount);
+        viewModel.Messages.Clear();
+        Assert.Equal(0, viewModel.MarkedMessageCount);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), $"Took {watch.Elapsed}");
+    }
+}

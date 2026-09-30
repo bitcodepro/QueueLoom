@@ -57,9 +57,9 @@ public sealed record DeadLetterSearchRequest
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(batchSize, BrowseMessagesRequest.MaximumMaxMessages);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumMessagesPerTarget, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumMessagesPerTarget, 10_000);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumMessagesPerTarget, 100_000);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumResults, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumResults, 5_000);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumResults, 50_000);
 
         Query = query.Trim();
         if (Query.Length > MaximumQueryLength)

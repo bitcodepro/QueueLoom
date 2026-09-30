@@ -54,8 +54,10 @@ public sealed partial class MainWindowViewModel
     public ApplicationPropertyType PropertyType { get; set; } = ApplicationPropertyType.String;
     public IReadOnlyList<ApplicationPropertyType> PropertyTypes { get; } = Enum.GetValues<ApplicationPropertyType>();
     public bool CanLoadMoreMessages => !IsBusy && !_browseExhausted && _browseSource is not null &&
-        _browseProfile?.Id == ConnectedProfileId && Messages.Count < 1000 && RetainedBrowseBytes < 32 * 1024 * 1024;
+        _browseProfile?.Id == ConnectedProfileId && Messages.Count < BrowseDisplayLimit && RetainedBrowseBytes < BrowseByteLimit;
     private long RetainedBrowseBytes => Messages.Sum(m => (long)m.Message.Body.Length);
+    private const int BrowseDisplayLimit = 10_000;
+    private const long BrowseByteLimit = 128L * 1024 * 1024;
     public bool HasMessages => Messages.Count > 0;
     public bool HasEntities => Entities.Count > 0;
     public bool UsesSampledCounts => _topology?.UsesSampledCounts == true;
@@ -65,7 +67,7 @@ public sealed partial class MainWindowViewModel
     public string EmptyMessagesText => !IsConnected ? "Connect an environment to browse messages." : "Select a source and Peek, or search dead letters.";
     public string BrowsePageStatus => _browseSource is null ? DeadLetterSearchStatus :
         $"{Messages.Count:N0} loaded · {RetainedBrowseBytes / 1024d:N1} KiB retained · " +
-        (_browseDisplayLimit || Messages.Count >= 1000 ? "Display limit reached (1,000 messages / 32 MiB)" :
+        (_browseDisplayLimit || Messages.Count >= BrowseDisplayLimit ? "Display limit reached (10,000 messages / 128 MiB)" :
             _browseExhausted ? "End of available messages" : "Use Load next 100 to continue");
 
     private void InitializeOperationsFeatures()
@@ -109,7 +111,11 @@ public sealed partial class MainWindowViewModel
             () => _backupRepository is not null && _launcher is not null);
         InitializeReplayFeatures();
         InitializeLogReading();
-        Messages.CollectionChanged += (_, _) => NotifyBrowseFeatures();
+        Messages.CollectionChanged += (_, _) =>
+        {
+            if (_messageBatchDepth > 0) _messagesChangedInBatch = true;
+            else NotifyBrowseFeatures();
+        };
         Entities.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasEntities));
         PropertyChanged += (_, args) =>
         {
@@ -148,6 +154,7 @@ public sealed partial class MainWindowViewModel
         {
             AdvanceLogPositions(page);
         }
+        using var batch = BatchMessageUpdates();
         var seen = Messages.Select(m => m.Message.SequenceNumber).ToHashSet();
         var bytes = RetainedBrowseBytes;
         var ordered = page.All(m => m.HasSequenceNumber)
@@ -157,7 +164,7 @@ public sealed partial class MainWindowViewModel
                 : page.OrderBy(m => m.EnqueuedAt ?? DateTimeOffset.MaxValue).ThenBy(m => m.Properties.MessageId, StringComparer.Ordinal);
         foreach (var message in ordered)
         {
-            if (Messages.Count >= 1000 || bytes + message.Body.Length > 32 * 1024 * 1024)
+            if (Messages.Count >= BrowseDisplayLimit || bytes + message.Body.Length > BrowseByteLimit)
             { _browseExhausted = true; _browseDisplayLimit = true; break; }
             if (!seen.Add(message.SequenceNumber)) continue;
             Messages.Add(new MessageItemViewModel(message, profile.Id, profile.Name, profile.EnvironmentLabel, profile.EnvironmentTone));

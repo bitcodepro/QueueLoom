@@ -87,6 +87,7 @@ public sealed partial class MainWindowViewModel
         if (options.SendAt is { } sendAt)
         {
             ScheduleResend(profile, items, options, sendAt);
+            using var unmark = BatchMessageUpdates();
             foreach (var item in marked)
             {
                 item.IsMarked = false;
@@ -107,6 +108,7 @@ public sealed partial class MainWindowViewModel
             .ConfigureAwait(true);
 
         RemoveResentOriginals(result);
+        using var batch = BatchMessageUpdates();
         foreach (var item in marked.Where(item => Messages.Contains(item)))
         {
             item.IsMarked = false;

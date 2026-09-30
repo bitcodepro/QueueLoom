@@ -11,11 +11,16 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>Backs up and deletes exactly the messages the operator ticked, e.g. the results of a DLQ search.</summary>
 public sealed partial class MainWindowViewModel
 {
+    private readonly HashSet<MessageItemViewModel> _trackedMessages = [];
+    private int _markedCount;
+    private int _messageBatchDepth;
+    private bool _messagesChangedInBatch;
+
     public AsyncRelayCommand DeleteMarkedMessagesCommand { get; private set; } = null!;
 
-    public int MarkedMessageCount => Messages.Count(message => message.IsMarked);
+    public int MarkedMessageCount => _markedCount;
 
-    public bool HasMarkedMessages => Messages.Any(message => message.IsMarked);
+    public bool HasMarkedMessages => _markedCount > 0;
 
     public bool HasDeletableMessages => Messages.Any(message => message.CanDelete);
 
@@ -67,6 +72,7 @@ public sealed partial class MainWindowViewModel
         set
         {
             var mark = value == true;
+            using var batch = BatchMessageUpdates();
             foreach (var message in Messages)
             {
                 message.IsMarked = mark;
@@ -84,22 +90,95 @@ public sealed partial class MainWindowViewModel
 
     private void OnMessagesChangedForDeletion(object? sender, NotifyCollectionChangedEventArgs args)
     {
+        if (args.Action == NotifyCollectionChangedAction.Reset)
+        {
+            // Clear() does not list the removed items, so the tracked set says which ones to let go.
+            foreach (var item in _trackedMessages.Where(item => !Messages.Contains(item)).ToArray())
+            {
+                Untrack(item);
+            }
+        }
         foreach (var item in args.OldItems?.OfType<MessageItemViewModel>() ?? [])
         {
-            item.PropertyChanged -= OnMessageMarkChanged;
+            Untrack(item);
         }
         foreach (var item in args.NewItems?.OfType<MessageItemViewModel>() ?? [])
         {
-            item.PropertyChanged += OnMessageMarkChanged;
+            if (_trackedMessages.Add(item))
+            {
+                item.PropertyChanged += OnMessageMarkChanged;
+                _markedCount += item.IsMarked ? 1 : 0;
+            }
         }
-        NotifyMarkedMessages();
+        NotifyMarkedMessagesOrDefer();
+    }
+
+    private void Untrack(MessageItemViewModel item)
+    {
+        if (_trackedMessages.Remove(item))
+        {
+            item.PropertyChanged -= OnMessageMarkChanged;
+            _markedCount -= item.IsMarked ? 1 : 0;
+        }
     }
 
     private void OnMessageMarkChanged(object? sender, PropertyChangedEventArgs args)
     {
-        if (args.PropertyName == nameof(MessageItemViewModel.IsMarked))
+        if (args.PropertyName == nameof(MessageItemViewModel.IsMarked) && sender is MessageItemViewModel item)
         {
-            NotifyMarkedMessages();
+            _markedCount += item.IsMarked ? 1 : -1;
+            NotifyMarkedMessagesOrDefer();
+        }
+    }
+
+    /// <summary>
+    /// Ticking all of 50,000 messages must not rebuild the reasons and labels 50,000 times: inside a batch the
+    /// change is only noted, and the batch refreshes everything once when it ends.
+    /// </summary>
+    /// <summary>Replaces the listed messages in one update.</summary>
+    public void ReplaceMessages(IEnumerable<MessageItemViewModel> messages)
+    {
+        using var batch = BatchMessageUpdates();
+        Messages.Clear();
+        foreach (var message in messages)
+        {
+            Messages.Add(message);
+        }
+    }
+
+    private IDisposable BatchMessageUpdates()
+    {
+        _messageBatchDepth++;
+        return new MessageBatch(this);
+    }
+
+    private void NotifyMarkedMessagesOrDefer()
+    {
+        if (_messageBatchDepth > 0)
+        {
+            _messagesChangedInBatch = true;
+            return;
+        }
+        NotifyMarkedMessages();
+    }
+
+    private sealed class MessageBatch(MainWindowViewModel owner) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
+            if (--owner._messageBatchDepth == 0 && owner._messagesChangedInBatch)
+            {
+                owner._messagesChangedInBatch = false;
+                owner.NotifyMarkedMessages();
+                owner.NotifyBrowseFeatures();
+            }
         }
     }
 
@@ -269,6 +348,7 @@ public sealed partial class MainWindowViewModel
         var deleted = removed
             .Select(message => (message.Source, message.SubQueue, message.SequenceNumber))
             .ToHashSet();
+        using var batch = BatchMessageUpdates();
         foreach (var item in Messages
                      .Where(item => deleted.Contains((item.Message.Source, item.Message.SubQueue, item.Message.SequenceNumber)))
                      .ToArray())

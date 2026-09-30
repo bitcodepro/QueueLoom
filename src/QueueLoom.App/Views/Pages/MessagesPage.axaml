@@ -42,8 +42,12 @@
             </DataTemplate>
           </ComboBox.ItemTemplate>
         </ComboBox>
-        <Button Grid.Column="4" Content="Search DLQ" Classes="primary"
-                Command="{Binding SearchDeadLettersCommand}" ToolTip.Tip="Search dead letters (Enter)" />
+        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="8">
+          <CheckBox Content="Deep" IsChecked="{Binding DeepSearch}" IsEnabled="{Binding !IsBusy}" MinWidth="0"
+                    ToolTip.Tip="For large dead-letter queues: read up to 20,000 messages per queue and keep up to 20,000 matches. It can take several minutes; Esc cancels." />
+          <Button Content="Search DLQ" Classes="primary"
+                  Command="{Binding SearchDeadLettersCommand}" ToolTip.Tip="Search dead letters (Enter)" />
+        </StackPanel>
         <Button Grid.Column="6" Content="Save search" Classes="quiet"
                 Command="{Binding SaveSearchCommand}"
                 ToolTip.Tip="Keep this text, environment and time window to run again later" />
