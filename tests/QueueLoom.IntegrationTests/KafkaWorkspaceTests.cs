@@ -204,6 +204,27 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
         Assert.Equal(new LogPosition(0, 0), positioned[0].Position);
     }
 
+    [EmulatorFact(Emulators.Kafka)]
+    public async Task Consumer_group_lag_is_shown_on_the_topic()
+    {
+        await ProduceAsync(_payments, "p-1", "p-2", "p-3");
+        var group = Emulators.Unique("billing");
+        using (var consumer = new ConsumerBuilder<Ignore, Ignore>(new ConsumerConfig
+               {
+                   BootstrapServers = Emulators.KafkaServers, GroupId = group, EnableAutoCommit = false
+               }).Build())
+        {
+            consumer.Commit([new TopicPartitionOffset(_payments, 0, 1)]);
+        }
+
+        var topology = await _workspace.GetTopologyAsync(forceRefresh: true);
+
+        var payments = topology.Queues.Single(queue => queue.Name == _payments);
+        var lag = Assert.Single(payments.Consumers!.Groups, item => item.Group == group);
+        Assert.Equal(2, lag.Lag);
+        Assert.Null(topology.Queues.Single(queue => queue.Name == _orders).Consumers);
+    }
+
     private async Task ProduceAsync(string topic, params string[] ids)
     {
         foreach (var id in ids)

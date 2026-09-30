@@ -12,5 +12,8 @@ public sealed record ServiceBusQueue(
     /// <summary>A short provider-specific note shown next to the name, for example which queue this one is the DLQ of.</summary>
     public string? Note { get; init; }
 
+    /// <summary>Connected consumers (RabbitMQ) or consumer group lag (Kafka); null where the service does not say.</summary>
+    public ConsumerActivity? Consumers { get; init; }
+
     public ServiceBusEntityReference Reference => ServiceBusEntityReference.Queue(Name);
 }

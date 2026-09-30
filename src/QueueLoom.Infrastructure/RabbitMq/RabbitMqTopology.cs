@@ -16,6 +16,9 @@ internal sealed record RabbitQueueInfo(
     long? DeliveryLimit,
     string State)
 {
+    /// <summary>Connected consumers; null when the management API leaves the field out.</summary>
+    public int? Consumers { get; init; }
+
     public bool IsStream => Type == "stream";
 
     public bool IsQuorum => Type == "quorum";
@@ -52,7 +55,10 @@ internal sealed record RabbitQueueInfo(
             Setting("x-dead-letter-exchange", "dead-letter-exchange"),
             Setting("x-dead-letter-routing-key", "dead-letter-routing-key"),
             Limit(),
-            queue.TryGetProperty("state", out var state) ? state.GetString() ?? "running" : "running");
+            queue.TryGetProperty("state", out var state) ? state.GetString() ?? "running" : "running")
+        {
+            Consumers = queue.TryGetProperty("consumers", out var consumers) && consumers.TryGetInt32(out var count) ? count : null
+        };
     }
 
     private static long ReadLong(JsonElement element, string name) =>
@@ -156,7 +162,8 @@ internal sealed class RabbitMqTopologyIndex
                 queue.State is "running" or "idle" or "live" ? ServiceBusEntityStatus.Active : ServiceBusEntityStatus.Unknown)
             {
                 HasDeadLetterQueue = deadLetter is not null,
-                Note = notes.Count == 0 ? null : string.Join(" · ", notes)
+                Note = notes.Count == 0 ? null : string.Join(" · ", notes),
+                Consumers = queue.Consumers is { } consumers ? ConsumerActivity.Connected(consumers) : null
             };
         });
 

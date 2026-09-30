@@ -121,6 +121,9 @@
                   <TextBlock Text="{Binding Detail}" Classes="muted" FontSize="11"
                              IsVisible="{Binding HasDetail}"
                              TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Detail}" />
+                  <TextBlock Text="{Binding ConsumersDisplay}" FontSize="11" IsVisible="{Binding HasConsumers}"
+                             Classes.muted="{Binding !HasConsumerLag}" Classes.warning="{Binding HasConsumerLag}"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ConsumersTip}" />
                 </StackPanel>
                 <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" Classes="muted" Margin="0,0,12,0"
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis"

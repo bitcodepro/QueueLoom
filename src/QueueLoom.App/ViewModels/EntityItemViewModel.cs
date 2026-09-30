@@ -14,8 +14,10 @@ public sealed class EntityItemViewModel
         int indent,
         string? note = null,
         string topicKindName = "topic",
-        string queueKindName = "queue")
+        string queueKindName = "queue",
+        ConsumerActivity? consumers = null)
     {
+        Consumers = consumers;
         _topicKindName = topicKindName;
         _queueKindName = queueKindName;
         ArgumentOutOfRangeException.ThrowIfNegative(indent);
@@ -37,6 +39,18 @@ public sealed class EntityItemViewModel
     public string Detail => Note ?? ParentPath;
 
     public bool HasDetail => !string.IsNullOrEmpty(Detail);
+
+    /// <summary>Connected consumers (RabbitMQ) or consumer group lag (Kafka).</summary>
+    public ConsumerActivity? Consumers { get; }
+
+    public bool HasConsumers => Consumers is not null;
+
+    public string ConsumersDisplay => Consumers?.Summary ?? string.Empty;
+
+    public string ConsumersTip => Consumers?.Details ?? string.Empty;
+
+    /// <summary>Highlighted when a group is behind, or when messages wait in a queue nobody reads.</summary>
+    public bool HasConsumerLag => Consumers is { MaximumLag: > 0 } || Consumers is { Consumers: 0 } && Active > 0;
 
     public ServiceBusEntityReference Reference { get; }
 

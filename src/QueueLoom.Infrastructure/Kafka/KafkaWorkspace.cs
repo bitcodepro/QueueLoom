@@ -18,6 +18,7 @@ namespace QueueLoom.Infrastructure.Kafka;
 public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 {
     private const int MaximumBatch = 100;
+    private const int MaximumConsumerGroups = 200;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
     private readonly ISecretVault _secretVault;
@@ -131,6 +132,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 {
                     long retained = 0;
                     string? countError = null;
+                    var ends = new Dictionary<int, long>();
                     foreach (var partition in topic.Partitions)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -142,16 +144,81 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                             break;
                         }
                         retained += Math.Max(0, marks.High.Value - marks.Low.Value);
+                        ends[partition.PartitionId] = marks.High.Value;
                     }
                     return new KafkaTopicInfo(topic.Topic, topic.Partitions.Select(partition => partition.PartitionId).ToArray(), retained)
                     {
-                        CountError = countError
+                        CountError = countError,
+                        Ends = ends
                     };
                 })
                 .ToArray();
             return new KafkaTopologyIndex(topics, suffixes);
         }, cancellationToken).ConfigureAwait(false);
+        _index = await WithConsumerLagAsync(_index, cancellationToken).ConfigureAwait(false);
         return _index.ToTopology(TimeProvider.GetUtcNow());
+    }
+
+    /// <summary>
+    /// Adds each consumer group's lag: per partition, the high watermark minus the group's committed offset. Lag is
+    /// extra information, so a cluster that refuses to list groups (missing ACLs) still shows its topics.
+    /// </summary>
+    private async Task<KafkaTopologyIndex> WithConsumerLagAsync(KafkaTopologyIndex index, CancellationToken cancellationToken)
+    {
+        List<ConsumerGroupListing> groups;
+        try
+        {
+            groups = (await Admin.ListConsumerGroupsAsync(new ListConsumerGroupsOptions { RequestTimeout = RequestTimeout })
+                    .ConfigureAwait(false)).Valid
+                .Where(group => !group.GroupId.StartsWith("queueloom-reader-", StringComparison.Ordinal))
+                .OrderBy(group => group.GroupId, StringComparer.Ordinal)
+                .Take(MaximumConsumerGroups)
+                .ToList();
+        }
+        catch (KafkaException)
+        {
+            return index;
+        }
+
+        var lags = new Dictionary<string, List<ConsumerGroupLag>>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            List<ListConsumerGroupOffsetsResult> offsets;
+            try
+            {
+                offsets = await Admin.ListConsumerGroupOffsetsAsync(
+                        [new ConsumerGroupTopicPartitions(group.GroupId, null)],
+                        new ListConsumerGroupOffsetsOptions { RequestTimeout = RequestTimeout, RequireStableOffsets = false })
+                    .ConfigureAwait(false);
+            }
+            catch (KafkaException)
+            {
+                continue;
+            }
+
+            foreach (var topic in offsets.SelectMany(result => result.Partitions).Where(partition => partition.Offset.Value >= 0)
+                         .GroupBy(partition => partition.Topic, StringComparer.Ordinal))
+            {
+                if (index.Find(topic.Key) is not { } info)
+                {
+                    continue;
+                }
+                var lag = topic.Sum(partition => info.Ends.TryGetValue(partition.Partition.Value, out var end)
+                    ? Math.Max(0, end - partition.Offset.Value)
+                    : 0);
+                if (!lags.TryGetValue(topic.Key, out var list))
+                {
+                    lags[topic.Key] = list = [];
+                }
+                list.Add(new ConsumerGroupLag(group.GroupId, lag, group.State.ToString()));
+            }
+        }
+
+        return index with
+        {
+            Topics = index.Topics.Select(topic => lags.TryGetValue(topic.Name, out var list) ? topic with { Groups = list } : topic).ToArray()
+        };
     }
 
     protected override ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue)

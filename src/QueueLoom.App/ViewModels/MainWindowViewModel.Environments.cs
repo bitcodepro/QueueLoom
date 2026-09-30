@@ -501,6 +501,7 @@ public sealed partial class MainWindowViewModel
         CancelWriteUnlockTimerWithoutWaiting();
         _topology = null;
         _allEntities.Clear();
+        RefreshConsumerRows();
         Entities.Clear();
         SelectedEntity = null;
         Destinations.Clear();
