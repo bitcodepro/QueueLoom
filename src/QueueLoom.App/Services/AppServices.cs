@@ -47,6 +47,12 @@ public static class AppServices
         services.AddSingleton<INotificationService, WindowNotificationService>();
         services.AddSingleton<IThemeService, AvaloniaThemeService>();
         services.AddSingleton<GitHubUpdateChecker>(_ => new GitHubUpdateChecker());
+        services.AddSingleton(_ =>
+        {
+            var client = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("QueueLoom-Update");
+            return new AppUpdater(client);
+        });
         services.AddSingleton<IMonitorAlertService>(provider => new MonitorAlertService(
             provider.GetRequiredService<TopLevelAccessor>(),
             new HttpClient { Timeout = TimeSpan.FromSeconds(15) },

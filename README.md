@@ -19,7 +19,7 @@ A desktop app for Windows, macOS and Linux for message queues in **Azure Service
 
 ## Install
 
-Download the package for your system from [Releases](../../releases). No .NET installation is needed.
+Download the package for your system from [Releases](../../releases). No .NET installation is needed. When a new version comes out, QueueLoom offers to update itself: it downloads the package, checks its SHA-256 checksum, installs it and restarts.
 
 | System | Package | Start |
 |---|---|---|

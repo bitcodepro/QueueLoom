@@ -16,6 +16,7 @@ public sealed partial class MainWindow : Window
     private readonly JsonAppSettingsStore? _settingsStore;
     private readonly WindowDialogService? _dialogService;
     private readonly GitHubUpdateChecker? _updateChecker;
+    private readonly AppUpdater? _updater;
     private readonly IAppLauncher? _launcher;
     private readonly IThemeService? _theme;
     private readonly ILogger<MainWindow>? _logger;
@@ -38,9 +39,11 @@ public sealed partial class MainWindow : Window
         GitHubUpdateChecker updateChecker,
         IAppLauncher launcher,
         IThemeService theme,
-        ILogger<MainWindow> logger)
+        ILogger<MainWindow> logger,
+        AppUpdater? updater = null)
         : this()
     {
+        _updater = updater;
         _viewModel = viewModel;
         _settingsStore = settingsStore;
         _dialogService = dialogService;
@@ -174,15 +177,33 @@ public sealed partial class MainWindow : Window
 
         try
         {
+            _updater?.CleanUpPreviousUpdate(AppUpdater.CurrentTarget());
             var update = await _updateChecker.CheckAsync();
             if (update is null || _shutdownInProgress)
             {
                 return;
             }
 
-            if (await _dialogService.PromptForUpdateAsync(update.Version.ToString(3)) && _launcher is not null)
+            var target = AppUpdater.CurrentTarget();
+            var reason = target is null
+                ? "This is a development build, which is not updated in place."
+                : AppUpdater.CanInstall(target)
+                    ? null
+                    : $"QueueLoom cannot write to its folder ({target.InstallDirectory}).";
+            var updater = _updater;
+            Func<IProgress<UpdateProgress>, CancellationToken, Task>? install = updater is not null && target is not null && reason is null
+                ? async (progress, token) =>
+                {
+                    var staging = await updater.DownloadAsync(update, target, progress, token);
+                    AppUpdater.Install(target, staging);
+                    _logger?.LogInformation("Installed QueueLoom {Version}", update.Version);
+                }
+                : null;
+            var dialog = new UpdateDialogViewModel(GitHubUpdateChecker.CurrentVersion.ToString(3), update, install, reason);
+            if (await _dialogService.ShowUpdateAsync(dialog, _launcher) == UpdateDialogResult.Restart && target is not null)
             {
-                await _launcher.OpenUriAsync(update.ReleasePage);
+                AppUpdater.StartInstalled(target);
+                Close();
             }
         }
         catch (Exception exception)
