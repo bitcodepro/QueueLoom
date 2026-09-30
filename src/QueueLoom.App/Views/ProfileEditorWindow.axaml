@@ -213,18 +213,18 @@
         <Border Classes="card" IsVisible="{Binding IsRabbitMq}">
           <StackPanel Spacing="12">
             <TextBlock Text="RabbitMQ broker" FontSize="16" FontWeight="SemiBold" />
-            <Grid ColumnDefinitions="*,14,120,14,120">
+            <Grid ColumnDefinitions="*,14,110,14,130">
               <StackPanel Grid.Column="0" Spacing="7">
                 <TextBlock Text="HOST" Classes="eyebrow" />
                 <TextBox Text="{Binding RabbitHost}" PlaceholderText="rabbit.internal" AutomationProperties.Name="RabbitMQ host" />
               </StackPanel>
               <StackPanel Grid.Column="2" Spacing="7">
-                <TextBlock Text="AMQP PORT" Classes="eyebrow" />
+                <TextBlock Text="AMQP" Classes="eyebrow" />
                 <NumericUpDown Value="{Binding RabbitAmqpPort}" Minimum="1" Maximum="65535" FormatString="0" ShowButtonSpinner="False"
                                AutomationProperties.Name="AMQP port" />
               </StackPanel>
               <StackPanel Grid.Column="4" Spacing="7">
-                <TextBlock Text="MANAGEMENT PORT" Classes="eyebrow" />
+                <TextBlock Text="MANAGEMENT" Classes="eyebrow" />
                 <NumericUpDown Value="{Binding RabbitManagementPort}" Minimum="1" Maximum="65535" FormatString="0" ShowButtonSpinner="False"
                                AutomationProperties.Name="Management port" />
               </StackPanel>

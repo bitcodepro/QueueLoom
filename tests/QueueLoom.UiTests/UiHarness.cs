@@ -174,7 +174,8 @@ internal sealed class WindowFixture : IAsyncDisposable
         var fixture = !connect
             ? new WindowFixture()
             : allClouds
-                ? new WindowFixture(DemoData.Development, DemoData.Production, DemoData.AwsStaging, DemoData.GoogleDevelopment)
+                ? new WindowFixture(DemoData.Development, DemoData.Production, DemoData.AwsStaging, DemoData.GoogleDevelopment,
+                    DemoData.RabbitStaging, DemoData.KafkaDevelopment)
                 : new WindowFixture(DemoData.Development, DemoData.Production);
         fixture.Window.Show();
         await fixture.SettleAsync();

@@ -174,7 +174,14 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
             Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
         }
 
-        Assert.Equal(1u, (await _setup.QueueDeclarePassiveAsync("invoices")).MessageCount);
+        // A quorum queue applies a requeue through Raft, so its ready count can trail the nack for a moment.
+        var ready = 0u;
+        for (var attempt = 0; attempt < 50 && ready == 0; attempt++)
+        {
+            await Task.Delay(100);
+            ready = (await _setup.QueueDeclarePassiveAsync("invoices")).MessageCount;
+        }
+        Assert.Equal(1u, ready);
         Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("invoices.dlq")).MessageCount);
     }
 

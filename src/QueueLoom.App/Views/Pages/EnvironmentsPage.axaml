@@ -8,7 +8,7 @@
     <Grid ColumnDefinitions="*,Auto">
       <StackPanel Spacing="4">
         <TextBlock Text="Environments" Classes="pageTitle" />
-        <TextBlock Text="Azure Service Bus namespaces, AWS regions and Google Cloud projects. Secrets are encrypted on this device." Classes="muted" />
+        <TextBlock Text="Service Bus namespaces, AWS regions, Google Cloud projects, RabbitMQ brokers and Kafka clusters. Secrets are encrypted on this device." Classes="muted" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">
         <Button Content="Edit" Classes="quiet" Command="{Binding EditEnvironmentCommand}" />
