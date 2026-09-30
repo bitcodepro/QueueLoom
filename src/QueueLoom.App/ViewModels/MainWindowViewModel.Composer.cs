@@ -91,7 +91,7 @@ public sealed partial class MainWindowViewModel
     }
 
     /// <summary>The draft came from a dead-letter queue, so sending can also remove the original.</summary>
-    public bool CanMoveDraftOriginal => _draftSourceMessage is { IsDeadLetter: true } && !_draftSourceIsLocalBackup;
+    public bool CanMoveDraftOriginal => _draftSourceMessage is { IsDeadLetter: true } && !_draftSourceIsLocalBackup && CanDeleteSelectedMessages;
 
     /// <summary>
     /// False: send a copy and keep the original (the default). True: send, then back up the original and remove it

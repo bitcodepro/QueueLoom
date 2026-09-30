@@ -26,12 +26,17 @@ internal static class Emulators
     /// <summary>host:port of a RabbitMQ broker with the management plugin on port + 10000, user guest/guest.</summary>
     public const string RabbitMq = "QUEUELOOM_RABBITMQ";
 
+    /// <summary>Bootstrap servers of a Kafka cluster without authentication, for example localhost:9092.</summary>
+    public const string Kafka = "QUEUELOOM_KAFKA";
+
     public static string LocalStackUrl => Environment.GetEnvironmentVariable(LocalStack)!;
 
     public static string PubSubHost => Environment.GetEnvironmentVariable(PubSub)!;
 
     /// <summary>The emulator's connection string, with UseDevelopmentEmulator=true.</summary>
     public static string ServiceBusConnectionString => Environment.GetEnvironmentVariable(ServiceBus)!;
+
+    public static string KafkaServers => Environment.GetEnvironmentVariable(Kafka)!;
 
     public static string RabbitMqHost => Environment.GetEnvironmentVariable(RabbitMq)!.Split(':')[0];
 

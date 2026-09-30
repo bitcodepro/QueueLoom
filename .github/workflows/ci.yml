@@ -65,7 +65,7 @@ jobs:
           path: TestResults
 
   emulator-tests:
-    name: Emulator tests (Service Bus, SQS / SNS, Pub/Sub, RabbitMQ)
+    name: Emulator tests (Service Bus, SQS / SNS, Pub/Sub, RabbitMQ, Kafka)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,11 +74,12 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Start LocalStack, the Pub/Sub emulator, RabbitMQ and the Service Bus emulator
+      - name: Start LocalStack, the Pub/Sub emulator, RabbitMQ, Kafka and the Service Bus emulator
         run: |
           docker run -d --name localstack -p 4566:4566 -e SERVICES=sqs,sns localstack/localstack:4.14
           # 5672 belongs to the Service Bus emulator, so RabbitMQ listens on 5673 (management on 15673).
           docker run -d --name rabbitmq -p 5673:5672 -p 15673:15672 rabbitmq:4-management
+          docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.1
           docker run -d --name pubsub -p 8085:8085 gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
             gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=queueloom-test
           docker network create servicebus
@@ -101,12 +102,13 @@ jobs:
             if curl -sf http://localhost:4566/_localstack/health | grep -q '"sqs": "\(available\|running\)"' &&
                curl -sf http://localhost:8085 >/dev/null &&
                curl -sf http://localhost:5300/health | grep -q healthy &&
-               curl -sf -u guest:guest http://localhost:15673/api/overview >/dev/null; then
+               curl -sf -u guest:guest http://localhost:15673/api/overview >/dev/null &&
+               docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
               exit 0
             fi
             sleep 2
           done
-          docker logs localstack | tail -20; docker logs pubsub | tail -20; docker logs servicebus | tail -20; docker logs rabbitmq | tail -20
+          docker logs localstack | tail -20; docker logs pubsub | tail -20; docker logs servicebus | tail -20; docker logs rabbitmq | tail -20; docker logs kafka | tail -20
           exit 1
 
       - name: Test against the emulators
@@ -115,9 +117,10 @@ jobs:
           QUEUELOOM_PUBSUB_EMULATOR: localhost:8085
           QUEUELOOM_SERVICEBUS_EMULATOR: Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
           QUEUELOOM_RABBITMQ: localhost:5673
+          QUEUELOOM_KAFKA: localhost:9092
         run: >-
           dotnet test QueueLoom.slnx -c Release --no-build --logger trx --results-directory TestResults
-          --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests"
+          --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests|FullyQualifiedName~KafkaUiTests"
 
       - name: Upload test results
         if: failure()

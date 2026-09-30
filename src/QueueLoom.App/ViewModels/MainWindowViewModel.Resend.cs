@@ -64,7 +64,8 @@ public sealed partial class MainWindowViewModel
             marked.Select(message => message.Message).ToArray(),
             Destinations.Select(destination => destination.Reference),
             profile.Name,
-            requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production);
+            requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production,
+            canRemoveOriginals: CanDeleteSelectedMessages);
         var options = await _dialogs.ChooseResendOptionsAsync(dialog, cancellationToken).ConfigureAwait(true);
         if (options is null)
         {

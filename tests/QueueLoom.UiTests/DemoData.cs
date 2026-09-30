@@ -66,6 +66,19 @@ internal static class DemoData
         RabbitMq = new RabbitMqSettings("rabbit.internal", "queueloom")
     };
 
+    public static readonly ServiceBusProfile KafkaDevelopment = new ServiceBusProfile(
+        Guid.Parse("66666666-6666-6666-6666-666666666666"),
+        "Events on Kafka",
+        EnvironmentKind.Development,
+        null,
+        null,
+        new AuthenticationSettings(AuthenticationKind.KafkaNone),
+        ProfileAccessMode.ReadWrite)
+    {
+        Provider = MessagingProvider.Kafka,
+        Kafka = new KafkaSettings("kafka-1:9092,kafka-2:9092")
+    };
+
     public static ServiceBusTopology Topology { get; } = new(
         new DateTimeOffset(2026, 9, 26, 9, 30, 0, TimeSpan.Zero),
         [

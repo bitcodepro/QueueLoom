@@ -21,8 +21,10 @@ public sealed class ResendDialogViewModel : ObservableObject
         IReadOnlyList<BrowsedMessage> messages,
         IEnumerable<ServiceBusEntityReference> destinations,
         string environmentName,
-        bool requiresTypedConfirmation)
+        bool requiresTypedConfirmation,
+        bool canRemoveOriginals = true)
     {
+        CanRemoveOriginals = canRemoveOriginals;
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
         {
@@ -61,8 +63,15 @@ public sealed class ResendDialogViewModel : ObservableObject
         }
     }
 
-    /// <summary>Only dead-lettered messages can be removed after sending.</summary>
-    public bool CanMove => Messages.All(message => message.IsDeadLetter);
+    /// <summary>False where the service cannot remove single messages (Kafka).</summary>
+    public bool CanRemoveOriginals { get; }
+
+    /// <summary>Only dead-lettered messages can be removed after sending, and only where the service allows it.</summary>
+    public bool CanMove => CanRemoveOriginals && Messages.All(message => message.IsDeadLetter);
+
+    public string MoveUnavailableReason => CanRemoveOriginals
+        ? "Only dead-lettered messages can be moved; untick active messages to enable it."
+        : "Kafka keeps every message until its retention ends, so originals cannot be removed one by one.";
 
     public bool Moves
     {

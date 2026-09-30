@@ -110,7 +110,14 @@ public sealed class MessageItemViewModel : ObservableObject
         ? Message.SequenceNumber.ToString(System.Globalization.CultureInfo.CurrentCulture)
         : "—";
 
-    public string MessageId => Message.Properties.MessageId ?? "(no MessageId)";
+    /// <summary>The message ID; for Kafka records without one, where they are in the topic.</summary>
+    public string MessageId => Message.Properties.MessageId ?? KafkaPosition ?? "(no MessageId)";
+
+    private string? KafkaPosition =>
+        Message.ApplicationProperties.FirstOrDefault(property => property.Name == "kafka.partition") is { } partition &&
+        Message.ApplicationProperties.FirstOrDefault(property => property.Name == "kafka.offset") is { } offset
+            ? $"partition {partition.Value} · offset {offset.Value}"
+            : null;
 
     public string Subject => Message.Properties.Subject ?? "—";
 

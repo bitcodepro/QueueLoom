@@ -120,7 +120,7 @@
                   <Border Classes="envDot" controls:ToneAssist.Background="{Binding EnvironmentTone}" />
                   <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="4" ToolTip.Tip="{Binding EntityPath}">
                     <Grid ColumnDefinitions="Auto,8,*" IsVisible="{Binding IsQueue}">
-                      <TextBlock Text="QUEUE" Classes="eyebrow accent" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding QueueKindLabel}" Classes="eyebrow accent" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="{Binding EntityName}" FontWeight="SemiBold"
                                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                     </Grid>
@@ -310,7 +310,7 @@
                         Command="{Binding ResendMarkedMessagesCommand}" IsVisible="{Binding HasDeadLetterMessages}"
                         ToolTip.Tip="Send the ticked messages again, as copies or moving them out of the DLQ. Requires write access." />
                 <Button Grid.Column="7" Content="{Binding DeleteMarkedMessagesLabel}" Classes="danger copyAction"
-                        Command="{Binding DeleteMarkedMessagesCommand}" IsVisible="{Binding HasDeletableMessages}"
+                        Command="{Binding DeleteMarkedMessagesCommand}" IsVisible="{Binding ShowDeleteMarkedMessages}"
                         ToolTip.Tip="{Binding DeleteMarkedMessagesTip}" />
               </Grid>
             </Border>

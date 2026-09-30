@@ -149,6 +149,7 @@ public static class MessagingWorkspaces
             MessagingProvider.AmazonSqsSns => new Aws.AwsSqsSnsWorkspace(secretVault, backupStore: backupStore),
             MessagingProvider.GooglePubSub => new Google.GooglePubSubWorkspace(secretVault, backupStore: backupStore),
             MessagingProvider.RabbitMq => new RabbitMq.RabbitMqWorkspace(secretVault, backupStore: backupStore),
+            MessagingProvider.Kafka => new Kafka.KafkaWorkspace(secretVault, backupStore: backupStore),
             _ => new Azure.AzureServiceBusWorkspace(secretVault, backupStore: backupStore)
         });
     }

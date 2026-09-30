@@ -62,6 +62,9 @@ public sealed partial class MainWindowViewModel
     {
         var previousDestination = preserveDestination ? SelectedDestination?.Reference : null;
         _topology = topology;
+        OnPropertyChanged(nameof(CanDeleteSelectedMessages));
+        OnPropertyChanged(nameof(ShowDeleteMarkedMessages));
+        DeleteMarkedMessagesCommand?.NotifyCanExecuteChanged();
         _lastUpdated = topology.FetchedAt;
         _allEntities.Clear();
 
@@ -73,7 +76,8 @@ public sealed partial class MainWindowViewModel
                 queue.Status,
                 queue.RequiresSession,
                 indent: 0,
-                queue.Note));
+                queue.Note,
+                queueKindName: topology.QueueKindName));
         }
 
         foreach (var topic in topology.Topics)

@@ -21,6 +21,11 @@ public sealed partial class MainWindowViewModel
 
     public bool HasDeadLetterMessages => Messages.Any(message => message.IsDeadLetter);
 
+    /// <summary>False for Kafka, which cannot remove single messages; emptying a dead-letter topic still works.</summary>
+    public bool CanDeleteSelectedMessages => _topology?.CanDeleteSelectedMessages ?? true;
+
+    public bool ShowDeleteMarkedMessages => HasDeletableMessages && CanDeleteSelectedMessages;
+
     /// <summary>"Delete" for dead letters; "Cancel scheduled" or "Remove deferred" when the list holds those instead.</summary>
     public string DeleteMarkedMessagesLabel
     {
@@ -73,7 +78,7 @@ public sealed partial class MainWindowViewModel
     {
         DeleteMarkedMessagesCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Deleting selected messages", DeleteMarkedMessagesAsync, token, allowCancellation: true),
-            () => !IsBusy && CanWrite && HasMarkedMessages);
+            () => !IsBusy && CanWrite && HasMarkedMessages && CanDeleteSelectedMessages);
         Messages.CollectionChanged += OnMessagesChangedForDeletion;
     }
 
@@ -105,6 +110,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasMarkedMessages));
         OnPropertyChanged(nameof(HasDeletableMessages));
         OnPropertyChanged(nameof(HasDeadLetterMessages));
+        OnPropertyChanged(nameof(ShowDeleteMarkedMessages));
         OnPropertyChanged(nameof(DeleteMarkedMessagesLabel));
         OnPropertyChanged(nameof(DeleteMarkedMessagesTip));
         OnPropertyChanged(nameof(ResendMarkedMessagesLabel));
@@ -292,7 +298,8 @@ public sealed partial class MainWindowViewModel
                     row.ProfileName,
                     row.EnvironmentLabel,
                     row.EnvironmentTone,
-                    new DeadLetterEntitySnapshot(row.Entity, remaining, row.Count, null, row.Snapshot.SubQueue)));
+                    new DeadLetterEntitySnapshot(row.Entity, remaining, row.Count, null, row.Snapshot.SubQueue),
+                    row.QueueKindLabel.ToLowerInvariant()));
             }
         }
 

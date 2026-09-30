@@ -13,9 +13,11 @@ public sealed class EntityItemViewModel
         bool requiresSession,
         int indent,
         string? note = null,
-        string topicKindName = "topic")
+        string topicKindName = "topic",
+        string queueKindName = "queue")
     {
         _topicKindName = topicKindName;
+        _queueKindName = queueKindName;
         ArgumentOutOfRangeException.ThrowIfNegative(indent);
         Reference = reference;
         Runtime = runtime;
@@ -26,6 +28,7 @@ public sealed class EntityItemViewModel
     }
 
     private readonly string _topicKindName;
+    private readonly string _queueKindName;
 
     /// <summary>A provider-specific remark, for example "Dead-letter queue of orders" or "Pushes to https://…".</summary>
     public string? Note { get; }
@@ -63,7 +66,7 @@ public sealed class EntityItemViewModel
 
     public string KindLabel => Reference.Kind switch
     {
-        ServiceBusEntityKind.Queue => "QUEUE",
+        ServiceBusEntityKind.Queue => _queueKindName.ToUpperInvariant(),
         ServiceBusEntityKind.Topic => _topicKindName.ToUpperInvariant(),
         ServiceBusEntityKind.Subscription => "SUBSCRIPTION",
         _ => "ENTITY"

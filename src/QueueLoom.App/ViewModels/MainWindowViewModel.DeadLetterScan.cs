@@ -217,7 +217,8 @@ public sealed partial class MainWindowViewModel
                 profile.Name,
                 profile.EnvironmentLabel,
                 profile.EnvironmentTone,
-                withHistory));
+                withHistory,
+                profile.Provider == Core.Profiles.MessagingProvider.Kafka ? "topic" : "queue"));
         }
 
         SortDeadLetterSources(selectedProfileId, selectedEntity, selectedSubQueue);

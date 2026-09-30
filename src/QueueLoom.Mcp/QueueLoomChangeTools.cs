@@ -46,6 +46,11 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var topology = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetTopologyAsync(forceRefresh: false, token), cancellationToken)
                 .ConfigureAwait(false);
+            if (!topology.CanDeleteSelectedMessages)
+            {
+                throw new McpException(
+                    $"{profile.Provider.DisplayName()} cannot delete single messages. Use purge_dead_letters to empty a dead-letter topic.");
+            }
             DeleteDeadLetterMessagesRequest request;
             try
             {
@@ -254,6 +259,11 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var (target, originals, missing) = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: false, token).ConfigureAwait(false);
+                if (resendMode == ResendMode.Move && !topology.CanDeleteSelectedMessages)
+                {
+                    throw new McpException(
+                        $"{profile.Provider.DisplayName()} cannot remove single messages, so 'move' is not available. Use mode 'copy'.");
+                }
                 ServiceBusEntityReference? to = null;
                 if (!string.IsNullOrWhiteSpace(destination))
                 {

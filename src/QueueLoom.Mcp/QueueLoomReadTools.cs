@@ -34,9 +34,10 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var topology = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetTopologyAsync(forceRefresh: true, token), cancellationToken)
                 .ConfigureAwait(false);
-            var entities = topology.Queues.Select(queue => McpMapping.ToInfo(queue.Reference, queue.Runtime, queue.Status))
+            string Kind(string name) => char.ToUpperInvariant(name[0]) + name[1..];
+            var entities = topology.Queues.Select(queue => McpMapping.ToInfo(queue.Reference, queue.Runtime, queue.Status) with { Kind = Kind(topology.QueueKindName) })
                 .Concat(topology.Topics.SelectMany(topic =>
-                    new[] { McpMapping.ToInfo(topic.Reference, topic.Runtime, topic.Status) }
+                    new[] { McpMapping.ToInfo(topic.Reference, topic.Runtime, topic.Status) with { Kind = Kind(topology.TopicKindName) } }
                         .Concat(topic.Subscriptions.Select(subscription =>
                             McpMapping.ToInfo(subscription.Reference, subscription.Runtime, subscription.Status)))))
                 .Where(entity => string.IsNullOrWhiteSpace(filter) ||
