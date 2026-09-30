@@ -235,6 +235,7 @@ public sealed class DeadLetterJsonBackupSession(
         {
             ServiceBusSubQueue.DeadLetter => "dlq",
             ServiceBusSubQueue.TransferDeadLetter => "tdlq",
+            ServiceBusSubQueue.Active => "active",
             _ => throw new ArgumentOutOfRangeException(nameof(subQueue), subQueue, "Unsupported backup subqueue.")
         });
 

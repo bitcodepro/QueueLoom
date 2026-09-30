@@ -8,7 +8,7 @@
     <StackPanel Margin="{StaticResource PageMargin}" Spacing="18">
       <StackPanel Spacing="4">
         <TextBlock Text="Monitors" Classes="pageTitle" />
-        <TextBlock Text="Polls dead-letter counters. Services without counters (Pub/Sub, local emulators) are counted by reading and releasing messages." Classes="muted" />
+        <TextBlock Text="Watches dead-letter counts and keeps their history. Services without counters (local emulators) are counted by reading and releasing messages." Classes="muted" />
       </StackPanel>
 
       <Grid ColumnDefinitions="1.25*,16,*">
@@ -112,6 +112,90 @@
           </StackPanel>
         </Border>
       </Grid>
+
+      <Border Classes="card" IsVisible="{Binding IsHistoryAvailable}">
+        <StackPanel Spacing="16">
+          <Grid ColumnDefinitions="*,Auto,10,Auto">
+            <StackPanel Spacing="3" VerticalAlignment="Center">
+              <TextBlock Text="Dead-letter history" Classes="sectionTitle" />
+              <TextBlock Text="How many messages sat in the dead-letter queues of an environment over time."
+                         Classes="muted" TextWrapping="Wrap" />
+            </StackPanel>
+            <ComboBox Grid.Column="1" Width="290" ItemsSource="{Binding Profiles}" SelectedItem="{Binding HistoryProfile}"
+                      PlaceholderText="Choose environment" AutomationProperties.Name="History environment">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:ProfileItemViewModel">
+                  <Grid ColumnDefinitions="Auto,9,*,Auto">
+                    <Border Classes="envDot" controls:ToneAssist.Background="{Binding EnvironmentTone}" />
+                    <TextBlock Grid.Column="2" Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+                    <controls:ProviderBadge Grid.Column="3" Provider="{Binding Provider}" Margin="8,0,0,0" />
+                  </Grid>
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <ComboBox Grid.Column="3" Width="150" ItemsSource="{Binding HistoryRanges}" SelectedItem="{Binding HistoryRange}"
+                      AutomationProperties.Name="History period" />
+          </Grid>
+
+          <controls:EmptyState IsVisible="{Binding !HasHistory}" Margin="8,18"
+                               Icon="{x:Static controls:Icons.Monitors}"
+                               Title="Nothing recorded yet"
+                               Description="{Binding HistoryEmptyText}" />
+
+          <Grid ColumnDefinitions="*,24,300" IsVisible="{Binding HasHistory}">
+            <StackPanel Spacing="14">
+              <StackPanel Orientation="Horizontal" Spacing="36">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="NOW" Classes="eyebrow" />
+                  <TextBlock Text="{Binding HistoryNowText}" Classes="statValue" />
+                </StackPanel>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="PEAK" Classes="eyebrow" />
+                  <TextBlock Text="{Binding HistoryPeakText}" Classes="statValue" />
+                  <TextBlock Text="{Binding HistoryPeakTime}" Classes="muted" FontSize="11" />
+                </StackPanel>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="CHANGE IN PERIOD" Classes="eyebrow" />
+                  <TextBlock Text="{Binding HistoryChangeText}" Classes="statValue"
+                             Classes.danger="{Binding IsHistoryRising}" Classes.success="{Binding IsHistoryFalling}" />
+                </StackPanel>
+              </StackPanel>
+              <controls:HistoryChart Height="210" Points="{Binding HistoryPoints}"
+                                     From="{Binding HistoryFrom}" To="{Binding HistoryTo}"
+                                     LineBrush="{DynamicResource WarningBrush}"
+                                     GridBrush="{DynamicResource HairlineBrush}"
+                                     LabelBrush="{DynamicResource TextSecondaryBrush}"
+                                     TooltipBrush="{DynamicResource SurfaceRaisedBrush}"
+                                     AutomationProperties.Name="Dead-letter count over time" />
+              <TextBlock Text="{Binding HistoryFootnote}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="2" Spacing="10">
+              <TextBlock Text="LARGEST DEAD-LETTER QUEUES" Classes="eyebrow" />
+              <TextBlock Text="The queues were empty at the last check." Classes="muted"
+                         IsVisible="{Binding !HasHistorySources}" TextWrapping="Wrap" />
+              <ItemsControl ItemsSource="{Binding HistorySources}" IsVisible="{Binding HasHistorySources}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:DeadLetterTrendItemViewModel">
+                    <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,5">
+                      <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}"
+                                 VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="{Binding NowText}" FontWeight="SemiBold" Margin="10,0"
+                                 VerticalAlignment="Center" />
+                      <Border Grid.Column="2" Classes="trend" Classes.rising="{Binding IsRising}"
+                              Classes.falling="{Binding IsFalling}" MinWidth="64">
+                        <TextBlock Text="{Binding ChangeText}" FontSize="11" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" />
+                      </Border>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Grid>
+        </StackPanel>
+      </Border>
     </StackPanel>
   </ScrollViewer>
 </UserControl>

@@ -53,6 +53,32 @@ internal static class DemoData
         GooglePubSub = new GooglePubSubSettings("shipping-dev-2231")
     };
 
+    public static readonly ServiceBusProfile RabbitStaging = new ServiceBusProfile(
+        Guid.Parse("55555555-5555-5555-5555-555555555555"),
+        "Billing on RabbitMQ",
+        EnvironmentKind.Test,
+        null,
+        null,
+        new AuthenticationSettings(AuthenticationKind.RabbitMqPassword),
+        ProfileAccessMode.ReadWrite)
+    {
+        Provider = MessagingProvider.RabbitMq,
+        RabbitMq = new RabbitMqSettings("rabbit.internal", "queueloom")
+    };
+
+    public static readonly ServiceBusProfile KafkaDevelopment = new ServiceBusProfile(
+        Guid.Parse("66666666-6666-6666-6666-666666666666"),
+        "Events on Kafka",
+        EnvironmentKind.Development,
+        null,
+        null,
+        new AuthenticationSettings(AuthenticationKind.KafkaNone),
+        ProfileAccessMode.ReadWrite)
+    {
+        Provider = MessagingProvider.Kafka,
+        Kafka = new KafkaSettings("kafka-1:9092,kafka-2:9092")
+    };
+
     public static ServiceBusTopology Topology { get; } = new(
         new DateTimeOffset(2026, 9, 26, 9, 30, 0, TimeSpan.Zero),
         [
@@ -92,6 +118,24 @@ internal static class DemoData
             new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("invoices-retry"), 2_431, 2_431),
             new DeadLetterEntitySnapshot(ServiceBusEntityReference.Subscription("customer-events", "crm-sync"), 5, 5)
         ]);
+
+    /// <summary>A day of monitor checks: a failed deployment dead-letters invoices, then a fix slowly drains them.</summary>
+    public static IEnumerable<DeadLetterHistorySample> History(ServiceBusProfile profile, DateTimeOffset now)
+    {
+        for (var step = 144; step >= 0; step--)
+        {
+            var at = now.AddMinutes(-10 * step);
+            var hour = 24 - step / 6.0;
+            var invoices = hour < 9 ? 1_880 + (long)(hour * 6)
+                : hour < 11 ? 1_934 + (long)((hour - 9) * 380)
+                : hour < 17 ? 2_694 - (long)((hour - 11) * 60)
+                : 2_334 + (long)((hour - 17) * 14);
+            var orders = step is 60 or 61 ? 140 : 12 + step % 7;
+            var crm = hour > 20 ? 5 : 2;
+            yield return new DeadLetterHistorySample(at, profile.Id, profile.Name, invoices + orders + crm,
+                new Dictionary<string, long> { ["invoices-retry"] = invoices, ["orders"] = orders, ["customer-events/crm-sync"] = crm });
+        }
+    }
 
     public static IReadOnlyList<DeadLetterBackupSummary> Backups { get; } =
     [

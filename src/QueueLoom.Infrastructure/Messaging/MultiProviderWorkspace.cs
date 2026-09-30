@@ -7,7 +7,7 @@ namespace QueueLoom.Infrastructure.Messaging;
 
 /// <summary>
 /// The workspace the app talks to. It forwards every call to the workspace of the connected environment's
-/// provider (Azure Service Bus, Amazon SQS / SNS or Google Pub/Sub), so pages and the MCP server stay
+/// provider (Azure Service Bus, Amazon SQS / SNS, Google Pub/Sub, RabbitMQ or Kafka), so pages and the MCP server stay
 /// provider-agnostic.
 /// </summary>
 public sealed class MultiProviderWorkspace : IServiceBusWorkspace
@@ -100,6 +100,25 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
         IProgress<DeadLetterMessageDeletionProgress>? progress = null) =>
         Current.DeleteDeadLetterMessagesAsync(request, cancellationToken, progress);
 
+    public QueueManagementCapabilities? QueueManagement => _current?.QueueManagement;
+
+    public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
+        Current.GetQueueSettingsAsync(queue, cancellationToken);
+
+    public Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
+        Current.CreateQueueAsync(definition, cancellationToken);
+
+    public Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
+        Current.UpdateQueueSettingsAsync(queue, settings, cancellationToken);
+
+    public Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
+        Current.DeleteQueueAsync(queue, cancellationToken);
+
+    public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
+        IReadOnlyList<BrowsedMessage> messages,
+        CancellationToken cancellationToken = default) =>
+        Current.RemovePendingMessagesAsync(messages, cancellationToken);
+
     public Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default) =>
@@ -143,6 +162,8 @@ public static class MessagingWorkspaces
         {
             MessagingProvider.AmazonSqsSns => new Aws.AwsSqsSnsWorkspace(secretVault, backupStore: backupStore),
             MessagingProvider.GooglePubSub => new Google.GooglePubSubWorkspace(secretVault, backupStore: backupStore),
+            MessagingProvider.RabbitMq => new RabbitMq.RabbitMqWorkspace(secretVault, backupStore: backupStore),
+            MessagingProvider.Kafka => new Kafka.KafkaWorkspace(secretVault, backupStore: backupStore),
             _ => new Azure.AzureServiceBusWorkspace(secretVault, backupStore: backupStore)
         });
     }

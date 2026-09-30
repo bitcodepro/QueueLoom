@@ -25,6 +25,9 @@ public sealed record ServiceBusTopic
 
     public ServiceBusEntityStatus Status { get; }
 
+    /// <summary>A short provider-specific note, for example the exchange type and the queues it routes to.</summary>
+    public string? Note { get; init; }
+
     public int SubscriptionCount => Subscriptions.Count;
 
     public ServiceBusEntityReference Reference => ServiceBusEntityReference.Topic(Name);

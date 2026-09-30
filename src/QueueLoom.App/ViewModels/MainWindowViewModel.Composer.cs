@@ -19,9 +19,21 @@ public sealed partial class MainWindowViewModel
             if (SetProperty(ref _selectedDestination, value))
             {
                 NotifyCommandStates();
+                OnPropertyChanged(nameof(SubjectHint));
+                OnPropertyChanged(nameof(HasSubjectHint));
             }
         }
     }
+
+    /// <summary>What Subject means for the chosen destination, where it is more than a label.</summary>
+    public string SubjectHint => (ConnectedProvider, SelectedDestination?.Reference.Kind) switch
+    {
+        (MessagingProvider.RabbitMq, ServiceBusEntityKind.Topic) => "Used as the routing key of the exchange.",
+        (MessagingProvider.RabbitMq, ServiceBusEntityKind.Queue) => "RabbitMQ reaches a queue by its name, so the subject is not sent.",
+        _ => string.Empty
+    };
+
+    public bool HasSubjectHint => SubjectHint.Length > 0;
 
     public string DraftBody
     {
@@ -79,7 +91,7 @@ public sealed partial class MainWindowViewModel
     }
 
     /// <summary>The draft came from a dead-letter queue, so sending can also remove the original.</summary>
-    public bool CanMoveDraftOriginal => _draftSourceMessage is { IsDeadLetter: true } && !_draftSourceIsLocalBackup;
+    public bool CanMoveDraftOriginal => _draftSourceMessage is { IsDeadLetter: true } && !_draftSourceIsLocalBackup && CanDeleteSelectedMessages;
 
     /// <summary>
     /// False: send a copy and keep the original (the default). True: send, then back up the original and remove it

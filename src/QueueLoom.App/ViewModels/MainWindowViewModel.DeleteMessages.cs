@@ -19,12 +19,41 @@ public sealed partial class MainWindowViewModel
 
     public bool HasDeletableMessages => Messages.Any(message => message.CanDelete);
 
-    public string DeleteMarkedMessagesLabel => MarkedMessageCount switch
+    public bool HasDeadLetterMessages => Messages.Any(message => message.IsDeadLetter);
+
+    /// <summary>False for Kafka, which cannot remove single messages; emptying a dead-letter topic still works.</summary>
+    public bool CanDeleteSelectedMessages => _topology?.CanDeleteSelectedMessages ?? true;
+
+    public bool ShowDeleteMarkedMessages => HasDeletableMessages && CanDeleteSelectedMessages;
+
+    /// <summary>"Delete" for dead letters; "Cancel scheduled" or "Remove deferred" when the list holds those instead.</summary>
+    public string DeleteMarkedMessagesLabel
     {
-        0 => "Delete selected…",
-        1 => "Delete 1 message…",
-        var count => $"Delete {count:N0} messages…"
-    };
+        get
+        {
+            var marked = Messages.Where(message => message.IsMarked).ToArray();
+            var pool = marked.Length > 0 ? marked : Messages.Where(message => message.CanDelete).ToArray();
+            var count = marked.Length;
+            if (pool.Length > 0 && pool.All(message => message.IsScheduled))
+            {
+                return count == 0 ? "Cancel selected…" : $"Cancel {count:N0} scheduled…";
+            }
+            if (pool.Length > 0 && pool.All(message => message.IsPending))
+            {
+                return count == 0 ? "Remove selected…" : $"Remove {count:N0} {(pool.All(message => message.IsDeferred) ? "deferred" : "pending")}…";
+            }
+            return count switch
+            {
+                0 => "Delete selected…",
+                1 => "Delete 1 message…",
+                _ => $"Delete {count:N0} messages…"
+            };
+        }
+    }
+
+    public string DeleteMarkedMessagesTip => Messages.Any(message => message.IsPending) && !HasDeadLetterMessages
+        ? "Back up the ticked messages, then cancel the scheduled ones and remove the deferred ones. Requires write access."
+        : "Back up and permanently delete exactly the ticked dead-letter messages. Requires write access.";
 
     /// <summary>Header checkbox: true when every deletable message is ticked, false when none, null otherwise.</summary>
     public bool? AreAllMessagesMarked
@@ -49,7 +78,7 @@ public sealed partial class MainWindowViewModel
     {
         DeleteMarkedMessagesCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Deleting selected messages", DeleteMarkedMessagesAsync, token, allowCancellation: true),
-            () => !IsBusy && CanWrite && HasMarkedMessages);
+            () => !IsBusy && CanWrite && HasMarkedMessages && CanDeleteSelectedMessages);
         Messages.CollectionChanged += OnMessagesChangedForDeletion;
     }
 
@@ -76,10 +105,14 @@ public sealed partial class MainWindowViewModel
 
     private void NotifyMarkedMessages()
     {
+        RebuildDeadLetterReasons();
         OnPropertyChanged(nameof(MarkedMessageCount));
         OnPropertyChanged(nameof(HasMarkedMessages));
         OnPropertyChanged(nameof(HasDeletableMessages));
+        OnPropertyChanged(nameof(HasDeadLetterMessages));
+        OnPropertyChanged(nameof(ShowDeleteMarkedMessages));
         OnPropertyChanged(nameof(DeleteMarkedMessagesLabel));
+        OnPropertyChanged(nameof(DeleteMarkedMessagesTip));
         OnPropertyChanged(nameof(ResendMarkedMessagesLabel));
         OnPropertyChanged(nameof(ExportMessagesLabel));
         ExportMessagesCommand?.NotifyCanExecuteChanged();
@@ -102,6 +135,16 @@ public sealed partial class MainWindowViewModel
         if (marked.Any(message => !message.CanDelete))
         {
             throw new InvalidOperationException("Only dead-lettered messages can be deleted. Untick active messages.");
+        }
+        if (marked.Any(message => message.IsPending))
+        {
+            if (marked.Any(message => message.IsDeadLetter))
+            {
+                throw new InvalidOperationException(
+                    "Dead letters and scheduled or deferred messages are removed separately. Tick only one kind.");
+            }
+            await RemoveMarkedPendingMessagesAsync(marked, cancellationToken).ConfigureAwait(true);
+            return;
         }
         if (marked.Length > DeleteDeadLetterMessagesRequest.MaximumMessages)
         {
@@ -255,7 +298,8 @@ public sealed partial class MainWindowViewModel
                     row.ProfileName,
                     row.EnvironmentLabel,
                     row.EnvironmentTone,
-                    new DeadLetterEntitySnapshot(row.Entity, remaining, row.Count, null, row.Snapshot.SubQueue)));
+                    new DeadLetterEntitySnapshot(row.Entity, remaining, row.Count, null, row.Snapshot.SubQueue),
+                    row.QueueKindLabel.ToLowerInvariant()));
             }
         }
 

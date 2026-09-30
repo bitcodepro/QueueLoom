@@ -17,7 +17,7 @@
       <Border Classes="card" IsVisible="{Binding !IsConnected}" Padding="28">
         <controls:EmptyState Icon="{x:Static controls:Icons.Plug}"
                              Title="Connect an environment to see message counts"
-                             Description="Choose an environment in the top bar, or add an Azure Service Bus namespace, an AWS region or a Google Cloud project.">
+                             Description="Choose an environment in the top bar, or add one: Azure Service Bus, Amazon SQS / SNS, Google Cloud Pub/Sub, RabbitMQ or Kafka.">
           <Button Content="{Binding EnvironmentActionLabel}" Command="{Binding EnvironmentActionCommand}" Classes="primary" />
         </controls:EmptyState>
       </Border>

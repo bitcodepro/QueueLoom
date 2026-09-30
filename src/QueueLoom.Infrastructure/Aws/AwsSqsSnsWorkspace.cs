@@ -20,7 +20,7 @@ namespace QueueLoom.Infrastructure.Aws;
 /// Service Bus: SQS queues are queues, SNS topics are topics and SNS subscriptions are subscriptions.
 /// The dead-letter queue of a queue or subscription is the SQS queue named in its redrive policy.
 /// </summary>
-public sealed class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
+public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 {
     /// <summary>How long a received message stays invisible while QueueLoom looks at it.</summary>
     internal const int HoldSeconds = 180;

@@ -318,6 +318,10 @@ public sealed partial class MainWindowViewModel
                     var snapshot = await _workspace.GetDeadLetterSnapshotAsync(scope, cancellationToken)
                         .ConfigureAwait(true);
                     CaptureMonitorSnapshot(profile, snapshot);
+                    if (activeScope != SelectedSourceMonitorScope)
+                    {
+                        RecordDeadLetterHistory(profile, snapshot);
+                    }
                     isComplete &= !snapshot.HasFailures;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

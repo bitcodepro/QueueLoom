@@ -47,11 +47,18 @@ public sealed record MessageInfo(
     IReadOnlyDictionary<string, string> ApplicationProperties,
     string BodyFormat,
     string Body,
-    bool BodyTruncated);
+    bool BodyTruncated,
+    string State,
+    DateTimeOffset? ScheduledFor,
+    string? DecodedAs = null,
+    string? DecodedBody = null);
 
 public sealed record MessageListInfo(string Environment, string Summary, IReadOnlyList<MessageInfo> Messages);
 
 public sealed record MessageSelection(string Entity, string SubQueue, long SequenceNumber, string? MessageId);
+
+/// <param name="Path">Full path of the file that was written.</param>
+public sealed record ExportInfo(string Environment, string Path, int Count, string Format, string Summary);
 
 public sealed record ChangeResult(string Environment, bool Approved, string Summary, string? BackupDirectory, IReadOnlyList<string> Details);
 
@@ -102,6 +109,7 @@ internal static class McpMapping
     public static MessageInfo ToInfo(BrowsedMessage message)
     {
         var body = EditableMessageBody.FromBytes(message.Body.Span);
+        var decoded = BodyDecoder.Decode(message.Body, message.Properties.ContentType);
         var text = body.Content;
         var truncated = message.IsBodyTruncated || text.Length > MaximumBodyCharacters;
         if (text.Length > MaximumBodyCharacters)
@@ -124,7 +132,11 @@ internal static class McpMapping
             message.ApplicationProperties.ToDictionary(property => property.Name, property => property.Value),
             body.Format.ToString(),
             text,
-            truncated);
+            truncated,
+            message.State == ServiceBusMessageState.Unknown ? (message.IsDeadLetter ? "DeadLettered" : "Active") : message.State.ToString(),
+            message.State == ServiceBusMessageState.Scheduled ? message.Properties.ScheduledEnqueueTime : null,
+            decoded?.Summary,
+            decoded is null ? null : decoded.Text.Length > MaximumBodyCharacters ? decoded.Text[..MaximumBodyCharacters] : decoded.Text);
     }
 }
 

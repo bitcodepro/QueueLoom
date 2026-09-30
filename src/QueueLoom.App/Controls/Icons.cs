@@ -28,6 +28,8 @@ public static class Icons
         "AzureServiceBus" => Azure,
         "AmazonSqsSns" => Aws,
         "GooglePubSub" => GoogleCloud,
+        "RabbitMq" => RabbitMq,
+        "Kafka" => Kafka,
         _ => null
     };
 
@@ -73,6 +75,16 @@ public static class Icons
 
     public static Geometry GoogleCloud { get; } = Parse(
         "F0 M12,1.8 L20.9,6.9 V17.1 L12,22.2 L3.1,17.1 V6.9 Z M12,7.2 A4.8,4.8 0 1 0 12,16.8 A4.8,4.8 0 1 0 12,7.2 Z");
+
+    /// <summary>A block rabbit: two ears on a body, with an eye.</summary>
+    public static Geometry RabbitMq { get; } = Parse(
+        "F0 M4,2.5 H8.6 V9.4 H10.4 V2.5 H15 V9.4 H20 V21.5 H4 Z M14.4,13.4 H17 V16 H14.4 Z");
+
+    /// <summary>Connected nodes: a broker with its neighbours.</summary>
+    public static Geometry Kafka { get; } = Parse(
+        "M12,1.6 A2.4,2.4 0 1 1 11.99,1.6 Z M12,17.6 A2.4,2.4 0 1 1 11.99,17.6 Z M12,8.9 A3.1,3.1 0 1 1 11.99,8.9 Z " +
+        "M19.2,5.4 A2.2,2.2 0 1 1 19.19,5.4 Z M19.2,14.2 A2.2,2.2 0 1 1 19.19,14.2 Z " +
+        "M11.2,5.8 H12.8 V18.2 H11.2 Z M13.9,10.6 L18.2,8 L18.9,9.3 L14.6,11.9 Z M14.6,13.1 L18.9,15.7 L18.2,17 L13.9,14.4 Z");
 
     private static Geometry Parse(string data) => Geometry.Parse(data);
 }

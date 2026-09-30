@@ -1,0 +1,112 @@
+using QueueLoom.Core.ServiceBus;
+
+namespace QueueLoom.Core.Monitoring;
+
+/// <summary>Dead-letter counts of one environment at one moment, from a complete monitor check or scan.</summary>
+/// <param name="Sources">Non-empty dead-letter queues by display name ("orders", "orders (transfer)"); the largest only.</param>
+public sealed record DeadLetterHistorySample(
+    DateTimeOffset At,
+    Guid ProfileId,
+    string Environment,
+    long Total,
+    IReadOnlyDictionary<string, long> Sources)
+{
+    public const int MaximumSources = 25;
+
+    public static DeadLetterHistorySample FromSnapshot(DeadLetterSnapshot snapshot, string environment)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var sources = snapshot.Entities
+            .Where(entity => entity.Count > 0)
+            .GroupBy(SourceName, StringComparer.Ordinal)
+            .Select(group => (Name: group.Key, Count: group.Sum(entity => entity.Count!.Value)))
+            .OrderByDescending(source => source.Count)
+            .ThenBy(source => source.Name, StringComparer.Ordinal)
+            .Take(MaximumSources)
+            .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
+        return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources);
+    }
+
+    public static string SourceName(DeadLetterEntitySnapshot entity) =>
+        entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
+            ? $"{entity.Entity.DisplayName} (transfer)"
+            : entity.Entity.DisplayName;
+}
+
+public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count);
+
+/// <param name="Start">Count at the first sample of the period.</param>
+/// <param name="Now">Count at the last sample.</param>
+public sealed record DeadLetterSourceTrend(string Name, long Start, long Now)
+{
+    public long Change => Now - Start;
+}
+
+public sealed record DeadLetterHistorySummary(
+    IReadOnlyList<DeadLetterHistoryPoint> Points,
+    long Now,
+    long Start,
+    DeadLetterHistoryPoint Peak,
+    IReadOnlyList<DeadLetterSourceTrend> Sources,
+    int SampleCount)
+{
+    public long Change => Now - Start;
+}
+
+public interface IDeadLetterHistoryStore
+{
+    /// <summary>Keeps the sample unless the same environment was recorded less than a minute ago with the same total.</summary>
+    void Append(DeadLetterHistorySample sample);
+
+    IReadOnlyList<DeadLetterHistorySample> Read(Guid profileId, DateTimeOffset since);
+}
+
+public static class DeadLetterHistory
+{
+    public static readonly TimeSpan Retention = TimeSpan.FromDays(30);
+
+    public static readonly TimeSpan MinimumSpacing = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// Reduces samples to at most <paramref name="maximumPoints"/> chart points. Each time bucket keeps its highest
+    /// count, so a short spike of dead letters stays visible in a 30-day view.
+    /// </summary>
+    public static DeadLetterHistorySummary? Summarize(
+        IReadOnlyList<DeadLetterHistorySample> samples,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        int maximumPoints = 360,
+        int maximumSources = 6)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumPoints, 2);
+        var inRange = samples.Where(sample => sample.At >= from && sample.At <= to).OrderBy(sample => sample.At).ToArray();
+        if (inRange.Length == 0)
+        {
+            return null;
+        }
+
+        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total)).ToArray();
+        if (points.Length > maximumPoints)
+        {
+            var bucket = (to - from).Ticks / maximumPoints + 1;
+            points = points
+                .GroupBy(point => (point.At - from).Ticks / bucket)
+                .Select(group => group.MaxBy(point => point.Count)!)
+                .ToArray();
+        }
+
+        var first = inRange[0];
+        var last = inRange[^1];
+        var peak = points.MaxBy(point => point.Count)!;
+        var sources = last.Sources.Keys.Concat(first.Sources.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .Select(name => new DeadLetterSourceTrend(name, first.Sources.GetValueOrDefault(name), last.Sources.GetValueOrDefault(name)))
+            .OrderByDescending(source => source.Now)
+            .ThenByDescending(source => Math.Abs(source.Change))
+            .ThenBy(source => source.Name, StringComparer.Ordinal)
+            .Take(maximumSources)
+            .ToArray();
+        return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length);
+    }
+}

@@ -23,6 +23,7 @@ public sealed class MessageItemViewModel : ObservableObject
     private readonly Lazy<string> _bodyDisplay;
     private readonly Lazy<string> _applicationPropertiesJson;
     private readonly Lazy<string> _propertiesJson;
+    private readonly Lazy<DecodedBody?> _decoded;
     private bool _isMarked;
 
     public MessageItemViewModel(
@@ -43,6 +44,7 @@ public sealed class MessageItemViewModel : ObservableObject
         _bodyDisplay = new Lazy<string>(CreateBodyDisplay);
         _applicationPropertiesJson = new Lazy<string>(CreateApplicationPropertiesJson);
         _propertiesJson = new Lazy<string>(CreatePropertiesJson);
+        _decoded = new Lazy<DecodedBody?>(() => BodyDecoder.Decode(Message.Body, Message.Properties.ContentType));
     }
 
     public BrowsedMessage Message { get; }
@@ -54,8 +56,20 @@ public sealed class MessageItemViewModel : ObservableObject
         set => SetProperty(ref _isMarked, value && CanDelete);
     }
 
-    /// <summary>Only dead-lettered messages can be deleted; active messages are browse-only.</summary>
-    public bool CanDelete => Message.SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter;
+    /// <summary>
+    /// Dead-lettered messages can be deleted, and scheduled or deferred ones cancelled or removed; other active
+    /// messages are browse-only.
+    /// </summary>
+    public bool CanDelete => Message.IsDeadLetter || IsPending;
+
+    /// <summary>A scheduled or deferred Azure Service Bus message: in the queue but not delivered to receivers.</summary>
+    public bool IsPending => PendingMessages.IsPending(Message);
+
+    public bool IsScheduled => IsPending && Message.State == ServiceBusMessageState.Scheduled;
+
+    public bool IsDeferred => IsPending && Message.State == ServiceBusMessageState.Deferred;
+
+    public bool IsDeadLetter => Message.IsDeadLetter;
 
     public DeadLetterMessageKey Key => new(Message.Source, Message.SubQueue, Message.SequenceNumber, Message.Properties.MessageId);
 
@@ -69,9 +83,25 @@ public sealed class MessageItemViewModel : ObservableObject
 
     public string SourceDisplay => Message.Source.DisplayName;
 
-    public string SubQueueLabel => Message.SubQueue == ServiceBusSubQueue.TransferDeadLetter
-        ? "TRANSFER DLQ"
-        : "DLQ";
+    public string SubQueueLabel => Message.SubQueue switch
+    {
+        ServiceBusSubQueue.TransferDeadLetter => "TRANSFER DLQ",
+        ServiceBusSubQueue.DeadLetter => "DLQ",
+        _ when IsScheduled => "SCHEDULED",
+        _ when IsDeferred => "DEFERRED",
+        _ => "ACTIVE"
+    };
+
+    /// <summary>The reason column: why a message was dead-lettered, or when a scheduled one will be delivered.</summary>
+    public string StatusDetail => Message.IsDeadLetter
+        ? DeadLetterReason
+        : IsScheduled
+            ? Message.Properties.ScheduledEnqueueTime is { } due
+                ? $"Due {due.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}"
+                : "Scheduled"
+            : IsDeferred
+                ? "Waiting for its receiver"
+                : "—";
 
     public long SequenceNumber => Message.SequenceNumber;
 
@@ -80,7 +110,14 @@ public sealed class MessageItemViewModel : ObservableObject
         ? Message.SequenceNumber.ToString(System.Globalization.CultureInfo.CurrentCulture)
         : "—";
 
-    public string MessageId => Message.Properties.MessageId ?? "(no MessageId)";
+    /// <summary>The message ID; for Kafka records without one, where they are in the topic.</summary>
+    public string MessageId => Message.Properties.MessageId ?? KafkaPosition ?? "(no MessageId)";
+
+    private string? KafkaPosition =>
+        Message.ApplicationProperties.FirstOrDefault(property => property.Name == "kafka.partition") is { } partition &&
+        Message.ApplicationProperties.FirstOrDefault(property => property.Name == "kafka.offset") is { } offset
+            ? $"partition {partition.Value} · offset {offset.Value}"
+            : null;
 
     public string Subject => Message.Properties.Subject ?? "—";
 
@@ -113,6 +150,20 @@ public sealed class MessageItemViewModel : ObservableObject
     /// Copy actions keep using <see cref="BodyText"/> so the original bytes are preserved.
     /// </summary>
     public string BodyDisplayText => _bodyDisplay.Value;
+
+    /// <summary>The body unpacked (gzip, base64, Avro, Protobuf), when it is not readable as it is.</summary>
+    public bool HasDecodedBody => _decoded.Value is not null;
+
+    public string DecodedText => _decoded.Value?.Text ?? string.Empty;
+
+    public bool DecodedIsJson => _decoded.Value?.IsJson == true;
+
+    public IReadOnlyList<string> DecodedSteps => _decoded.Value?.Steps ?? [];
+
+    public string DecodedNote => (_decoded.Value?.Note ?? string.Empty) +
+                                 (Message.IsBodyTruncated && HasDecodedBody ? " Only the retained part of the body was decoded." : string.Empty);
+
+    public bool HasDecodedNote => !string.IsNullOrWhiteSpace(DecodedNote);
 
     public string BodyFormat => Message.IsBodyTruncated
         ? "Truncated preview"

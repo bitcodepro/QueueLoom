@@ -29,7 +29,7 @@
       <RadioButton GroupName="resendMode" IsChecked="{Binding Copies}" Content="Keep them: send copies only" />
       <RadioButton GroupName="resendMode" IsChecked="{Binding Moves}" IsEnabled="{Binding CanMove}"
                    Content="Move them: send, then back up and remove the originals from the DLQ" />
-      <TextBlock Text="Only dead-lettered messages can be moved; untick active messages to enable it."
+      <TextBlock Text="{Binding MoveUnavailableReason}"
                  Classes="muted" FontSize="12" IsVisible="{Binding !CanMove}" />
     </StackPanel>
 

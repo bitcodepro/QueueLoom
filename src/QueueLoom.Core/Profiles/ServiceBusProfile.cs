@@ -2,7 +2,7 @@ namespace QueueLoom.Core.Profiles;
 
 /// <summary>
 /// A non-secret, persistable description of a messaging environment: an Azure Service Bus namespace,
-/// an AWS account region (SQS and SNS) or a Google Cloud project (Pub/Sub).
+/// an AWS account region (SQS and SNS), a Google Cloud project (Pub/Sub), a RabbitMQ virtual host or a Kafka cluster.
 /// </summary>
 public sealed record ServiceBusProfile(
     Guid Id,
@@ -22,6 +22,10 @@ public sealed record ServiceBusProfile(
 
     public GooglePubSubSettings? GooglePubSub { get; init; }
 
+    public RabbitMqSettings? RabbitMq { get; init; }
+
+    public KafkaSettings? Kafka { get; init; }
+
     /// <summary>Where the environment lives, in the provider's own terms: namespace, region or project.</summary>
     public string? EndpointDisplay => Provider switch
     {
@@ -31,6 +35,10 @@ public sealed record ServiceBusProfile(
         MessagingProvider.GooglePubSub when GooglePubSub is not null => string.IsNullOrWhiteSpace(GooglePubSub.EmulatorHost)
             ? GooglePubSub.ProjectId
             : $"{GooglePubSub.ProjectId} · emulator {GooglePubSub.EmulatorHost}",
+        MessagingProvider.RabbitMq when RabbitMq is not null => RabbitMq.VirtualHost == "/"
+            ? $"{RabbitMq.Host}:{RabbitMq.AmqpPort}"
+            : $"{RabbitMq.Host}:{RabbitMq.AmqpPort} · vhost {RabbitMq.VirtualHost}",
+        MessagingProvider.Kafka when Kafka is not null => Kafka.BootstrapServers,
         _ => FullyQualifiedNamespace
     };
 
@@ -57,10 +65,33 @@ public sealed record ServiceBusProfile(
         AuthenticationKind.GoogleApplicationDefault => string.IsNullOrWhiteSpace(GooglePubSub?.EmulatorHost)
             ? "Application Default Credentials"
             : "Emulator · no credentials",
+        AuthenticationKind.RabbitMqPassword => $"User {RabbitMq?.UserName}",
+        AuthenticationKind.KafkaNone => Kafka?.UseTls == true ? "TLS, no sign-in" : "No sign-in",
+        AuthenticationKind.KafkaSaslPassword => $"SASL {Kafka?.SaslMechanism} · {Kafka?.UserName}",
         _ => Authentication.Kind.ToString()
     };
 
     public bool CanWrite => AccessMode == ProfileAccessMode.ReadWrite;
+
+    /// <summary>
+    /// Allows creating, changing and deleting queues, on top of write access. Off by default: most operators only
+    /// need to work with messages.
+    /// </summary>
+    public bool AllowQueueManagement { get; init; }
+
+    /// <summary>Throws unless queues may be managed now: the environment allows it and write access is on.</summary>
+    public void EnsureQueueManagementAllowed()
+    {
+        if (!AllowQueueManagement)
+        {
+            throw new InvalidOperationException(
+                $"Environment '{Name}' does not allow managing queues. Turn it on in Environments → Edit.");
+        }
+        if (!CanWrite)
+        {
+            throw new InvalidOperationException($"Environment '{Name}' is read-only. Unlock write access first.");
+        }
+    }
 
     public static ServiceBusProfile CreateNew(
         string name,

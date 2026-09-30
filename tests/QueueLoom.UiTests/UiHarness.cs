@@ -127,6 +127,11 @@ internal sealed class WindowFixture : IAsyncDisposable
         params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
     {
         _settings = new JsonAppSettingsStore(QueueLoomPaths.ForRoot(_dataDirectory));
+        History = new JsonLinesDeadLetterHistoryStore(Path.Combine(_dataDirectory, "dlq-history.jsonl"));
+        foreach (var sample in profiles.Take(1).SelectMany(profile => DemoData.History(profile, DateTimeOffset.UtcNow)))
+        {
+            History.Append(sample);
+        }
         var accessor = new TopLevelAccessor();
         ViewModel = new MainWindowViewModel(
             new InMemoryProfileRepository(profiles),
@@ -137,7 +142,8 @@ internal sealed class WindowFixture : IAsyncDisposable
             clipboard: Clipboard,
             launcher: new NoopLauncher(),
             notifications: Notifications,
-            theme: new AvaloniaThemeService());
+            theme: new AvaloniaThemeService(),
+            history: History);
         Window = new MainWindow(
             ViewModel,
             _settings,
@@ -155,6 +161,8 @@ internal sealed class WindowFixture : IAsyncDisposable
 
     public MainWindowViewModel ViewModel { get; }
 
+    public JsonLinesDeadLetterHistoryStore History { get; }
+
     public MainWindow Window { get; }
 
     public RecordingClipboard Clipboard { get; } = new();
@@ -166,7 +174,8 @@ internal sealed class WindowFixture : IAsyncDisposable
         var fixture = !connect
             ? new WindowFixture()
             : allClouds
-                ? new WindowFixture(DemoData.Development, DemoData.Production, DemoData.AwsStaging, DemoData.GoogleDevelopment)
+                ? new WindowFixture(DemoData.Development, DemoData.Production, DemoData.AwsStaging, DemoData.GoogleDevelopment,
+                    DemoData.RabbitStaging, DemoData.KafkaDevelopment)
                 : new WindowFixture(DemoData.Development, DemoData.Production);
         fixture.Window.Show();
         await fixture.SettleAsync();

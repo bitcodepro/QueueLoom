@@ -12,7 +12,9 @@ public sealed record QueueLoomPaths(
 {
     public static QueueLoomPaths CreateDefault()
     {
-        var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        // Create: a new Linux or macOS account may not have ~/.local/share yet, and without this option .NET
+        // returns an empty path for a folder that does not exist.
+        var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create);
         if (string.IsNullOrWhiteSpace(localData))
         {
             throw new InvalidOperationException("The operating system did not provide a local application-data directory.");

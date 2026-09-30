@@ -65,7 +65,8 @@ public sealed partial class MainWindowViewModel
     /// </summary>
     public string BrowseModeLabel => ConnectedProvider switch
     {
-        MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub => "Receive and release",
+        MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub or MessagingProvider.RabbitMq => "Receive and release",
+        MessagingProvider.Kafka => "Read by offset",
         _ => "Non-destructive Peek"
     };
 
@@ -75,6 +76,10 @@ public sealed partial class MainWindowViewModel
             "SQS has no peek. Messages are received, hidden for up to 3 minutes and returned unchanged; their receive count goes up by one.",
         MessagingProvider.GooglePubSub =>
             "Pub/Sub has no peek. Messages are pulled, held for up to 3 minutes and returned unchanged; with a dead-letter policy each read counts as a delivery attempt.",
+        MessagingProvider.RabbitMq =>
+            "RabbitMQ has no peek. Messages are taken with basic.get and requeued unchanged; they are marked as redelivered, and quorum queues do not count this as a delivery.",
+        MessagingProvider.Kafka =>
+            "Kafka keeps messages after they are read. QueueLoom reads them by offset, without a consumer group, so nothing is committed or changed.",
         _ => "Messages are peeked without locking or changing them."
     };
 
@@ -82,6 +87,8 @@ public sealed partial class MainWindowViewModel
     {
         MessagingProvider.GooglePubSub => "Pub/Sub does not report counts",
         MessagingProvider.AmazonSqsSns => "Approximate SQS counts",
+        MessagingProvider.RabbitMq => "Ready messages in dead-letter queues",
+        MessagingProvider.Kafka => "Messages kept in dead-letter topics",
         _ => "DLQ + transfer DLQ"
     };
 
@@ -551,6 +558,8 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(ConnectionTone));
         OnPropertyChanged(nameof(ConnectedNamespace));
         OnPropertyChanged(nameof(ConnectedProvider));
+        OnPropertyChanged(nameof(SubjectHint));
+        OnPropertyChanged(nameof(HasSubjectHint));
         OnPropertyChanged(nameof(BrowseModeLabel));
         OnPropertyChanged(nameof(BrowseModeDescription));
         OnPropertyChanged(nameof(DeadLetterCountCaption));

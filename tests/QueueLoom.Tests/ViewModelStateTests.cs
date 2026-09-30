@@ -742,14 +742,16 @@ public sealed partial class ViewModelStateTests
         IUserDialogService? dialogs = null,
         IDeadLetterBackupRepository? backupRepository = null,
         ISecretVault? secretVault = null,
-        QueueLoom.App.Services.IMonitorAlertService? alerts = null) =>
+        QueueLoom.App.Services.IMonitorAlertService? alerts = null,
+        IDeadLetterHistoryStore? history = null) =>
         new(
             repository,
             secretVault ?? new FakeSecretVault(),
             workspace,
             dialogs ?? new FakeDialogService(),
             backupRepository,
-            alerts: alerts);
+            alerts: alerts,
+            history: history);
 
     internal static ServiceBusProfile CreateProfile(
         string name,
@@ -1064,6 +1066,53 @@ public sealed partial class ViewModelStateTests
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 
+        public QueueManagementCapabilities? QueueManagement { get; set; }
+
+        public List<QueueDefinition> CreatedQueues { get; } = [];
+
+        public List<(string Queue, QueueSettings Settings)> UpdatedQueues { get; } = [];
+
+        public List<string> DeletedQueues { get; } = [];
+
+        public QueueSettings CurrentQueueSettings { get; set; } = new();
+
+        public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
+            Task.FromResult(CurrentQueueSettings);
+
+        public Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default)
+        {
+            CreatedQueues.Add(definition);
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow,
+                Topology.Queues.Append(new ServiceBusQueue(definition.Name, ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active)),
+                Topology.Topics);
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default)
+        {
+            UpdatedQueues.Add((queue, settings));
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default)
+        {
+            DeletedQueues.Add(queue);
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, Topology.Queues.Where(item => item.Name != queue), Topology.Topics);
+            return Task.CompletedTask;
+        }
+
+        public List<IReadOnlyList<BrowsedMessage>> PendingRemovals { get; } = [];
+
+        public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
+            IReadOnlyList<BrowsedMessage> messages,
+            CancellationToken cancellationToken = default)
+        {
+            PendingRemovals.Add(messages);
+            return Task.FromResult(new RemovePendingMessagesResult(
+                messages.Select(message => new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+        }
+
         public List<DeleteDeadLetterMessagesRequest> DeleteRequests { get; } = [];
 
         /// <summary>Sequence numbers reported as not found by the fake deletion.</summary>
@@ -1165,6 +1214,22 @@ public sealed partial class ViewModelStateTests
             IReadOnlyList<(string Name, string Pattern)> fileTypes,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(SaveFilePath);
+
+        /// <summary>Fills in the queue dialog like an operator would; null cancels it.</summary>
+        public Action<QueueDialogViewModel>? FillQueueDialog { get; set; }
+
+        public List<QueueDialogViewModel> QueueDialogs { get; } = [];
+
+        public Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default)
+        {
+            QueueDialogs.Add(viewModel);
+            if (FillQueueDialog is null)
+            {
+                return Task.FromResult<object?>(null);
+            }
+            FillQueueDialog(viewModel);
+            return Task.FromResult<object?>(viewModel.IsNew ? viewModel.TryBuildDefinition() : viewModel.TryBuildSettings());
+        }
 
         public List<ResendDialogViewModel> ResendDialogs { get; } = [];
 

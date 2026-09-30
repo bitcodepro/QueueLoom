@@ -52,6 +52,31 @@ public interface IServiceBusWorkspace : IAsyncDisposable
         CancellationToken cancellationToken = default,
         IProgress<DeadLetterMessageDeletionProgress>? progress = null);
 
+    /// <summary>
+    /// Backs up, then cancels scheduled messages and removes deferred ones (Azure Service Bus only). Every message
+    /// must satisfy <see cref="PendingMessages.IsPending"/>.
+    /// </summary>
+    Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
+        IReadOnlyList<BrowsedMessage> messages,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Azure Service Bus has scheduled and deferred messages.");
+
+    /// <summary>What queue management this service offers; null when it offers none.</summary>
+    QueueManagementCapabilities? QueueManagement => null;
+
+    Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service does not support queue management in QueueLoom.");
+
+    Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service does not support queue management in QueueLoom.");
+
+    Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service does not support queue management in QueueLoom.");
+
+    /// <summary>Deletes the queue and every message in it. Its dead-letter queue, if separate, is kept.</summary>
+    Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service does not support queue management in QueueLoom.");
+
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default);

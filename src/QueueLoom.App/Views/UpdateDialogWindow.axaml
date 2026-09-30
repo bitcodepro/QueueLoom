@@ -1,0 +1,53 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.UpdateDialogWindow"
+        x:DataType="vm:UpdateDialogViewModel"
+        Title="QueueLoom update"
+        Width="560"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+  <StackPanel Margin="26" Spacing="16">
+    <StackPanel Orientation="Horizontal" Spacing="14">
+      <Image Source="/Assets/queueloom-128.png" Width="48" Height="48" VerticalAlignment="Top"
+             RenderOptions.BitmapInterpolationMode="HighQuality" />
+      <StackPanel Spacing="4" VerticalAlignment="Center">
+        <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" />
+        <TextBlock Classes="muted" FontSize="12">
+          <Run Text="{Binding CurrentVersion}" />
+          <Run Text=" → " />
+          <Run Text="{Binding NewVersion}" FontWeight="SemiBold" />
+        </TextBlock>
+      </StackPanel>
+    </StackPanel>
+
+    <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+
+    <StackPanel Spacing="6" IsVisible="{Binding IsDownloading}">
+      <ProgressBar Minimum="0" Maximum="100" Value="{Binding Progress}" Height="6"
+                   IsIndeterminate="{Binding !IsProgressKnown}" AutomationProperties.Name="Download progress" />
+      <TextBlock Text="{Binding ProgressText}" Classes="muted" FontSize="12" />
+    </StackPanel>
+
+    <Border Classes="alert" IsVisible="{Binding IsFailed}">
+      <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" />
+    </Border>
+
+    <Grid ColumnDefinitions="Auto,*,Auto">
+      <Button Content="Release notes" Classes="quiet" Click="ReleaseNotesClick"
+              ToolTip.Tip="Open the release page on GitHub" />
+      <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+        <Button Content="Not now" Click="LaterClick" IsVisible="{Binding IsAvailable}" />
+        <Button Content="Cancel" Click="CancelClick" IsVisible="{Binding IsDownloading}" />
+        <Button Content="Close" Click="LaterClick" IsVisible="{Binding IsFailed}" />
+        <Button Content="Restart later" Click="LaterClick" IsVisible="{Binding IsReady}" />
+        <Button Content="Update now" Classes="primary" Click="InstallClick" IsVisible="{Binding ShowInstallButton}" />
+        <Button Content="Open releases page" Classes="primary" Click="ReleaseNotesClick" IsVisible="{Binding IsFailed}" />
+        <Button Content="Open releases page" Classes="primary" Click="ReleaseNotesClick"
+                IsVisible="{Binding !CanInstall}" />
+        <Button Content="Restart now" Classes="primary" Click="RestartClick" IsVisible="{Binding IsReady}" />
+      </StackPanel>
+    </Grid>
+  </StackPanel>
+</Window>

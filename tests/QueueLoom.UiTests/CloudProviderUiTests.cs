@@ -23,7 +23,8 @@ public sealed class CloudProviderUiTests
         var page = fixture.Window.GetVisualDescendants().OfType<QueueLoom.App.Views.Pages.EnvironmentsPage>().Single();
         var badges = page.GetVisualDescendants().OfType<ProviderBadge>().Where(badge => badge.IsVisible).ToArray();
         Assert.Equal(
-            [MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, MessagingProvider.AmazonSqsSns, MessagingProvider.GooglePubSub],
+            [MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, MessagingProvider.AmazonSqsSns, MessagingProvider.GooglePubSub,
+             MessagingProvider.RabbitMq, MessagingProvider.Kafka],
             badges.Select(badge => badge.Provider!.Value).Order());
         Assert.Contains(page.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Amazon SQS / SNS");
         Assert.Contains(page.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "shipping-dev-2231");
@@ -107,6 +108,18 @@ public sealed class CloudProviderUiTests
             await fixture.SettleAsync();
             Save(editor, Path.Combine(directory, $"{theme.ToString().ToLowerInvariant()}-editor-aws.png"));
             editor.Close();
+
+            var rabbit = new ProfileEditorViewModel(null) { Name = "Billing on RabbitMQ", Environment = EnvironmentKind.Test };
+            rabbit.SelectedProvider = rabbit.ProviderOptions.Single(option => option.Provider == MessagingProvider.RabbitMq);
+            rabbit.RabbitHost = "rabbit.billing.internal";
+            rabbit.RabbitUserName = "queueloom";
+            rabbit.BrokerPassword = "example";
+            rabbit.AllowQueueManagement = true;
+            var rabbitEditor = new ProfileEditorWindow(rabbit) { Width = 700, Height = 1000 };
+            rabbitEditor.Show();
+            await fixture.SettleAsync();
+            Save(rabbitEditor, Path.Combine(directory, $"{theme.ToString().ToLowerInvariant()}-editor-rabbitmq.png"));
+            rabbitEditor.Close();
         }
         fixture.ViewModel.ThemePreference = AppThemePreference.Dark;
 

@@ -48,6 +48,11 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException(
                 "Some ticked messages belong to another environment. Connect that environment and search again.");
         }
+        if (marked.Any(message => message.IsPending))
+        {
+            throw new InvalidOperationException(
+                "Scheduled and deferred messages are not resent: they are still in their queue. Untick them.");
+        }
         if (marked.Any(message => message.Message.IsBodyTruncated))
         {
             throw new InvalidOperationException(
@@ -59,7 +64,8 @@ public sealed partial class MainWindowViewModel
             marked.Select(message => message.Message).ToArray(),
             Destinations.Select(destination => destination.Reference),
             profile.Name,
-            requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production);
+            requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production,
+            canRemoveOriginals: CanDeleteSelectedMessages);
         var options = await _dialogs.ChooseResendOptionsAsync(dialog, cancellationToken).ConfigureAwait(true);
         if (options is null)
         {

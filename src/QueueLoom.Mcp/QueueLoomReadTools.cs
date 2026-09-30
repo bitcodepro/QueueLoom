@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+using System.Globalization;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.ServiceBus;
 
@@ -8,7 +9,7 @@ namespace QueueLoom.Mcp;
 
 /// <summary>Read-only tools. They never lock, settle or send messages, so they run without approval.</summary>
 [McpServerToolType]
-public sealed class QueueLoomReadTools(McpWorkspaceSession session)
+public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSettings settings)
 {
     private const string EnvironmentDescription =
         "Saved environment name (see list_environments). Optional when only one environment is saved.";
@@ -33,9 +34,10 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session)
             var topology = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetTopologyAsync(forceRefresh: true, token), cancellationToken)
                 .ConfigureAwait(false);
-            var entities = topology.Queues.Select(queue => McpMapping.ToInfo(queue.Reference, queue.Runtime, queue.Status))
+            string Kind(string name) => char.ToUpperInvariant(name[0]) + name[1..];
+            var entities = topology.Queues.Select(queue => McpMapping.ToInfo(queue.Reference, queue.Runtime, queue.Status) with { Kind = Kind(topology.QueueKindName) })
                 .Concat(topology.Topics.SelectMany(topic =>
-                    new[] { McpMapping.ToInfo(topic.Reference, topic.Runtime, topic.Status) }
+                    new[] { McpMapping.ToInfo(topic.Reference, topic.Runtime, topic.Status) with { Kind = Kind(topology.TopicKindName) } }
                         .Concat(topic.Subscriptions.Select(subscription =>
                             McpMapping.ToInfo(subscription.Reference, subscription.Runtime, subscription.Status)))))
                 .Where(entity => string.IsNullOrWhiteSpace(filter) ||
@@ -65,7 +67,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session)
     [McpServerTool(Name = "peek_messages", Title = "Peek messages", ReadOnly = true, Idempotent = true)]
     [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
                  "SQS and Pub/Sub receive the messages and release them at once (paging is not available there). " +
-                 "Bodies longer than 4,000 characters are truncated. Use fromSequenceNumber to page on Azure.")]
+                 "Bodies longer than 4,000 characters are truncated. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
+                 "unpacked in decodedBody. Use fromSequenceNumber to page on Azure.")]
     public Task<MessageListInfo> PeekMessagesAsync(
         [Description("Queue name, or 'topic/subscription'.")] string entity,
         [Description(EnvironmentDescription)] string? environment = null,
@@ -129,4 +132,93 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session)
                 (result.IsComplete ? "." : "; the search stopped at a limit or hit errors, so results may be incomplete."),
                 result.Matches.Select(McpMapping.ToInfo).ToArray());
         });
+
+    [McpServerTool(Name = "export_messages", Title = "Export messages to a file", ReadOnly = true, Idempotent = false, OpenWorld = false)]
+    [Description("Saves messages with their full bodies and properties to a JSON or CSV file on this computer and returns its path. " +
+                 "Pass 'entity' to export messages from one queue or subscription (like peek_messages), or 'query' to export " +
+                 "dead letters matching a search across the environment (like search_dead_letters). Nothing is removed.")]
+    public Task<ExportInfo> ExportMessagesAsync(
+        [Description(EnvironmentDescription)] string? environment = null,
+        [Description("Queue name, or 'topic/subscription'.")] string? entity = null,
+        [Description("Text to search the dead-letter queues for, instead of 'entity'.")] string? query = null,
+        [Description("With 'entity': 'dlq' (default), 'transfer-dlq' or 'active'.")] string subQueue = "dlq",
+        [Description("How many messages at most, 1-1,000.")] int maxMessages = 100,
+        [Description("'json' (default; complete) or 'csv' (one row per message, for spreadsheets).")] string format = "json",
+        [Description("Optional file name without folders; a name with the environment and time is chosen when omitted.")] string? fileName = null,
+        CancellationToken cancellationToken = default) =>
+        McpGuard.RunAsync(async () =>
+        {
+            var hasEntity = !string.IsNullOrWhiteSpace(entity);
+            var hasQuery = !string.IsNullOrWhiteSpace(query);
+            if (hasEntity == hasQuery)
+            {
+                throw new McpException("Pass either 'entity' or 'query'.");
+            }
+            var extension = format?.Trim().ToLowerInvariant() switch
+            {
+                "json" or "" or null => ".json",
+                "csv" => ".csv",
+                _ => throw new McpException("format must be 'json' or 'csv'.")
+            };
+            var count = Math.Clamp(maxMessages, 1, BrowseMessagesRequest.MaximumMaxMessages);
+
+            var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var (label, messages, complete) = await session.ReadAsync(profile, async (workspace, token) =>
+            {
+                var topology = await workspace.GetTopologyAsync(forceRefresh: hasQuery, token).ConfigureAwait(false);
+                if (hasEntity)
+                {
+                    var source = EntityResolver.Resolve(topology, entity!, requireMessageSource: true);
+                    var queue = McpMapping.ParseSubQueue(subQueue);
+                    var browsed = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, queue, count), token)
+                        .ConfigureAwait(false);
+                    return ($"{McpMapping.EntityName(source)}-{McpMapping.SubQueueName(queue)}", browsed, true);
+                }
+
+                var targets = DeadLetterSearchTargets.ForTopology(topology);
+                if (targets.Length == 0)
+                {
+                    return ("search", (IReadOnlyList<BrowsedMessage>)[], true);
+                }
+                var result = await workspace.SearchDeadLettersAsync(
+                        new DeadLetterSearchRequest(query!.Trim(), targets, maximumResults: count), token)
+                    .ConfigureAwait(false);
+                return ("search", result.Matches, result.IsComplete);
+            }, cancellationToken).ConfigureAwait(false);
+
+            var path = ExportPath(profile.Name, label, fileName, extension);
+            await MessageExport.WriteAsync(path, messages.Select(message => new ExportedMessage(profile.Name, message)).ToArray(),
+                cancellationToken).ConfigureAwait(false);
+            session.Record("Info", "Exported messages", $"{messages.Count} message(s) to {path}", profile);
+            return new ExportInfo(
+                profile.Name,
+                path,
+                messages.Count,
+                extension.TrimStart('.'),
+                $"{messages.Count} message(s) saved to {path}" +
+                (messages.Any(message => message.IsBodyTruncated) ? "; some bodies were too large and are truncated" : string.Empty) +
+                (complete ? "." : "; the search stopped at a limit or hit errors, so the file may be incomplete."));
+        });
+
+    private string ExportPath(string environment, string label, string? fileName, string extension)
+    {
+        var directory = settings.ResolvedExportDirectory;
+        Directory.CreateDirectory(directory);
+        var name = string.IsNullOrWhiteSpace(fileName)
+            ? $"{environment}-{label}-{DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}"
+            : Path.GetFileNameWithoutExtension(Path.GetFileName(fileName.Trim()));
+        var safe = new string(name.Select(character =>
+            Path.GetInvalidFileNameChars().Contains(character) || character is '/' or '\\' or ':' ? '-' : character).ToArray()).Trim(' ', '.');
+        if (safe.Length == 0)
+        {
+            safe = "messages";
+        }
+
+        var path = Path.Combine(directory, safe + extension);
+        for (var copy = 2; File.Exists(path); copy++)
+        {
+            path = Path.Combine(directory, $"{safe} ({copy}){extension}");
+        }
+        return path;
+    }
 }

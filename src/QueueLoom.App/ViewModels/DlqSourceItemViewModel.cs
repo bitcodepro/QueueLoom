@@ -9,8 +9,12 @@ public sealed class DlqSourceItemViewModel(
     string profileName,
     string environmentLabel,
     Tone environmentTone,
-    DeadLetterEntitySnapshot snapshot)
+    DeadLetterEntitySnapshot snapshot,
+    string queueKindName = "queue")
 {
+    /// <summary>"QUEUE", or "TOPIC" for Kafka, whose topics hold the messages.</summary>
+    public string QueueKindLabel { get; } = queueKindName.ToUpperInvariant();
+
     public Guid ProfileId { get; } = profileId;
 
     public string ProfileName { get; } = profileName;
@@ -33,7 +37,7 @@ public sealed class DlqSourceItemViewModel(
 
     public bool IsSubscription => Entity.Kind == ServiceBusEntityKind.Subscription;
 
-    public string EntityKind => IsQueue ? "Queue" : "Subscription";
+    public string EntityKind => IsQueue ? QueueKindLabel[..1] + QueueKindLabel[1..].ToLowerInvariant() : "Subscription";
 
     public string SubQueueLabel => Snapshot.SubQueue == ServiceBusSubQueue.TransferDeadLetter
         ? "TRANSFER DLQ"

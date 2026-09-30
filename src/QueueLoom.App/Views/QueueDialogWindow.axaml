@@ -1,0 +1,66 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.QueueDialogWindow"
+        x:DataType="vm:QueueDialogViewModel"
+        Title="{Binding Title}"
+        Width="560"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+  <StackPanel Margin="26" Spacing="16">
+    <StackPanel Spacing="4">
+      <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+      <TextBlock Text="{Binding EnvironmentName, StringFormat='Environment: {0}'}" Classes="muted" />
+    </StackPanel>
+
+    <StackPanel Spacing="7" IsVisible="{Binding IsNew}">
+      <TextBlock Text="NAME" Classes="eyebrow" />
+      <TextBox Text="{Binding Name}" PlaceholderText="orders" AutomationProperties.Name="Name" />
+    </StackPanel>
+
+    <StackPanel Spacing="7" IsVisible="{Binding ShowTimeToLive}">
+      <TextBlock Text="KEEP UNREAD MESSAGES FOR" Classes="eyebrow" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <NumericUpDown Value="{Binding TimeToLive}" Minimum="0" Width="140" FormatString="0.##" PlaceholderText="default"
+                       AutomationProperties.Name="Time to live" />
+        <ComboBox ItemsSource="{Binding TimeUnits}" SelectedItem="{Binding TimeToLiveUnit}" Width="120"
+                  AutomationProperties.Name="Time to live unit" />
+      </StackPanel>
+    </StackPanel>
+
+    <Grid ColumnDefinitions="*,14,*" IsVisible="{Binding ShowDeliveryOrLock}">
+      <StackPanel Spacing="7" IsVisible="{Binding ShowMaxDeliveryCount}">
+        <TextBlock Text="DEAD-LETTER AFTER · DELIVERIES" Classes="eyebrow" />
+        <NumericUpDown Value="{Binding MaxDeliveryCount}" Minimum="1" Maximum="2000" FormatString="0" PlaceholderText="default"
+                       AutomationProperties.Name="Maximum deliveries" />
+      </StackPanel>
+      <StackPanel Grid.Column="2" Spacing="7" IsVisible="{Binding ShowLockDuration}">
+        <TextBlock Text="LOCK · SECONDS" Classes="eyebrow" />
+        <NumericUpDown Value="{Binding LockSeconds}" Minimum="0" Maximum="43200" FormatString="0" PlaceholderText="default"
+                       AutomationProperties.Name="Lock duration in seconds" />
+      </StackPanel>
+    </Grid>
+
+    <StackPanel Spacing="7" IsVisible="{Binding ShowPartitions}">
+      <TextBlock Text="PARTITIONS" Classes="eyebrow" />
+      <NumericUpDown Value="{Binding Partitions}" Minimum="1" Maximum="10000" FormatString="0" Width="140" HorizontalAlignment="Left"
+                     AutomationProperties.Name="Partitions" />
+    </StackPanel>
+
+    <CheckBox IsChecked="{Binding DeadLetterOnExpiration}" IsVisible="{Binding ShowDeadLetterOnExpiration}"
+              Content="Move expired messages to the dead-letter queue" />
+    <CheckBox IsChecked="{Binding CreateDeadLetterQueue}" IsVisible="{Binding ShowCreateDeadLetterQueue}"
+              Content="{Binding DeadLetterQueueLabel}" />
+
+    <Border Classes="callout" IsVisible="{Binding HasNote}">
+      <TextBlock Text="{Binding Note}" Classes="muted" TextWrapping="Wrap" />
+    </Border>
+    <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="Cancel" Click="CancelClick" />
+      <Button Content="{Binding ConfirmLabel}" Classes="primary" Click="ConfirmClick" />
+    </StackPanel>
+  </StackPanel>
+</Window>

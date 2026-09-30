@@ -64,6 +64,13 @@
           </StackPanel>
         </Grid>
 
+        <StackPanel Spacing="4">
+          <CheckBox IsChecked="{Binding AllowQueueManagement}" Content="Allow creating, changing and deleting queues"
+                    AutomationProperties.Name="Allow queue management" />
+          <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap" Margin="28,0,0,0"
+                     Text="Also needs write access. Deleting a queue always asks you to type its name." />
+        </StackPanel>
+
         <StackPanel Spacing="7" IsVisible="{Binding IsCustomEnvironment}">
           <TextBlock Text="CUSTOM ENVIRONMENT LABEL" Classes="eyebrow" />
           <TextBox Text="{Binding CustomEnvironmentName}" PlaceholderText="Staging" />
@@ -199,6 +206,86 @@
 
             <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding !IsGoogleServiceAccountKey}"
                        Text="Uses the credentials of gcloud auth application-default login or GOOGLE_APPLICATION_CREDENTIALS. The emulator needs none." />
+          </StackPanel>
+        </Border>
+
+        <!-- RabbitMQ -->
+        <Border Classes="card" IsVisible="{Binding IsRabbitMq}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="RabbitMQ broker" FontSize="16" FontWeight="SemiBold" />
+            <Grid ColumnDefinitions="*,14,110,14,130">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="HOST" Classes="eyebrow" />
+                <TextBox Text="{Binding RabbitHost}" PlaceholderText="rabbit.internal" AutomationProperties.Name="RabbitMQ host" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="AMQP" Classes="eyebrow" />
+                <NumericUpDown Value="{Binding RabbitAmqpPort}" Minimum="1" Maximum="65535" FormatString="0" ShowButtonSpinner="False"
+                               AutomationProperties.Name="AMQP port" />
+              </StackPanel>
+              <StackPanel Grid.Column="4" Spacing="7">
+                <TextBlock Text="MANAGEMENT" Classes="eyebrow" />
+                <NumericUpDown Value="{Binding RabbitManagementPort}" Minimum="1" Maximum="65535" FormatString="0" ShowButtonSpinner="False"
+                               AutomationProperties.Name="Management port" />
+              </StackPanel>
+            </Grid>
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="VIRTUAL HOST" Classes="eyebrow" />
+                <TextBox Text="{Binding RabbitVirtualHost}" PlaceholderText="/" AutomationProperties.Name="Virtual host" />
+              </StackPanel>
+              <CheckBox Grid.Column="2" IsChecked="{Binding RabbitUseTls}" Content="Use TLS (amqps and https)" VerticalAlignment="Bottom" />
+            </Grid>
+            <Grid ColumnDefinitions="*,14,*">
+              <StackPanel Grid.Column="0" Spacing="7">
+                <TextBlock Text="USER NAME" Classes="eyebrow" />
+                <TextBox Text="{Binding RabbitUserName}" PlaceholderText="queueloom" AutomationProperties.Name="RabbitMQ user name" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="7">
+                <TextBlock Text="PASSWORD" Classes="eyebrow" />
+                <TextBox Text="{Binding BrokerPassword}" PasswordChar="•" AutomationProperties.Name="RabbitMQ password" />
+              </StackPanel>
+            </Grid>
+            <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                       Text="QueueLoom lists queues through the management plugin, so the user needs the monitoring (or management) tag and read permission on the virtual host." />
+          </StackPanel>
+        </Border>
+
+        <!-- Apache Kafka -->
+        <Border Classes="card" IsVisible="{Binding IsKafka}">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Kafka cluster" FontSize="16" FontWeight="SemiBold" />
+            <StackPanel Spacing="7">
+              <TextBlock Text="BOOTSTRAP SERVERS" Classes="eyebrow" />
+              <TextBox Text="{Binding KafkaBootstrapServers}" PlaceholderText="broker-1:9092,broker-2:9092"
+                       AutomationProperties.Name="Bootstrap servers" />
+            </StackPanel>
+            <CheckBox IsChecked="{Binding KafkaUseTls}" Content="Use TLS" />
+            <StackPanel Spacing="12" IsVisible="{Binding IsKafkaSasl}">
+              <Grid ColumnDefinitions="160,14,*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="SASL MECHANISM" Classes="eyebrow" />
+                  <ComboBox ItemsSource="{Binding KafkaSaslMechanisms}" SelectedItem="{Binding KafkaSaslMechanism}"
+                            HorizontalAlignment="Stretch" AutomationProperties.Name="SASL mechanism" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="USER NAME" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaUserName}" AutomationProperties.Name="Kafka user name" />
+                </StackPanel>
+                <StackPanel Grid.Column="4" Spacing="7">
+                  <TextBlock Text="PASSWORD" Classes="eyebrow" />
+                  <TextBox Text="{Binding BrokerPassword}" PasswordChar="•" AutomationProperties.Name="Kafka password" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Spacing="7">
+              <TextBlock Text="DEAD-LETTER TOPICS END WITH" Classes="eyebrow" />
+              <TextBox Text="{Binding KafkaDeadLetterSuffixes}" AutomationProperties.Name="Dead-letter topic endings" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="A topic named like another one plus one of these endings is shown as its dead-letter queue, for example orders.DLT for orders." />
+            </StackPanel>
           </StackPanel>
         </Border>
 

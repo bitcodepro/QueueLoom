@@ -30,6 +30,7 @@
           <SolidColorBrush x:Key="WarningBrush" Color="#FFB45E" />
           <SolidColorBrush x:Key="DangerBrush" Color="#FF6B82" />
           <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A1C2A" />
+          <SolidColorBrush x:Key="SuccessSoftBrush" Color="#133427" />
           <SolidColorBrush x:Key="DangerCardBrush" Color="#231722" />
           <SolidColorBrush x:Key="DangerBorderBrush" Color="#6C2A3B" />
           <SolidColorBrush x:Key="WarningSoftBrush" Color="#33260F" />
@@ -39,6 +40,10 @@
           <SolidColorBrush x:Key="ProviderAwsSoftBrush" Color="#382710" />
           <SolidColorBrush x:Key="ProviderGcpBrush" Color="#5BC27A" />
           <SolidColorBrush x:Key="ProviderGcpSoftBrush" Color="#133324" />
+          <SolidColorBrush x:Key="ProviderRabbitBrush" Color="#F47BB5" />
+          <SolidColorBrush x:Key="ProviderRabbitSoftBrush" Color="#3A1830" />
+          <SolidColorBrush x:Key="ProviderKafkaBrush" Color="#AE95FF" />
+          <SolidColorBrush x:Key="ProviderKafkaSoftBrush" Color="#241D44" />
           <!-- Fluent control overrides -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#101D2F" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#15263C" />
@@ -73,6 +78,7 @@
           <SolidColorBrush x:Key="WarningBrush" Color="#9A5B00" />
           <SolidColorBrush x:Key="DangerBrush" Color="#C42842" />
           <SolidColorBrush x:Key="DangerSoftBrush" Color="#FCE9EC" />
+          <SolidColorBrush x:Key="SuccessSoftBrush" Color="#E2F4EA" />
           <SolidColorBrush x:Key="DangerCardBrush" Color="#FFF5F7" />
           <SolidColorBrush x:Key="DangerBorderBrush" Color="#F0B6C0" />
           <SolidColorBrush x:Key="WarningSoftBrush" Color="#FFF3DF" />
@@ -82,6 +88,10 @@
           <SolidColorBrush x:Key="ProviderAwsSoftBrush" Color="#FFF0DD" />
           <SolidColorBrush x:Key="ProviderGcpBrush" Color="#1B7A3B" />
           <SolidColorBrush x:Key="ProviderGcpSoftBrush" Color="#E2F4E7" />
+          <SolidColorBrush x:Key="ProviderRabbitBrush" Color="#B02D6E" />
+          <SolidColorBrush x:Key="ProviderRabbitSoftBrush" Color="#FCE6F1" />
+          <SolidColorBrush x:Key="ProviderKafkaBrush" Color="#5B3CC4" />
+          <SolidColorBrush x:Key="ProviderKafkaSoftBrush" Color="#EDE7FF" />
           <!-- Fluent control overrides -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#FFFFFF" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#F4F7FB" />
@@ -108,6 +118,7 @@
       <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
       <Setter Property="FontSize" Value="14" />
+      <Setter Property="Icon" Value="/Assets/queueloom.ico" />
     </Style>
 
     <!-- Typography -->
@@ -217,6 +228,34 @@
       <Setter Property="CornerRadius" Value="20" />
       <Setter Property="Padding" Value="10,5" />
       <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.success">
+      <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+    </Style>
+    <Style Selector="Border.trend">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="8,2" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+    </Style>
+    <Style Selector="Border.trend.rising">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource DangerBrush}" />
+    </Style>
+    <Style Selector="Border.trend.falling">
+      <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource SuccessBrush}" />
+    </Style>
+    <Style Selector="Border.decodeStep">
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="8,2" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource AccentBrush}" />
+    </Style>
+    <!-- No arrow after the last step -->
+    <Style Selector="ContentPresenter:nth-last-child(1) TextBlock.decodeArrow">
+      <Setter Property="IsVisible" Value="False" />
     </Style>
     <Style Selector="Border.divider">
       <Setter Property="Height" Value="1" />
@@ -368,6 +407,30 @@
     </Style>
     <Style Selector="ListBox.navigation ListBoxItem:selected TextBlock.navLabel">
       <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <!-- Dead-letter reason chips on Messages -->
+    <Style Selector="Button.reasonChip">
+      <Setter Property="Padding" Value="10,4" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+    <Style Selector="Button.reasonChip.selected">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+    </Style>
+    <Style Selector="Button.reasonChip Border.chipCount">
+      <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="6,0" />
+    </Style>
+    <Style Selector="Button.reasonChip.selected Border.chipCount">
+      <Setter Property="Background" Value="{DynamicResource DangerBorderBrush}" />
     </Style>
 
     <!-- Cloud picker in the environment editor -->

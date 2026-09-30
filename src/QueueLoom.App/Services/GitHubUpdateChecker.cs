@@ -10,8 +10,6 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
 {
     private static readonly Uri TagsApi =
         new("https://api.github.com/repos/bitcodepro/QueueLoom/tags?per_page=30");
-    private static readonly Uri TagsPage =
-        new("https://github.com/bitcodepro/QueueLoom/tags");
     private readonly HttpClient _httpClient = httpClient ?? CreateClient();
     private readonly bool _ownsClient = httpClient is null;
 
@@ -57,9 +55,9 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
                 }
             }
 
-            var currentVersion = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0);
-            return latestVersion is not null && latestVersion > Normalize(currentVersion)
-                ? new UpdateCheckResult(latestVersion, latestTag!, TagsPage)
+            return latestVersion is not null && latestVersion > CurrentVersion
+                ? new UpdateCheckResult(latestVersion, latestTag!,
+                    new Uri($"https://github.com/bitcodepro/QueueLoom/releases/tag/{Uri.EscapeDataString(latestTag!)}"))
                 : null;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -75,6 +73,8 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
             return null;
         }
     }
+
+    public static Version CurrentVersion => Normalize(Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0));
 
     internal static bool TryParseVersion(string? tag, out Version version)
     {

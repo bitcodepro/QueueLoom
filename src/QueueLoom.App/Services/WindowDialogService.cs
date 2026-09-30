@@ -75,20 +75,14 @@ public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogSer
         return file?.TryGetLocalPath();
     }
 
-    public Task<bool> PromptForUpdateAsync(
-        string version,
+    public Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<object?>(new QueueDialogWindow(viewModel), cancellationToken);
+
+    public Task<UpdateDialogResult> ShowUpdateAsync(
+        UpdateDialogViewModel viewModel,
+        IAppLauncher? launcher,
         CancellationToken cancellationToken = default) =>
-        ShowDialogAsync<bool>(
-            new ConfirmDialogWindow(
-                new ConfirmDialogViewModel(
-                    "QueueLoom update available",
-                    $"QueueLoom {version} is available. Open the QueueLoom page on GitHub?",
-                    isDangerous: false,
-                    requiredText: null,
-                    showCancel: true,
-                    confirmLabel: "Open GitHub",
-                    cancelLabel: "Not now")),
-            cancellationToken);
+        ShowDialogAsync<UpdateDialogResult>(new UpdateDialogWindow(viewModel, launcher), cancellationToken);
 
     private async Task<T> ShowDialogAsync<T>(Window dialog, CancellationToken cancellationToken)
     {

@@ -91,7 +91,8 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
             with
             {
                 Provider = MessagingProvider.AmazonSqsSns,
-                Aws = new AwsSettings(Region, Emulators.LocalStackUrl)
+                Aws = new AwsSettings(Region, Emulators.LocalStackUrl),
+                AllowQueueManagement = true
             };
         _profile = profile;
         await _vault.StoreAsync(ProfileSecretKey.ConnectionString(profile.Id), new AwsAccessKey("test", "test").ToSecret());
@@ -355,4 +356,24 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
 
         throw new InvalidOperationException("The message was not moved to the dead-letter queue.");
     }
+
+    [EmulatorFact(Emulators.LocalStack)]
+    public async Task Queues_are_created_with_a_dead_letter_queue_changed_and_deleted()
+    {
+        var name = Emulators.Unique("invoices");
+
+        await _workspace.CreateQueueAsync(new QueueDefinition(name,
+            new QueueSettings(TimeSpan.FromDays(2), MaxDeliveryCount: 4, LockDuration: TimeSpan.FromSeconds(45))));
+        var topology = await _workspace.GetTopologyAsync(forceRefresh: true);
+        Assert.True(topology.Queues.Single(queue => queue.Name == name).HasDeadLetterQueue);
+        Assert.Equal(new QueueSettings(TimeSpan.FromDays(2), 4, TimeSpan.FromSeconds(45)), await _workspace.GetQueueSettingsAsync(name));
+
+        await _workspace.UpdateQueueSettingsAsync(name, new QueueSettings(MaxDeliveryCount: 9, LockDuration: TimeSpan.FromMinutes(5)));
+        Assert.Equal(new QueueSettings(TimeSpan.FromDays(2), 9, TimeSpan.FromMinutes(5)), await _workspace.GetQueueSettingsAsync(name));
+
+        await _workspace.DeleteQueueAsync(name);
+        await _workspace.DeleteQueueAsync(name + "-dlq");
+        Assert.DoesNotContain((await _workspace.GetTopologyAsync(forceRefresh: true)).Queues, queue => queue.Name.StartsWith(name, StringComparison.Ordinal));
+    }
+
 }

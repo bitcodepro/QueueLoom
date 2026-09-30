@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Core.Validation;
@@ -10,7 +11,7 @@ using QueueLoom.Core.Validation;
 namespace QueueLoom.Mcp;
 
 /// <summary>
-/// Tools that change Service Bus. Every call is shown to a person for approval before anything happens;
+/// Tools that change messages. Every call is shown to a person for approval before anything happens;
 /// a declined or unanswered request returns without touching the namespace.
 /// </summary>
 [McpServerToolType]
@@ -45,6 +46,11 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var topology = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetTopologyAsync(forceRefresh: false, token), cancellationToken)
                 .ConfigureAwait(false);
+            if (!topology.CanDeleteSelectedMessages)
+            {
+                throw new McpException(
+                    $"{profile.Provider.DisplayName()} cannot delete single messages. Use purge_dead_letters to empty a dead-letter topic.");
+            }
             DeleteDeadLetterMessagesRequest request;
             try
             {
@@ -207,6 +213,195 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             return new ChangeResult(profile.Name, true,
                 $"Sent message {draft.Properties.MessageId} to {McpMapping.EntityName(target)}.", null, []);
         });
+
+    [McpServerTool(Name = "resend_dead_letters", Title = "Resend dead-letter messages",
+        Destructive = true, Idempotent = false, OpenWorld = false)]
+    [Description("Resends the listed dead-lettered messages (e.g. results of search_dead_letters) unchanged: back to the queue " +
+                 "or topic they came from, or to 'destination'. mode 'copy' leaves the originals in the dead-letter queue; " +
+                 "mode 'move' sends first, then backs up and removes only the originals that were sent. " +
+                 "Requires approval by the user in QueueLoom; at most 1,000 messages per call.")]
+    public Task<ChangeResult> ResendDeadLettersAsync(
+        McpServer server,
+        [Description("Messages to resend: entity ('queue' or 'topic/subscription'), subQueue ('dlq' or 'transfer-dlq'), " +
+                     "sequenceNumber and messageId exactly as returned by search_dead_letters or peek_messages.")]
+        MessageSelection[] messages,
+        [Description("'copy' (the originals stay in the dead-letter queue) or 'move' (the originals are backed up and removed after sending).")]
+        string mode,
+        [Description(ReasonDescription)] string reason,
+        [Description(EnvironmentDescription)] string? environment = null,
+        [Description("Queue or topic to send to. When omitted, each message goes back to its queue, or to the topic of its subscription.")]
+        string? destination = null,
+        [Description("Send at most this many messages per second, 1-100; 0 (default) sends as fast as possible.")]
+        int messagesPerSecond = 0,
+        CancellationToken cancellationToken = default) =>
+        McpGuard.RunAsync(async () =>
+        {
+            if (messages is not { Length: > 0 })
+            {
+                throw new McpException("List at least one message to resend.");
+            }
+            if (messages.Length > DeadLetterResender.MaximumMessages)
+            {
+                throw new McpException($"At most {DeadLetterResender.MaximumMessages:N0} messages can be resent per call.");
+            }
+            var resendMode = mode?.Trim().ToLowerInvariant() switch
+            {
+                "copy" => ResendMode.Copy,
+                "move" => ResendMode.Move,
+                _ => throw new McpException("mode must be 'copy' or 'move'.")
+            };
+            if (messagesPerSecond is < 0 or > 100)
+            {
+                throw new McpException("messagesPerSecond must be between 0 and 100.");
+            }
+
+            var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var (target, originals, missing) = await session.ReadAsync(profile, async (workspace, token) =>
+            {
+                var topology = await workspace.GetTopologyAsync(forceRefresh: false, token).ConfigureAwait(false);
+                if (resendMode == ResendMode.Move && !topology.CanDeleteSelectedMessages)
+                {
+                    throw new McpException(
+                        $"{profile.Provider.DisplayName()} cannot remove single messages, so 'move' is not available. Use mode 'copy'.");
+                }
+                ServiceBusEntityReference? to = null;
+                if (!string.IsNullOrWhiteSpace(destination))
+                {
+                    to = EntityResolver.Resolve(topology, destination, requireMessageSource: false);
+                    if (!to.CanSend)
+                    {
+                        throw new McpException($"'{destination}' is a subscription; send to its topic instead.");
+                    }
+                }
+
+                DeadLetterMessageKey[] keys;
+                try
+                {
+                    keys = messages.Select(message => new DeadLetterMessageKey(
+                            EntityResolver.Resolve(topology, message.Entity, requireMessageSource: true),
+                            McpMapping.ParseSubQueue(message.SubQueue),
+                            message.SequenceNumber,
+                            string.IsNullOrWhiteSpace(message.MessageId) ? null : message.MessageId))
+                        .Distinct()
+                        .ToArray();
+                }
+                catch (ArgumentException exception)
+                {
+                    throw new McpException(exception.Message);
+                }
+                if (keys.Any(key => key.SubQueue == ServiceBusSubQueue.Active))
+                {
+                    throw new McpException("Only dead-lettered messages ('dlq' or 'transfer-dlq') can be resent with this tool.");
+                }
+
+                var (found, notFound) = await FindMessagesAsync(workspace, keys, token).ConfigureAwait(false);
+                return (to, found, notFound);
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (originals.Count == 0)
+            {
+                throw new McpException(
+                    "None of the listed messages is in its dead-letter queue any more. Run search_dead_letters or peek_messages again.");
+            }
+            var tooLarge = originals.Where(message => message.IsBodyTruncated).ToArray();
+            if (tooLarge.Length > 0)
+            {
+                throw new McpException(
+                    $"{tooLarge.Length} message(s) have bodies too large to resend here (for example #{tooLarge[0].SequenceNumber}). " +
+                    "Resend them from the QueueLoom app instead.");
+            }
+
+            var items = originals
+                .Select(message => new ResendItem(message, target ?? DeadLetterResender.OriginalDestination(message.Source), message.CreateDraft()))
+                .ToArray();
+            var action = resendMode == ResendMode.Move ? "Move dead-letter messages" : "Resend dead-letter messages";
+            var perDestination = items
+                .GroupBy(item => McpMapping.EntityName(item.Destination), StringComparer.OrdinalIgnoreCase)
+                .Select(group => $"• to {group.Key}: {group.Count()}")
+                .ToArray();
+            var examples = items.Take(10).Select(item =>
+                $"  {McpMapping.EntityName(item.Original.Source)} #{item.Original.SequenceNumber} {item.Original.Properties.MessageId ?? "(no Message ID)"}");
+            var decision = await RequestApprovalAsync(server, profile, action,
+                $"{items.Length} dead-lettered message(s) will be sent again, unchanged" +
+                (messagesPerSecond > 0 ? $", at most {messagesPerSecond} per second" : string.Empty) + ".\n" +
+                (resendMode == ResendMode.Move
+                    ? "Move: after sending, each original that was sent is backed up locally and removed from its dead-letter queue."
+                    : "Copy: the originals stay in their dead-letter queues.") +
+                (missing.Count > 0 ? $"\n{missing.Count} listed message(s) were not found and will be skipped." : string.Empty) +
+                "\n\n" + string.Join("\n", perDestination.Take(20)) +
+                (perDestination.Length > 20 ? $"\n… and {perDestination.Length - 20} more destinations" : string.Empty) +
+                "\n\nFirst messages:\n" + string.Join("\n", examples),
+                reason, cancellationToken).ConfigureAwait(false);
+            if (!decision.Approved)
+            {
+                return Declined(profile, action, decision);
+            }
+
+            var result = await session.WriteAsync(profile,
+                    (workspace, token) => DeadLetterResender.ResendAsync(workspace, items, resendMode, messagesPerSecond, null, token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var summary = $"{result.SentCount} of {items.Length} sent" +
+                          (resendMode == ResendMode.Move ? $", {result.MovedCount} original(s) removed" : string.Empty) +
+                          (result.OriginalsKeptCount > 0 ? $", {result.OriginalsKeptCount} original(s) kept" : string.Empty) +
+                          (result.FailedCount > 0 ? $", {result.FailedCount} failed" : string.Empty) +
+                          (result.CancelledCount > 0 ? $", {result.CancelledCount} not sent" : string.Empty) +
+                          (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + ".";
+            session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 ? "Success" : "Warning",
+                resendMode == ResendMode.Move ? "Moved dead-letter messages" : "Resent dead-letter messages",
+                $"{summary} Reason: {reason}" + (result.BackupDirectory is null ? "." : $". Backup: {result.BackupDirectory}"),
+                profile, target);
+            return new ChangeResult(profile.Name, true, summary, result.BackupDirectory,
+                result.Items.Select(item =>
+                        $"{McpMapping.EntityName(item.Item.Original.Source)} #{item.Item.Original.SequenceNumber} → " +
+                        $"{McpMapping.EntityName(item.Item.Destination)}: {item.Outcome}" +
+                        (item.Detail is null ? string.Empty : $" ({item.Detail})"))
+                    .Concat(missing.Select(key => $"{McpMapping.EntityName(key.Source)} #{key.SequenceNumber}: NotFound"))
+                    .ToArray());
+        });
+
+    /// <summary>
+    /// Reads the complete messages behind the given keys. Azure pages by sequence number; SQS and Pub/Sub return one
+    /// batch, whose sequence numbers are derived from the Message ID.
+    /// </summary>
+    private static async Task<(IReadOnlyList<BrowsedMessage> Found, IReadOnlyList<DeadLetterMessageKey> Missing)> FindMessagesAsync(
+        IServiceBusWorkspace workspace,
+        IReadOnlyList<DeadLetterMessageKey> keys,
+        CancellationToken cancellationToken)
+    {
+        const int MaximumPages = 20;
+        var found = new Dictionary<DeadLetterMessageKey, BrowsedMessage>();
+        foreach (var group in keys.GroupBy(key => (key.Source, key.SubQueue)))
+        {
+            var wanted = group.ToDictionary(key => key.SequenceNumber);
+            long? from = wanted.Keys.Min();
+            for (var page = 0; page < MaximumPages && wanted.Count > 0; page++)
+            {
+                var batch = await workspace.BrowseMessagesAsync(
+                        new BrowseMessagesRequest(group.Key.Source, group.Key.SubQueue, BrowseMessagesRequest.MaximumMaxMessages, from),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var message in batch)
+                {
+                    if (wanted.TryGetValue(message.SequenceNumber, out var key) &&
+                        (key.MessageId is null || string.Equals(key.MessageId, message.Properties.MessageId, StringComparison.Ordinal)))
+                    {
+                        found[key] = message;
+                        wanted.Remove(message.SequenceNumber);
+                    }
+                }
+
+                if (batch.Count < BrowseMessagesRequest.MaximumMaxMessages || !batch[^1].HasSequenceNumber)
+                {
+                    break;
+                }
+                from = batch[^1].SequenceNumber + 1;
+            }
+        }
+
+        return (keys.Where(found.ContainsKey).Select(key => found[key]).ToArray(),
+            keys.Where(key => !found.ContainsKey(key)).ToArray());
+    }
 
     private Task<ApprovalDecision> RequestApprovalAsync(
         McpServer server,

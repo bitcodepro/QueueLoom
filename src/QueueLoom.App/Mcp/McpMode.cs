@@ -28,9 +28,10 @@ internal static class McpMode
 
     public static int Run(string[] args, Func<AppBuilder> buildAvaloniaApp)
     {
-        var settings = new McpServerSettings(
-            ReadOnly: args.Any(arg => string.Equals(arg, ReadOnlyArgument, StringComparison.OrdinalIgnoreCase)));
         var paths = QueueLoomPaths.CreateDefault();
+        var settings = new McpServerSettings(
+            ReadOnly: args.Any(arg => string.Equals(arg, ReadOnlyArgument, StringComparison.OrdinalIgnoreCase)),
+            ExportDirectory: Path.Combine(paths.RootDirectory, "exports"));
         var logs = new FileLoggerProvider(Path.Combine(paths.RootDirectory, "logs"));
 
         if (!settings.ReadOnly && HasDesktopSession())
