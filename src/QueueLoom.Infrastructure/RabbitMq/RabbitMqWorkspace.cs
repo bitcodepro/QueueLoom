@@ -17,7 +17,7 @@ namespace QueueLoom.Infrastructure.RabbitMq;
 /// messages are read over AMQP with basic.get and returned with a requeue, which RabbitMQ allows without changing
 /// them. A queue's dead letters are read from the queue its dead-letter exchange routes to.
 /// </summary>
-public sealed class RabbitMqWorkspace : LeasedMessagingWorkspace
+public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
 {
     private const int MaximumBatch = 100;
 

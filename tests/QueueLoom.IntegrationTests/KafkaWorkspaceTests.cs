@@ -46,7 +46,8 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
                 new AuthenticationSettings(AuthenticationKind.KafkaNone), accessMode: ProfileAccessMode.ReadWrite) with
         {
             Provider = MessagingProvider.Kafka,
-            Kafka = new KafkaSettings(Emulators.KafkaServers)
+            Kafka = new KafkaSettings(Emulators.KafkaServers),
+            AllowQueueManagement = true
         };
         _workspace = new KafkaWorkspace(new InMemorySecretVault(), backupStore: new DeadLetterJsonBackupStore(QueueLoomPaths.ForRoot(_directory.Path)));
         await _workspace.ConnectAsync(profile);
@@ -151,6 +152,28 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
         var result = await _workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("o-4", DeadLetterSearchTargets.ForTopology(topology)));
 
         Assert.Equal(["o-4"], result.Matches.Select(message => message.Properties.MessageId));
+    }
+
+    [EmulatorFact(Emulators.Kafka)]
+    public async Task Topics_are_created_with_a_dead_letter_topic_grown_and_deleted()
+    {
+        var name = Emulators.Unique("returns");
+        await _workspace.CreateQueueAsync(new QueueDefinition(name, new QueueSettings(TimeSpan.FromDays(3), Partitions: 2)));
+
+        Assert.True((await _workspace.GetTopologyAsync(forceRefresh: true)).Queues.Single(queue => queue.Name == name).HasDeadLetterQueue);
+        Assert.Equal(new QueueSettings(TimeSpan.FromDays(3), Partitions: 2), await _workspace.GetQueueSettingsAsync(name));
+
+        await _workspace.UpdateQueueSettingsAsync(name, new QueueSettings(TimeSpan.FromHours(12), Partitions: 4));
+        Assert.Equal(new QueueSettings(TimeSpan.FromHours(12), Partitions: 4), await _workspace.GetQueueSettingsAsync(name));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _workspace.UpdateQueueSettingsAsync(name, new QueueSettings(Partitions: 1)));
+
+        await _workspace.DeleteQueueAsync(name);
+        await _workspace.DeleteQueueAsync(name + ".DLT");
+        for (var attempt = 0; attempt < 20 && (await _workspace.GetTopologyAsync(forceRefresh: true)).Queues.Any(queue => queue.Name.StartsWith(name, StringComparison.Ordinal)); attempt++)
+        {
+            await Task.Delay(250);
+        }
+        Assert.DoesNotContain((await _workspace.GetTopologyAsync(forceRefresh: true)).Queues, queue => queue.Name.StartsWith(name, StringComparison.Ordinal));
     }
 
     private async Task ProduceAsync(string topic, params string[] ids)

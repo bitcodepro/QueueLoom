@@ -100,6 +100,20 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
         IProgress<DeadLetterMessageDeletionProgress>? progress = null) =>
         Current.DeleteDeadLetterMessagesAsync(request, cancellationToken, progress);
 
+    public QueueManagementCapabilities? QueueManagement => _current?.QueueManagement;
+
+    public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
+        Current.GetQueueSettingsAsync(queue, cancellationToken);
+
+    public Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
+        Current.CreateQueueAsync(definition, cancellationToken);
+
+    public Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
+        Current.UpdateQueueSettingsAsync(queue, settings, cancellationToken);
+
+    public Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
+        Current.DeleteQueueAsync(queue, cancellationToken);
+
     public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
         IReadOnlyList<BrowsedMessage> messages,
         CancellationToken cancellationToken = default) =>

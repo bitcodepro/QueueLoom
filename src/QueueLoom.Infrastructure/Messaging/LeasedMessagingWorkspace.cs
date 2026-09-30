@@ -354,6 +354,30 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
             backupSession.RootDirectory);
     }
 
+    public virtual QueueManagementCapabilities? QueueManagement => null;
+
+    public virtual Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} does not support queue management in QueueLoom.");
+
+    public virtual Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} does not support queue management in QueueLoom.");
+
+    public virtual Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} does not support queue management in QueueLoom.");
+
+    public virtual Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} does not support queue management in QueueLoom.");
+
+    /// <summary>Runs a queue management change: allowed only with the environment's permission and write access.</summary>
+    protected async Task ManageAsync(Func<CancellationToken, Task> change, CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        GetConnectedProfile().EnsureQueueManagementAllowed();
+        await change(cancellationToken).ConfigureAwait(false);
+        _cachedTopology = null;
+    }
+
     public async Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default)

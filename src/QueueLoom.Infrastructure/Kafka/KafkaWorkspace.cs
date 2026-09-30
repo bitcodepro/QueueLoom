@@ -15,7 +15,7 @@ namespace QueueLoom.Infrastructure.Kafka;
 /// a consumer group and changes nothing. Single messages cannot be removed; emptying a dead-letter topic deletes its
 /// records from the oldest on.
 /// </summary>
-public sealed class KafkaWorkspace : LeasedMessagingWorkspace
+public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 {
     private const int MaximumBatch = 100;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);

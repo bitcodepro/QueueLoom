@@ -73,6 +73,26 @@ public sealed record ServiceBusProfile(
 
     public bool CanWrite => AccessMode == ProfileAccessMode.ReadWrite;
 
+    /// <summary>
+    /// Allows creating, changing and deleting queues, on top of write access. Off by default: most operators only
+    /// need to work with messages.
+    /// </summary>
+    public bool AllowQueueManagement { get; init; }
+
+    /// <summary>Throws unless queues may be managed now: the environment allows it and write access is on.</summary>
+    public void EnsureQueueManagementAllowed()
+    {
+        if (!AllowQueueManagement)
+        {
+            throw new InvalidOperationException(
+                $"Environment '{Name}' does not allow managing queues. Turn it on in Environments → Edit.");
+        }
+        if (!CanWrite)
+        {
+            throw new InvalidOperationException($"Environment '{Name}' is read-only. Unlock write access first.");
+        }
+    }
+
     public static ServiceBusProfile CreateNew(
         string name,
         EnvironmentKind environment,

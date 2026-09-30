@@ -28,6 +28,13 @@ public interface IUserDialogService
         CancellationToken cancellationToken = default) =>
         Task.FromResult<ResendOptions?>(viewModel.CanConfirm ? viewModel.ToOptions() : null);
 
+    /// <summary>
+    /// Shows the new-queue or queue-settings dialog. Returns a <see cref="QueueLoom.Core.ServiceBus.QueueDefinition"/>
+    /// or <see cref="QueueLoom.Core.ServiceBus.QueueSettings"/>; null means cancelled.
+    /// </summary>
+    Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
+        Task.FromResult<object?>(viewModel.IsNew ? viewModel.TryBuildDefinition() : viewModel.TryBuildSettings());
+
     /// <summary>Asks where to save a file. Null means cancelled.</summary>
     Task<string?> ChooseSaveFileAsync(
         string title,

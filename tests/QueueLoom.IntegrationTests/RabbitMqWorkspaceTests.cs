@@ -72,7 +72,8 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
                 new AuthenticationSettings(AuthenticationKind.RabbitMqPassword), accessMode: ProfileAccessMode.ReadWrite) with
         {
             Provider = MessagingProvider.RabbitMq,
-            RabbitMq = new RabbitMqSettings(Emulators.RabbitMqHost, "guest", _vhost, Emulators.RabbitMqPort, Emulators.RabbitMqPort + 10000)
+            RabbitMq = new RabbitMqSettings(Emulators.RabbitMqHost, "guest", _vhost, Emulators.RabbitMqPort, Emulators.RabbitMqPort + 10000),
+            AllowQueueManagement = true
         };
         await _vault.StoreAsync(ProfileSecretKey.ConnectionString(profile.Id), "guest");
         _workspace = new RabbitMqWorkspace(_vault, backupStore: new DeadLetterJsonBackupStore(QueueLoomPaths.ForRoot(_directory.Path)),
@@ -206,6 +207,25 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
 
         Assert.Equal(2, snapshot.Entities.Single(entity => entity.Entity.Name == "orders").Count);
         Assert.DoesNotContain(snapshot.Entities, entity => entity.Entity.Name == "dead-letters");
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Queues_are_created_as_quorum_queues_with_a_dead_letter_queue_and_deleted()
+    {
+        await _workspace.CreateQueueAsync(new QueueDefinition("refunds", new QueueSettings(TimeSpan.FromHours(6), MaxDeliveryCount: 3)));
+
+        var topology = await _workspace.GetTopologyAsync(forceRefresh: true);
+        var refunds = topology.Queues.Single(queue => queue.Name == "refunds");
+        Assert.True(refunds.HasDeadLetterQueue);
+        Assert.Contains("Quorum queue, delivery limit 3", refunds.Note, StringComparison.Ordinal);
+        Assert.StartsWith("Dead-letter queue of refunds", topology.Queues.Single(queue => queue.Name == "refunds.dlq").Note, StringComparison.Ordinal);
+        Assert.Equal(new QueueSettings(TimeSpan.FromHours(6), 3), await _workspace.GetQueueSettingsAsync("refunds"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _workspace.CreateQueueAsync(new QueueDefinition("refunds", new QueueSettings())));
+        await Assert.ThrowsAsync<NotSupportedException>(() => _workspace.UpdateQueueSettingsAsync("refunds", new QueueSettings(MaxDeliveryCount: 5)));
+
+        await _workspace.DeleteQueueAsync("refunds");
+        Assert.DoesNotContain((await _workspace.GetTopologyAsync(forceRefresh: true)).Queues, queue => queue.Name == "refunds");
     }
 
     private async Task PublishAsync(string queue, params string[] ids)

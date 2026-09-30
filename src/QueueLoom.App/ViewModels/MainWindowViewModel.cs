@@ -245,6 +245,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeSavedSearches();
         InitializeAlerts(alerts);
         InitializeHistory(history);
+        InitializeQueueManagement();
         InitializeRetention();
         InitializeReasons();
         RefreshDeadLetterEnvironmentFilters();
@@ -583,6 +584,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         ToggleMonitorCommand.NotifyCanExecuteChanged();
         UnlockWritesCommand.NotifyCanExecuteChanged();
         DeleteMarkedMessagesCommand?.NotifyCanExecuteChanged();
+        NotifyQueueManagement();
     }
 
     private void AddActivity(

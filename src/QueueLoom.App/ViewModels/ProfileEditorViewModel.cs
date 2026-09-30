@@ -37,6 +37,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
     private string _googleEmulatorHost;
     private string _googleServiceAccountKey = string.Empty;
     private ProfileAccessMode _accessMode;
+    private bool _allowQueueManagement;
     private string _error = string.Empty;
     public int EmulatorManagementPort { get; set; } = 5300;
 
@@ -57,6 +58,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         _awsProfileName = existing?.Aws?.ProfileName ?? string.Empty;
         _googleProjectId = existing?.GooglePubSub?.ProjectId ?? string.Empty;
         _googleEmulatorHost = existing?.GooglePubSub?.EmulatorHost ?? string.Empty;
+        _allowQueueManagement = existing?.AllowQueueManagement ?? false;
         _accessMode = existing?.AccessMode
             ?? (_environment == EnvironmentKind.Production ? ProfileAccessMode.ReadOnly : ProfileAccessMode.ReadWrite);
 
@@ -130,6 +132,13 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
     public IReadOnlyList<EntraIdCredentialKind> CredentialKinds { get; } = Enum.GetValues<EntraIdCredentialKind>();
 
     public IReadOnlyList<ProfileAccessMode> AccessModes { get; } = Enum.GetValues<ProfileAccessMode>();
+
+    /// <summary>Creating, changing and deleting queues; off unless the operator turns it on for this environment.</summary>
+    public bool AllowQueueManagement
+    {
+        get => _allowQueueManagement;
+        set => SetProperty(ref _allowQueueManagement, value);
+    }
 
     public string Name
     {
@@ -473,7 +482,8 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
             Environment == EnvironmentKind.Production ? ProfileAccessMode.ReadOnly : AccessMode)
         {
             EmulatorManagementPort = EmulatorManagementPort,
-            Provider = Provider
+            Provider = Provider,
+            AllowQueueManagement = AllowQueueManagement
         };
 
     private void ApplyProvider(AuthenticationKind? preferred)
