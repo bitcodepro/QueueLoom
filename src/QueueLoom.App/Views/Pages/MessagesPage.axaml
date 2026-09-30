@@ -216,12 +216,12 @@
                 <TextBlock Grid.Column="6" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
               </Grid>
             </Border>
-            <!-- Why these messages were dead-lettered; a click ticks all messages with that reason -->
+            <!-- Why these messages were dead-lettered (or that they are scheduled or deferred); a click ticks all of them -->
             <Border Grid.Row="1" Padding="12,8" IsVisible="{Binding HasDeadLetterReasons}"
                     BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
               <Grid ColumnDefinitions="Auto,10,*">
                 <StackPanel VerticalAlignment="Center" Spacing="1">
-                  <TextBlock Text="REASONS" Classes="eyebrow" />
+                  <TextBlock Text="{Binding DeadLetterReasonsTitle}" Classes="eyebrow" />
                   <TextBlock Text="{Binding DeadLetterReasonsSummary}" Classes="muted" FontSize="11" />
                 </StackPanel>
                 <ItemsControl Grid.Column="2" ItemsSource="{Binding DeadLetterReasons}">
@@ -279,7 +279,8 @@
                     <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="2" Margin="0,0,8,0">
                       <TextBlock Text="{Binding SourceDisplay}" FontWeight="SemiBold"
                                  TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceDisplay}" />
-                      <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow danger" />
+                      <TextBlock Text="{Binding SubQueueLabel}" Classes="eyebrow"
+                                 Classes.danger="{Binding IsDeadLetter}" Classes.warning="{Binding IsPending}" />
                     </StackPanel>
                     <StackPanel Grid.Column="4" VerticalAlignment="Center" Spacing="2" Margin="0,0,8,0">
                       <TextBlock Text="{Binding MessageId}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
@@ -287,9 +288,11 @@
                       <TextBlock Text="{Binding BodyPreview}" Classes="muted" FontSize="11" TextTrimming="CharacterEllipsis"
                                  ToolTip.Tip="{Binding BodyPreview}" />
                     </StackPanel>
-                    <TextBlock Grid.Column="5" Text="{Binding DeadLetterReason}" Classes="danger" Margin="0,0,8,0"
+                    <TextBlock Grid.Column="5" Text="{Binding StatusDetail}" Margin="0,0,8,0"
+                               Classes.danger="{Binding IsDeadLetter}" Classes.warning="{Binding IsPending}"
+                               Classes.muted="{Binding !CanDelete}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
-                               ToolTip.Tip="{Binding DeadLetterReason}" />
+                               ToolTip.Tip="{Binding StatusDetail}" />
                     <TextBlock Grid.Column="6" Text="{Binding EnqueuedAt}" Classes="muted" VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding EnqueuedAt}" />
                   </Grid>
@@ -304,11 +307,11 @@
                         Command="{Binding ExportMessagesCommand}"
                         ToolTip.Tip="Save the ticked messages, or all listed ones, to a JSON or CSV file" />
                 <Button Grid.Column="5" Content="{Binding ResendMarkedMessagesLabel}" Classes="quiet copyAction"
-                        Command="{Binding ResendMarkedMessagesCommand}" IsVisible="{Binding HasDeletableMessages}"
+                        Command="{Binding ResendMarkedMessagesCommand}" IsVisible="{Binding HasDeadLetterMessages}"
                         ToolTip.Tip="Send the ticked messages again, as copies or moving them out of the DLQ. Requires write access." />
                 <Button Grid.Column="7" Content="{Binding DeleteMarkedMessagesLabel}" Classes="danger copyAction"
                         Command="{Binding DeleteMarkedMessagesCommand}" IsVisible="{Binding HasDeletableMessages}"
-                        ToolTip.Tip="Back up and permanently delete exactly the ticked dead-letter messages. Requires write access." />
+                        ToolTip.Tip="{Binding DeleteMarkedMessagesTip}" />
               </Grid>
             </Border>
           </Grid>

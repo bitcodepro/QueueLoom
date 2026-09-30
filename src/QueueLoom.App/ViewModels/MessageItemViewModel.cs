@@ -54,8 +54,20 @@ public sealed class MessageItemViewModel : ObservableObject
         set => SetProperty(ref _isMarked, value && CanDelete);
     }
 
-    /// <summary>Only dead-lettered messages can be deleted; active messages are browse-only.</summary>
-    public bool CanDelete => Message.SubQueue is ServiceBusSubQueue.DeadLetter or ServiceBusSubQueue.TransferDeadLetter;
+    /// <summary>
+    /// Dead-lettered messages can be deleted, and scheduled or deferred ones cancelled or removed; other active
+    /// messages are browse-only.
+    /// </summary>
+    public bool CanDelete => Message.IsDeadLetter || IsPending;
+
+    /// <summary>A scheduled or deferred Azure Service Bus message: in the queue but not delivered to receivers.</summary>
+    public bool IsPending => PendingMessages.IsPending(Message);
+
+    public bool IsScheduled => IsPending && Message.State == ServiceBusMessageState.Scheduled;
+
+    public bool IsDeferred => IsPending && Message.State == ServiceBusMessageState.Deferred;
+
+    public bool IsDeadLetter => Message.IsDeadLetter;
 
     public DeadLetterMessageKey Key => new(Message.Source, Message.SubQueue, Message.SequenceNumber, Message.Properties.MessageId);
 
@@ -69,9 +81,25 @@ public sealed class MessageItemViewModel : ObservableObject
 
     public string SourceDisplay => Message.Source.DisplayName;
 
-    public string SubQueueLabel => Message.SubQueue == ServiceBusSubQueue.TransferDeadLetter
-        ? "TRANSFER DLQ"
-        : "DLQ";
+    public string SubQueueLabel => Message.SubQueue switch
+    {
+        ServiceBusSubQueue.TransferDeadLetter => "TRANSFER DLQ",
+        ServiceBusSubQueue.DeadLetter => "DLQ",
+        _ when IsScheduled => "SCHEDULED",
+        _ when IsDeferred => "DEFERRED",
+        _ => "ACTIVE"
+    };
+
+    /// <summary>The reason column: why a message was dead-lettered, or when a scheduled one will be delivered.</summary>
+    public string StatusDetail => Message.IsDeadLetter
+        ? DeadLetterReason
+        : IsScheduled
+            ? Message.Properties.ScheduledEnqueueTime is { } due
+                ? $"Due {due.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}"
+                : "Scheduled"
+            : IsDeferred
+                ? "Waiting for its receiver"
+                : "—";
 
     public long SequenceNumber => Message.SequenceNumber;
 

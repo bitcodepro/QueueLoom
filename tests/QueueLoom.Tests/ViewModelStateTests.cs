@@ -1066,6 +1066,18 @@ public sealed partial class ViewModelStateTests
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 
+        public List<IReadOnlyList<BrowsedMessage>> PendingRemovals { get; } = [];
+
+        public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
+            IReadOnlyList<BrowsedMessage> messages,
+            CancellationToken cancellationToken = default)
+        {
+            PendingRemovals.Add(messages);
+            return Task.FromResult(new RemovePendingMessagesResult(
+                messages.Select(message => new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+        }
+
         public List<DeleteDeadLetterMessagesRequest> DeleteRequests { get; } = [];
 
         /// <summary>Sequence numbers reported as not found by the fake deletion.</summary>

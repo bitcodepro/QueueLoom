@@ -52,6 +52,15 @@ public interface IServiceBusWorkspace : IAsyncDisposable
         CancellationToken cancellationToken = default,
         IProgress<DeadLetterMessageDeletionProgress>? progress = null);
 
+    /// <summary>
+    /// Backs up, then cancels scheduled messages and removes deferred ones (Azure Service Bus only). Every message
+    /// must satisfy <see cref="PendingMessages.IsPending"/>.
+    /// </summary>
+    Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
+        IReadOnlyList<BrowsedMessage> messages,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Azure Service Bus has scheduled and deferred messages.");
+
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default);

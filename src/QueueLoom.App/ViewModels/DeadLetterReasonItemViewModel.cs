@@ -21,10 +21,23 @@ public sealed class DeadLetterReasonItemViewModel(
 
     public string Label => $"{Reason} · {Count:N0}";
 
-    public string ToolTip => IsSelected
-        ? $"Untick the {Count:N0} message(s) with this reason"
-        : $"Tick the {Count:N0} message(s) with this reason, and only those";
+    public bool IsState => Reason is Scheduled or Deferred;
 
+    public string ToolTip => (IsSelected, IsState) switch
+    {
+        (true, true) => $"Untick the {Count:N0} {Reason.ToLowerInvariant()} message(s)",
+        (false, true) => $"Tick the {Count:N0} {Reason.ToLowerInvariant()} message(s), and only those",
+        (true, false) => $"Untick the {Count:N0} message(s) with this reason",
+        _ => $"Tick the {Count:N0} message(s) with this reason, and only those"
+    };
+
+    public const string Scheduled = "Scheduled";
+
+    public const string Deferred = "Deferred";
+
+    /// <summary>The dead-letter reason, or "Scheduled" / "Deferred" for those active messages.</summary>
     public static string ReasonOf(MessageItemViewModel message) =>
-        string.IsNullOrWhiteSpace(message.Message.DeadLetterReason) ? NoReason : message.Message.DeadLetterReason.Trim();
+        message.IsScheduled ? Scheduled
+        : message.IsDeferred ? Deferred
+        : string.IsNullOrWhiteSpace(message.Message.DeadLetterReason) ? NoReason : message.Message.DeadLetterReason.Trim();
 }

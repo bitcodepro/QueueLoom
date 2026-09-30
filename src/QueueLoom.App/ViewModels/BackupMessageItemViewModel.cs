@@ -25,9 +25,12 @@ public sealed class BackupMessageItemViewModel(DeadLetterBackupSummary summary)
         ? "QUEUE"
         : "SUBSCRIPTION";
 
-    public string SubQueueLabel => Summary.SubQueue == ServiceBusSubQueue.TransferDeadLetter
-        ? "TRANSFER DLQ"
-        : "DLQ";
+    public string SubQueueLabel => Summary.SubQueue switch
+    {
+        ServiceBusSubQueue.TransferDeadLetter => "TRANSFER DLQ",
+        ServiceBusSubQueue.Active => "SCHEDULED / DEFERRED",
+        _ => "DLQ"
+    };
 
     public string MessageId => Summary.MessageId ?? "(no MessageId)";
 

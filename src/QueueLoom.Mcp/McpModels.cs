@@ -47,7 +47,9 @@ public sealed record MessageInfo(
     IReadOnlyDictionary<string, string> ApplicationProperties,
     string BodyFormat,
     string Body,
-    bool BodyTruncated);
+    bool BodyTruncated,
+    string State,
+    DateTimeOffset? ScheduledFor);
 
 public sealed record MessageListInfo(string Environment, string Summary, IReadOnlyList<MessageInfo> Messages);
 
@@ -127,7 +129,9 @@ internal static class McpMapping
             message.ApplicationProperties.ToDictionary(property => property.Name, property => property.Value),
             body.Format.ToString(),
             text,
-            truncated);
+            truncated,
+            message.State == ServiceBusMessageState.Unknown ? (message.IsDeadLetter ? "DeadLettered" : "Active") : message.State.ToString(),
+            message.State == ServiceBusMessageState.Scheduled ? message.Properties.ScheduledEnqueueTime : null);
     }
 }
 
