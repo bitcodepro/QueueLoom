@@ -239,6 +239,16 @@
       <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}" />
       <Setter Property="TextElement.Foreground" Value="{DynamicResource SuccessBrush}" />
     </Style>
+    <Style Selector="Border.decodeStep">
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="8,2" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource AccentBrush}" />
+    </Style>
+    <!-- No arrow after the last step -->
+    <Style Selector="ContentPresenter:nth-last-child(1) TextBlock.decodeArrow">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
     <Style Selector="Border.divider">
       <Setter Property="Height" Value="1" />
       <Setter Property="Background" Value="{DynamicResource HairlineBrush}" />

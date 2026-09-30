@@ -49,7 +49,9 @@ public sealed record MessageInfo(
     string Body,
     bool BodyTruncated,
     string State,
-    DateTimeOffset? ScheduledFor);
+    DateTimeOffset? ScheduledFor,
+    string? DecodedAs = null,
+    string? DecodedBody = null);
 
 public sealed record MessageListInfo(string Environment, string Summary, IReadOnlyList<MessageInfo> Messages);
 
@@ -107,6 +109,7 @@ internal static class McpMapping
     public static MessageInfo ToInfo(BrowsedMessage message)
     {
         var body = EditableMessageBody.FromBytes(message.Body.Span);
+        var decoded = BodyDecoder.Decode(message.Body, message.Properties.ContentType);
         var text = body.Content;
         var truncated = message.IsBodyTruncated || text.Length > MaximumBodyCharacters;
         if (text.Length > MaximumBodyCharacters)
@@ -131,7 +134,9 @@ internal static class McpMapping
             text,
             truncated,
             message.State == ServiceBusMessageState.Unknown ? (message.IsDeadLetter ? "DeadLettered" : "Active") : message.State.ToString(),
-            message.State == ServiceBusMessageState.Scheduled ? message.Properties.ScheduledEnqueueTime : null);
+            message.State == ServiceBusMessageState.Scheduled ? message.Properties.ScheduledEnqueueTime : null,
+            decoded?.Summary,
+            decoded is null ? null : decoded.Text.Length > MaximumBodyCharacters ? decoded.Text[..MaximumBodyCharacters] : decoded.Text);
     }
 }
 

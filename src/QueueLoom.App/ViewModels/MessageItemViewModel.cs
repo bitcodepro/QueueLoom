@@ -23,6 +23,7 @@ public sealed class MessageItemViewModel : ObservableObject
     private readonly Lazy<string> _bodyDisplay;
     private readonly Lazy<string> _applicationPropertiesJson;
     private readonly Lazy<string> _propertiesJson;
+    private readonly Lazy<DecodedBody?> _decoded;
     private bool _isMarked;
 
     public MessageItemViewModel(
@@ -43,6 +44,7 @@ public sealed class MessageItemViewModel : ObservableObject
         _bodyDisplay = new Lazy<string>(CreateBodyDisplay);
         _applicationPropertiesJson = new Lazy<string>(CreateApplicationPropertiesJson);
         _propertiesJson = new Lazy<string>(CreatePropertiesJson);
+        _decoded = new Lazy<DecodedBody?>(() => BodyDecoder.Decode(Message.Body, Message.Properties.ContentType));
     }
 
     public BrowsedMessage Message { get; }
@@ -141,6 +143,20 @@ public sealed class MessageItemViewModel : ObservableObject
     /// Copy actions keep using <see cref="BodyText"/> so the original bytes are preserved.
     /// </summary>
     public string BodyDisplayText => _bodyDisplay.Value;
+
+    /// <summary>The body unpacked (gzip, base64, Avro, Protobuf), when it is not readable as it is.</summary>
+    public bool HasDecodedBody => _decoded.Value is not null;
+
+    public string DecodedText => _decoded.Value?.Text ?? string.Empty;
+
+    public bool DecodedIsJson => _decoded.Value?.IsJson == true;
+
+    public IReadOnlyList<string> DecodedSteps => _decoded.Value?.Steps ?? [];
+
+    public string DecodedNote => (_decoded.Value?.Note ?? string.Empty) +
+                                 (Message.IsBodyTruncated && HasDecodedBody ? " Only the retained part of the body was decoded." : string.Empty);
+
+    public bool HasDecodedNote => !string.IsNullOrWhiteSpace(DecodedNote);
 
     public string BodyFormat => Message.IsBodyTruncated
         ? "Truncated preview"

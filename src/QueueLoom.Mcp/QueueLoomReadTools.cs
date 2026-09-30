@@ -66,7 +66,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [McpServerTool(Name = "peek_messages", Title = "Peek messages", ReadOnly = true, Idempotent = true)]
     [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
                  "SQS and Pub/Sub receive the messages and release them at once (paging is not available there). " +
-                 "Bodies longer than 4,000 characters are truncated. Use fromSequenceNumber to page on Azure.")]
+                 "Bodies longer than 4,000 characters are truncated. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
+                 "unpacked in decodedBody. Use fromSequenceNumber to page on Azure.")]
     public Task<MessageListInfo> PeekMessagesAsync(
         [Description("Queue name, or 'topic/subscription'.")] string entity,
         [Description(EnvironmentDescription)] string? environment = null,

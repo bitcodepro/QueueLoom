@@ -43,6 +43,7 @@ The badge next to each environment (**AZURE**, **AWS**, **GCP**) shows its cloud
 - **Find dead letters.** On **Messages / DLQ**, search by Message ID, Correlation ID, subject, body text or a property, optionally only from the last hour, day or week. **Save search** keeps a search to run again with one click.
 - **Delete only the messages you need.** Tick the found messages and press **Delete N messages…**; the others stay in the queue.
 - **Resend.** Tick messages and press **Resend N messages…**: back to where they came from or to any queue or topic, as **copies** (the originals stay) or as a **move** (sent first, then the originals are backed up and removed from the DLQ). In **Composer**, **Open as draft** lets you edit one message before sending it the same two ways.
+- **Read packed bodies.** Bodies compressed with gzip, encoded as base64, written as Avro files or as Protobuf open on a **Decoded** tab next to **Body**, with the steps shown (for example *base64 → gzip → JSON*). Protobuf fields are shown by number, since QueueLoom has no .proto file.
 - **Export** the ticked or listed messages to JSON or CSV.
 - **Empty a dead-letter queue**, with a limit on how many messages to remove.
 - **Restore from backups** or replay copies to any queue or topic. On **Backups**, pick a group on the left (an environment, a topic with its subscriptions, a subscription or a queue) and delete all its backups at once, or keep backups for a set number of days.
