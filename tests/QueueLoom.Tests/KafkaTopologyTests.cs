@@ -70,4 +70,16 @@ public sealed class KafkaTopologyTests
         Assert.Equal("s3cret", result.ConnectionString);
         Assert.Equal("SASL ScramSha512 · queueloom", result.Profile.AuthenticationDisplayName);
     }
+
+    [Fact]
+    public void TopicsWithoutAPartitionLeader_AreStillListedWithANote()
+    {
+        var index = new KafkaTopologyIndex(
+            [new KafkaTopicInfo("orders", [0], 0) { CountError = "counts unavailable: a partition has no leader right now" }],
+            KafkaSettings.DefaultDeadLetterSuffixes);
+
+        var orders = Assert.Single(index.ToTopology(DateTimeOffset.UtcNow).Queues);
+        Assert.Equal("1 partition · counts unavailable: a partition has no leader right now", orders.Note);
+    }
+
 }
