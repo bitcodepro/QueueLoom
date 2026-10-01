@@ -10,11 +10,11 @@
     "43": "8c4a15517a566b02ecff8e24fd329c2cf09d7d58",
     "44": "8b3495161f76fab4353ab7d0518fb27dcf267ef0"
   },
-  "main": "d7b9ae430663233b2cd7acfb5b2d88a72b7a8b54",
-  "mainRun": 36934856793,
+  "main": "e73ca6f57ccd555ba309bd0a9170c174496a5aeb",
+  "mainRun": 36936120512,
   "activePR": 44,
   "activeHead": "8b3495161f76fab4353ab7d0518fb27dcf267ef0",
-  "activeRun": 36935437637,
+  "activeRun": 36936120512,
   "ledger": [
     {
       "PR": 42,
@@ -140,8 +140,11 @@
       "integrated_main": "d7b9ae430663233b2cd7acfb5b2d88a72b7a8b54",
       "conflict_free": true,
       "verified_base_tree": "e8d2d5e0b43a50c5cbba21c8daa9d705f6eecd8c",
-      "merge_sha": null,
-      "pr_ci": 36935437637
+      "merge_sha": "e73ca6f57ccd555ba309bd0a9170c174496a5aeb",
+      "pr_ci": 36935437637,
+      "pr_ci_conclusion": "success",
+      "skip_release": true,
+      "main_ci": 36936120512
     }
   ],
   "cache": {
@@ -250,5 +253,5 @@
   },
   "local_preparation_complete": true,
   "requires_local_executor": false,
-  "checked_at_utc": "2026-10-01T22:30:27.954Z"
+  "checked_at_utc": "2026-10-01T22:37:17.674Z"
 }
