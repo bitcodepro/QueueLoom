@@ -53,3 +53,20 @@ Legacy batch payloads without the optional KafkaEnvelope field remain readable, 
 
 The resend progress repair is a shared prerequisite for the six otherwise independent audit PRs. Those PRs are stacked on codex/audit-resend-progress to keep their diffs focused while exercising the CI repair. Kafka is additionally stacked on codex/audit-scheduled-safety because it extends scheduled persistence. Review the progress prerequisite first, then the independent fixes, then Kafka after scheduling. Retarget after approved prerequisite merges; no merges or releases were authorized or performed.
 Latest complete local Release validation: 589 unit tests and 30 headless UI tests passed; 53 broker integration cases were discovered and skipped because Docker is unavailable locally. Results: final-validation.trx in each test project. This supersedes historical suite counts above.
+
+## Published draft heads
+
+Every remote tree matched the independently tested local scoped tree. Focused branch validation passed 40/40 cases; final combined Release validation passed 589 unit and 30 UI tests.
+
+| Draft PR | Scope | Head SHA | Base | CI run |
+| --- | --- | --- | --- | --- |
+| [#36](https://github.com/bitcodepro/QueueLoom/pull/36) | settings | `9e64c1474dbdc9f49e3c832c0ecedf37d9d52fd5` | `codex/audit-resend-progress` | [run 36907859584](https://github.com/bitcodepro/QueueLoom/actions/runs/36907859584) |
+| [#37](https://github.com/bitcodepro/QueueLoom/pull/37) | credential-export | `60db155138244ca6b2d18c49c502cdb35bf94b99` | `codex/audit-resend-progress` | [run 36907930014](https://github.com/bitcodepro/QueueLoom/actions/runs/36907930014) |
+| [#38](https://github.com/bitcodepro/QueueLoom/pull/38) | mcp-identities | `8309de1cf06486551c30eb3a513ccec2d44618c7` | `codex/audit-resend-progress` | [run 36908019485](https://github.com/bitcodepro/QueueLoom/actions/runs/36908019485) |
+| [#39](https://github.com/bitcodepro/QueueLoom/pull/39) | scheduled-safety | `197f4279ff556748802f27d6285c6c8daf05e65b` | `codex/audit-resend-progress` | [run 36908123721](https://github.com/bitcodepro/QueueLoom/actions/runs/36908123721) |
+| [#41](https://github.com/bitcodepro/QueueLoom/pull/41) | purge-profile | `292d4c6c4f2e7f49a1971046cf986d3506dfbe79` | `codex/audit-resend-progress` | [run 36908220797](https://github.com/bitcodepro/QueueLoom/actions/runs/36908220797) |
+| [#42](https://github.com/bitcodepro/QueueLoom/pull/42) | resend-progress | `a50b78207b0b186c2da8474290df6a99c4dca5af` | `main` | [run 36907724975](https://github.com/bitcodepro/QueueLoom/actions/runs/36907724975) |
+| [#43](https://github.com/bitcodepro/QueueLoom/pull/43) | rabbit-lifecycle | `f6ae5bc2f98d38165844e92c4fdeca3b90c4d625` | `codex/audit-resend-progress` | [run 36908243546](https://github.com/bitcodepro/QueueLoom/actions/runs/36908243546) |
+| [#44](https://github.com/bitcodepro/QueueLoom/pull/44) | kafka-envelope | `2df29190cc2699c7466d253eba5ab19078994b5d` | `codex/audit-scheduled-safety` | [run 36908445296](https://github.com/bitcodepro/QueueLoom/actions/runs/36908445296) |
+
+At 18:41 UTC, #42 and #37 complete workflows passed; all three platform build/test jobs passed on #36, #38, #39, #41 and #43. Remaining broker/package jobs and #44 were still running. Final outcomes will be appended after completion. No main branch, merge, tag, or release changed.
