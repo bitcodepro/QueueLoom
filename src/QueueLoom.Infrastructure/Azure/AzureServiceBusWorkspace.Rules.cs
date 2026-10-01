@@ -27,7 +27,7 @@ public sealed partial class AzureServiceBusWorkspace
                 {
                     rules.Add(ToRule(rule));
                 }
-                result.Add(new SubscriptionRules(subscription.SubscriptionName, rules));
+                result.Add(new SubscriptionRules(subscription.SubscriptionName, rules) { Note = ForwardingNote(topic, subscription) });
             }
         }
         catch (RequestFailedException exception) when (exception.Status is 401 or 403)
@@ -36,6 +36,25 @@ public sealed partial class AzureServiceBusWorkspace
                 "Reading subscription rules needs the Azure Service Bus Data Owner role (or a Manage connection string).", exception);
         }
         return result.OrderBy(item => item.Subscription, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    /// <summary>Where a subscription that auto-forwards sends what it receives, followed through the last topology read.</summary>
+    private string? ForwardingNote(string topic, SubscriptionProperties subscription)
+    {
+        var target = Forwarding.TargetName(subscription.ForwardTo);
+        var deadLetters = Forwarding.TargetName(subscription.ForwardDeadLetteredMessagesTo);
+        var notes = new List<string>();
+        if (target is not null)
+        {
+            notes.Add(_cachedTopology is { } topology
+                ? Forwarding.Follow(topology, $"{topic}/{subscription.SubscriptionName}").Describe(target)
+                : $"Forwards to {target}");
+        }
+        if (deadLetters is not null)
+        {
+            notes.Add($"Dead letters are forwarded to {deadLetters}");
+        }
+        return notes.Count == 0 ? null : string.Join(" · ", notes);
     }
 
     public async Task SaveSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, bool replace,

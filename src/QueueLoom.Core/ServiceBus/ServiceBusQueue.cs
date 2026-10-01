@@ -15,5 +15,11 @@ public sealed record ServiceBusQueue(
     /// <summary>Connected consumers (RabbitMQ) or consumer group lag (Kafka); null where the service does not say.</summary>
     public ConsumerActivity? Consumers { get; init; }
 
+    /// <summary>Azure Service Bus auto-forwarding: the queue or topic every message is moved to at once, or null.</summary>
+    public string? ForwardTo { get; init; }
+
+    /// <summary>Azure Service Bus: where dead letters are forwarded instead of staying in the dead-letter queue, or null.</summary>
+    public string? ForwardDeadLettersTo { get; init; }
+
     public ServiceBusEntityReference Reference => ServiceBusEntityReference.Queue(Name);
 }
