@@ -23,7 +23,12 @@ try {
     $started = $true
     $errors = $process.StandardError.ReadToEndAsync()
     $process.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"package-smoke","version":"1"}}}')
-    $response = $process.StandardOutput.ReadLineAsync().WaitAsync([TimeSpan]::FromSeconds(30)).GetAwaiter().GetResult() | ConvertFrom-Json
+    $line = $process.StandardOutput.ReadLineAsync().WaitAsync([TimeSpan]::FromSeconds(30)).GetAwaiter().GetResult()
+    if ($null -eq $line) {
+        $process.WaitForExit()
+        throw "Packaged server exited ($($process.ExitCode)): $($errors.GetAwaiter().GetResult())"
+    }
+    $response = $line | ConvertFrom-Json
     if ($response.id -ne 1 -or $response.result.serverInfo.name -ne 'QueueLoom') { throw 'MCP initialization failed' }
     $process.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
     $process.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
@@ -33,6 +38,9 @@ try {
         $response = $line | ConvertFrom-Json
     } while ($response.id -ne 2)
     if ('list_environments' -notin $response.result.tools.name -or $response.error) { throw 'MCP tool discovery failed' }
+    if (@($response.result.tools | Where-Object { -not $_.annotations.readOnlyHint }).Count) {
+        throw 'The read-only packaged server exposed a non-read-only tool'
+    }
     Write-Host "PASS $Rid packaged executable: MCP initialization and read-only tool discovery"
 } finally {
     if ($started -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }

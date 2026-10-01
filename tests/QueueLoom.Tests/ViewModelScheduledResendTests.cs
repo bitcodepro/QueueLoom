@@ -201,9 +201,12 @@ public sealed partial class ViewModelStateTests
 
 public sealed partial class ViewModelStateTests
 {
-    [Fact]
-    public async Task LargeDeadLetterLists_TickAndUntickInOnePass()
+    [Theory]
+    [InlineData("en-US", "30,000")]
+    [InlineData("uk-UA", "30\u00a0000")]
+    public async Task LargeDeadLetterLists_TickAndUntickInOnePass(string cultureName, string formattedCount)
     {
+        using var culture = new TestCulture(cultureName);
         var profile = CreateProfile("Orders", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
         await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace());
         var source = ServiceBusEntityReference.Queue("orders");
@@ -214,7 +217,7 @@ public sealed partial class ViewModelStateTests
 
         viewModel.AreAllMessagesMarked = true;
         Assert.Equal(30_000, viewModel.MarkedMessageCount);
-        Assert.Equal("Delete 30,000 messages…", viewModel.DeleteMarkedMessagesLabel);
+        Assert.Equal($"Delete {formattedCount} messages…", viewModel.DeleteMarkedMessagesLabel);
         viewModel.AreAllMessagesMarked = false;
         Assert.False(viewModel.HasMarkedMessages);
         var timeout = viewModel.DeadLetterReasons.Single(reason => reason.Reason == "Timeout");

@@ -8,17 +8,17 @@ This inventory was prepared from the restored NuGet dependency graph for the cur
 
 | Component | Version | License | Source/license |
 |---|---:|---|---|
-| Avalonia, Avalonia.Desktop, Avalonia.Themes.Fluent, Avalonia.Fonts.Inter, and Avalonia platform packages | 12.1.1 | MIT | [AvaloniaUI/Avalonia](https://github.com/AvaloniaUI/Avalonia), [license](https://github.com/AvaloniaUI/Avalonia/blob/main/licence.md) |
+| Avalonia, Avalonia.Desktop, Avalonia.Themes.Fluent, Avalonia.Fonts.Inter, and Avalonia platform packages | 12.1.3 | MIT | [AvaloniaUI/Avalonia](https://github.com/AvaloniaUI/Avalonia), [license](https://github.com/AvaloniaUI/Avalonia/blob/main/licence.md) |
 | Avalonia.AvaloniaEdit | 12.0.0 | MIT | [AvaloniaUI/AvaloniaEdit](https://github.com/AvaloniaUI/AvaloniaEdit), [license](https://github.com/AvaloniaUI/AvaloniaEdit/blob/master/LICENSE) |
 | ModelContextProtocol / ModelContextProtocol.Core | 2.2.0 | Apache-2.0 | [modelcontextprotocol/csharp-sdk](https://github.com/modelcontextprotocol/csharp-sdk), [license](https://github.com/modelcontextprotocol/csharp-sdk/blob/main/LICENSE) |
 | Microsoft.Extensions.AI.Abstractions | 10.8.3 | MIT | [dotnet/extensions](https://github.com/dotnet/extensions), [license](https://github.com/dotnet/extensions/blob/main/LICENSE) |
 | Avalonia.BuildServices (build-time, transitive) | 11.3.2 | MIT | [AvaloniaUI/Avalonia.BuildServices](https://github.com/AvaloniaUI/Avalonia.BuildServices) |
 | Azure.Identity | 1.21.0 | MIT | [Azure SDK for .NET — Identity](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/identity/Azure.Identity), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
-| Azure.Messaging.ServiceBus | 7.20.2 | MIT | [Azure SDK for .NET — Service Bus](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/servicebus/Azure.Messaging.ServiceBus), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
-| Azure.Core / Azure.Core.Amqp / System.ClientModel | 1.60.0 / 1.3.1 / 1.14.0 | MIT | [Azure SDK for .NET](https://github.com/Azure/azure-sdk-for-net), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
+| Azure.Messaging.ServiceBus | 7.21.0 | MIT | [Azure SDK for .NET — Service Bus](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/servicebus/Azure.Messaging.ServiceBus), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
+| Azure.Core / Azure.Core.Amqp / System.ClientModel | 1.62.0 / 1.3.1 / 1.15.0 | MIT | [Azure SDK for .NET](https://github.com/Azure/azure-sdk-for-net), [license](https://github.com/Azure/azure-sdk-for-net/blob/main/LICENSE.txt) |
 | Microsoft.Azure.Amqp | 2.7.0 | MIT | [Azure/azure-amqp](https://github.com/Azure/azure-amqp), [license](https://github.com/Azure/azure-amqp/blob/master/LICENSE) |
 | Microsoft.Identity.Client / Extensions.Msal / IdentityModel.Abstractions | 4.84.2 / 4.84.2 / 8.14.0 | MIT | [AzureAD/microsoft-authentication-library-for-dotnet](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet), [license](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet/blob/main/LICENSE) |
-| AWSSDK.SQS / AWSSDK.SimpleNotificationService / AWSSDK.Core | 4.0.100.14 / 4.0.100.15 / 4.0.102.6 | Apache-2.0 | [aws/aws-sdk-net](https://github.com/aws/aws-sdk-net), [license](https://github.com/aws/aws-sdk-net/blob/main/License.txt) |
+| AWSSDK.SQS / AWSSDK.SimpleNotificationService / AWSSDK.Core | 4.0.100.15 / 4.0.100.16 / 4.0.102.8 | Apache-2.0 | [aws/aws-sdk-net](https://github.com/aws/aws-sdk-net), [license](https://github.com/aws/aws-sdk-net/blob/main/License.txt) |
 | Google.Cloud.PubSub.V1 / Google.Cloud.Monitoring.V3 / Google.Cloud.Iam.V1 | 3.38.0 / 3.16.0 / 3.5.0 | Apache-2.0 | [googleapis/google-cloud-dotnet](https://github.com/googleapis/google-cloud-dotnet), [license](https://github.com/googleapis/google-cloud-dotnet/blob/main/LICENSE) |
 | Confluent.Kafka / librdkafka.redist | 2.15.1 / 2.15.1 | Apache-2.0 (librdkafka: BSD-2-Clause, with bundled OpenSSL, zlib, zstd, lz4 and curl under their own licenses) | [confluentinc/confluent-kafka-dotnet](https://github.com/confluentinc/confluent-kafka-dotnet), [librdkafka licenses](https://github.com/confluentinc/librdkafka/blob/master/LICENSES.txt) |
 | RabbitMQ.Client | 7.2.2 | Apache-2.0 or MPL-2.0 (dual) | [rabbitmq/rabbitmq-dotnet-client](https://github.com/rabbitmq/rabbitmq-dotnet-client), [license](https://github.com/rabbitmq/rabbitmq-dotnet-client/blob/main/LICENSE) |
@@ -35,7 +35,7 @@ This inventory was prepared from the restored NuGet dependency graph for the cur
 | MicroCom.Runtime | 0.11.6 | MIT | [kekekeks/MicroCom](https://github.com/kekekeks/MicroCom), [license](https://github.com/kekekeks/MicroCom/blob/master/LICENSE) |
 | Tmds.DBus.Protocol | 0.94.1 | MIT | [tmds/Tmds.DBus](https://github.com/tmds/Tmds.DBus), [license](https://github.com/tmds/Tmds.DBus/blob/main/LICENSE) |
 | Avalonia.Angle.Windows.Natives | 2.1.27548.20260419 | See bundled `LICENSE` | [NuGet package](https://www.nuget.org/packages/Avalonia.Angle.Windows.Natives/2.1.27548.20260419) |
-| Inter font family, embedded by Avalonia.Fonts.Inter | bundled with 12.1.1 | SIL Open Font License 1.1 | [rsms/inter](https://github.com/rsms/inter), [OFL-1.1](https://github.com/rsms/inter/blob/master/LICENSE.txt) |
+| Inter font family, embedded by Avalonia.Fonts.Inter | bundled with 12.1.3 | SIL Open Font License 1.1 | [rsms/inter](https://github.com/rsms/inter), [OFL-1.1](https://github.com/rsms/inter/blob/master/LICENSE.txt) |
 
 ## Test-only dependencies
 
@@ -43,9 +43,9 @@ Test packages are used during development but are not included in the normal pub
 
 | Component | Version | License | Source/license |
 |---|---:|---|---|
-| Microsoft.NET.Test.Sdk and Microsoft Test Platform packages | 18.8.1 | MIT | [microsoft/vstest](https://github.com/microsoft/vstest), [license](https://github.com/microsoft/vstest/blob/main/LICENSE) |
-| Avalonia.Headless / Avalonia.Skia (UI tests) | 12.1.1 | MIT | [AvaloniaUI/Avalonia](https://github.com/AvaloniaUI/Avalonia), [license](https://github.com/AvaloniaUI/Avalonia/blob/main/licence.md) |
-| coverlet.collector | 10.0.1 | MIT | [coverlet-coverage/coverlet](https://github.com/coverlet-coverage/coverlet), [license](https://github.com/coverlet-coverage/coverlet/blob/master/LICENSE) |
+| Microsoft.NET.Test.Sdk and Microsoft Test Platform packages | 18.10.1 | MIT | [microsoft/vstest](https://github.com/microsoft/vstest), [license](https://github.com/microsoft/vstest/blob/main/LICENSE) |
+| Avalonia.Headless / Avalonia.Skia (UI tests) | 12.1.3 | MIT | [AvaloniaUI/Avalonia](https://github.com/AvaloniaUI/Avalonia), [license](https://github.com/AvaloniaUI/Avalonia/blob/main/licence.md) |
+| coverlet.collector | 10.1.0 | MIT | [coverlet-coverage/coverlet](https://github.com/coverlet-coverage/coverlet), [license](https://github.com/coverlet-coverage/coverlet/blob/master/LICENSE) |
 | xunit / xunit.analyzers | 2.9.3 / 1.18.0 | Apache-2.0 | [xunit/xunit](https://github.com/xunit/xunit), [license](https://github.com/xunit/xunit/blob/main/LICENSE) |
 | xunit.runner.visualstudio | 3.1.5 | Apache-2.0 | [xunit/visualstudio.xunit](https://github.com/xunit/visualstudio.xunit), [license](https://github.com/xunit/visualstudio.xunit/blob/main/LICENSE) |
 

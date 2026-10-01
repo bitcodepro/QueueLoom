@@ -112,9 +112,12 @@ public sealed class McpServerTests
         Assert.Contains("is not 'e'", rows[1].GetProperty("explanation").GetString(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task ExplainDeadLetters_GroupsTheDeadLettersByCause()
+    [Theory]
+    [InlineData("en-US", "66.7")]
+    [InlineData("uk-UA", "66,7")]
+    public async Task ExplainDeadLetters_GroupsTheDeadLettersByCause(string cultureName, string formattedShare)
     {
+        using var culture = new TestCulture(cultureName);
         await using var server = await McpTestServer.StartAsync();
         BrowsedMessage Dead(long number, string reason, string description) => new(
             Orders.Reference, ServiceBusSubQueue.DeadLetter, number, System.Text.Encoding.UTF8.GetBytes("{}"),
@@ -138,7 +141,7 @@ public sealed class McpServerTests
         Assert.Equal(2, top.GetProperty("sources").GetProperty("orders").GetInt32());
         Assert.Equal(["m-1", "m-2"], top.GetProperty("sampleMessageIds").EnumerateArray().Select(id => id.GetString()));
         Assert.Contains("never completed it", top.GetProperty("hint").GetString(), StringComparison.Ordinal);
-        Assert.StartsWith("3 dead letter(s) read from 1 queue(s) fall into 2 cause(s); the largest is MaxDeliveryCountExceeded: Order {n} was not found (66.7%)",
+        Assert.StartsWith("3 dead letter(s) read from 1 queue(s) fall into 2 cause(s); the largest is MaxDeliveryCountExceeded: Order {n} was not found (" + formattedShare + "%)",
             explained.GetProperty("summary").GetString(), StringComparison.Ordinal);
     }
 
