@@ -1,0 +1,4 @@
+[*.cs]
+# Preserve existing explicit and default cancellation scenarios during the v3 migration.
+# Offer the new runner-token recommendation in the IDE without changing test semantics.
+dotnet_diagnostic.xUnit1051.severity = suggestion

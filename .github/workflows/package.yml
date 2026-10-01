@@ -49,6 +49,12 @@ jobs:
           rid: ${{ matrix.rid }}
           version: ${{ inputs.version }}
 
+      - name: Verify native rendering on the package host
+        run: >-
+          dotnet test tests/QueueLoom.UiTests/QueueLoom.UiTests.csproj -c Release
+          --filter "FullyQualifiedName~NativeRenderingTests"
+          --logger trx --results-directory NativeRenderingResults
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Each artifact contains the release archive AND its checksum, not one raw file.

@@ -18,7 +18,7 @@ public sealed class AzurePendingMessagesTests : IAsyncLifetime
     private ServiceBusClient _client = null!;
     private AzureServiceBusWorkspace _workspace = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.ServiceBus)))
         {
@@ -36,7 +36,7 @@ public sealed class AzurePendingMessagesTests : IAsyncLifetime
         await _workspace.GetTopologyAsync(forceRefresh: true);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {
