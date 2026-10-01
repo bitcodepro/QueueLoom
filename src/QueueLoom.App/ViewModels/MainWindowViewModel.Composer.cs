@@ -398,7 +398,7 @@ public sealed partial class MainWindowViewModel
         return new MessageDraft(
             new EditableMessageBody(DraftBody ?? string.Empty, DraftBodyFormat),
             properties,
-            applicationProperties);
+            applicationProperties) { KafkaEnvelope = _draftSourceMessage?.KafkaEnvelope };
     }
 
     private void BindDraftToConnectedEnvironment()

@@ -56,7 +56,7 @@ public sealed record MessageRewrite(string Find, string Replacement, bool InBody
             }
         }
 
-        return changed ? new MessageDraft(body, properties, applicationProperties) : draft;
+        return changed ? new MessageDraft(body, properties, applicationProperties) { KafkaEnvelope = draft.KafkaEnvelope } : draft;
     }
 
     /// <summary>True when a JSON body is no longer valid JSON after the replacement.</summary>

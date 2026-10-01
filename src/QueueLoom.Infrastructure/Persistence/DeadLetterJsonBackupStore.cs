@@ -219,6 +219,11 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "deadLetterErrorDescription", message.DeadLetterErrorDescription);
             WriteApplicationProperties(writer, message.ApplicationProperties);
             WriteBody(writer, message.Body);
+            if (message.KafkaEnvelope is not null)
+            {
+                writer.WritePropertyName("kafkaEnvelope");
+                JsonSerializer.Serialize(writer, message.KafkaEnvelope);
+            }
         }, cancellationToken);
     }
 
@@ -262,7 +267,7 @@ public sealed class DeadLetterJsonBackupSession(
             {
                 using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
                 writer.WriteStartObject();
-                writer.WriteNumber("schemaVersion", 1);
+                writer.WriteNumber("schemaVersion", profile.Provider == MessagingProvider.Kafka ? 2 : 1);
                 writer.WriteString("backupId", backupId);
                 writer.WriteString("backedUpAtUtc", DateTimeOffset.UtcNow);
                 writer.WriteString("purgeStartedAtUtc", startedAt);

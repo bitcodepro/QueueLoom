@@ -55,7 +55,12 @@ internal static class KafkaMessageMapper
             enqueuedAt: message.Timestamp.Type == TimestampType.NotAvailable ? null : new DateTimeOffset(message.Timestamp.UtcDateTime),
             deadLetterReason: reason,
             deadLetterErrorDescription: description)
-        { HasSequenceNumber = false, Position = new LogPosition(result.Partition.Value, result.Offset.Value) };
+        {
+            HasSequenceNumber = false, Position = new LogPosition(result.Partition.Value, result.Offset.Value),
+            KafkaEnvelope = new KafkaEnvelope(message.Key?.ToArray(), message.Value is null,
+                (message.Headers ?? []).Select(header => new KafkaRawHeader(header.Key, header.GetValueBytes()?.ToArray())).ToArray(),
+                properties, applicationProperties)
+        };
     }
 
     /// <summary>The topic a dead-lettered message came from, when the dead-letter headers say so.</summary>
@@ -71,7 +76,7 @@ internal static class KafkaMessageMapper
         return null;
     }
 
-    public static Message<byte[]?, byte[]> ToKafka(MessageDraft draft)
+    public static Message<byte[]?, byte[]?> ToKafka(MessageDraft draft)
     {
         var headers = new Headers();
         if (!string.IsNullOrEmpty(draft.Properties.MessageId))
@@ -96,12 +101,33 @@ internal static class KafkaMessageMapper
         }
 
         var key = draft.Properties.PartitionKey ?? draft.Properties.SessionId;
-        return new Message<byte[]?, byte[]>
+        var result = new Message<byte[]?, byte[]?>
         {
             Key = string.IsNullOrEmpty(key) ? null : Encoding.UTF8.GetBytes(key),
             Value = draft.Body.GetBytes(),
             Headers = headers
         };
+        if (draft.KafkaEnvelope is not { } envelope) return result;
+
+        // Preserve raw metadata for every name whose editable projection has not changed.
+        // An explicit edit replaces that name's raw occurrences with the edited representation.
+        var baseline = ToKafka(new MessageDraft(draft.Body, envelope.OriginalProperties, envelope.OriginalApplicationProperties));
+        var names = baseline.Headers.Select(header => header.Key).Concat(headers.Select(header => header.Key)).Distinct(StringComparer.Ordinal);
+        var changed = names.Where(name => !baseline.Headers.Where(header => header.Key == name).Select(header => Convert.ToBase64String(header.GetValueBytes() ?? []))
+            .SequenceEqual(headers.Where(header => header.Key == name).Select(header => Convert.ToBase64String(header.GetValueBytes() ?? []))))
+            .ToHashSet(StringComparer.Ordinal);
+        var raw = new Headers();
+        foreach (var header in envelope.Headers)
+        {
+            if (!changed.Contains(header.Name) && !DeadLetterHeaderPrefixes.Any(prefix => header.Name.StartsWith(prefix, StringComparison.Ordinal)))
+                raw.Add(header.Name, header.Value?.ToArray());
+        }
+        foreach (var header in headers.Where(header => changed.Contains(header.Key))) raw.Add(header.Key, header.GetValueBytes());
+        result.Headers = raw;
+        if (draft.Properties.PartitionKey == envelope.OriginalProperties.PartitionKey && draft.Properties.SessionId == envelope.OriginalProperties.SessionId)
+            result.Key = envelope.Key?.ToArray();
+        if (envelope.IsTombstone && result.Value is { Length: 0 }) result.Value = null;
+        return result;
     }
 
     private static (string? Reason, string? Description) DeadLetterInfo(IReadOnlyDictionary<string, byte[]> headers)
