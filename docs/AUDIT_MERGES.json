@@ -1,0 +1,198 @@
+{
+  "expected": {
+    "36": "485a379b6bf16d81e7f76cc6d6887094d07ce5c0",
+    "37": "9d9702a07c308a917655154962faf90f9a08201f",
+    "38": "a4e6207a61afb9ac5305ad08afd2af5943e0e625",
+    "39": "197f4279ff556748802f27d6285c6c8daf05e65b",
+    "40": "cb959474c6cac7aa0898e1a94bb7ea701dd9b6f0",
+    "41": "292d4c6c4f2e7f49a1971046cf986d3506dfbe79",
+    "42": "a50b78207b0b186c2da8474290df6a99c4dca5af",
+    "43": "f6ae5bc2f98d38165844e92c4fdeca3b90c4d625",
+    "44": "03a7d1d51865ffae6c003a3eb322934945cdf755"
+  },
+  "main": "6c941ad04cb352c2152aee92a46d37237bb39509",
+  "mainRun": 36930111719,
+  "activePR": 38,
+  "activeHead": "a4e6207a61afb9ac5305ad08afd2af5943e0e625",
+  "activeRun": 36928947177,
+  "ledger": [
+    {
+      "PR": 42,
+      "original_head": "a50b78207b0b186c2da8474290df6a99c4dca5af",
+      "merged_head": "a50b78207b0b186c2da8474290df6a99c4dca5af",
+      "merge_sha": "9635021ab25dc1ca419b0f1669cb059af9dbad86",
+      "skip_release": true,
+      "pr_ci": 36907724975,
+      "main_ci": 36923742823,
+      "review": "Prior independent review cleared; no unresolved GitHub review threads.",
+      "main_ci_conclusion": "success",
+      "release_skipped": true
+    },
+    {
+      "PR": 36,
+      "original_head": "9e64c1474dbdc9f49e3c832c0ecedf37d9d52fd5",
+      "validated_head": "485a379b6bf16d81e7f76cc6d6887094d07ce5c0",
+      "tree": "ff843dda606817c6ddea1dedbdd8bf93475f209a",
+      "integrated_main": "9635021ab25dc1ca419b0f1669cb059af9dbad86",
+      "conflict_free": true,
+      "main_delta_files": [],
+      "pr_ci": 36924082706,
+      "merge_sha": "41848c115055714b8f41f8893f1deb6ca950e3b6",
+      "pr_ci_conclusion": "success",
+      "skip_release": true,
+      "main_ci": 36925148908,
+      "main_ci_conclusion": "success"
+    },
+    {
+      "PR": 37,
+      "original_head": "8a526a188eb3228410bb56ac8cc1274d46860f40",
+      "validated_head": "9d9702a07c308a917655154962faf90f9a08201f",
+      "tree": "d874aa653544d2d8bb6a2ce2bf1cc26a07b0ce0f",
+      "integrated_main": "41848c115055714b8f41f8893f1deb6ca950e3b6",
+      "conflict_free": true,
+      "main_delta_files": [
+        "src/QueueLoom.Infrastructure/Persistence/JsonAppSettingsStore.cs",
+        "tests/QueueLoom.Tests/SettingsAuditRegressionTests.cs"
+      ],
+      "pr_ci": 36925314218,
+      "merge_sha": "1a246f4660965f912314a1d80b2ef3a60b3bb3ce",
+      "pr_ci_conclusion": "success",
+      "skip_release": true,
+      "main_ci": 36926421447,
+      "main_ci_conclusion": "success",
+      "merged_by_parent_during_disconnect": true
+    },
+    {
+      "PR": 38,
+      "original_head": "8309de1cf06486551c30eb3a513ccec2d44618c7",
+      "validated_head": "a4e6207a61afb9ac5305ad08afd2af5943e0e625",
+      "tree": "6ec8d9f93ee5e0c89678c28d16c8dcb02d2d2117",
+      "integrated_main": "1a246f4660965f912314a1d80b2ef3a60b3bb3ce",
+      "conflict_free": true,
+      "main_delta_files": [
+        "src/QueueLoom.App/ViewModels/MainWindowViewModel.Environments.cs",
+        "src/QueueLoom.Core/Abstractions/IAtomicProfileRepository.cs",
+        "src/QueueLoom.Core/Profiles/EnvironmentTransfer.cs",
+        "src/QueueLoom.Core/Validation/ProfileValidator.cs",
+        "src/QueueLoom.Infrastructure/Persistence/JsonAppSettingsStore.cs",
+        "src/QueueLoom.Infrastructure/Persistence/JsonProfileRepository.cs",
+        "tests/QueueLoom.Tests/CredentialExportAuditRegressionTests.cs",
+        "tests/QueueLoom.Tests/LegacyProfileRepositoryAuditTests.cs",
+        "tests/QueueLoom.Tests/SettingsAuditRegressionTests.cs",
+        "tests/QueueLoom.Tests/ViewModelLegacyRegistryRollbackAuditTests.cs"
+      ],
+      "pr_ci": 36928947177,
+      "merge_sha": "6c941ad04cb352c2152aee92a46d37237bb39509",
+      "pr_ci_conclusion": "success",
+      "skip_release": true,
+      "main_ci": 36930111719
+    }
+  ],
+  "cache": {
+    "39": {
+      "pr": 39,
+      "branch": "codex/audit-scheduled-safety",
+      "old_head": "197f4279ff556748802f27d6285c6c8daf05e65b",
+      "before_tree": "6ec8d9f93ee5e0c89678c28d16c8dcb02d2d2117",
+      "tree": "f8b79a132d195622d773db1d453b3e89a5ec9dbc",
+      "entry_count": 7,
+      "paths": [
+        "src/QueueLoom.App/ViewModels/MainWindowViewModel.Environments.cs",
+        "src/QueueLoom.App/ViewModels/MainWindowViewModel.ScheduledResends.cs",
+        "src/QueueLoom.Core/Profiles/ServiceBusProfile.cs",
+        "src/QueueLoom.Core/ServiceBus/ScheduledResend.cs",
+        "src/QueueLoom.Infrastructure/Persistence/JsonScheduledResendStore.cs",
+        "tests/QueueLoom.Tests/ViewModelAuditRegressionTests.cs",
+        "tests/QueueLoom.Tests/ViewModelStateTests.cs"
+      ],
+      "remote_tree": "f8b79a132d195622d773db1d453b3e89a5ec9dbc",
+      "verified": true
+    },
+    "40": {
+      "pr": 40,
+      "branch": "fix/updater-restart-handoff-20261001",
+      "old_head": "cb959474c6cac7aa0898e1a94bb7ea701dd9b6f0",
+      "before_tree": "aad3ab4dd78d9b0216c288fe0d9a34f2bd7d1200",
+      "tree": "11a08b631c7949b8d0218dac00e6c84001ce20fa",
+      "entry_count": 15,
+      "paths": [
+        ".github/actions/package/action.yml",
+        ".github/scripts/smoke-update.ps1",
+        "QueueLoom.slnx",
+        "docs/updater-restart-validation.md",
+        "src/QueueLoom.App/MainWindow.axaml.cs",
+        "src/QueueLoom.App/Program.cs",
+        "src/QueueLoom.App/Services/AppUpdater.cs",
+        "src/QueueLoom.App/Services/UpdateRestart.cs",
+        "src/QueueLoom.App/Views/UpdateDialogWindow.axaml.cs",
+        "tests/QueueLoom.Tests/AppUpdaterTests.cs",
+        "tests/QueueLoom.Tests/QueueLoom.Tests.csproj",
+        "tests/QueueLoom.Tests/UpdateRestartProcessTests.cs",
+        "tests/QueueLoom.UiTests/UpdateDialogUiTests.cs",
+        "tests/QueueLoom.UpdateFixture/Program.cs",
+        "tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj"
+      ],
+      "remote_tree": "11a08b631c7949b8d0218dac00e6c84001ce20fa",
+      "verified": true
+    },
+    "41": {
+      "pr": 41,
+      "branch": "codex/audit-purge-profile",
+      "old_head": "292d4c6c4f2e7f49a1971046cf986d3506dfbe79",
+      "before_tree": "f8b79a132d195622d773db1d453b3e89a5ec9dbc",
+      "tree": "3c52f87b7a0b90c05ddd097eadd43415bfb1c825",
+      "entry_count": 2,
+      "paths": [
+        "src/QueueLoom.App/ViewModels/MainWindowViewModel.Purge.cs",
+        "tests/QueueLoom.Tests/ViewModelPurgeAuditRegressionTests.cs"
+      ],
+      "remote_tree": "3c52f87b7a0b90c05ddd097eadd43415bfb1c825",
+      "verified": true
+    },
+    "43": {
+      "pr": 43,
+      "branch": "codex/audit-rabbit-lifecycle",
+      "old_head": "f6ae5bc2f98d38165844e92c4fdeca3b90c4d625",
+      "before_tree": "3c52f87b7a0b90c05ddd097eadd43415bfb1c825",
+      "tree": "e8d2d5e0b43a50c5cbba21c8daa9d705f6eecd8c",
+      "entry_count": 5,
+      "paths": [
+        "src/QueueLoom.Infrastructure/Messaging/LeasedMessage.cs",
+        "src/QueueLoom.Infrastructure/Messaging/LeasedMessagingWorkspace.cs",
+        "src/QueueLoom.Infrastructure/RabbitMq/RabbitMqWorkspace.cs",
+        "tests/QueueLoom.IntegrationTests/RabbitMqWorkspaceTests.cs",
+        "tests/QueueLoom.Tests/RabbitLifecycleAuditTests.cs"
+      ],
+      "remote_tree": "e8d2d5e0b43a50c5cbba21c8daa9d705f6eecd8c",
+      "verified": true
+    },
+    "44": {
+      "pr": 44,
+      "branch": "codex/audit-kafka-envelope",
+      "old_head": "03a7d1d51865ffae6c003a3eb322934945cdf755",
+      "before_tree": "e8d2d5e0b43a50c5cbba21c8daa9d705f6eecd8c",
+      "tree": "aad3ab4dd78d9b0216c288fe0d9a34f2bd7d1200",
+      "entry_count": 13,
+      "paths": [
+        "src/QueueLoom.App/ViewModels/MainWindowViewModel.Composer.cs",
+        "src/QueueLoom.Core/ServiceBus/BrowsedMessage.cs",
+        "src/QueueLoom.Core/ServiceBus/KafkaEnvelope.cs",
+        "src/QueueLoom.Core/ServiceBus/MessageDraft.cs",
+        "src/QueueLoom.Core/ServiceBus/MessageRewrite.cs",
+        "src/QueueLoom.Infrastructure/Kafka/KafkaMessageMapper.cs",
+        "src/QueueLoom.Infrastructure/Kafka/KafkaWorkspace.cs",
+        "src/QueueLoom.Infrastructure/Persistence/BatchReplayStore.cs",
+        "src/QueueLoom.Infrastructure/Persistence/DeadLetterJsonBackupStore.cs",
+        "src/QueueLoom.Infrastructure/Persistence/JsonDeadLetterBackupRepository.cs",
+        "src/QueueLoom.Infrastructure/Persistence/JsonScheduledResendStore.cs",
+        "tests/QueueLoom.Tests/KafkaAuditRegressionTests.cs",
+        "tests/QueueLoom.Tests/ViewModelKafkaComposerAuditTests.cs"
+      ],
+      "remote_tree": "aad3ab4dd78d9b0216c288fe0d9a34f2bd7d1200",
+      "verified": true
+    }
+  },
+  "local_preparation_complete": true,
+  "requires_local_executor": false,
+  "checked_at_utc": "2026-10-01 21:48:47 UTC"
+}
