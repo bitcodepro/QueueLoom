@@ -42,6 +42,41 @@ public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<
 /// <param name="Headline">For a given message: how many subscriptions receive it, or that it is dropped.</param>
 public sealed record TopicRoutingInfo(string Environment, string Topic, string? Headline, IReadOnlyList<SubscriptionRoutingInfo> Subscriptions);
 
+/// <param name="Hint">What this reason usually means and where to look, when QueueLoom knows the reason.</param>
+public sealed record DeadLetterCauseInfo(
+    string Reason,
+    string? Pattern,
+    string? Example,
+    int Count,
+    double Share,
+    IReadOnlyDictionary<string, int> Sources,
+    DateTimeOffset? FirstEnqueued,
+    DateTimeOffset? LastEnqueued,
+    int MaxDeliveryCount,
+    IReadOnlyList<string> SampleMessageIds,
+    string? Hint);
+
+/// <param name="Note">What QueueLoom knows about the queue, such as where it forwards its dead letters.</param>
+public sealed record DeadLetterSourceSummaryInfo(string Entity, long DeadLetterCount, int Read, string? Note, string? Error);
+
+public sealed record DeadLetterExplanationInfo(
+    string Environment,
+    string Summary,
+    int ReadMessages,
+    IReadOnlyList<DeadLetterSourceSummaryInfo> Sources,
+    IReadOnlyList<DeadLetterCauseInfo> Causes);
+
+/// <param name="Paths">Every way a message travels, as "inbox → orders → orders/eu → eu-orders".</param>
+public sealed record ForwardingInfo(
+    string Environment,
+    string Entity,
+    string Summary,
+    IReadOnlyList<string> Destinations,
+    IReadOnlyList<string> Paths,
+    IReadOnlyList<string> Loops,
+    IReadOnlyList<string> Missing,
+    int LongestChain);
+
 public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count);
 
 public sealed record DeadLetterTrendInfo(string Source, long Start, long Now, long Change);
