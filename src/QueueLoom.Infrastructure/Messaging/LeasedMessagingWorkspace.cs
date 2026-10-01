@@ -746,7 +746,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 return cached;
             }
 
-            _cachedTopology = await ReadTopologyAsync(cancellationToken).ConfigureAwait(false);
+            _cachedTopology = (await ReadTopologyAsync(cancellationToken).ConfigureAwait(false)) with { EntityNamesCaseSensitive = true };
             return _cachedTopology;
         }
         finally
