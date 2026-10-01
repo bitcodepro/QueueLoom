@@ -25,7 +25,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     private readonly List<KafkaChannel> _channels = [];
     private ClientConfig? _config;
     private IAdminClient? _admin;
-    private IProducer<byte[]?, byte[]>? _producer;
+    private IProducer<byte[]?, byte[]?>? _producer;
     private SchemaRegistryClient? _schemaRegistry;
     private KafkaTopologyIndex _index = KafkaTopologyIndex.Empty;
 
@@ -92,7 +92,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             {
                 throw new InvalidOperationException($"No Kafka broker answered at {settings.BootstrapServers}.");
             }
-            _producer = new ProducerBuilder<byte[]?, byte[]>(new ProducerConfig(config) { Acks = Acks.All, MessageTimeoutMs = 30_000 }).Build();
+            _producer = new ProducerBuilder<byte[]?, byte[]?>(new ProducerConfig(config) { Acks = Acks.All, MessageTimeoutMs = 30_000 }).Build();
         }
         catch (KafkaException exception)
         {
@@ -266,7 +266,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             await producer.ProduceAsync(destination.Name, KafkaMessageMapper.ToKafka(message), cancellationToken).ConfigureAwait(false);
         }
-        catch (ProduceException<byte[]?, byte[]> exception)
+        catch (ProduceException<byte[]?, byte[]?> exception)
         {
             throw new InvalidOperationException($"Kafka did not accept the message: {exception.Error.Reason}", exception);
         }

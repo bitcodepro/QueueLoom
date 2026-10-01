@@ -230,7 +230,7 @@ public sealed partial class MainWindowViewModel
             .Select(source => (source.Source, source.SubQueue))
             .ToHashSet();
         foreach (var row in DeadLetterSources
-                     .Where(row => completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
+                     .Where(row => row.ProfileId == result.ProfileId && completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
                      .ToArray())
         {
             DeadLetterSources.Remove(row);

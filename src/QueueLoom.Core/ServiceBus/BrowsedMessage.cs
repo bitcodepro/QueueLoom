@@ -95,6 +95,7 @@ public sealed record BrowsedMessage
 
     /// <summary>Partition and offset of a message in a log (Kafka); null elsewhere.</summary>
     public LogPosition? Position { get; init; }
+    public KafkaEnvelope? KafkaEnvelope { get; init; }
 
     /// <summary>The registry schema of a body in the Confluent wire format, when one was found.</summary>
     public MessageSchema? Schema { get; init; }
@@ -109,6 +110,6 @@ public sealed record BrowsedMessage
                 "This message body exceeds the safe editor limit and was only retained as a preview.");
         }
 
-        return new MessageDraft(EditableMessageBody.FromBytes(_body), Properties, ApplicationProperties);
+        return new MessageDraft(EditableMessageBody.FromBytes(_body), Properties, ApplicationProperties) { KafkaEnvelope = KafkaEnvelope };
     }
 }

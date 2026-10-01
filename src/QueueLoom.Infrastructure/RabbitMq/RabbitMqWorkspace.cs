@@ -237,17 +237,18 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
 
     /// <summary>
     /// Reads one queue with basic.get on its own AMQP channel. Held messages stay unacknowledged; releasing them
-    /// requeues them in place. The channel closes once nothing is held, which also returns anything left over.
+    /// requeues them in place. The channel closes at operation cleanup, returning any deliveries not yet released.
     /// </summary>
     private sealed class RabbitChannel(
         RabbitMqWorkspace owner,
         string queue,
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
-        string? belongsTo) : ILeasedMessageChannel
+        string? belongsTo) : ILeasedMessageChannel, IAsyncDisposable
     {
         private readonly HashSet<ulong> _held = [];
         private IChannel? _channel;
+        private readonly string _identity = Guid.NewGuid().ToString("N");
 
         public string PhysicalName => queue;
 
@@ -268,7 +269,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 _held.Add(result.DeliveryTag);
                 var message = RabbitMqMessageMapper.FromAmqp(result.Body, result.BasicProperties, result.RoutingKey, source, subQueue);
                 var belongs = belongsTo is null || RabbitMqMessageMapper.DeadLetteredFrom(result.BasicProperties) == belongsTo;
-                messages.Add(new LeasedMessage(message, result.DeliveryTag.ToString(System.Globalization.CultureInfo.InvariantCulture), belongs));
+                messages.Add(new LeasedMessage(message, result.DeliveryTag.ToString(System.Globalization.CultureInfo.InvariantCulture), belongs)
+                    { DeliveryIdentity = $"{_identity}:{result.DeliveryTag}" });
             }
             return messages;
         }
@@ -281,10 +283,10 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             }
             foreach (var tag in Tags(messages))
             {
+                if (!_held.Contains(tag)) continue;
                 await _channel.BasicNackAsync(tag, multiple: false, requeue: true, cancellationToken).ConfigureAwait(false);
                 _held.Remove(tag);
             }
-            await CloseWhenIdleAsync().ConfigureAwait(false);
         }
 
         public async Task<IReadOnlyCollection<LeasedMessage>> SettleAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
@@ -303,16 +305,15 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                     failed.Add(message);
                 }
             }
-            await CloseWhenIdleAsync().ConfigureAwait(false);
             return failed;
         }
 
         private static IEnumerable<ulong> Tags(IEnumerable<LeasedMessage> messages) =>
             messages.Select(message => ulong.Parse(message.LeaseHandle, System.Globalization.CultureInfo.InvariantCulture));
 
-        private async Task CloseWhenIdleAsync()
+        public async ValueTask DisposeAsync()
         {
-            if (_held.Count > 0 || _channel is null)
+            if (_channel is null)
             {
                 return;
             }
@@ -325,7 +326,11 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             catch (Exception exception) when (exception is AlreadyClosedException or OperationInterruptedException)
             {
             }
-            channel.Dispose();
+            finally
+            {
+                _held.Clear();
+                channel.Dispose();
+            }
         }
     }
 }

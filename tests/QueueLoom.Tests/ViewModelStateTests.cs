@@ -935,6 +935,7 @@ public sealed partial class ViewModelStateTests
         public IReadOnlyList<BrowsedMessage> BrowseMessages { get; set; } = [];
         public List<SendMessageRequest> SentMessages { get; } = [];
         public Action? OnSend { get; set; }
+        public Func<Task>? SendGate { get; set; }
 
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
@@ -1047,11 +1048,11 @@ public sealed partial class ViewModelStateTests
                     matches)]));
         }
 
-        public Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default)
+        public async Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default)
         {
             SentMessages.Add(request);
             OnSend?.Invoke();
-            return Task.CompletedTask;
+            if (SendGate is not null) await SendGate();
         }
 
         public Task ResubmitDeadLetterAsync(

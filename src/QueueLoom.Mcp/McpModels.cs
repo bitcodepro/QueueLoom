@@ -24,7 +24,10 @@ public sealed record EntityInfo(
     long Active,
     long DeadLetter,
     long TransferDeadLetter,
-    long Scheduled);
+    long Scheduled)
+{
+    public string? TypedEntity { get; init; }
+}
 
 public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, bool CountsAreSampled, IReadOnlyList<EntityInfo> Entities);
 
@@ -222,10 +225,30 @@ internal static class EntityResolver
         var key = entity.Trim().Replace(" / ", "/", StringComparison.Ordinal);
         var candidates = topology.Queues.Select(queue => queue.Reference)
             .Concat(topology.Topics.Select(topic => topic.Reference))
-            .Concat(topology.Topics.SelectMany(topic => topic.Subscriptions).Select(subscription => subscription.Reference));
-        var match = candidates.FirstOrDefault(reference =>
-            string.Equals(McpMapping.EntityName(reference), key, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(reference.Path, key, StringComparison.OrdinalIgnoreCase));
+            .Concat(topology.Topics.SelectMany(topic => topic.Subscriptions).Select(subscription => subscription.Reference)).ToArray();
+        var prefixes = new Dictionary<string, ServiceBusEntityKind>(StringComparer.Ordinal)
+        {
+            [topology.QueueKindName + ":"] = ServiceBusEntityKind.Queue,
+            [topology.TopicKindName + ":"] = ServiceBusEntityKind.Topic,
+            ["subscription:"] = ServiceBusEntityKind.Subscription
+        };
+        // Kafka calls the queue model a topic; it has no topic-model destinations.
+        if (topology.QueueKindName == "topic") prefixes["topic:"] = ServiceBusEntityKind.Queue;
+        var prefix = prefixes.Keys.FirstOrDefault(prefix => key.StartsWith(prefix, StringComparison.Ordinal));
+        if (prefix is not null)
+        {
+            candidates = candidates.Where(reference => reference.Kind == prefixes[prefix]).ToArray();
+            key = key[prefix.Length..];
+        }
+        ServiceBusEntityReference[] Matches(StringComparison comparison) => candidates.Where(reference =>
+            string.Equals(McpMapping.EntityName(reference), key, comparison) ||
+            string.Equals(reference.Path, key, comparison)).Distinct().ToArray();
+        var matches = Matches(StringComparison.Ordinal);
+        if (matches.Length == 0 && !topology.EntityNamesCaseSensitive && topology.TopicKindName != "exchange" && topology.QueueKindName != "topic")
+            matches = Matches(StringComparison.OrdinalIgnoreCase);
+        if (matches.Length > 1)
+            throw new ModelContextProtocol.McpException($"Entity '{entity}' is ambiguous. Use a typed name such as '{topology.QueueKindName}:{key}' or '{topology.TopicKindName}:{key}'.");
+        var match = matches.SingleOrDefault();
         if (match is null)
         {
             throw new ModelContextProtocol.McpException(
