@@ -21,6 +21,7 @@ public sealed record ServiceBusTopology
 
     /// <summary>What the service calls a topic: "topic" by default, "exchange" for RabbitMQ.</summary>
     public string TopicKindName { get; init; } = "topic";
+    public bool EntityNamesCaseSensitive { get; init; }
 
     public bool SupportsTransferDeadLetter { get; init; } = true;
 

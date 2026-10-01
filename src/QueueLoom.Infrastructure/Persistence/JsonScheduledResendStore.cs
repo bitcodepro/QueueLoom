@@ -5,7 +5,7 @@ using QueueLoom.Core.ServiceBus;
 namespace QueueLoom.Infrastructure.Persistence;
 
 /// <summary>
-/// Scheduled resends in "scheduled-resends.v1.json" in the data folder, so they survive a restart. The file holds
+/// Scheduled resends in "scheduled-resends.v2.json" in the data folder, so they survive a restart. The file holds
 /// message bodies, like backups do, and is readable by the current user only.
 /// </summary>
 public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledResendStore
@@ -18,12 +18,16 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
 
     private readonly object _gate = new();
 
-    public string FilePath => Path.Combine(paths.RootDirectory, "scheduled-resends.v1.json");
+    public string FilePath => Path.Combine(paths.RootDirectory, "scheduled-resends.v2.json");
 
     public IReadOnlyList<ScheduledResend> Load()
     {
         lock (_gate)
         {
+            // Move once, so older versions cannot execute schedules whose configuration or raw envelope
+            // they do not understand. Legacy jobs have no configuration identity and remain blocked.
+            var legacyPath = Path.Combine(paths.RootDirectory, "scheduled-resends.v1.json");
+            if (!File.Exists(FilePath) && File.Exists(legacyPath)) File.Move(legacyPath, FilePath);
             try
             {
                 return File.Exists(FilePath)
@@ -59,13 +63,15 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         resend.Id, resend.ProfileId, resend.EnvironmentName, resend.CreatedAt, resend.DueAt, resend.Mode, resend.MessagesPerSecond,
         resend.DestinationDisplay,
         resend.Items.Select(item => new ItemDocument(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId, item.Destination,
-            item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToList())).ToList());
+            item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToList())).ToList())
+        { ConfigurationIdentity = resend.ConfigurationIdentity };
 
     private static ScheduledResend ToModel(ResendDocument document) => new(
         document.Id, document.ProfileId, document.EnvironmentName, document.CreatedAt, document.DueAt, document.Mode,
         document.MessagesPerSecond, document.DestinationDisplay,
         document.Items.Select(item => new ScheduledResendItem(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId,
-            item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties))).ToArray());
+            item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties))).ToArray())
+        { ConfigurationIdentity = document.ConfigurationIdentity };
 
     private sealed record ResendDocument(
         Guid Id,
@@ -76,7 +82,10 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         ResendMode Mode,
         int MessagesPerSecond,
         string DestinationDisplay,
-        List<ItemDocument> Items);
+        List<ItemDocument> Items)
+    {
+        public string? ConfigurationIdentity { get; init; }
+    }
 
     private sealed record ItemDocument(
         ServiceBusEntityReference Source,
