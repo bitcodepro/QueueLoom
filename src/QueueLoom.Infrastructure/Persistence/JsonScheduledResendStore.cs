@@ -63,14 +63,14 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         resend.Id, resend.ProfileId, resend.EnvironmentName, resend.CreatedAt, resend.DueAt, resend.Mode, resend.MessagesPerSecond,
         resend.DestinationDisplay,
         resend.Items.Select(item => new ItemDocument(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId, item.Destination,
-            item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToList())).ToList())
+            item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToList()) { KafkaEnvelope = item.Message.KafkaEnvelope }).ToList())
         { ConfigurationIdentity = resend.ConfigurationIdentity };
 
     private static ScheduledResend ToModel(ResendDocument document) => new(
         document.Id, document.ProfileId, document.EnvironmentName, document.CreatedAt, document.DueAt, document.Mode,
         document.MessagesPerSecond, document.DestinationDisplay,
         document.Items.Select(item => new ScheduledResendItem(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId,
-            item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties))).ToArray())
+            item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope })).ToArray())
         { ConfigurationIdentity = document.ConfigurationIdentity };
 
     private sealed record ResendDocument(
@@ -95,5 +95,8 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         ServiceBusEntityReference Destination,
         EditableMessageBody Body,
         EditableMessageProperties Properties,
-        List<MessageApplicationProperty> ApplicationProperties);
+        List<MessageApplicationProperty> ApplicationProperties)
+    {
+        public KafkaEnvelope? KafkaEnvelope { get; init; }
+    }
 }

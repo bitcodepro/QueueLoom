@@ -183,7 +183,10 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadOptionalDateTimeOffset(root, "expiresAtUtc"),
             deadLetterReason: ReadOptionalString(root, "deadLetterReason"),
             deadLetterErrorDescription: ReadOptionalString(root, "deadLetterErrorDescription"),
-            originalBodySize: ReadInt64(root, "bodySize"));
+            originalBodySize: ReadInt64(root, "bodySize"))
+        {
+            KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null
+        };
     }
 
     private string ValidateMessagePath(string path)
@@ -233,7 +236,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     {
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty("schemaVersion", out var schema) ||
-            schema.GetInt32() != 1)
+            schema.GetInt32() is not (1 or 2))
         {
             throw new InvalidDataException("Unsupported backup JSON schema.");
         }

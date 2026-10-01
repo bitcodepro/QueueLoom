@@ -6,7 +6,10 @@ using QueueLoom.Core.Validation;
 namespace QueueLoom.Infrastructure.Persistence;
 
 public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProperties Properties,
-    MessageApplicationProperty[] ApplicationProperties, string Origin);
+    MessageApplicationProperty[] ApplicationProperties, string Origin)
+{
+    public KafkaEnvelope? KafkaEnvelope { get; init; }
+}
 
 /// <summary>Durable, resumable copy operation. Never settles original messages.</summary>
 public sealed class BatchReplayStore(string root) : IBatchReplayStore
@@ -39,10 +42,10 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
                 // Replay means send now. TTL remains explicit; enqueue timestamps are broker-owned.
                 ScheduledEnqueueTime = null
             };
-            var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties);
+            var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope };
             var validation = MessageDraftValidator.Validate(prepared);
             if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
-            var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin);
+            var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin) { KafkaEnvelope = prepared.KafkaEnvelope };
             await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
         }
         if (count == 0) throw new InvalidOperationException("Select at least one readable message.");
@@ -79,7 +82,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
             if (state != "Pending")
                 throw new InvalidOperationException($"Batch {plan.Id:N}, item {i + 1}: previous delivery is uncertain. Inspect the destination before replaying; automatic retry is blocked.");
             var item = await ReadPayload(folder, i, token);
-            var validation = MessageDraftValidator.Validate(new MessageDraft(item.Body, item.Properties, item.ApplicationProperties));
+            var validation = MessageDraftValidator.Validate(new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope });
             if (!validation.IsValid) throw new InvalidDataException($"Replay item {i + 1} is invalid.");
         }
         try
@@ -97,7 +100,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
                 {
                     // Once sent, cancellation is handled between items to preserve the acknowledgement.
                     await workspace.SendMessageAsync(new SendMessageRequest(plan.Destination,
-                        new MessageDraft(item.Body, item.Properties, item.ApplicationProperties)), CancellationToken.None);
+                        new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope }), CancellationToken.None);
                     await AtomicFile.WriteTextAsync(stateFile, "Sent", CancellationToken.None);
                     sent++;
                 }

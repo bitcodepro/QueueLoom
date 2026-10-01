@@ -19,6 +19,7 @@ public sealed record MessageDraft
     public EditableMessageProperties Properties { get; }
 
     public IReadOnlyList<MessageApplicationProperty> ApplicationProperties { get; }
+    public KafkaEnvelope? KafkaEnvelope { get; init; }
 
     public static MessageDraft Empty { get; } = new(EditableMessageBody.Empty);
 }
