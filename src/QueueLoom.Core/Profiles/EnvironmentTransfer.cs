@@ -32,9 +32,16 @@ public static class EnvironmentTransfer
         var environments = new JsonArray();
         foreach (var profile in profiles)
         {
+            if (profile.Kafka?.SchemaRegistryUrl is { } registry &&
+                (!Uri.TryCreate(registry, UriKind.Absolute, out var uri) ||
+                 !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)))
+            {
+                throw new InvalidOperationException("Remove credentials, query and fragment from the Schema Registry URL before exporting environments.");
+            }
             var node = JsonSerializer.SerializeToNode(profile, Options)!.AsObject();
             // The id belongs to this computer (and its vault entries); write access is a local decision.
             node.Remove("id");
+            node.Remove("configurationRevision");
             node.Remove("accessMode");
             environments.Add(node);
         }

@@ -58,6 +58,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     SystemNotifications = updated.SystemNotifications,
                     KeepInTray = updated.KeepInTray,
                     AlertWebhookUrl = updated.AlertWebhookUrl,
+                    ProtobufSchemaPath = updated.ProtobufSchemaPath,
                     BackupRetentionDays = updated.BackupRetentionDays
                 },
                 SerializerOptions);
@@ -127,6 +128,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 SystemNotifications = document.SystemNotifications ?? AppSettings.Default.SystemNotifications,
                 KeepInTray = document.KeepInTray,
                 AlertWebhookUrl = document.AlertWebhookUrl,
+                ProtobufSchemaPath = document.ProtobufSchemaPath,
                 BackupRetentionDays = document.BackupRetentionDays
             }.Normalize();
         }
@@ -145,6 +147,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         public bool? SystemNotifications { get; set; }
         public bool KeepInTray { get; set; }
         public string? AlertWebhookUrl { get; set; }
+        public string? ProtobufSchemaPath { get; set; }
         public int BackupRetentionDays { get; set; }
     }
 }
