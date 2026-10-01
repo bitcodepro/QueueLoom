@@ -21,12 +21,14 @@ public sealed partial class AzureServiceBusWorkspace
             ReceiveMode = ServiceBusReceiveMode.PeekLock,
             PrefetchCount = 0
         };
-        var remaining = request.LoadAll ? int.MaxValue : request.MaxMessages;
+        var perSessionLimit = request.LoadAll ? int.MaxValue : request.MaxMessages;
         var result = new List<BrowsedMessage>();
         var receivers = new List<ServiceBusSessionReceiver>();
         try
         {
-            while (remaining > 0 && receivers.Count < MaximumSessionsPerBrowse)
+            // Read each available session's prefix, then merge globally. Stopping after one session can skip
+            // lower sequence numbers in another session when the next page uses a global cursor.
+            while (receivers.Count < MaximumSessionsPerBrowse)
             {
                 ServiceBusSessionReceiver receiver;
                 using (var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
@@ -51,7 +53,8 @@ public sealed partial class AzureServiceBusWorkspace
 
                 // Kept open until the end, so the same session is not handed out again.
                 receivers.Add(receiver);
-                long? cursor = null;
+                var remaining = perSessionLimit;
+                long? cursor = request.FromSequenceNumber;
                 while (remaining > 0)
                 {
                     var page = await receiver.PeekMessagesAsync(Math.Min(BrowseBatchSize, remaining), cursor, cancellationToken)
@@ -85,6 +88,7 @@ public sealed partial class AzureServiceBusWorkspace
 
         return result
             .OrderBy(message => message.SequenceNumber)
+            .Take(request.LoadAll ? int.MaxValue : request.MaxMessages)
             .ToArray();
     }
 }

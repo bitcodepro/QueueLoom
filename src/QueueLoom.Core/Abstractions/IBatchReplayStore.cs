@@ -14,7 +14,8 @@ public interface IBatchReplayStore
         bool preserveIds,
         int rate,
         CancellationToken token,
-        string? fullyQualifiedNamespace = null);
+        string? fullyQualifiedNamespace = null,
+        string? configurationIdentity = null);
 
     ReplayPlan? Latest(Guid profileId);
 

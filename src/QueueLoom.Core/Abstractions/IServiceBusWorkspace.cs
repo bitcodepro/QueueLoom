@@ -10,6 +10,8 @@ public interface IServiceBusWorkspace : IAsyncDisposable
 
     Guid? ConnectedProfileId { get; }
     string? ConnectedNamespace => null;
+    string? ConnectedConfigurationIdentity => null;
+    MessagingProvider? ConnectedProvider => null;
 
     Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default);
 

@@ -252,6 +252,7 @@ public sealed class RealCloudsUiTests
         {
             var message = new PubsubMessage { Data = ByteString.CopyFromUtf8(body) };
             message.Attributes["CloudPubSubDeadLetterSourceSubscription"] = source;
+            message.Attributes["CloudPubSubDeadLetterSourceSubscriptionProject"] = deadLetters.ProjectId;
             message.Attributes["CloudPubSubDeadLetterSourceDeliveryCount"] = "5";
             await publisher.PublishAsync(deadLetters, [message]);
         }

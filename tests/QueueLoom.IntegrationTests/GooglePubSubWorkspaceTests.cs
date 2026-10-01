@@ -258,4 +258,39 @@ public sealed class GooglePubSubWorkspaceTests : IAsyncLifetime
         message.Attributes["CloudPubSubDeadLetterSourceDeliveryCount"] = "5";
         await _publisher.PublishAsync(new TopicName(Project, _deadLetterTopic), [message]);
     }
+
+    [EmulatorFact(Emulators.PubSub)]
+    public async Task DefaultMovePublishesToTheForeignProjectWithTheSameTopicId()
+    {
+        var foreignTopic = new TopicName("queueloom-audit-foreign", _events);
+        var foreignSubscription = new SubscriptionName(Project, Emulators.Unique("foreign"));
+        var foreignReader = new SubscriptionName("queueloom-audit-foreign", Emulators.Unique("verify"));
+        try
+        {
+            await _publisher.CreateTopicAsync(foreignTopic);
+            await _subscriber.CreateSubscriptionAsync(new Subscription
+            {
+                SubscriptionName = foreignSubscription, TopicAsTopicName = foreignTopic, AckDeadlineSeconds = 10,
+                DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = new TopicName(Project, _deadLetterTopic).ToString(), MaxDeliveryAttempts = 5 }
+            });
+            await _subscriber.CreateSubscriptionAsync(foreignReader, foreignTopic, null, 10);
+            await DeadLetterAsync(foreignSubscription.SubscriptionId, "foreign retry");
+            var topology = await _workspace.GetTopologyAsync(forceRefresh: true);
+            var source = topology.Topics.Single(t => t.Name == foreignTopic.ToString()).Subscriptions.Single().Reference;
+            Assert.DoesNotContain(topology.Topics.Single(t => t.Name == _events).Subscriptions, s => s.Name == foreignSubscription.SubscriptionId);
+            var original = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, ServiceBusSubQueue.DeadLetter)));
+            var item = new ResendItem(original, DeadLetterResender.OriginalDestination(source), original.CreateDraft()).WithNewMessageId();
+            Assert.Equal(1, (await DeadLetterResender.ResendAsync(_workspace, [item], ResendMode.Move)).MovedCount);
+            var received = await _subscriber.PullAsync(foreignReader, 10);
+            Assert.Equal("foreign retry", Assert.Single(received.ReceivedMessages).Message.Data.ToStringUtf8());
+            Assert.Empty((await _subscriber.PullAsync(new SubscriptionName(Project, _audit), 10)).ReceivedMessages);
+            Assert.Empty(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, ServiceBusSubQueue.DeadLetter)));
+        }
+        finally
+        {
+            await _subscriber.DeleteSubscriptionAsync(foreignSubscription);
+            await _subscriber.DeleteSubscriptionAsync(foreignReader);
+            await _publisher.DeleteTopicAsync(foreignTopic);
+        }
+    }
 }

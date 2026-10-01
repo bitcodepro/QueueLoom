@@ -201,6 +201,12 @@ public sealed class DeadLetterJsonBackupStoreTests
                 Path.GetDirectoryName(firstPath),
                 Path.GetDirectoryName(secondPath),
                 StringComparison.OrdinalIgnoreCase));
+            var repository = new JsonDeadLetterBackupRepository(paths);
+            var summaries = await repository.ListAsync();
+            Assert.Contains(summaries, summary => summary.Source == firstSource);
+            Assert.Contains(summaries, summary => summary.Source == secondSource);
+            foreach (var summary in summaries)
+                Assert.Equal(summary.Source, (await repository.LoadAsync(summary)).Source);
         }
         finally
         {

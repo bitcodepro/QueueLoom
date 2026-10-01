@@ -30,6 +30,7 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
     public Guid? ConnectedProfileId => _current?.ConnectedProfileId;
 
     public string? ConnectedNamespace => _current?.ConnectedNamespace;
+    public string? ConnectedConfigurationIdentity => _current?.ConnectedConfigurationIdentity;
 
     /// <summary>The provider of the environment the workspace is connected (or connecting) to.</summary>
     public MessagingProvider? ConnectedProvider { get; private set; }

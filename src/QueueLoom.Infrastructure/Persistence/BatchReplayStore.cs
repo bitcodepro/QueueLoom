@@ -19,7 +19,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
 
     public async Task<ReplayPlan> CreateAsync(Guid profileId, ServiceBusEntityReference destination,
         IEnumerable<(MessageDraft Draft, string Origin)> drafts, bool preserveIds, int rate,
-        CancellationToken token, string? fullyQualifiedNamespace = null)
+        CancellationToken token, string? fullyQualifiedNamespace = null, string? configurationIdentity = null)
     {
         if (!destination.CanSend || profileId == Guid.Empty) throw new ArgumentException("A connected profile and send destination are required.");
         if (rate is < 1 or > 50) throw new ArgumentOutOfRangeException(nameof(rate), "Use 1–50 messages per second.");
@@ -49,7 +49,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
             await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
         }
         if (count == 0) throw new InvalidOperationException("Select at least one readable message.");
-        var plan = new ReplayPlan(id, profileId, destination, DateTimeOffset.UtcNow, count, rate, preserveIds, fullyQualifiedNamespace);
+        var plan = new ReplayPlan(id, profileId, destination, DateTimeOffset.UtcNow, count, rate, preserveIds, fullyQualifiedNamespace, configurationIdentity);
         // Publishing the plan last prevents resuming a partially prepared batch.
         await AtomicFile.WriteTextAsync(Path.Combine(folder, "plan.json"), JsonSerializer.Serialize(plan), token);
         return plan;
@@ -71,8 +71,10 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
         if (plan.Count is < 1 or > 1000 || plan.MessagesPerSecond is < 1 or > 50 || !plan.Destination.CanSend)
             throw new InvalidDataException("Replay plan has invalid limits or destination.");
         if (workspace.ConnectedProfileId != plan.ProfileId || !canWrite()) throw new InvalidOperationException("Reconnect and unlock the batch environment.");
-        if (plan.Namespace is not null && !string.Equals(plan.Namespace, workspace.ConnectedNamespace, StringComparison.OrdinalIgnoreCase))
+        if (plan.Namespace is not null && !string.Equals(plan.Namespace, workspace.ConnectedNamespace, StringComparison.Ordinal))
             throw new InvalidOperationException("The profile namespace has changed since this batch was prepared. Resume is blocked.");
+        if (plan.ConfigurationIdentity is not null && plan.ConfigurationIdentity != workspace.ConnectedConfigurationIdentity)
+            throw new InvalidOperationException("The environment configuration changed since this batch was prepared. Resume is blocked.");
         var sent = 0;
         // Validate every pending payload and stop on an uncertain previous send before any new writes.
         for (var i = 0; i < plan.Count; i++)
@@ -93,6 +95,8 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
                 if (ReadState(folder, i) == "Sent") continue;
                 if (workspace.ConnectedProfileId != plan.ProfileId || !canWrite())
                     throw new InvalidOperationException("Write access expired. Batch paused; completed sends are retained.");
+                if (plan.ConfigurationIdentity is not null && plan.ConfigurationIdentity != workspace.ConnectedConfigurationIdentity)
+                    throw new InvalidOperationException("The environment configuration changed. Batch paused.");
                 var item = await ReadPayload(folder, i, token);
                 var stateFile = Path.Combine(folder, $"{i:D6}.state");
                 await AtomicFile.WriteTextAsync(stateFile, "Sending", token);

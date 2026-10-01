@@ -17,6 +17,7 @@ public sealed class McpWorkspaceSession(
     IActivityJournal? journal = null) : IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private string? _connectedConfigurationIdentity;
 
     public IServiceBusWorkspace Workspace => workspace;
 
@@ -116,12 +117,28 @@ public sealed class McpWorkspaceSession(
 
     private async Task EnsureConnectedReadOnlyAsync(ServiceBusProfile profile, CancellationToken cancellationToken)
     {
-        if (workspace.ConnectionState == WorkspaceConnectionState.Connected && workspace.ConnectedProfileId == profile.Id)
+        var identity = ScheduledResend.IdentityFor(profile);
+        var saved = await profiles.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false);
+        if (saved is null || ScheduledResend.IdentityFor(saved) != identity)
+        {
+            throw new McpException("The environment configuration changed. Read it again and request a new approval before writing.");
+        }
+        if (workspace.ConnectionState == WorkspaceConnectionState.Connected && workspace.ConnectedProfileId == profile.Id &&
+            _connectedConfigurationIdentity == identity &&
+            (workspace.ConnectedConfigurationIdentity is null || workspace.ConnectedConfigurationIdentity == identity))
         {
             return;
         }
 
         await workspace.ConnectAsync(profile with { AccessMode = ProfileAccessMode.ReadOnly }, cancellationToken)
             .ConfigureAwait(false);
+        _connectedConfigurationIdentity = identity;
+        saved = await profiles.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false);
+        if (saved is null || ScheduledResend.IdentityFor(saved) != identity)
+        {
+            await workspace.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+            _connectedConfigurationIdentity = null;
+            throw new McpException("The environment configuration changed while connecting. Review it and request a new approval.");
+        }
     }
 }

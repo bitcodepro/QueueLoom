@@ -265,8 +265,40 @@ public sealed class McpServerTests
         var sent = Assert.Single(server.Workspace.SentMessages);
         Assert.Equal("orders", sent.Destination.Name);
         Assert.Equal("correlation-42", sent.Message.Properties.CorrelationId);
+        Assert.False(string.IsNullOrWhiteSpace(sent.Message.Properties.MessageId));
+        Assert.Contains("distinct new Message IDs", request.Details, StringComparison.Ordinal);
         Assert.Equal([3L], Assert.Single(server.Workspace.DeleteRequests).Messages.Select(message => message.SequenceNumber));
         Assert.Equal([ProfileAccessMode.ReadWrite, ProfileAccessMode.ReadOnly], server.Workspace.AccessModeChanges);
+    }
+
+    [Fact]
+    public async Task SendRejectsConfigurationChangedDuringApproval()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var profile = Assert.Single(await server.Profiles.ListAsync());
+        server.Approver.OnRequest = () => server.Profiles.UpsertAsync(profile with { ConfigurationRevision = Guid.NewGuid() }).GetAwaiter().GetResult();
+        var error = await server.CallForErrorAsync("send_message", new() { ["destination"] = "orders", ["body"] = "{}", ["reason"] = "test" });
+        Assert.Contains("configuration changed", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.DoesNotContain(ProfileAccessMode.ReadWrite, server.Workspace.AccessModeChanges);
+    }
+
+    [Fact]
+    public async Task AzureMcpMoveCannotPreserveIdsButCopyWarns()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var args = new Dictionary<string, object?>
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 3L, messageId = (string?)null } },
+            ["mode"] = "move", ["reason"] = "test", ["preserveMessageIds"] = true
+        };
+        Assert.Contains("distinct new Message IDs", await server.CallForErrorAsync("resend_dead_letters", args), StringComparison.Ordinal);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.Empty(server.Workspace.DeleteRequests);
+        Assert.Empty(server.Approver.Requests);
+        args["mode"] = "copy";
+        await server.CallAsync("resend_dead_letters", args);
+        Assert.Contains("suppress delivery", Assert.Single(server.Approver.Requests).Details, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -423,10 +455,12 @@ public sealed class McpServerTests
     private sealed class RecordingApprover(bool approve) : IOperationApprover
     {
         public List<ApprovalRequest> Requests { get; } = [];
+        public Action? OnRequest { get; set; }
 
         public Task<ApprovalDecision> RequestAsync(ApprovalRequest request, McpServer server, CancellationToken cancellationToken)
         {
             Requests.Add(request);
+            OnRequest?.Invoke();
             return Task.FromResult(approve
                 ? ApprovalDecision.Approve("Approved in test.")
                 : ApprovalDecision.Deny("The user declined the change."));
@@ -440,6 +474,7 @@ public sealed class McpServerTests
 
         public required McpClient Client { get; init; }
         public required FakeWorkspace Workspace { get; init; }
+        public required FakeProfileRepository Profiles { get; init; }
         public RecordingApprover Approver { get; private init; } = new(false);
         public required string ExportDirectory { get; init; }
         private Task Run { init => _run = value; }
@@ -466,6 +501,7 @@ public sealed class McpServerTests
             workspace.Snapshots[profile.Id] = new DeadLetterSnapshot(profile.Id, DateTimeOffset.UtcNow,
                 [new DeadLetterEntitySnapshot(Orders.Reference, 2)]);
             var recording = new RecordingApprover(approve);
+            var profiles = new FakeProfileRepository([profile], profile.Id);
             var history = new MemoryHistoryStore();
 
             var clientToServer = new Pipe();
@@ -476,7 +512,7 @@ public sealed class McpServerTests
                 new McpServerSettings(readOnly, exportDirectory),
                 services =>
                 {
-                    services.AddSingleton<IProfileRepository>(new FakeProfileRepository([profile], profile.Id));
+                    services.AddSingleton<IProfileRepository>(profiles);
                     services.AddSingleton<IServiceBusWorkspace>(workspace);
                     services.AddSingleton<IDeadLetterHistoryStore>(history);
                     services.AddSingleton(approver ?? recording);
@@ -498,6 +534,7 @@ public sealed class McpServerTests
                 History = history,
                 Client = client,
                 Workspace = workspace,
+                Profiles = profiles,
                 Approver = recording,
                 ExportDirectory = exportDirectory,
                 Run = run,

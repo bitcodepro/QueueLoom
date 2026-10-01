@@ -14,7 +14,8 @@ public sealed record ResendOptions(
     ResendMode Mode,
     int MessagesPerSecond,
     MessageRewrite? Rewrite = null,
-    DateTimeOffset? SendAt = null);
+    DateTimeOffset? SendAt = null,
+    bool PreserveMessageIds = false);
 
 /// <summary>Options for resending the ticked messages: destination, copy or move, and pace.</summary>
 public sealed class ResendDialogViewModel : ObservableObject
@@ -31,6 +32,7 @@ public sealed class ResendDialogViewModel : ObservableObject
     private bool _replaceInProperties;
     private bool _matchCase = true;
     private bool _sendLater;
+    private bool _preserveMessageIds;
     private string _sendAtText = "30m";
     private readonly Func<DateTimeOffset> _now;
 
@@ -40,10 +42,12 @@ public sealed class ResendDialogViewModel : ObservableObject
         string environmentName,
         bool requiresTypedConfirmation,
         bool canRemoveOriginals = true,
-        Func<DateTimeOffset>? now = null)
+        Func<DateTimeOffset>? now = null,
+        bool requiresNewIdsForMove = false)
     {
         _now = now ?? (() => DateTimeOffset.Now);
         CanRemoveOriginals = canRemoveOriginals;
+        RequiresNewIdsForMove = requiresNewIdsForMove;
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
         {
@@ -65,6 +69,19 @@ public sealed class ResendDialogViewModel : ObservableObject
     public IReadOnlyList<BrowsedMessage> Messages { get; }
 
     public string EnvironmentName { get; }
+    public bool RequiresNewIdsForMove { get; }
+    public bool PreserveMessageIds
+    {
+        get => _preserveMessageIds;
+        set
+        {
+            if (SetProperty(ref _preserveMessageIds, value))
+            {
+                OnPropertyChanged(nameof(Summary));
+                OnPropertyChanged(nameof(CanConfirm));
+            }
+        }
+    }
 
     public string Title => Messages.Count == 1 ? "Resend 1 message" : $"Resend {Messages.Count:N0} messages";
 
@@ -102,6 +119,7 @@ public sealed class ResendDialogViewModel : ObservableObject
                 OnPropertyChanged(nameof(Copies));
                 OnPropertyChanged(nameof(Summary));
                 OnPropertyChanged(nameof(ConfirmLabel));
+                OnPropertyChanged(nameof(CanConfirm));
             }
         }
     }
@@ -237,7 +255,7 @@ public sealed class ResendDialogViewModel : ObservableObject
 
     public bool CanConfirm => (!RequiresTypedConfirmation ||
                                string.Equals(TypedConfirmation.Trim(), EnvironmentName, StringComparison.Ordinal)) &&
-                              (!SendLater || SendAt is not null);
+                               (!SendLater || SendAt is not null) && (!Moves || !RequiresNewIdsForMove || !PreserveMessageIds);
 
     public string ConfirmLabel => (SendLater, Moves) switch
     {
@@ -266,12 +284,15 @@ public sealed class ResendDialogViewModel : ObservableObject
                   "dead-letter queues. If a send fails, that original stays where it is."
                 : "Copies are sent; the originals stay where they are.";
             var rewrite = Rewrite is null ? string.Empty : $"\n\nFind and replace: {RewritePreview}";
-            return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{fanOut}{rewrite}";
+            var ids = PreserveMessageIds
+                ? "\n\nMessage IDs are preserved. Duplicate detection may accept the send but suppress delivery. Azure moves require new IDs; use copy to preserve IDs."
+                : "\n\nEvery copy receives a distinct new Message ID, assigned before sending and retained for retries and scheduled sends.";
+            return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{ids}{fanOut}{rewrite}";
         }
     }
 
     public ResendOptions ToOptions() =>
-        new(Destination.Reference, Moves ? ResendMode.Move : ResendMode.Copy, MessagesPerSecond, Rewrite, SendAt);
+        new(Destination.Reference, Moves ? ResendMode.Move : ResendMode.Copy, MessagesPerSecond, Rewrite, SendAt, PreserveMessageIds);
 
     /// <summary>Parses "30m", "2h", "1d", "03:00" (the next time the clock shows it) or a date and time.</summary>
     public static DateTimeOffset? ParseWhen(string? text, DateTimeOffset now)

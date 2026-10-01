@@ -245,6 +245,18 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     private static ServiceBusEntityReference ParseSource(JsonElement root)
     {
         var kind = ReadEnum<ServiceBusEntityKind>(root, "sourceKind");
+        // Current backups carry exact components; rendered paths may contain the delimiter themselves.
+        if (root.TryGetProperty("sourceName", out _) || root.TryGetProperty("topicName", out _))
+        {
+            var name = ReadRequiredString(root, "sourceName");
+            return kind switch
+            {
+                ServiceBusEntityKind.Queue => ServiceBusEntityReference.Queue(name),
+                ServiceBusEntityKind.Subscription => ServiceBusEntityReference.Subscription(ReadRequiredString(root, "topicName"), name),
+                _ => throw new InvalidDataException("A backup source must be a queue or subscription.")
+            };
+        }
+        // Legacy backups did not store components separately.
         var path = ReadRequiredString(root, "sourcePath");
         if (kind == ServiceBusEntityKind.Queue)
         {

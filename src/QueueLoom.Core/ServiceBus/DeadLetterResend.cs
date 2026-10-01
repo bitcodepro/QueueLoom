@@ -16,6 +16,13 @@ public sealed record ResendItem(BrowsedMessage Original, ServiceBusEntityReferen
 {
     public DeadLetterMessageKey Key =>
         new(Original.Source, Original.SubQueue, Original.SequenceNumber, Original.Properties.MessageId);
+
+    /// <summary>Assign once when preparing the operation, so SDK retries and scheduled sends reuse this ID.</summary>
+    public ResendItem WithNewMessageId() => this with
+    {
+        Message = new MessageDraft(Message.Body, Message.Properties with { MessageId = Guid.NewGuid().ToString("N") },
+            Message.ApplicationProperties) { KafkaEnvelope = Message.KafkaEnvelope }
+    };
 }
 
 public enum ResendOutcome
@@ -97,6 +104,7 @@ public static class DeadLetterResender
             throw new ArgumentException("Only dead-lettered messages can be moved. Use copy mode for active messages.", nameof(items));
         }
         ArgumentOutOfRangeException.ThrowIfNegative(messagesPerSecond);
+        EnsureSafeMessageIds(workspace.ConnectedProvider, items, mode);
 
         var results = new ResendItemResult?[items.Count];
         var delay = messagesPerSecond > 0 ? TimeSpan.FromSeconds(1.0 / messagesPerSecond) : TimeSpan.Zero;
@@ -168,6 +176,17 @@ public static class DeadLetterResender
         }
 
         return new ResendResult(results.Select(result => result!).ToArray(), backupDirectory);
+    }
+
+    public static void EnsureSafeMessageIds(QueueLoom.Core.Profiles.MessagingProvider? provider,
+        IReadOnlyList<ResendItem> items, ResendMode mode)
+    {
+        if (provider != QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus || mode != ResendMode.Move) return;
+        var originalIds = items.Select(item => item.Original.Properties.MessageId).Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.Ordinal);
+        var sentIds = new HashSet<string>(StringComparer.Ordinal);
+        if (items.Any(item => string.IsNullOrWhiteSpace(item.Message.Properties.MessageId) ||
+            originalIds.Contains(item.Message.Properties.MessageId) || !sentIds.Add(item.Message.Properties.MessageId)))
+            throw new InvalidOperationException("Azure moves require distinct new Message IDs. Duplicate detection may accept a preserved ID but suppress the replacement. Choose new IDs, or copy while keeping the originals.");
     }
 
     private static string DescribeKept(DeadLetterMessageDeletionOutcome? outcome) => outcome switch

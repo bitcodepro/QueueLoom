@@ -51,6 +51,9 @@ public sealed partial class ViewModelStateTests
 
         Assert.Empty(workspace.SentMessages);
         var scheduled = Assert.Single(viewModel.ScheduledResends);
+        var preparedIds = scheduled.Resend.Items.Select(i => i.Message.Properties.MessageId).ToArray();
+        Assert.All(preparedIds, id => Assert.False(string.IsNullOrWhiteSpace(id)));
+        Assert.Equal(2, preparedIds.Distinct().Count());
         Assert.Equal(clock.GetUtcNow().AddMinutes(30), scheduled.Resend.DueAt);
         Assert.StartsWith("Waits 30 min", scheduled.Status, StringComparison.Ordinal);
 
@@ -60,6 +63,7 @@ public sealed partial class ViewModelStateTests
         clock.Now = clock.Now.AddMinutes(31);
         await viewModel.RunDueScheduledResendsAsync();
         Assert.Equal(2, workspace.SentMessages.Count);
+        Assert.Equal(preparedIds, workspace.SentMessages.Select(s => s.Message.Properties.MessageId));
         Assert.Equal([2L, 4L], Assert.Single(workspace.DeleteRequests).Messages.Select(key => key.SequenceNumber).Order());
         Assert.Empty(viewModel.ScheduledResends);
 

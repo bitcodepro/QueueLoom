@@ -260,10 +260,12 @@ public sealed partial class MainWindowViewModel
         {
             warning += "\n\nThe selected destination is a topic. This copy may fan out to every matching subscription.";
         }
-        if (_draftSourceMessage is not null)
+        if (_draftSourceMessage is not null && draft.Properties.MessageId == _draftSourceMessage.Properties.MessageId)
         {
             warning += "\n\nThe original MessageId is currently preserved. With duplicate detection enabled, Azure may accept the send but suppress the duplicate; change MessageId when a distinct delivery is required.";
         }
+        if (_draftSourceMessage is { IsDeadLetter: true } originalForMove && DraftMovesOriginal && !_draftSourceIsLocalBackup)
+            DeadLetterResender.EnsureSafeMessageIds(profile.Provider, [new ResendItem(originalForMove, destination.Reference, draft)], ResendMode.Move);
         var confirmed = await _dialogs.ConfirmAsync(
             $"Send to {destination.Name}",
             $"Environment: {profile.Name}\nDestination: {destination.Reference.DisplayName}\nMessageId: {draft.Properties.MessageId}\n\n{warning}",

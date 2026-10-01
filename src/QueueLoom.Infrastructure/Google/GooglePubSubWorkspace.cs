@@ -29,6 +29,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
     // Pub/Sub adds these to a message it forwards to a dead-letter topic.
     internal const string DeadLetterSourceSubscription = "CloudPubSubDeadLetterSourceSubscription";
+    internal const string DeadLetterSourceSubscriptionProject = "CloudPubSubDeadLetterSourceSubscriptionProject";
     internal const string DeadLetterSourceDeliveryCount = "CloudPubSubDeadLetterSourceDeliveryCount";
     private const string DeadLetterAttributePrefix = "CloudPubSubDeadLetter";
 
@@ -195,9 +196,12 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             pubsubMessage.OrderingKey = orderingKey;
         }
 
-        await Publisher.PublishAsync(new TopicName(_projectId, destination.Name), [pubsubMessage], cancellationToken)
+        await Publisher.PublishAsync(TopicResource(destination.Name), [pubsubMessage], cancellationToken)
             .ConfigureAwait(false);
     }
+
+    private TopicName TopicResource(string topic) => TopicName.TryParse(topic, out var resource)
+        ? resource : new TopicName(_projectId, topic);
 
     /// <summary>
     /// The latest pubsub.googleapis.com/subscription/num_undelivered_messages per subscription ID, or null when
@@ -392,16 +396,17 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
         private bool BelongsToSource(PubsubMessage message)
         {
-            if (belongsTo is null ||
-                !message.Attributes.TryGetValue(DeadLetterSourceSubscription, out var sourceSubscription) ||
-                string.IsNullOrEmpty(sourceSubscription))
+            if (belongsTo is null)
             {
                 return true;
             }
-
-            // Pub/Sub records the subscription ID; accept a full resource name too.
-            return string.Equals(sourceSubscription, belongsTo.SubscriptionId, StringComparison.Ordinal) ||
-                   string.Equals(sourceSubscription, belongsTo.ToString(), StringComparison.Ordinal);
+            if (!message.Attributes.TryGetValue(DeadLetterSourceSubscription, out var sourceSubscription) ||
+                string.IsNullOrEmpty(sourceSubscription)) return false;
+            message.Attributes.TryGetValue(DeadLetterSourceSubscriptionProject, out var sourceProject);
+            if (!string.IsNullOrEmpty(sourceProject) && sourceProject != belongsTo.ProjectId) return false;
+            if (SubscriptionName.TryParse(sourceSubscription, out var resource))
+                return resource == belongsTo;
+            return sourceSubscription == belongsTo.SubscriptionId && sourceProject == belongsTo.ProjectId;
         }
     }
 }
@@ -437,18 +442,17 @@ internal sealed record GooglePubSubTopology(
         var index = new Dictionary<(string, string), Subscription>();
         var topics = new List<ServiceBusTopic>();
         // Subscriptions may belong to a topic of another project or to a deleted topic; show them too.
-        var allTopics = topicIds
-            .Select(topicId => (Id: topicId, Resource: (string?)null))
-            .Concat(byTopic.Keys
-                .Where(resource => !topicIds.Contains(TopicIdOf(resource)))
-                .Select(resource => (Id: TopicIdOf(resource), Resource: (string?)resource)))
-            .DistinctBy(topic => topic.Id)
+        var allTopics = topicIds.Select(topicId => new TopicName(projectId, topicId).ToString())
+            .Concat(byTopic.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .Select(resource => (Id: TopicName.TryParse(resource, out var parsed) && parsed.ProjectId == projectId
+                ? parsed.TopicId : resource, Resource: resource))
             .OrderBy(topic => topic.Id, StringComparer.Ordinal);
 
         foreach (var (topicId, resource) in allTopics)
         {
             var topicSubscriptions = byTopic
-                .Where(pair => resource is null ? TopicIdOf(pair.Key) == topicId : pair.Key == resource)
+                .Where(pair => pair.Key == resource)
                 .SelectMany(pair => pair.Value)
                 .ToArray();
 
@@ -466,7 +470,7 @@ internal sealed record GooglePubSubTopology(
                         ? $"Dead letters go to {deadLetterTopicId}"
                         : $"Dead letters go to {deadLetterTopicId}, which has no subscription to read them from";
                 }
-                else if (deadLetterUsers.TryGetValue(resource ?? new TopicName(projectId, topicId).ToString(), out var users))
+                else if (deadLetterUsers.TryGetValue(resource, out var users))
                 {
                     note = $"Holds dead letters of {string.Join(", ", users)}";
                 }
