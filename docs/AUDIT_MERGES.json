@@ -12,9 +12,9 @@
   },
   "main": "932cbe52a4366badcf6ed1408e81fab016c68ce8",
   "mainRun": 36937426762,
-  "activePR": 40,
-  "activeHead": "cac1918fb1d574506452ef9433b347a429a5087d",
-  "activeRun": 36937426762,
+  "activePR": null,
+  "activeHead": null,
+  "activeRun": null,
   "ledger": [
     {
       "PR": 42,
@@ -85,7 +85,8 @@
       "merge_sha": "6c941ad04cb352c2152aee92a46d37237bb39509",
       "pr_ci_conclusion": "success",
       "skip_release": true,
-      "main_ci": 36930111719
+      "main_ci": 36930111719,
+      "main_ci_conclusion": "success"
     },
     {
       "PR": 39,
@@ -159,7 +160,8 @@
       "pr_ci": 36936682123,
       "pr_ci_conclusion": "success",
       "skip_release": false,
-      "main_ci": 36937426762
+      "main_ci": 36937426762,
+      "main_ci_conclusion": "success"
     }
   ],
   "cache": {
@@ -268,5 +270,145 @@
   },
   "local_preparation_complete": true,
   "requires_local_executor": false,
-  "checked_at_utc": "2026-10-01T22:50:36.829Z"
+  "checked_at_utc": "2026-10-01T23:01:47.366Z",
+  "status": "complete",
+  "release": {
+    "tag": "v1.5.4",
+    "id": 401417233,
+    "url": "https://github.com/bitcodepro/QueueLoom/releases/tag/v1.5.4",
+    "published_at": "2026-10-01T22:59:02Z",
+    "tag_target_sha": "932cbe52a4366badcf6ed1408e81fab016c68ce8",
+    "run_id": 36937426762,
+    "run_conclusion": "success",
+    "assets": [
+      {
+        "id": 604303996,
+        "name": "QueueLoom-1.5.4-linux-x64.tar.gz",
+        "size": 57166482,
+        "digest": "sha256:a1ebb865cf6eb5bf605f01e059a3148fd8a28115932570d276f54cc108da81e2",
+        "state": "uploaded"
+      },
+      {
+        "id": 604303995,
+        "name": "QueueLoom-1.5.4-linux-x64.tar.gz.sha256",
+        "size": 98,
+        "digest": "sha256:dcda4ec12b546aa04aa584aec41ccb3c425407a1af03679e2c0e089c8a0c0b09",
+        "state": "uploaded"
+      },
+      {
+        "id": 604303990,
+        "name": "QueueLoom-1.5.4-osx-arm64.zip",
+        "size": 53722059,
+        "digest": "sha256:0a8470efaa0aee458eb54c40f59c04ebeb80cde986950a9ad445035f306717e4",
+        "state": "uploaded"
+      },
+      {
+        "id": 604303992,
+        "name": "QueueLoom-1.5.4-osx-arm64.zip.sha256",
+        "size": 95,
+        "digest": "sha256:49b0b95803429bfd3fe14d068306f26e9de2ca32871799966c9028a08ae5257f",
+        "state": "uploaded"
+      },
+      {
+        "id": 604303993,
+        "name": "QueueLoom-1.5.4-osx-x64.zip",
+        "size": 55964351,
+        "digest": "sha256:3c030abf834382926faa0326500cc48e9dc6b315896d5431802f6578711d5064",
+        "state": "uploaded"
+      },
+      {
+        "id": 604304007,
+        "name": "QueueLoom-1.5.4-osx-x64.zip.sha256",
+        "size": 93,
+        "digest": "sha256:a55fa6b397f0d46347b419029cb1ace9a4a9cb38d95cb5704544139b1b9789b2",
+        "state": "uploaded"
+      },
+      {
+        "id": 604304006,
+        "name": "QueueLoom-1.5.4-win-x64.zip",
+        "size": 55581335,
+        "digest": "sha256:18a59af473716b4b2fa464eb98843ff099dd3665c8155620838c8edda0d5ced9",
+        "state": "uploaded"
+      },
+      {
+        "id": 604304032,
+        "name": "QueueLoom-1.5.4-win-x64.zip.sha256",
+        "size": 93,
+        "digest": "sha256:e6f7fd21933ce20d06d1eee36125201ef65e6bfe7f1f6acd43188dca1035b34e",
+        "state": "uploaded"
+      }
+    ],
+    "checksums": [
+      {
+        "archive": "QueueLoom-1.5.4-linux-x64.tar.gz",
+        "archive_bytes": 57166482,
+        "archive_digest": "sha256:a1ebb865cf6eb5bf605f01e059a3148fd8a28115932570d276f54cc108da81e2",
+        "checksum_bytes": 98,
+        "expected_checksum_bytes": 98,
+        "expected_checksum_content_digest": "sha256:dcda4ec12b546aa04aa584aec41ccb3c425407a1af03679e2c0e089c8a0c0b09",
+        "actual_checksum_file_digest": "sha256:dcda4ec12b546aa04aa584aec41ccb3c425407a1af03679e2c0e089c8a0c0b09",
+        "match": true
+      },
+      {
+        "archive": "QueueLoom-1.5.4-osx-arm64.zip",
+        "archive_bytes": 53722059,
+        "archive_digest": "sha256:0a8470efaa0aee458eb54c40f59c04ebeb80cde986950a9ad445035f306717e4",
+        "checksum_bytes": 95,
+        "expected_checksum_bytes": 95,
+        "expected_checksum_content_digest": "sha256:49b0b95803429bfd3fe14d068306f26e9de2ca32871799966c9028a08ae5257f",
+        "actual_checksum_file_digest": "sha256:49b0b95803429bfd3fe14d068306f26e9de2ca32871799966c9028a08ae5257f",
+        "match": true
+      },
+      {
+        "archive": "QueueLoom-1.5.4-osx-x64.zip",
+        "archive_bytes": 55964351,
+        "archive_digest": "sha256:3c030abf834382926faa0326500cc48e9dc6b315896d5431802f6578711d5064",
+        "checksum_bytes": 93,
+        "expected_checksum_bytes": 93,
+        "expected_checksum_content_digest": "sha256:a55fa6b397f0d46347b419029cb1ace9a4a9cb38d95cb5704544139b1b9789b2",
+        "actual_checksum_file_digest": "sha256:a55fa6b397f0d46347b419029cb1ace9a4a9cb38d95cb5704544139b1b9789b2",
+        "match": true
+      },
+      {
+        "archive": "QueueLoom-1.5.4-win-x64.zip",
+        "archive_bytes": 55581335,
+        "archive_digest": "sha256:18a59af473716b4b2fa464eb98843ff099dd3665c8155620838c8edda0d5ced9",
+        "checksum_bytes": 93,
+        "expected_checksum_bytes": 93,
+        "expected_checksum_content_digest": "sha256:e6f7fd21933ce20d06d1eee36125201ef65e6bfe7f1f6acd43188dca1035b34e",
+        "actual_checksum_file_digest": "sha256:e6f7fd21933ce20d06d1eee36125201ef65e6bfe7f1f6acd43188dca1035b34e",
+        "match": true
+      }
+    ],
+    "checksum_verification_method": "Verified GitHub archive SHA-256 metadata by reconstructing each ASCII no-newline checksum file per the checked-in package script; every reconstructed file SHA-256 and byte count equals the corresponding uploaded checksum asset metadata. Final release archive bytes were not independently downloaded/rehashed through this connector.",
+    "validation": {
+      "unit_tests_per_platform": 664,
+      "ui_tests_per_platform": 31,
+      "platforms": [
+        "Windows",
+        "Linux",
+        "macOS"
+      ],
+      "broker_integration_tests": 53,
+      "broker_ui_tests": 3,
+      "broker_failures": 0,
+      "broker_skips": 0,
+      "release_package_hosts": [
+        "win-x64",
+        "linux-x64",
+        "osx-x64",
+        "osx-arm64"
+      ],
+      "windows_update_smoke_job": 110622150706,
+      "windows_update_smoke": "passed",
+      "pr_archive_verification_job": 110619972748,
+      "pr_archive_verification": "all four downloaded PR archives passed checksums and required contents",
+      "release_artifact_transfer_digests": "all four producer/upload and release/download artifact digests matched"
+    },
+    "limitations": [
+      "The complete native Update-click, installation, tray-aware shutdown and restart chain remains untested.",
+      "Native GUI updater restart on Linux and macOS remains unverified.",
+      "Final release archive bytes were not independently downloaded and rehashed after publication; release asset metadata/digests, producer smoke tests and CI artifact-transfer digests were verified."
+    ]
+  }
 }
