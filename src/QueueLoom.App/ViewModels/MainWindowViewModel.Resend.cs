@@ -100,13 +100,29 @@ public sealed partial class MainWindowViewModel
             $"{items.Length:N0} messages · {options.Destination?.DisplayName ?? "back to their sources"}",
             options.Destination);
 
+        var progressGate = new object();
+        var progressFinished = false;
         var progress = new Progress<ResendProgress>(update =>
-            StatusText = $"Sent {update.Processed:N0} of {update.Total:N0}" +
-                         (update.Failed > 0 ? $" · {update.Failed:N0} failed" : string.Empty));
-        var result = await DeadLetterResender.ResendAsync(
-                _workspace, items, options.Mode, options.MessagesPerSecond, progress, cancellationToken)
-            .ConfigureAwait(true);
-
+        {
+            lock (progressGate)
+            {
+                if (progressFinished) return;
+                StatusText = $"Sent {update.Processed:N0} of {update.Total:N0}" +
+                             (update.Failed > 0 ? $" · {update.Failed:N0} failed" : string.Empty);
+            }
+        });
+        ResendResult result;
+        try
+        {
+            result = await DeadLetterResender.ResendAsync(
+                    _workspace, items, options.Mode, options.MessagesPerSecond, progress, cancellationToken)
+                .ConfigureAwait(true);
+        }
+        finally
+        {
+            // Progress posts asynchronously; queued updates must not replace a terminal result.
+            lock (progressGate) progressFinished = true;
+        }
         RemoveResentOriginals(result);
         using var batch = BatchMessageUpdates();
         foreach (var item in marked.Where(item => Messages.Contains(item)))
