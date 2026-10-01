@@ -240,9 +240,18 @@ public sealed partial class RuleEditorViewModel : ObservableObject
             }
             var property = line[..separator].Trim();
             // A line left as it was keeps the exact value Service Bus returned, whatever its type.
-            properties[property] = _originalProperties.TryGetValue(property, out var original) && original.Line == line
-                ? original.Value
-                : RoutingValue.Parse(line[(separator + 1)..]);
+            try
+            {
+                properties[property] = _originalProperties.TryGetValue(property, out var original) && original.Line == line
+                    ? original.Value
+                    : RoutingValue.Parse(line[(separator + 1)..]);
+            }
+            catch (FormatException exception)
+            {
+                // A typo in a tagged value ("<Int32> nope", "<DateTime> soon") keeps the dialog open with the reason.
+                Error = $"{property}: {exception.Message}";
+                return null;
+            }
         }
         if (properties.FirstOrDefault(pair => !RoutingValue.IsAllowedInCorrelationRule(pair.Value)) is { Key: not null } unsupported)
         {

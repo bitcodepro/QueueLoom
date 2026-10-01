@@ -115,3 +115,42 @@ public sealed class TypedRoutingTests
         Assert.Equal("line1\nline3", TopicRoutingViewModel.ParseProperties(routing.TestProperties).Single(pair => pair.Key == "note").Value);
     }
 }
+
+public sealed class RuleEditorValidationTests
+{
+    [Theory]
+    [InlineData("count = <Int32> nope", "count: 'nope' is not a valid <Int32>.")]
+    [InlineData("due = <DateTime> not-a-date", "due: 'not-a-date' is not a valid <DateTime>.")]
+    [InlineData("value = <Int32> 2147483648", "value: 2147483648 does not fit in a <Int32>.")]
+    [InlineData("grade = <Char> 'AB'", "grade: 'AB' is not a valid <Char>.")]
+    [InlineData("odd = <Color> red", "odd: Unknown type <Color>.")]
+    public void BadTaggedValues_KeepTheEditorOpenWithTheReason(string line, string error)
+    {
+        var editor = new QueueLoom.App.ViewModels.RuleEditorViewModel("orders", "billing")
+        {
+            Name = "typed",
+            Kind = QueueLoom.App.ViewModels.RuleEditorViewModel.Kinds[1],
+            CorrelationProperties = line
+        };
+
+        Assert.Null(editor.TryBuild());
+        Assert.StartsWith(error, editor.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BadTaggedValues_InTheRoutingWindowShowAnError()
+    {
+        var services = new QueueLoom.App.ViewModels.TopicRoutingServices(
+            _ => Task.FromResult<IReadOnlyList<QueueLoom.Core.Routing.SubscriptionRules>>([]),
+            (_, _, _, _) => Task.CompletedTask, (_, _, _) => Task.CompletedTask,
+            _ => Task.FromResult<QueueLoom.Core.Routing.SubscriptionRule?>(null), (_, _, _) => Task.FromResult(false));
+        var routing = new QueueLoom.App.ViewModels.TopicRoutingViewModel("orders", "Dev", false, string.Empty, services);
+        await routing.LoadAsync();
+
+        routing.TestProperties = "count = <Int32> 2147483648";
+        routing.Check();
+
+        Assert.Equal("2147483648 does not fit in a <Int32>.", routing.Error);
+        Assert.False(routing.HasHeadline);
+    }
+}

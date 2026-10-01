@@ -101,12 +101,15 @@ public static class RoutingValue
                     "UINT64" => ulong.Parse(rest, CultureInfo.InvariantCulture),
                     "DOUBLE" => double.Parse(rest, NumberStyles.Float, CultureInfo.InvariantCulture),
                     "STRING" => Unquote(rest),
-                    _ => throw new FormatException($"Unknown type <{type}>. Use Int32, Int64, Double, Single, Decimal, Char, Guid, DateTime, DateTimeOffset, TimeSpan or Uri.")
+                    _ => throw new UnknownTypeException(type)
                 };
             }
-            catch (Exception exception) when (exception is OverflowException or UriFormatException or ArgumentException)
+            catch (Exception exception) when (exception is OverflowException or UriFormatException or ArgumentException or FormatException
+                                                  && exception is not UnknownTypeException)
             {
-                throw new FormatException($"'{rest}' is not a valid <{type}>.", exception);
+                throw new FormatException(exception is OverflowException
+                    ? $"{rest} does not fit in a <{type}>."
+                    : $"{(rest.StartsWith('\'') ? rest : $"'{rest}'")} is not a valid <{type}>.", exception);
             }
         }
         if (value.Length >= 2 && value[0] == '\'' && value[^1] == '\'')
@@ -134,6 +137,9 @@ public static class RoutingValue
         var text = number.ToString("R", CultureInfo.InvariantCulture);
         return double.IsFinite(number) && !text.Contains('.') && !text.Contains('E') ? text + ".0" : text;
     }
+
+    private sealed class UnknownTypeException(string type) : FormatException(
+        $"Unknown type <{type}>. Use Int32, Int64, Double, Single, Decimal, Char, Guid, DateTime, DateTimeOffset, TimeSpan or Uri.");
 
     private static bool IsNumber(object value) =>
         value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
