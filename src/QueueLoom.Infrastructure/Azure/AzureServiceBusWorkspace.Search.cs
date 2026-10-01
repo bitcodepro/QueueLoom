@@ -8,6 +8,7 @@ using Azure.Messaging.ServiceBus.Administration;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
+using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 
@@ -16,6 +17,37 @@ namespace QueueLoom.Infrastructure.Azure;
 /// <summary>Browsing and searching messages: peek only, nothing is locked or changed.</summary>
 public sealed partial class AzureServiceBusWorkspace
 {
+    /// <summary>
+    /// Service Bus refuses to peek an entity that auto-forwards (it holds nothing), and one that forwards its dead letters
+    /// keeps none; both are said plainly, with where the messages are instead.
+    /// </summary>
+    private void ThrowIfForwarded(ServiceBusEntityReference source, ServiceBusSubQueue subQueue)
+    {
+        var (forwardTo, deadLettersTo) = source.Kind switch
+        {
+            ServiceBusEntityKind.Queue => _cachedTopology?.Queues.FirstOrDefault(queue =>
+                string.Equals(queue.Name, source.Name, StringComparison.OrdinalIgnoreCase)) is { } queue
+                ? (queue.ForwardTo, queue.ForwardDeadLettersTo)
+                : (null, null),
+            ServiceBusEntityKind.Subscription => _cachedTopology?.Topics
+                .FirstOrDefault(topic => string.Equals(topic.Name, source.TopicName, StringComparison.OrdinalIgnoreCase))?.Subscriptions
+                .FirstOrDefault(subscription => string.Equals(subscription.Name, source.Name, StringComparison.OrdinalIgnoreCase)) is { } subscription
+                ? (subscription.ForwardTo, subscription.ForwardDeadLettersTo)
+                : (null, null),
+            _ => (null, null)
+        };
+        if (subQueue == ServiceBusSubQueue.Active && Forwarding.TargetName(forwardTo) is { } target)
+        {
+            throw new InvalidOperationException(
+                $"{source.DisplayName} forwards every message to {target} at once, so it holds none. Look in {target} instead.");
+        }
+        if (subQueue == ServiceBusSubQueue.DeadLetter && Forwarding.TargetName(deadLettersTo) is { } deadLetterTarget)
+        {
+            throw new InvalidOperationException(
+                $"{source.DisplayName} forwards its dead letters to {deadLetterTarget}, so its dead-letter queue stays empty. Look in {deadLetterTarget} instead.");
+        }
+    }
+
     public async Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
         BrowseMessagesRequest request,
         CancellationToken cancellationToken = default)
@@ -24,6 +56,8 @@ public sealed partial class AzureServiceBusWorkspace
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
+
+        ThrowIfForwarded(request.Source, request.SubQueue);
 
         // Dead-letter queues never use sessions, even when their queue or subscription does. Only active
         // messages of a session-enabled entity have to be read session by session.
@@ -273,7 +307,7 @@ public sealed partial class AzureServiceBusWorkspace
                     azureMessage =>
                     {
                         scanned = checked(scanned + 1);
-                        if (!MatchesSearch(azureMessage, request.Query))
+                        if (!MatchesSearch(azureMessage, request.Search))
                         {
                             return;
                         }
@@ -419,34 +453,15 @@ public sealed partial class AzureServiceBusWorkspace
         int ScannedMessageCount,
         bool SafetyLimitReached);
 
-    private static bool MatchesSearch(ServiceBusReceivedMessage message, string query)
+    private static bool MatchesSearch(ServiceBusReceivedMessage message, MessageSearchQuery query)
     {
-        if (Contains(message.CorrelationId, query) ||
-            Contains(message.MessageId, query) ||
-            Contains(message.Subject, query) ||
-            Contains(message.SessionId, query) ||
-            Contains(message.ContentType, query) ||
-            Contains(message.DeadLetterReason, query) ||
-            Contains(message.DeadLetterErrorDescription, query))
-        {
-            return true;
-        }
-
-        foreach (var property in message.ApplicationProperties)
-        {
-            if (Contains(property.Key, query) ||
-                Contains(Convert.ToString(property.Value, CultureInfo.InvariantCulture), query))
-            {
-                return true;
-            }
-        }
-
         var body = message.Body.ToMemory();
-        var searchableLength = Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes);
-        return searchableLength > 0 && Encoding.UTF8.GetString(body.Span[..searchableLength])
-            .Contains(query, StringComparison.OrdinalIgnoreCase);
+        return query.Matches(
+            [message.CorrelationId, message.MessageId, message.Subject, message.SessionId, message.ContentType, message.To, message.ReplyTo,
+                message.DeadLetterReason, message.DeadLetterErrorDescription],
+            message.ApplicationProperties.Select(property =>
+                new KeyValuePair<string, string?>(property.Key, Convert.ToString(property.Value, CultureInfo.InvariantCulture))),
+            body[..Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes)],
+            message.ContentType);
     }
-
-    private static bool Contains(string? value, string query) =>
-        !string.IsNullOrEmpty(value) && value.Contains(query, StringComparison.OrdinalIgnoreCase);
 }

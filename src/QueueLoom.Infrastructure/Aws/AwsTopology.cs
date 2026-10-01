@@ -77,6 +77,12 @@ internal sealed record AwsSubscriptionInfo(
     /// <summary>Filled in by <see cref="AwsTopicInfo.From"/>: a readable, unique name within the topic.</summary>
     public string Name { get; init; } = string.Empty;
 
+    /// <summary>The subscription's filter policy (JSON), or null when it takes every message.</summary>
+    public string? FilterPolicy { get; init; }
+
+    /// <summary>True when the policy looks at the JSON body (FilterPolicyScope MessageBody) instead of the attributes.</summary>
+    public bool FilterPolicyOnBody { get; init; }
+
     public bool IsConfirmed => Arn.StartsWith("arn:", StringComparison.Ordinal);
 
     /// <summary>"sqs:orders-billing", "lambda:resize-image", "https:hooks.example.com" and so on.</summary>

@@ -116,7 +116,13 @@ public sealed partial class AzureServiceBusWorkspace
             properties.Name,
             runtime is null ? ServiceBusEntityRuntime.Empty : MapRuntime(runtime),
             MapStatus(properties.Status.ToString()),
-            properties.RequiresSession);
+            properties.RequiresSession)
+        {
+            ForwardTo = NullIfEmpty(properties.ForwardTo),
+            ForwardDeadLettersTo = NullIfEmpty(properties.ForwardDeadLetteredMessagesTo)
+        };
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static ServiceBusSubscription MapSubscription(
         SubscriptionProperties properties,
@@ -126,7 +132,11 @@ public sealed partial class AzureServiceBusWorkspace
             properties.SubscriptionName,
             runtime is null ? ServiceBusEntityRuntime.Empty : MapRuntime(runtime),
             MapStatus(properties.Status.ToString()),
-            properties.RequiresSession);
+            properties.RequiresSession)
+        {
+            ForwardTo = NullIfEmpty(properties.ForwardTo),
+            ForwardDeadLettersTo = NullIfEmpty(properties.ForwardDeadLetteredMessagesTo)
+        };
 
     private static ServiceBusEntityRuntime MapRuntime(QueueRuntimeProperties runtime) =>
         new(

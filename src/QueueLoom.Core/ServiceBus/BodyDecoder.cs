@@ -43,8 +43,12 @@ public static class BodyDecoder
         return schemaId > 0;
     }
 
-    public static DecodedBody? Decode(ReadOnlyMemory<byte> body, string? contentType = null, MessageSchema? schema = null)
+    /// <param name="protos">Message types for Protobuf bodies; <see cref="ProtoSchemaCatalog.Current"/> when null.</param>
+    /// <param name="messageType">The message type the message names, if any (see <see cref="ProtoSchemaCatalog.HintFrom"/>).</param>
+    public static DecodedBody? Decode(ReadOnlyMemory<byte> body, string? contentType = null, MessageSchema? schema = null,
+        ProtoSchemaSet? protos = null, string? messageType = null)
     {
+        protos ??= ProtoSchemaCatalog.Current;
         if (TryReadSchemaId(body.Span, out var schemaId))
         {
             var registry = DecodeRegistryFramed(body[5..], schemaId, schema?.Id == schemaId ? schema : null);
@@ -107,6 +111,14 @@ public static class BodyDecoder
         }
 
         var protobufHint = contentType?.Contains("proto", StringComparison.OrdinalIgnoreCase) == true;
+        messageType ??= ProtoSchemaCatalog.HintFrom(contentType);
+        if (!protos.IsEmpty && ProtoDecoder.DecodeBestFit(final, protos, messageType) is { } typed)
+        {
+            steps.Add($"Protobuf ({typed.Type.FullName})");
+            var named = protos.Resolve(messageType) == typed.Type;
+            return new DecodedBody(steps, typed.Json, true, note ??
+                (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body."));
+        }
         if (Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf))
         {
             steps.Add("Protobuf (no schema)");
@@ -153,6 +165,20 @@ public static class BodyDecoder
                         return null;
                     }
                 }
+                var indexes = new List<int>();
+                var indexPosition = 0;
+                Protobuf.TryReadVarint(span, ref indexPosition, out var rawIndexCount);
+                for (var index = 0L; index < ((long)(rawIndexCount >> 1) ^ -(long)(rawIndexCount & 1)); index++)
+                {
+                    Protobuf.TryReadVarint(span, ref indexPosition, out var rawIndex);
+                    indexes.Add((int)((long)(rawIndex >> 1) ^ -(long)(rawIndex & 1)));
+                }
+                if (RegistryProtoType(schema, indexes) is { } registry &&
+                    ProtoDecoder.Decode(span[position..], registry.Type, registry.Schemas) is { } typedRegistry)
+                {
+                    return new DecodedBody(["Schema Registry", "Protobuf"], typedRegistry.Json, true,
+                        $"Schema id {schemaId}, message {registry.Type.FullName}.");
+                }
                 var message = ProtobufMessageName(schema.Text);
                 return Protobuf.TryToJson(span[position..], requireMessage: false, out var protobuf)
                     ? new DecodedBody(["Schema Registry", "Protobuf"], protobuf, true,
@@ -185,6 +211,48 @@ public static class BodyDecoder
                         $"Schema id {schemaId}: the body does not match the schema ({exception.Message}).");
                 }
         }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ProtoSchemaSet?> RegistryProtos = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The message type a Confluent-framed body names: its message indexes walk the .proto's top-level messages and
+    /// then their nested ones ([] means the first message). Null when the schema cannot be read, for example because
+    /// it imports types the registry keeps elsewhere.
+    /// </summary>
+    private static (ProtoMessageType Type, ProtoSchemaSet Schemas)? RegistryProtoType(MessageSchema schema, IReadOnlyList<int> indexes)
+    {
+        var schemas = RegistryProtos.GetOrAdd(schema.Text, text =>
+        {
+            try
+            {
+                return ProtoSchemaSet.FromProtoFiles([("registry.proto", text)]);
+            }
+            catch (ProtoSchemaException)
+            {
+                return null;
+            }
+        });
+        if (schemas is null || schemas.IsEmpty)
+        {
+            return null;
+        }
+        var all = schemas.AllMessages;
+        var names = all.Select(message => message.FullName).ToHashSet(StringComparer.Ordinal);
+        string Parent(string name) => name.LastIndexOf('.') is var dot and > 0 ? name[..dot] : string.Empty;
+        var level = all.Where(message => !names.Contains(Parent(message.FullName))).ToArray();
+        ProtoMessageType? current = null;
+        foreach (var index in indexes.Count == 0 ? [0] : indexes)
+        {
+            if (index < 0 || index >= level.Length)
+            {
+                return null;
+            }
+            current = level[index];
+            var parent = current.FullName;
+            level = all.Where(message => Parent(message.FullName) == parent).ToArray();
+        }
+        return current is null ? null : (current, schemas);
     }
 
     /// <summary>The first message declared in a .proto file, which Confluent serializers use when no index is given.</summary>

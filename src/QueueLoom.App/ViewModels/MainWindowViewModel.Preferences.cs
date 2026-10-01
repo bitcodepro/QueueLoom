@@ -43,6 +43,10 @@ public sealed partial class MainWindowViewModel
         KeepInTray = settings.KeepInTray;
         AlertWebhookUrl = settings.AlertWebhookUrl ?? string.Empty;
         BackupRetentionDays = settings.BackupRetentionDays;
+        if (!string.IsNullOrWhiteSpace(settings.ProtobufSchemaPath))
+        {
+            _ = LoadProtobufSchemasAsync(settings.ProtobufSchemaPath);
+        }
     }
 
     private void InitializePreferences()

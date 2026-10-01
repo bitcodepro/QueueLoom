@@ -23,7 +23,7 @@ public sealed class MessageItemViewModel : ObservableObject
     private readonly Lazy<string> _bodyDisplay;
     private readonly Lazy<string> _applicationPropertiesJson;
     private readonly Lazy<string> _propertiesJson;
-    private readonly Lazy<DecodedBody?> _decoded;
+    private Lazy<DecodedBody?> _decoded;
     private bool _isMarked;
 
     public MessageItemViewModel(
@@ -44,10 +44,35 @@ public sealed class MessageItemViewModel : ObservableObject
         _bodyDisplay = new Lazy<string>(CreateBodyDisplay);
         _applicationPropertiesJson = new Lazy<string>(CreateApplicationPropertiesJson);
         _propertiesJson = new Lazy<string>(CreatePropertiesJson);
-        _decoded = new Lazy<DecodedBody?>(() => BodyDecoder.Decode(Message.Body, Message.Properties.ContentType, Message.Schema));
+        _decoded = CreateDecoded();
+    }
+
+    private Lazy<DecodedBody?> CreateDecoded() => new(() => BodyDecoder.Decode(Message.Body, Message.Properties.ContentType, Message.Schema,
+        messageType: ProtoSchemaCatalog.HintFrom(Message.Properties.ContentType, Message.ApplicationProperties)));
+
+    /// <summary>Decodes the body again, for example after .proto files were loaded.</summary>
+    public void RefreshDecoded()
+    {
+        if (!_decoded.IsValueCreated)
+        {
+            return;
+        }
+        _decoded = CreateDecoded();
+        OnPropertyChanged(nameof(HasDecodedBody));
+        OnPropertyChanged(nameof(DecodedText));
+        OnPropertyChanged(nameof(DecodedIsJson));
+        OnPropertyChanged(nameof(DecodedSteps));
+        OnPropertyChanged(nameof(DecodedNote));
+        OnPropertyChanged(nameof(HasDecodedNote));
+        OnPropertyChanged(nameof(ShowsProtobufFieldNumbers));
     }
 
     public BrowsedMessage Message { get; }
+
+    private (string Reason, string? Pattern)? _causeKey;
+
+    /// <summary>The dead-letter reason and the pattern of its description, worked out once per message.</summary>
+    public (string Reason, string? Pattern) CauseKey => _causeKey ??= DeadLetterCauses.KeyOf(Message);
 
     /// <summary>Ticked by the operator to include the message in "Delete selected".</summary>
     public bool IsMarked
@@ -164,6 +189,11 @@ public sealed class MessageItemViewModel : ObservableObject
                                  (Message.IsBodyTruncated && HasDecodedBody ? " Only the retained part of the body was decoded." : string.Empty);
 
     public bool HasDecodedNote => !string.IsNullOrWhiteSpace(DecodedNote);
+
+    /// <summary>A Protobuf body shown by field numbers: .proto files would give the fields their names.</summary>
+    public bool ShowsProtobufFieldNumbers => _decoded.Value is { } decoded &&
+                                             (decoded.Steps.Contains("Protobuf (no schema)") ||
+                                              decoded.Note?.Contains("shown by number", StringComparison.Ordinal) == true);
 
     public string BodyFormat => Message.IsBodyTruncated
         ? "Truncated preview"

@@ -21,7 +21,8 @@
       <Grid ColumnDefinitions="*,8,150,8,Auto,8,Auto,8,Auto,8,Auto">
         <TextBox Grid.Column="0" Classes="search"
                  Text="{Binding DeadLetterSearchQuery}"
-                 PlaceholderText="Correlation ID, Message ID, subject, body, or application property  (Ctrl+F)"
+                 PlaceholderText="Text, /regex/ or $.order.status == 'failed'  (Ctrl+F)"
+                 ToolTip.Tip="Plain text is found in IDs, subject, reason, properties and body, ignoring case. /regex/ is a regular expression (/…/i ignores case). $.path == value checks a field of the JSON body, also when it is gzip or base64: ==, !=, &gt;, &lt;, =~ /regex/, or the path alone for 'has the field'; join with and / or. [0] picks a list item, [*] any."
                  MaxLength="1024"
                  IsEnabled="{Binding !IsBusy}"
                  AutomationProperties.Name="Dead-letter message search">
@@ -264,6 +265,40 @@
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
+              </Grid>
+            </Border>
+            <!-- The same dead letters by cause: reason plus the shape of the error, IDs and numbers left out -->
+            <Border Padding="12,8" IsVisible="{Binding HasDeadLetterCauses}"
+                    BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="0,0,0,1">
+              <Grid ColumnDefinitions="Auto,10,*">
+                <StackPanel VerticalAlignment="Center" Spacing="1">
+                  <TextBlock Text="CAUSES" Classes="eyebrow" />
+                  <TextBlock Text="{Binding DeadLetterCausesSummary}" Classes="muted" FontSize="11" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4">
+                  <ItemsControl ItemsSource="{Binding DeadLetterCauses}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel ItemSpacing="6" LineSpacing="6" />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:DeadLetterCauseItemViewModel">
+                        <Button Classes="reasonChip" Classes.selected="{Binding IsSelected}"
+                                Command="{Binding Select}" CommandParameter="{Binding}" ToolTip.Tip="{Binding ToolTip}"
+                                AutomationProperties.Name="{Binding Label}">
+                          <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="{Binding Text}" MaxWidth="420" TextTrimming="CharacterEllipsis" />
+                            <Border Classes="chipCount">
+                              <TextBlock Text="{Binding Count, StringFormat={}{0:N0}}" FontSize="11" FontWeight="SemiBold" />
+                            </Border>
+                          </StackPanel>
+                        </Button>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <TextBlock Text="{Binding DeadLetterCausesMore}" Classes="muted" FontSize="11" IsVisible="{Binding HasMoreDeadLetterCauses}" />
+                </StackPanel>
               </Grid>
             </Border>
             </StackPanel>

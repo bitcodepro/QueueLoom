@@ -32,11 +32,53 @@ public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? 
 
 public sealed record RuleInfo(string Name, string Kind, string Filter, string? Action);
 
-/// <param name="Outcome">Receives, Skips or Unknown (only Service Bus can tell), when a message was given.</param>
-public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<RuleInfo> Rules, string? Warning, string? Outcome, string? Explanation);
+/// <param name="Outcome">Receives, Skips or Unknown (only the service can tell), when a message was given.</param>
+public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<RuleInfo> Rules, string? Warning, string? Outcome, string? Explanation)
+{
+    /// <summary>For example "Alternate exchange: gets what no binding takes", or an SNS subscription's endpoint.</summary>
+    public string? Note { get; init; }
+
+    /// <summary>RabbitMQ: the destination is an exchange, not a queue (the two may share a name).</summary>
+    public bool? IsExchange { get; init; }
+}
 
 /// <param name="Headline">For a given message: how many subscriptions receive it, or that it is dropped.</param>
 public sealed record TopicRoutingInfo(string Environment, string Topic, string? Headline, IReadOnlyList<SubscriptionRoutingInfo> Subscriptions);
+
+/// <param name="Hint">What this reason usually means and where to look, when QueueLoom knows the reason.</param>
+public sealed record DeadLetterCauseInfo(
+    string Reason,
+    string? Pattern,
+    string? Example,
+    int Count,
+    double Share,
+    IReadOnlyDictionary<string, int> Sources,
+    DateTimeOffset? FirstEnqueued,
+    DateTimeOffset? LastEnqueued,
+    int MaxDeliveryCount,
+    IReadOnlyList<string> SampleMessageIds,
+    string? Hint);
+
+/// <param name="Note">What QueueLoom knows about the queue, such as where it forwards its dead letters.</param>
+public sealed record DeadLetterSourceSummaryInfo(string Entity, long DeadLetterCount, int Read, string? Note, string? Error);
+
+public sealed record DeadLetterExplanationInfo(
+    string Environment,
+    string Summary,
+    int ReadMessages,
+    IReadOnlyList<DeadLetterSourceSummaryInfo> Sources,
+    IReadOnlyList<DeadLetterCauseInfo> Causes);
+
+/// <param name="Paths">Every way a message travels, as "inbox → orders → orders/eu → eu-orders".</param>
+public sealed record ForwardingInfo(
+    string Environment,
+    string Entity,
+    string Summary,
+    IReadOnlyList<string> Destinations,
+    IReadOnlyList<string> Paths,
+    IReadOnlyList<string> Loops,
+    IReadOnlyList<string> Missing,
+    int LongestChain);
 
 public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count);
 
@@ -135,7 +177,8 @@ internal static class McpMapping
     public static MessageInfo ToInfo(BrowsedMessage message)
     {
         var body = EditableMessageBody.FromBytes(message.Body.Span);
-        var decoded = BodyDecoder.Decode(message.Body, message.Properties.ContentType);
+        var decoded = BodyDecoder.Decode(message.Body, message.Properties.ContentType, message.Schema,
+            messageType: ProtoSchemaCatalog.HintFrom(message.Properties.ContentType, message.ApplicationProperties));
         var text = body.Content;
         var truncated = message.IsBodyTruncated || text.Length > MaximumBodyCharacters;
         if (text.Length > MaximumBodyCharacters)

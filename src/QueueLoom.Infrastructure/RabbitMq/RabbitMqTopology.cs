@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.RegularExpressions;
+using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Infrastructure.RabbitMq;
@@ -227,15 +227,5 @@ internal sealed class RabbitMqTopologyIndex
     }
 
     /// <summary>AMQP topic matching: '*' is one word, '#' is zero or more words.</summary>
-    internal static bool TopicMatches(string pattern, string routingKey)
-    {
-        var regex = "^" + string.Join(@"\.", pattern.Split('.').Select(word => word switch
-        {
-            "*" => @"[^.]+",
-            "#" => @".*",
-            _ => Regex.Escape(word)
-        })) + "$";
-        regex = regex.Replace(@"\..*", @"(\..*)?", StringComparison.Ordinal).Replace(@".*\.", @"(.*\.)?", StringComparison.Ordinal);
-        return Regex.IsMatch(routingKey, regex, RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-    }
+    internal static bool TopicMatches(string pattern, string routingKey) => RabbitBindings.TopicMatches(pattern, routingKey);
 }

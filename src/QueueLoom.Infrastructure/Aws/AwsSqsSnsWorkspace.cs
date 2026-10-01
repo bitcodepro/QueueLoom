@@ -287,24 +287,30 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         var details = await Task.WhenAll(subscriptions.Select(async subscription =>
         {
-            string? redriveTarget = null;
+            Dictionary<string, string>? attributes = null;
             if (subscription.SubscriptionArn?.StartsWith("arn:", StringComparison.Ordinal) == true)
             {
-                var attributes = await Sns.GetSubscriptionAttributesAsync(
+                attributes = (await Sns.GetSubscriptionAttributesAsync(
                         new Sns.GetSubscriptionAttributesRequest { SubscriptionArn = subscription.SubscriptionArn },
                         cancellationToken)
-                    .ConfigureAwait(false);
-                redriveTarget = AwsQueueInfo.ReadDeadLetterTargetArn(attributes.Attributes?.GetValueOrDefault("RedrivePolicy"));
+                    .ConfigureAwait(false)).Attributes;
             }
 
-            return (Subscription: subscription, RedriveTarget: redriveTarget);
+            return (Subscription: subscription, Attributes: attributes ?? []);
         })).ConfigureAwait(false);
 
         return AwsTopicInfo.From(topicArn, details.Select(item => new AwsSubscriptionInfo(
             item.Subscription.SubscriptionArn ?? string.Empty,
             item.Subscription.Protocol ?? "unknown",
             item.Subscription.Endpoint ?? string.Empty,
-            item.RedriveTarget)));
+            AwsQueueInfo.ReadDeadLetterTargetArn(item.Attributes.GetValueOrDefault("RedrivePolicy")))
+        {
+            FilterPolicy = string.IsNullOrWhiteSpace(item.Attributes.GetValueOrDefault("FilterPolicy")) ||
+                           item.Attributes.GetValueOrDefault("FilterPolicy")!.Trim() == "{}"
+                ? null
+                : item.Attributes["FilterPolicy"],
+            FilterPolicyOnBody = item.Attributes.GetValueOrDefault("FilterPolicyScope") == "MessageBody"
+        }));
     }
 
     private sealed class SqsChannel(

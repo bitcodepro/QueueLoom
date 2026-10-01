@@ -10,7 +10,7 @@ namespace QueueLoom.App.ViewModels;
 public sealed record TopicRoutingServices(
     Func<CancellationToken, Task<IReadOnlyList<SubscriptionRules>>> LoadRules,
     Func<string, SubscriptionRule, bool, CancellationToken, Task> SaveRule,
-    Func<string, string, CancellationToken, Task> DeleteRule,
+    Func<string, SubscriptionRule, CancellationToken, Task> DeleteRule,
     Func<RuleEditorViewModel, Task<SubscriptionRule?>> EditRule,
     Func<string, string, string?, Task<bool>> Confirm);
 
@@ -18,7 +18,10 @@ public sealed class RuleItemViewModel(SubscriptionRule rule)
 {
     public SubscriptionRule Rule { get; } = rule;
 
-    public string Name => Rule.Name;
+    public string Name => Rule.DisplayName;
+
+    /// <summary>A fanout binding has nothing to change; it can only be removed.</summary>
+    public bool CanChange => Rule.Kind is not (RuleFilterKind.FanoutBinding or RuleFilterKind.OtherBinding);
 
     public string KindLabel => Rule.KindLabel;
 
@@ -42,12 +45,24 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
 
     public IReadOnlyList<RuleItemViewModel> Rules { get; } = rules.Rules.Select(rule => new RuleItemViewModel(rule)).ToArray();
 
-    public string RulesText => Source.Rules.Count switch
-    {
-        0 => "no rules",
-        1 => $"1 rule · {Source.Rules[0].KindLabel}",
-        var count => $"{count} rules"
-    };
+    public string RulesText => Source.IsFallback
+        ? "alternate exchange"
+        : (Source.Service, Source.Rules.Count) switch
+        {
+            (RoutingService.Sns, 0) => "no filter policy · receives every message",
+            (RoutingService.PubSub, 0) => "no filter · receives every message",
+            (RoutingService.Sns, _) => $"filter policy on the {Source.Rules[0].KindLabel.ToLowerInvariant()}",
+            (RoutingService.PubSub, _) => "filter on the attributes",
+            (RoutingService.RabbitMq, 1) => $"1 binding · {Source.Rules[0].KindLabel}",
+            (RoutingService.RabbitMq, var count) => $"{count} bindings",
+            (_, 0) => "no rules",
+            (_, 1) => $"1 rule · {Source.Rules[0].KindLabel}",
+            (_, var count) => $"{count} rules"
+        };
+
+    public string? Note => Source.Note;
+
+    public bool HasNote => !string.IsNullOrEmpty(Note);
 
     public string? Warning => Source.Warning;
 
@@ -83,7 +98,7 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
     {
         RoutingOutcome.Receives => "RECEIVES",
         RoutingOutcome.Skips => "SKIPS",
-        RoutingOutcome.Unknown => "SERVICE BUS DECIDES",
+        RoutingOutcome.Unknown => $"{Source.Service.Name().ToUpperInvariant()} DECIDES",
         _ => string.Empty
     };
 
@@ -113,14 +128,17 @@ public sealed class TopicRoutingViewModel : ObservableObject
     private string _testSessionId;
     private string _testContentType;
     private string _testProperties;
+    private string _testBody;
     private readonly EditableMessageProperties _baseProperties;
     private readonly Dictionary<string, (string Line, object? Value)> _originalProperties = new(StringComparer.Ordinal);
     private bool _loaded;
 
     public TopicRoutingViewModel(string topic, string environmentName, bool canEdit, string editHint, TopicRoutingServices services,
-        MessageDraft? message = null, string? messageOrigin = null)
+        MessageDraft? message = null, string? messageOrigin = null, RoutingService service = RoutingService.ServiceBus)
     {
         Topic = topic;
+        Service = service;
+        _testBody = message?.Body is { Format: not MessageBodyFormat.Base64 } body ? body.Content : string.Empty;
         EnvironmentName = environmentName;
         CanEdit = canEdit;
         EditHint = editHint;
@@ -145,8 +163,8 @@ public sealed class TopicRoutingViewModel : ObservableObject
         _testProperties = string.Join(Environment.NewLine, _originalProperties.Values.Select(original => original.Line));
         CheckCommand = new RelayCommand(Check, () => !IsBusy && _loaded);
         RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
-        AddRuleCommand = new AsyncRelayCommand(AddRuleAsync, () => !IsBusy && CanEdit && Selected is not null);
-        EditRuleCommand = new AsyncRelayCommand<RuleItemViewModel>(EditRuleAsync, rule => !IsBusy && CanEdit && rule is not null);
+        AddRuleCommand = new AsyncRelayCommand(AddRuleAsync, () => !IsBusy && CanEdit && CanAddTo(Selected));
+        EditRuleCommand = new AsyncRelayCommand<RuleItemViewModel>(EditRuleAsync, rule => !IsBusy && CanEdit && rule?.CanChange == true);
         DeleteRuleCommand = new AsyncRelayCommand<RuleItemViewModel>(DeleteRuleAsync, rule => !IsBusy && CanEdit && rule is not null);
     }
 
@@ -154,7 +172,43 @@ public sealed class TopicRoutingViewModel : ObservableObject
 
     public string EnvironmentName { get; }
 
-    public string Title => $"Rules and routing · {Topic}";
+    public RoutingService Service { get; }
+
+    public string Title => Service == RoutingService.RabbitMq ? $"Bindings and routing · {Topic}" : $"Rules and routing · {Topic}";
+
+    /// <summary>How this service's rules decide where a message goes.</summary>
+    public string Explanation => Service.Explanation();
+
+    public string ListTitle => Service switch
+    {
+        RoutingService.RabbitMq => "Queues and exchanges bound to it",
+        RoutingService.Sns => "Subscriptions and filter policies",
+        RoutingService.PubSub => "Subscriptions and filters",
+        _ => "Subscriptions and rules"
+    };
+
+    public string AddRuleLabel => Service switch
+    {
+        RoutingService.RabbitMq => "Add binding…",
+        RoutingService.Sns => "Add filter policy…",
+        _ => "Add rule…"
+    };
+
+    /// <summary>In RabbitMQ the routing key is what bindings look at; QueueLoom sends Subject as the routing key.</summary>
+    public string SubjectLabel => Service == RoutingService.RabbitMq ? "ROUTING KEY" : "SUBJECT (LABEL)";
+
+    public string PropertiesLabel => Service switch
+    {
+        RoutingService.RabbitMq => "HEADERS · ONE PER LINE",
+        RoutingService.Sns or RoutingService.PubSub => "MESSAGE ATTRIBUTES · ONE PER LINE",
+        _ => "APPLICATION PROPERTIES · ONE PER LINE"
+    };
+
+    /// <summary>SNS policies can look at the JSON body, so the test message has one there.</summary>
+    public bool ShowsBody => Service == RoutingService.Sns;
+
+    /// <summary>The test message's body, for SNS policies with the MessageBody scope.</summary>
+    public string TestBody { get => _testBody; set => SetProperty(ref _testBody, value ?? string.Empty); }
 
     public bool CanEdit { get; }
 
@@ -175,12 +229,30 @@ public sealed class TopicRoutingViewModel : ObservableObject
             if (SetProperty(ref _selected, value))
             {
                 OnPropertyChanged(nameof(HasSelection));
+                OnPropertyChanged(nameof(AddRuleToolTip));
                 AddRuleCommand.NotifyCanExecuteChanged();
             }
         }
     }
 
     public bool HasSelection => Selected is not null;
+
+    public string AddRuleToolTip => Service switch
+    {
+        RoutingService.Sns when Selected?.Rules.Count > 0 => "This subscription has a filter policy; edit it instead",
+        RoutingService.Sns => "Add a filter policy to the selected subscription",
+        RoutingService.RabbitMq => "Bind the selected queue or exchange once more, with another key or headers",
+        _ => "Add a rule to the selected subscription"
+    };
+
+    /// <summary>SNS allows one policy per subscription; an alternate exchange has no bindings to add to.</summary>
+    private bool CanAddTo(RoutingSubscriptionViewModel? subscription) => subscription is not null && Service switch
+    {
+        RoutingService.Sns => subscription.Rules.Count == 0 && subscription.Source.Problem is null,
+        RoutingService.RabbitMq => !subscription.Source.IsFallback,
+        RoutingService.PubSub => false,
+        _ => true
+    };
 
     public RelayCommand CheckCommand { get; }
 
@@ -262,8 +334,10 @@ public sealed class TopicRoutingViewModel : ObservableObject
     public int WarningCount => Subscriptions.Count(subscription => subscription.HasWarning);
 
     public string SubscriptionsCaption => Subscriptions.Count == 0
-        ? "No subscriptions: every message sent to this topic is dropped."
-        : $"{Subscriptions.Count} subscription(s)" + (WarningCount > 0 ? $" · {WarningCount} receive nothing" : string.Empty);
+        ? Service == RoutingService.RabbitMq
+            ? "No bindings: every message sent to this exchange is dropped."
+            : "No subscriptions: every message sent to this topic is dropped."
+        : $"{Subscriptions.Count} {Service.SubscriptionWord()}(s)" + (WarningCount > 0 ? $" · {WarningCount} receive nothing" : string.Empty);
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -336,11 +410,13 @@ public sealed class TopicRoutingViewModel : ObservableObject
             To = Blank(TestTo),
             ReplyTo = Blank(TestReplyTo),
             SessionId = Blank(TestSessionId)
-        }, properties);
-        var result = TopicRouting.Route(Topic, Subscriptions.Select(item => item.Source).ToArray(), message);
-        foreach (var subscription in Subscriptions)
+        }, properties) { Body = TestBody };
+        var result = TopicRouting.Route(Topic, Subscriptions.Select(item => item.Source).ToArray(), message, Service);
+        // Results come back in the order of the subscriptions given; names alone are not unique (in RabbitMQ a queue
+        // and an exchange may share one).
+        for (var index = 0; index < Subscriptions.Count; index++)
         {
-            subscription.Result = result.Subscriptions.FirstOrDefault(item => item.Subscription == subscription.Name);
+            Subscriptions[index].Result = result.Subscriptions[index];
         }
         Headline = result.Headline;
         IsDropped = result.IsDropped;
@@ -349,20 +425,20 @@ public sealed class TopicRoutingViewModel : ObservableObject
     private async Task AddRuleAsync(CancellationToken cancellationToken)
     {
         var subscription = Selected ?? throw new InvalidOperationException("Select a subscription first.");
-        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name)).ConfigureAwait(true);
+        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, null, Service, BindingKind)).ConfigureAwait(true);
         if (rule is not null)
         {
-            await ChangeAsync(token => _services.SaveRule(subscription.Name, rule, false, token), cancellationToken).ConfigureAwait(true);
+            await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription), false, token), cancellationToken).ConfigureAwait(true);
         }
     }
 
     private async Task EditRuleAsync(RuleItemViewModel? item, CancellationToken cancellationToken)
     {
         var subscription = SubscriptionOf(item);
-        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, item!.Rule)).ConfigureAwait(true);
+        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, item!.Rule, Service, BindingKind)).ConfigureAwait(true);
         if (rule is not null)
         {
-            await ChangeAsync(token => _services.SaveRule(subscription.Name, rule, true, token), cancellationToken).ConfigureAwait(true);
+            await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription), true, token), cancellationToken).ConfigureAwait(true);
         }
     }
 
@@ -370,18 +446,34 @@ public sealed class TopicRoutingViewModel : ObservableObject
     {
         var subscription = SubscriptionOf(item);
         var last = subscription.Rules.Count == 1;
-        var confirmed = await _services.Confirm(
-            $"Delete rule {item!.Name}",
-            $"Environment: {EnvironmentName}\nSubscription: {Topic} / {subscription.Name}\nFilter: {item.Filter}\n\n" +
-            (last
+        var (title, consequence, typeName) = Service switch
+        {
+            RoutingService.Sns => ("Delete the filter policy",
+                "Without a filter policy the subscription receives every message sent to the topic.", (string?)subscription.Name),
+            RoutingService.RabbitMq => ($"Delete binding {item!.Name}", last
+                ? $"This is the only binding of {subscription.Name} to {Topic}: without it, it gets nothing from this exchange."
+                : $"Messages that only this binding let in will no longer reach {subscription.Name}.", last ? subscription.Name : null),
+            _ => ($"Delete rule {item!.Name}", last
                 ? "This is the subscription's only rule. Without it the subscription receives no messages at all until a rule is added."
-                : "Messages that only this rule let in will no longer reach the subscription."),
-            last ? subscription.Name : null).ConfigureAwait(true);
+                : "Messages that only this rule let in will no longer reach the subscription.", last ? subscription.Name : null)
+        };
+        var confirmed = await _services.Confirm(
+            title,
+            $"Environment: {EnvironmentName}\n{(Service == RoutingService.RabbitMq ? "Destination" : "Subscription")}: {Topic} / {subscription.Name}\n" +
+            $"Filter: {item!.Filter}\n\n{consequence}",
+            typeName).ConfigureAwait(true);
         if (confirmed)
         {
-            await ChangeAsync(token => _services.DeleteRule(subscription.Name, item.Name, token), cancellationToken).ConfigureAwait(true);
+            await ChangeAsync(token => _services.DeleteRule(subscription.Name, item.Rule, token), cancellationToken).ConfigureAwait(true);
         }
     }
+
+    /// <summary>RabbitMQ: a queue and an exchange may share a name, so the binding says which one it leads to.</summary>
+    private SubscriptionRule ForDestination(SubscriptionRule rule, RoutingSubscriptionViewModel subscription) =>
+        Service == RoutingService.RabbitMq ? rule with { ToExchange = subscription.Source.IsExchange } : rule;
+
+    /// <summary>RabbitMQ: every binding of an exchange is of the exchange's kind; a new one takes the kind of the others.</summary>
+    private RuleFilterKind? BindingKind => Subscriptions.SelectMany(item => item.Source.Rules).FirstOrDefault(rule => rule.IsBinding)?.Kind;
 
     private RoutingSubscriptionViewModel SubscriptionOf(RuleItemViewModel? item) =>
         Subscriptions.FirstOrDefault(subscription => item is not null && subscription.Rules.Contains(item))

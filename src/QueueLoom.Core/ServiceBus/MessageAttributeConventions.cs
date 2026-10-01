@@ -1,6 +1,5 @@
-using QueueLoom.Core.ServiceBus;
 
-namespace QueueLoom.Infrastructure.Messaging;
+namespace QueueLoom.Core.ServiceBus;
 
 /// <summary>
 /// SQS, SNS and Pub/Sub messages only have a body and free-form attributes. Service Bus style properties

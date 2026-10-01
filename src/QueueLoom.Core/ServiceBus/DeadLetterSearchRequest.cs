@@ -69,6 +69,9 @@ public sealed record DeadLetterSearchRequest
                 nameof(query));
         }
 
+        // Read once here, so a broken regular expression or JSON path is reported before anything is searched.
+        Search = MessageSearchQuery.Parse(Query);
+
         Targets = Array.AsReadOnly(targets.Distinct().ToArray());
         if (Targets.Count == 0)
         {
@@ -85,6 +88,9 @@ public sealed record DeadLetterSearchRequest
     }
 
     public string Query { get; }
+
+    /// <summary>The query read as text, a /regular expression/ or a $.json.path condition.</summary>
+    public MessageSearchQuery Search { get; }
 
     public IReadOnlyList<DeadLetterSearchTarget> Targets { get; }
 

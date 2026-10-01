@@ -8,6 +8,7 @@ using Azure.Messaging.ServiceBus.Administration;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
+using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 
@@ -237,7 +238,9 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
                 .ToArray();
 
             var topology = new ServiceBusTopology(_timeProvider.GetUtcNow(), queues, topics);
-            return _cachedTopology = _isEmulator ? await SampleEmulatorTopologyAsync(topology, cancellationToken).ConfigureAwait(false) : topology;
+            // Forwarding notes come last: they describe where messages go, whatever the counts.
+            return _cachedTopology = Forwarding.Annotate(
+                _isEmulator ? await SampleEmulatorTopologyAsync(topology, cancellationToken).ConfigureAwait(false) : topology);
         }
         finally
         {

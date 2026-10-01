@@ -33,8 +33,7 @@
   <Grid Margin="22" RowDefinitions="Auto,12,*,12,Auto">
     <StackPanel Spacing="4">
       <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-      <TextBlock Classes="muted" TextWrapping="Wrap"
-                 Text="Each subscription gets a copy of a message when at least one of its rules matches. Values are compared case-sensitively; property names are not. A message that matches no subscription is dropped without an error." />
+      <TextBlock Classes="muted" TextWrapping="Wrap" Text="{Binding Explanation}" />
       <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
     </StackPanel>
 
@@ -46,7 +45,7 @@
             <TextBlock Text="Where would this message go?" Classes="sectionTitle" />
             <TextBlock Text="{Binding MessageOrigin}" Classes="muted" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasMessageOrigin}" />
             <Grid ColumnDefinitions="*,8,*" RowDefinitions="Auto,Auto,8,Auto,Auto,8,Auto,Auto">
-              <TextBlock Text="SUBJECT (LABEL)" Classes="eyebrow" />
+              <TextBlock Text="{Binding SubjectLabel}" Classes="eyebrow" />
               <TextBox Grid.Row="1" Text="{Binding TestSubject}" AutomationProperties.Name="Test subject" />
               <TextBlock Grid.Column="2" Text="CORRELATION ID" Classes="eyebrow" />
               <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding TestCorrelationId}" AutomationProperties.Name="Test correlation ID" />
@@ -59,12 +58,18 @@
               <TextBlock Grid.Row="6" Grid.Column="2" Text="SESSION ID" Classes="eyebrow" />
               <TextBox Grid.Row="7" Grid.Column="2" Text="{Binding TestSessionId}" AutomationProperties.Name="Test session ID" />
             </Grid>
-            <TextBlock Text="APPLICATION PROPERTIES · ONE PER LINE" Classes="eyebrow" />
+            <TextBlock Text="{Binding PropertiesLabel}" Classes="eyebrow" />
             <TextBox Text="{Binding TestProperties}" AcceptsReturn="True" MinHeight="120" TextWrapping="NoWrap"
                      FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
                      PlaceholderText="region = 'EU'&#10;amount = 250&#10;vip = true" AutomationProperties.Name="Test properties" />
             <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
                        Text="'Quoted' values are text (\n is a line break), 250 and 1.5 are numbers, true and false are booleans, and &lt;Guid&gt;, &lt;DateTime&gt;, &lt;TimeSpan&gt; or &lt;Single&gt; mark other types." />
+            <StackPanel Spacing="6" IsVisible="{Binding ShowsBody}">
+              <TextBlock Text="BODY · FOR POLICIES ON THE MESSAGE BODY" Classes="eyebrow" />
+              <TextBox Text="{Binding TestBody}" AcceptsReturn="True" MinHeight="70" TextWrapping="Wrap"
+                       FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
+                       PlaceholderText="{}{&quot;order&quot;: {&quot;region&quot;: &quot;EU&quot;}}" AutomationProperties.Name="Test body" />
+            </StackPanel>
             <Button Content="Check routing" Classes="primary" HorizontalAlignment="Stretch" Command="{Binding CheckCommand}" />
             <Border Classes="headline" Classes.dropped="{Binding IsDropped}" IsVisible="{Binding HasHeadline}">
               <TextBlock Text="{Binding Headline}" TextWrapping="Wrap" FontWeight="SemiBold" />
@@ -78,12 +83,12 @@
         <Grid RowDefinitions="Auto,8,*">
           <Grid ColumnDefinitions="*,Auto,8,Auto">
             <StackPanel Spacing="2" VerticalAlignment="Center">
-              <TextBlock Text="Subscriptions and rules" Classes="sectionTitle" />
+              <TextBlock Text="{Binding ListTitle}" Classes="sectionTitle" />
               <TextBlock Text="{Binding SubscriptionsCaption}" Classes="muted" FontSize="12" />
             </StackPanel>
             <Button Grid.Column="1" Content="Refresh" Classes="quiet" Command="{Binding RefreshCommand}" />
-            <Button Grid.Column="3" Content="Add rule…" Classes="quiet" Command="{Binding AddRuleCommand}"
-                    IsVisible="{Binding CanEdit}" ToolTip.Tip="Add a rule to the selected subscription" />
+            <Button Grid.Column="3" Content="{Binding AddRuleLabel}" Classes="quiet" Command="{Binding AddRuleCommand}"
+                    IsVisible="{Binding CanEdit}" ToolTip.Tip="{Binding AddRuleToolTip}" />
           </Grid>
           <ListBox Grid.Row="2" ItemsSource="{Binding Subscriptions}" SelectedItem="{Binding Selected}" Classes="tableRows"
                    AutomationProperties.Name="Subscriptions">
@@ -94,6 +99,7 @@
                     <StackPanel Spacing="1">
                       <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                       <TextBlock Text="{Binding RulesText}" Classes="muted" FontSize="11" />
+                      <TextBlock Text="{Binding Note}" Classes="muted" FontSize="11" TextWrapping="Wrap" IsVisible="{Binding HasNote}" />
                     </StackPanel>
                     <Border Grid.Column="1" Classes="outcome" Classes.receives="{Binding Receives}" Classes.skips="{Binding Skips}"
                             Classes.unknown="{Binding IsUnknown}" IsVisible="{Binding HasResult}" VerticalAlignment="Top">
@@ -118,7 +124,7 @@
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top"
                                         IsVisible="{Binding $parent[Window].((vm:TopicRoutingViewModel)DataContext).CanEdit}">
-                              <Button Content="Edit" Classes="quiet copyAction"
+                              <Button Content="Edit" Classes="quiet copyAction" IsVisible="{Binding CanChange}"
                                       Command="{Binding $parent[Window].((vm:TopicRoutingViewModel)DataContext).EditRuleCommand}"
                                       CommandParameter="{Binding}" />
                               <Button Content="Delete" Classes="danger copyAction"

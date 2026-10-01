@@ -29,10 +29,12 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.Equal(
-            ["check_topic_routing", "delete_dead_letter_messages", "export_messages", "get_dead_letter_history", "get_entities", "list_environments", "peek_messages",
-             "purge_dead_letters", "resend_dead_letters", "scan_dead_letters", "search_dead_letters", "send_message"],
+            ["check_topic_routing", "delete_dead_letter_messages", "explain_dead_letters", "export_messages", "get_dead_letter_history", "get_entities",
+             "list_environments", "peek_messages", "purge_dead_letters", "resend_dead_letters", "scan_dead_letters", "search_dead_letters", "send_message",
+             "trace_forwarding"],
             tools.Select(tool => tool.Name).Order());
-        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages", "get_dead_letter_history", "check_topic_routing" })
+        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages",
+                     "get_dead_letter_history", "check_topic_routing", "explain_dead_letters", "trace_forwarding" })
         {
             Assert.True(tools.Single(tool => tool.Name == name).ProtocolTool.Annotations?.ReadOnlyHint);
         }
@@ -84,6 +86,82 @@ public sealed class McpServerTests
         Assert.Equal("Has no rules, so it receives no messages at all.", routed.GetProperty("subscriptions")[1].GetProperty("warning").GetString());
     }
 
+    [Fact]
+    public async Task TopicRouting_KeepsASameNamedQueueAndExchangeApart()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        server.Workspace.SupportsSubscriptionRules = true;
+        server.Workspace.RoutingService = QueueLoom.Core.Routing.RoutingService.RabbitMq;
+        server.Workspace.TopicRules["source"] =
+        [
+            new QueueLoom.Core.Routing.SubscriptionRules("dest",
+                [new QueueLoom.Core.Routing.SubscriptionRule("q", QueueLoom.Core.Routing.RuleFilterKind.DirectBinding) { Expression = "q", Title = "'q'" }])
+                { Service = QueueLoom.Core.Routing.RoutingService.RabbitMq },
+            new QueueLoom.Core.Routing.SubscriptionRules("dest",
+                [new QueueLoom.Core.Routing.SubscriptionRule("e", QueueLoom.Core.Routing.RuleFilterKind.DirectBinding) { Expression = "e", Title = "'e'" }])
+                { Service = QueueLoom.Core.Routing.RoutingService.RabbitMq, IsExchange = true }
+        ];
+
+        var routed = await server.CallAsync("check_topic_routing", new() { ["topic"] = "source", ["subject"] = "q" });
+
+        var rows = routed.GetProperty("subscriptions");
+        Assert.Equal("Receives", rows[0].GetProperty("outcome").GetString());
+        Assert.False(rows[0].GetProperty("isExchange").GetBoolean());
+        Assert.Equal("Skips", rows[1].GetProperty("outcome").GetString());
+        Assert.True(rows[1].GetProperty("isExchange").GetBoolean());
+        Assert.Contains("is not 'e'", rows[1].GetProperty("explanation").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExplainDeadLetters_GroupsTheDeadLettersByCause()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        BrowsedMessage Dead(long number, string reason, string description) => new(
+            Orders.Reference, ServiceBusSubQueue.DeadLetter, number, System.Text.Encoding.UTF8.GetBytes("{}"),
+            new EditableMessageProperties(MessageId: $"m-{number}"), enqueuedAt: DateTimeOffset.Parse("2026-08-12T10:00:00Z").AddMinutes(number),
+            deadLetterReason: reason, deadLetterErrorDescription: description, deliveryCount: (int)number);
+        server.Workspace.BrowseMessages =
+        [
+            Dead(1, "MaxDeliveryCountExceeded", "Order 17 was not found"),
+            Dead(2, "MaxDeliveryCountExceeded", "Order 99 was not found"),
+            Dead(3, "TTLExpiredException", "Expired")
+        ];
+
+        var explained = await server.CallAsync("explain_dead_letters");
+
+        Assert.Equal(3, explained.GetProperty("readMessages").GetInt32());
+        var top = explained.GetProperty("causes")[0];
+        Assert.Equal("MaxDeliveryCountExceeded", top.GetProperty("reason").GetString());
+        Assert.Equal("Order {n} was not found", top.GetProperty("pattern").GetString());
+        Assert.Equal(2, top.GetProperty("count").GetInt32());
+        Assert.Equal(66.7, top.GetProperty("share").GetDouble());
+        Assert.Equal(2, top.GetProperty("sources").GetProperty("orders").GetInt32());
+        Assert.Equal(["m-1", "m-2"], top.GetProperty("sampleMessageIds").EnumerateArray().Select(id => id.GetString()));
+        Assert.Contains("never completed it", top.GetProperty("hint").GetString(), StringComparison.Ordinal);
+        Assert.StartsWith("3 dead letter(s) read from 1 queue(s) fall into 2 cause(s); the largest is MaxDeliveryCountExceeded: Order {n} was not found (66.7%)",
+            explained.GetProperty("summary").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TraceForwarding_FollowsTheChainAndFindsLoops()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        server.Workspace.Topology = new ServiceBusTopology(DateTimeOffset.UtcNow,
+        [
+            Orders with { ForwardTo = "archive" },
+            new ServiceBusQueue("archive", ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active),
+            new ServiceBusQueue("ping", ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active) { ForwardTo = "pong" },
+            new ServiceBusQueue("pong", ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active) { ForwardTo = "ping" }
+        ]);
+
+        var chain = await server.CallAsync("trace_forwarding", new() { ["entity"] = "orders" });
+        Assert.Equal(["archive"], chain.GetProperty("destinations").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal("orders → archive", chain.GetProperty("paths")[0].GetString());
+
+        var loop = await server.CallAsync("trace_forwarding", new() { ["entity"] = "ping" });
+        Assert.Equal("Loop: ping → pong → ping. Service Bus dead-letters these messages after 4 forwards.", loop.GetProperty("summary").GetString());
+    }
+
     public sealed class MemoryHistoryStore : IDeadLetterHistoryStore
     {
         private readonly List<DeadLetterHistorySample> _samples = [];
@@ -113,7 +191,7 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.DoesNotContain(tools, tool => tool.ProtocolTool.Annotations?.ReadOnlyHint != true);
-        Assert.Equal(8, tools.Count);
+        Assert.Equal(10, tools.Count);
     }
 
     [Fact]

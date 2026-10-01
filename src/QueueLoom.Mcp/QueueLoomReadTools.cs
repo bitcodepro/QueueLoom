@@ -17,6 +17,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     private const string EnvironmentDescription =
         "Saved environment name (see list_environments). Optional when only one environment is saved.";
 
+    private const string QueryDescription =
+        "Plain text is found in IDs, subject, reason, properties and body, ignoring case. '/regex/' is a regular expression " +
+        "('/…/i' ignores case). '$.order.status == \'failed\'' checks a field of the JSON body (also gzip or base64): ==, !=, >, >=, <, <=, " +
+        "=~ /regex/, or the path alone for 'has the field'; join conditions with and / or; [0] picks a list item, [*] any.";
+
     [McpServerTool(Name = "list_environments", Title = "List environments", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Lists the environments saved in QueueLoom (name, kind such as Production, service such as Amazon SQS / SNS, " +
         "namespace/region/project, authentication, access mode).")]
@@ -98,14 +103,16 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         });
 
     [McpServerTool(Name = "check_topic_routing", Title = "Subscription rules and routing", ReadOnly = true, Idempotent = true)]
-    [Description("Azure Service Bus only. Lists every subscription of a topic with its rules (SQL or correlation filters). " +
-                 "When message fields are given, also says which subscriptions would receive such a message and, for the others, " +
-                 "which comparison failed. Use it when a message 'disappeared': a message no subscription matches is dropped silently. " +
-                 "As in Service Bus, values are compared case-sensitively and property names are not.")]
+    [Description("Lists every subscription of a topic with the rules that decide what it receives: Azure Service Bus SQL and " +
+                 "correlation rules, Amazon SNS filter policies, Google Pub/Sub filters, or the bindings of a RabbitMQ exchange " +
+                 "(pass the exchange as topic; the routing key is subject). When message fields are given, also says which " +
+                 "subscriptions would receive such a message and, for the others, which comparison failed. Use it when a message " +
+                 "'disappeared': a message no subscription matches is dropped silently. Service Bus compares property names " +
+                 "case-insensitively; SNS, Pub/Sub and RabbitMQ are case-sensitive.")]
     public Task<TopicRoutingInfo> CheckTopicRoutingAsync(
         [Description("Topic name.")] string topic,
         [Description(EnvironmentDescription)] string? environment = null,
-        [Description("Subject (sys.Label) of the message to check.")] string? subject = null,
+        [Description("Subject (sys.Label) of the message to check; the routing key in RabbitMQ.")] string? subject = null,
         [Description("Correlation ID of the message to check.")] string? correlationId = null,
         [Description("Message ID of the message to check.")] string? messageId = null,
         [Description("Content type of the message to check.")] string? contentType = null,
@@ -113,13 +120,14 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         [Description("Session ID of the message to check.")] string? sessionId = null,
         [Description("Application properties of the message to check, as a JSON object; strings, numbers and booleans keep their type, " +
                      "for example {\"region\": \"EU\", \"amount\": 250}.")] Dictionary<string, System.Text.Json.JsonElement>? properties = null,
+        [Description("Body of the message to check, for SNS filter policies on the message body.")] string? body = null,
         CancellationToken cancellationToken = default) =>
         McpGuard.RunAsync(async () =>
         {
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
-            var rules = await session.ReadAsync(profile, (workspace, token) => workspace.SupportsSubscriptionRules
-                    ? workspace.GetTopicRulesAsync(topic, token)
-                    : throw new InvalidOperationException($"{profile.Provider.DisplayName()} has no subscription rules; only Azure Service Bus does."),
+            var (rules, service) = await session.ReadAsync(profile, async (workspace, token) => workspace.SupportsSubscriptionRules
+                    ? (await workspace.GetTopicRulesAsync(topic, token).ConfigureAwait(false), workspace.RoutingService)
+                    : throw new InvalidOperationException($"{profile.Provider.DisplayName()} has no subscription rules or bindings."),
                 cancellationToken).ConfigureAwait(false);
             var applicationProperties = (properties ?? []).Select(pair => pair.Value.ValueKind switch
             {
@@ -132,20 +140,28 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 _ => new MessageApplicationProperty(pair.Key, ApplicationPropertyType.String, pair.Value.ToString())
             }).ToArray();
             var hasMessage = subject is not null || correlationId is not null || messageId is not null || contentType is not null ||
-                             to is not null || sessionId is not null || applicationProperties.Length > 0;
+                             to is not null || sessionId is not null || applicationProperties.Length > 0 || body is not null;
             var routing = hasMessage
                 ? QueueLoom.Core.Routing.TopicRouting.Route(topic, rules, new QueueLoom.Core.Routing.RoutingMessage(
-                    new EditableMessageProperties(messageId, correlationId, contentType, subject, to, SessionId: sessionId), applicationProperties))
+                    new EditableMessageProperties(messageId, correlationId, contentType, subject, to, SessionId: sessionId), applicationProperties)
+                {
+                    Body = body
+                }, service)
                 : null;
             return new TopicRoutingInfo(profile.Name, topic, routing?.Headline,
-                rules.Select(subscription =>
+                // Results come back in the order of the rules; a RabbitMQ queue and exchange may share a name.
+                rules.Select((subscription, index) =>
                 {
-                    var result = routing?.Subscriptions.First(item => item.Subscription == subscription.Subscription);
+                    var result = routing?.Subscriptions[index];
                     return new SubscriptionRoutingInfo(subscription.Subscription,
-                        subscription.Rules.Select(rule => new RuleInfo(rule.Name, rule.KindLabel, rule.FilterText, rule.Action)).ToArray(),
+                        subscription.Rules.Select(rule => new RuleInfo(rule.DisplayName, rule.KindLabel, rule.FilterText, rule.Action)).ToArray(),
                         subscription.Warning,
                         result?.Outcome.ToString(),
-                        result?.Summary);
+                        result?.Summary)
+                    {
+                        Note = subscription.Note,
+                        IsExchange = service == QueueLoom.Core.Routing.RoutingService.RabbitMq ? subscription.IsExchange : null
+                    };
                 }).ToArray());
         });
 
@@ -181,10 +197,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         });
 
     [McpServerTool(Name = "search_dead_letters", Title = "Search dead letters", ReadOnly = true, Idempotent = true)]
-    [Description("Searches every dead-letter queue of the environment for text in the Message ID, Correlation ID, subject, " +
-                 "application properties or body (first 1 MiB). Results can be passed to delete_dead_letter_messages.")]
+    [Description("Searches every dead-letter queue of the environment: text in the Message ID, Correlation ID, subject, " +
+                 "application properties or body (first 1 MiB), a /regular expression/, or a condition on a field of the JSON body. " +
+                 "Results can be passed to delete_dead_letter_messages.")]
     public Task<MessageListInfo> SearchDeadLettersAsync(
-        [Description("Text to look for.")] string query,
+        [Description(QueryDescription)] string query,
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Maximum number of matches, 1-500.")] int maxResults = 50,
         CancellationToken cancellationToken = default) =>
@@ -225,7 +242,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     public Task<ExportInfo> ExportMessagesAsync(
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Queue name, or 'topic/subscription'.")] string? entity = null,
-        [Description("Text to search the dead-letter queues for, instead of 'entity'.")] string? query = null,
+        [Description("Search the dead-letter queues instead of reading 'entity'. " + QueryDescription)] string? query = null,
         [Description("With 'entity': 'dlq' (default), 'transfer-dlq' or 'active'.")] string subQueue = "dlq",
         [Description("How many messages at most, 1-1,000.")] int maxMessages = 100,
         [Description("'json' (default; complete) or 'csv' (one row per message, for spreadsheets).")] string format = "json",
@@ -306,4 +323,114 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         }
         return path;
     }
+
+    [McpServerTool(Name = "explain_dead_letters", Title = "Why dead letters pile up", ReadOnly = true, Idempotent = true)]
+    [Description("Reads the dead-letter queues of the environment (or of one queue or subscription) and groups the messages by cause: " +
+                 "the dead-letter reason plus the shape of the error description, with IDs and numbers left out (for example " +
+                 "'Order {n} was not found'). For each cause: how many, where, since when, an example, sample message IDs and what " +
+                 "the reason usually means. Start here when asked why messages are dead-lettered. Nothing is locked or removed.")]
+    public Task<DeadLetterExplanationInfo> ExplainDeadLettersAsync(
+        [Description(EnvironmentDescription)] string? environment = null,
+        [Description("Queue name or 'topic/subscription'; every dead-letter queue when omitted.")] string? entity = null,
+        [Description("How many dead letters to read per queue, 1-1,000.")] int maxMessagesPerQueue = 200,
+        [Description("How many causes to return, most frequent first, 1-50.")] int maxCauses = 15,
+        CancellationToken cancellationToken = default) =>
+        McpGuard.RunAsync(async () =>
+        {
+            var perQueue = Math.Clamp(maxMessagesPerQueue, 1, BrowseMessagesRequest.MaximumMaxMessages);
+            var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var (sources, messages) = await session.ReadAsync(profile, async (workspace, token) =>
+            {
+                var topology = await workspace.GetTopologyAsync(forceRefresh: true, token).ConfigureAwait(false);
+                var queues = topology.Queues.Where(queue => queue.HasDeadLetterQueue)
+                    .Select(queue => (queue.Reference, Count: queue.Runtime.MessageCounts.DeadLetter, queue.Note))
+                    .Concat(topology.Topics.SelectMany(topic => topic.Subscriptions).Where(subscription => subscription.HasDeadLetterQueue)
+                        .Select(subscription => (subscription.Reference, Count: subscription.Runtime.MessageCounts.DeadLetter, subscription.Note)))
+                    .ToArray();
+                if (!string.IsNullOrWhiteSpace(entity))
+                {
+                    var wanted = EntityResolver.Resolve(topology, entity, requireMessageSource: true);
+                    queues = queues.Where(queue => queue.Reference == wanted).ToArray();
+                }
+                else if (topology.HasMessageCounts)
+                {
+                    queues = queues.Where(queue => queue.Count > 0).ToArray();
+                }
+
+                var summaries = new List<DeadLetterSourceSummaryInfo>();
+                var read = new List<BrowsedMessage>();
+                foreach (var (reference, count, note) in queues)
+                {
+                    try
+                    {
+                        var browsed = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(reference, ServiceBusSubQueue.DeadLetter, perQueue), token)
+                            .ConfigureAwait(false);
+                        read.AddRange(browsed);
+                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, browsed.Count, note, null));
+                    }
+                    catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or TimeoutException)
+                    {
+                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, 0, note, exception.Message));
+                    }
+                }
+                return (summaries, read);
+            }, cancellationToken).ConfigureAwait(false);
+
+            var total = messages.Count;
+            var causes = messages
+                .GroupBy(DeadLetterCauses.KeyOf)
+                .Select(group => new DeadLetterCauseInfo(
+                    group.Key.Reason,
+                    group.Key.Pattern,
+                    group.Select(message => message.DeadLetterErrorDescription).FirstOrDefault(text => !string.IsNullOrWhiteSpace(text))?.Trim().Split('\n')[0],
+                    group.Count(),
+                    Math.Round(100.0 * group.Count() / Math.Max(total, 1), 1),
+                    group.GroupBy(message => McpMapping.EntityName(message.Source))
+                        .OrderByDescending(source => source.Count())
+                        .ToDictionary(source => source.Key, source => source.Count()),
+                    group.Min(message => message.EnqueuedAt),
+                    group.Max(message => message.EnqueuedAt),
+                    group.Max(message => message.DeliveryCount),
+                    group.Select(message => message.Properties.MessageId).OfType<string>().Take(3).ToArray(),
+                    DeadLetterHints.For(group.Key.Reason)))
+                .OrderByDescending(cause => cause.Count)
+                .Take(Math.Clamp(maxCauses, 1, 50))
+                .ToArray();
+            var summary = total == 0
+                ? sources.Count == 0 ? "No dead-letter queue holds messages." : "The dead-letter queues that were read are empty."
+                : $"{total:N0} dead letter(s) read from {sources.Count(source => source.Read > 0):N0} queue(s) fall into " +
+                  $"{messages.GroupBy(DeadLetterCauses.KeyOf).Count():N0} cause(s); the largest is {causes[0].Reason}" +
+                  (causes[0].Pattern is null ? string.Empty : $": {causes[0].Pattern}") + $" ({causes[0].Share}%)." +
+                  (sources.Any(source => source.DeadLetterCount > source.Read) ? " Some queues hold more than was read; raise maxMessagesPerQueue to read more." : string.Empty);
+            return new DeadLetterExplanationInfo(profile.Name, summary, total, sources, causes);
+        });
+
+    [McpServerTool(Name = "trace_forwarding", Title = "Where forwarded messages go", ReadOnly = true, Idempotent = true)]
+    [Description("Azure Service Bus auto-forwarding: follows a queue, topic or subscription through every forward (topics copy to their " +
+                 "subscriptions, which may forward again) and says where messages end up, whether a chain loops, points at an entity " +
+                 "that does not exist, or is longer than the 4 forwards Service Bus allows (messages are dead-lettered then).")]
+    public Task<ForwardingInfo> TraceForwardingAsync(
+        [Description("Queue, topic, or 'topic/subscription' to start from.")] string entity,
+        [Description(EnvironmentDescription)] string? environment = null,
+        CancellationToken cancellationToken = default) =>
+        McpGuard.RunAsync(async () =>
+        {
+            var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var (start, report) = await session.ReadAsync(profile, async (workspace, token) =>
+            {
+                var topology = await workspace.GetTopologyAsync(forceRefresh: false, token).ConfigureAwait(false);
+                var reference = EntityResolver.Resolve(topology, entity, requireMessageSource: false);
+                var name = McpMapping.EntityName(reference);
+                return (name, QueueLoom.Core.Routing.Forwarding.Follow(topology, name));
+            }, cancellationToken).ConfigureAwait(false);
+
+            static string Line(IReadOnlyList<string> path) => string.Join(" → ", path);
+            var summary = report.Loops.Count > 0 ? $"Loop: {Line(report.Loops[0])}. Service Bus dead-letters these messages after 4 forwards."
+                : report.Missing.Count > 0 ? $"{Line(report.Missing[0])} points at an entity that does not exist."
+                : report.LongestChain == 0 ? $"{start} does not forward: messages stay there."
+                : report.IsTooLong ? $"{report.LongestChain} forwards is more than Service Bus allows (4): messages are dead-lettered on the way."
+                : $"Messages end up in {string.Join(", ", report.Destinations)} after at most {report.LongestChain} forward(s).";
+            return new ForwardingInfo(profile.Name, start, summary, report.Destinations, report.Paths.Select(Line).ToArray(),
+                report.Loops.Select(Line).ToArray(), report.Missing.Select(Line).ToArray(), report.LongestChain);
+        });
 }

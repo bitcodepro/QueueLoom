@@ -1080,6 +1080,8 @@ public sealed partial class ViewModelStateTests
 
         public bool SupportsSubscriptionRules { get; set; }
 
+        public QueueLoom.Core.Routing.RoutingService RoutingService { get; set; } = QueueLoom.Core.Routing.RoutingService.ServiceBus;
+
         public Dictionary<string, List<QueueLoom.Core.Routing.SubscriptionRules>> TopicRules { get; } = [];
 
         public List<string> RuleChanges { get; } = [];

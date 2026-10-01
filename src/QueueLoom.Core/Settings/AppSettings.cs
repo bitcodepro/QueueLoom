@@ -35,6 +35,9 @@ public sealed record AppSettings(
     /// <summary>Closing the window keeps QueueLoom running in the system tray, so monitors and scheduled resends go on.</summary>
     public bool KeepInTray { get; init; }
 
+    /// <summary>A .proto file, a descriptor set or a folder of them, for showing Protobuf bodies with field names; null for none.</summary>
+    public string? ProtobufSchemaPath { get; init; }
+
     /// <summary>Backups older than this many days are deleted at start-up; 0 keeps them forever.</summary>
     public int BackupRetentionDays { get; init; }
 

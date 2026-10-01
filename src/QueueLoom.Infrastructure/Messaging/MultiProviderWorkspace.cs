@@ -117,6 +117,10 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
 
     public bool SupportsSubscriptionRules => _current?.SupportsSubscriptionRules == true;
 
+    public RoutingService RoutingService => _current?.RoutingService ?? RoutingService.ServiceBus;
+
+    public string? RuleEditingNote => _current?.RuleEditingNote;
+
     public Task<IReadOnlyList<SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
         Current.GetTopicRulesAsync(topic, cancellationToken);
 
@@ -125,6 +129,9 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
         Current.SaveSubscriptionRuleAsync(topic, subscription, rule, replace, cancellationToken);
 
     public Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
+        Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
+
+    public Task DeleteSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, CancellationToken cancellationToken = default) =>
         Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
 
     public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(

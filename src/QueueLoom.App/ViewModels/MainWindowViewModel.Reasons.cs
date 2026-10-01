@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using QueueLoom.App.Commands;
+using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -25,9 +26,58 @@ public sealed partial class MainWindowViewModel
 
     public RelayCommand<DeadLetterReasonItemViewModel> SelectDeadLetterReasonCommand { get; private set; } = null!;
 
+    /// <summary>
+    /// The causes of the listed dead letters (reason plus the shape of the error description), most frequent first;
+    /// only the first <see cref="MaximumCauseChips"/> are shown.
+    /// </summary>
+    public ObservableCollection<DeadLetterCauseItemViewModel> DeadLetterCauses { get; } = [];
+
+    private const int MaximumCauseChips = 10;
+
+    private int _causeCount;
+
+    /// <summary>Worth showing when the descriptions say more than the reasons do.</summary>
+    public bool HasDeadLetterCauses => DeadLetterCauses.Count > 0;
+
+    public string DeadLetterCausesSummary => _causeCount == 1 ? "1 cause" : $"{_causeCount:N0} causes";
+
+    public string DeadLetterCausesMore => _causeCount > MaximumCauseChips ? $"and {_causeCount - MaximumCauseChips:N0} more" : string.Empty;
+
+    public bool HasMoreDeadLetterCauses => _causeCount > MaximumCauseChips;
+
+    public RelayCommand<DeadLetterCauseItemViewModel> SelectDeadLetterCauseCommand { get; private set; } = null!;
+
     private void InitializeReasons()
     {
         SelectDeadLetterReasonCommand = new RelayCommand<DeadLetterReasonItemViewModel>(SelectDeadLetterReason);
+        SelectDeadLetterCauseCommand = new RelayCommand<DeadLetterCauseItemViewModel>(SelectDeadLetterCause);
+    }
+
+    /// <summary>Ticks exactly the messages with this cause; when they are already ticked, unticks them.</summary>
+    private void SelectDeadLetterCause(DeadLetterCauseItemViewModel? cause)
+    {
+        if (cause is null)
+        {
+            return;
+        }
+
+        var untick = cause.IsSelected;
+        _updatingReasonSelection = true;
+        try
+        {
+            using var batch = BatchMessageUpdates();
+            foreach (var message in Messages.Where(message => message.CanDelete))
+            {
+                message.IsMarked = !untick && cause.Matches(message);
+            }
+        }
+        finally
+        {
+            _updatingReasonSelection = false;
+        }
+
+        RebuildDeadLetterReasons();
+        StatusText = untick ? $"Unticked the messages with cause {cause.Text}" : $"Ticked {cause.Count:N0} message(s) with cause {cause.Text}";
     }
 
     /// <summary>Ticks exactly the messages with this reason; when they are already ticked, unticks them.</summary>
@@ -87,8 +137,36 @@ public sealed partial class MainWindowViewModel
         {
             DeadLetterReasons.Add(group);
         }
+        RebuildDeadLetterCauses();
         OnPropertyChanged(nameof(HasDeadLetterReasons));
         OnPropertyChanged(nameof(DeadLetterReasonsSummary));
         OnPropertyChanged(nameof(DeadLetterReasonsTitle));
+    }
+
+    private void RebuildDeadLetterCauses()
+    {
+        var deadLetters = Messages.Where(message => message.CanDelete && !message.IsScheduled && !message.IsDeferred).ToArray();
+        var causes = deadLetters
+            .GroupBy(message => message.CauseKey)
+            .Select(group => (Cause: new DeadLetterCause(group.Key.Reason, group.Key.Pattern,
+                group.Select(message => message.Message.DeadLetterErrorDescription).FirstOrDefault(text => !string.IsNullOrWhiteSpace(text))?.Trim().Split('\n')[0],
+                group.Count()), Selected: group.All(message => message.IsMarked)))
+            .OrderByDescending(item => item.Cause.Count)
+            .ThenBy(item => item.Cause.Label, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        // Causes only add something when the error descriptions split at least one reason into several kinds of failure.
+        var useful = causes.Any(item => item.Cause.Pattern is not null) &&
+                     causes.Length > causes.Select(item => item.Cause.Reason).Distinct(StringComparer.Ordinal).Count();
+        _causeCount = useful ? causes.Length : 0;
+        DeadLetterCauses.Clear();
+        foreach (var (cause, selected) in useful ? causes.Take(MaximumCauseChips) : [])
+        {
+            DeadLetterCauses.Add(new DeadLetterCauseItemViewModel(cause, selected, SelectDeadLetterCauseCommand));
+        }
+        OnPropertyChanged(nameof(HasDeadLetterCauses));
+        OnPropertyChanged(nameof(DeadLetterCausesSummary));
+        OnPropertyChanged(nameof(DeadLetterCausesMore));
+        OnPropertyChanged(nameof(HasMoreDeadLetterCauses));
     }
 }
