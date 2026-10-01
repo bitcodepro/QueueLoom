@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
+using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Azure;
 using QueueLoom.Infrastructure.Persistence;
@@ -371,6 +372,31 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
 
     public virtual Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException($"{Provider.DisplayName()} does not support queue management in QueueLoom.");
+
+    public virtual bool SupportsSubscriptionRules => false;
+
+    public virtual RoutingService RoutingService => RoutingService.ServiceBus;
+
+    public virtual string? RuleEditingNote => null;
+
+    public virtual Task<IReadOnlyList<SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} has no subscription rules.");
+
+    public virtual Task SaveSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, bool replace,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} cannot change subscription rules in QueueLoom.");
+
+    public virtual Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException($"{Provider.DisplayName()} cannot change subscription rules in QueueLoom.");
+
+    /// <summary>Reads what rules need; the topology is refreshed afterwards since a change may be visible in it.</summary>
+    protected async Task<T> ReadRulesAsync<T>(Func<CancellationToken, Task<T>> read, CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        GetConnectedProfile();
+        return await read(cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Runs a queue management change: allowed only with the environment's permission and write access.</summary>
     protected async Task ManageAsync(Func<CancellationToken, Task> change, CancellationToken cancellationToken)

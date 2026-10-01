@@ -32,8 +32,12 @@ public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? 
 
 public sealed record RuleInfo(string Name, string Kind, string Filter, string? Action);
 
-/// <param name="Outcome">Receives, Skips or Unknown (only Service Bus can tell), when a message was given.</param>
-public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<RuleInfo> Rules, string? Warning, string? Outcome, string? Explanation);
+/// <param name="Outcome">Receives, Skips or Unknown (only the service can tell), when a message was given.</param>
+public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<RuleInfo> Rules, string? Warning, string? Outcome, string? Explanation)
+{
+    /// <summary>For example "Alternate exchange: gets what no binding takes", or an SNS subscription's endpoint.</summary>
+    public string? Note { get; init; }
+}
 
 /// <param name="Headline">For a given message: how many subscriptions receive it, or that it is dropped.</param>
 public sealed record TopicRoutingInfo(string Environment, string Topic, string? Headline, IReadOnlyList<SubscriptionRoutingInfo> Subscriptions);

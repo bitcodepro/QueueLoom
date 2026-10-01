@@ -11,7 +11,7 @@
   <StackPanel Margin="26" Spacing="14">
     <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
 
-    <Grid ColumnDefinitions="*,12,*">
+    <Grid ColumnDefinitions="*,12,*" IsVisible="{Binding IsServiceBus}">
       <StackPanel Spacing="7">
         <TextBlock Text="NAME" Classes="eyebrow" />
         <TextBox Text="{Binding Name}" IsEnabled="{Binding IsNew}" PlaceholderText="eu-orders" AutomationProperties.Name="Rule name" />
@@ -22,6 +22,41 @@
                   AutomationProperties.Name="Filter kind" />
       </StackPanel>
     </Grid>
+
+    <!-- Amazon SNS: one filter policy per subscription -->
+    <StackPanel Spacing="7" IsVisible="{Binding IsSnsPolicy}">
+      <TextBlock Text="APPLIES TO" Classes="eyebrow" />
+      <ComboBox ItemsSource="{x:Static vm:RuleEditorViewModel.PolicyScopes}" SelectedItem="{Binding PolicyScope}" HorizontalAlignment="Stretch"
+                AutomationProperties.Name="Policy scope" />
+      <TextBlock Text="FILTER POLICY (JSON)" Classes="eyebrow" />
+      <TextBox Text="{Binding Policy}" AcceptsReturn="True" MinHeight="140" TextWrapping="Wrap"
+               FontFamily="{StaticResource MonoFontFamily}" PlaceholderText="{}{&quot;region&quot;: [&quot;EU&quot;]}"
+               AutomationProperties.Name="Filter policy" />
+      <TextBlock Text="{Binding PolicyCheck}" FontSize="12" TextWrapping="Wrap"
+                 Classes.muted="{Binding !HasPolicyProblem}" Classes.danger="{Binding HasPolicyProblem}" />
+      <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 Text="Operators: prefix, suffix, equals-ignore-case, anything-but, numeric, exists, cidr; $or joins alternatives. A missing attribute matches nothing but {&quot;exists&quot;: false}." />
+    </StackPanel>
+
+    <!-- RabbitMQ: a binding of the exchange to this queue or exchange -->
+    <StackPanel Spacing="7" IsVisible="{Binding IsBindingKey}">
+      <TextBlock Text="{Binding BindingKeyLabel}" Classes="eyebrow" />
+      <TextBox Text="{Binding BindingKey}" FontFamily="{StaticResource MonoFontFamily}" PlaceholderText="order.created"
+               AutomationProperties.Name="Binding key" />
+      <TextBlock Text="{Binding BindingKeyHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+    </StackPanel>
+    <StackPanel Spacing="7" IsVisible="{Binding IsHeadersBinding}">
+      <TextBlock Text="MATCH" Classes="eyebrow" />
+      <ComboBox ItemsSource="{x:Static vm:RuleEditorViewModel.HeaderModes}" SelectedItem="{Binding HeadersMatch}" HorizontalAlignment="Stretch"
+                AutomationProperties.Name="Header match" />
+      <TextBlock Text="HEADERS · NAME = VALUE, ONE PER LINE" Classes="eyebrow" />
+      <TextBox Text="{Binding Headers}" AcceptsReturn="True" MinHeight="80" FontFamily="{StaticResource MonoFontFamily}"
+               PlaceholderText="region = 'EU'&#10;tier = 'gold'" AutomationProperties.Name="Binding headers" />
+      <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 Text="'Quoted' values are text, 250 a whole number, 1.5 a decimal, true and false booleans. RabbitMQ compares the type too: 250 does not match '250' or 250.0. Names are case-sensitive." />
+    </StackPanel>
+    <TextBlock IsVisible="{Binding IsFanoutBinding}" Classes="muted" TextWrapping="Wrap"
+               Text="A fanout exchange copies every message to every binding; the binding has nothing to set." />
 
     <StackPanel Spacing="7" IsVisible="{Binding IsSql}">
       <TextBlock Text="SQL FILTER" Classes="eyebrow" />
@@ -60,7 +95,7 @@
                  Text="'Quoted' values are text (\n is a line break), 250 is an Int64, &lt;Int32&gt; 250 an Int32, 1.5 a Double, true and false booleans, &lt;DateTime&gt; 2026-10-01T12:00:00Z a date. The type must match the message's exactly: an Int32 7 does not match an Int64 7, and 250 never matches '250'." />
     </StackPanel>
 
-    <StackPanel Spacing="7">
+    <StackPanel Spacing="7" IsVisible="{Binding IsServiceBus}">
       <TextBlock Text="ACTION · OPTIONAL" Classes="eyebrow" />
       <TextBox Text="{Binding Action}" FontFamily="{StaticResource MonoFontFamily}" PlaceholderText="SET priority = 'high'"
                AutomationProperties.Name="Rule action" />

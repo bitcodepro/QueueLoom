@@ -6,8 +6,9 @@ using QueueLoom.Core.ServiceBus;
 namespace QueueLoom.App.ViewModels;
 
 /// <summary>
-/// Azure Service Bus subscription rules: which messages of a topic each subscription receives, where a message
-/// would go, and adding, changing or deleting rules when queue management and write access allow it.
+/// Subscription rules (Service Bus rules, SNS filter policies, Pub/Sub filters, RabbitMQ bindings): which messages
+/// of a topic each subscription receives, where a message would go, and changing rules where the service allows it
+/// and queue management and write access are on.
 /// </summary>
 public sealed partial class MainWindowViewModel
 {
@@ -62,21 +63,30 @@ public sealed partial class MainWindowViewModel
     private async Task ShowRoutingAsync(string topic, MessageDraft? message, string? origin, CancellationToken cancellationToken)
     {
         var profile = _connectedProfile ?? throw new InvalidOperationException("Connect to an environment first.");
-        var canEdit = profile.AllowQueueManagement && CanWrite;
-        var hint = canEdit
-            ? "Rule changes apply at once to new messages; messages already in a subscription stay."
+        var service = _workspace.RoutingService;
+        var editingNote = _workspace.RuleEditingNote;
+        var canEdit = profile.AllowQueueManagement && CanWrite && editingNote is null;
+        var rules = service == RoutingService.RabbitMq ? "bindings" : "rules";
+        var hint = editingNote ?? (canEdit
+            ? service switch
+            {
+                RoutingService.Sns => "SNS can take a few minutes to apply a changed filter policy; messages already delivered stay.",
+                RoutingService.RabbitMq => "Binding changes apply at once to new messages; messages already in a queue stay.",
+                _ => "Rule changes apply at once to new messages; messages already in a subscription stay."
+            }
             : !profile.AllowQueueManagement
-                ? "To change rules, turn on \"Allow creating, changing and deleting queues\" for this environment."
-                : "Unlock write access to change rules.";
+                ? $"To change {rules}, turn on \"Allow creating, changing and deleting queues\" for this environment."
+                : $"Unlock write access to change {rules}.");
         var services = new TopicRoutingServices(
             token => _workspace.GetTopicRulesAsync(topic, token),
             async (subscription, rule, replace, token) =>
             {
                 var reference = ServiceBusEntityReference.Subscription(topic, subscription);
-                RecordOperationIntent(replace ? "Change subscription rule started" : "Add subscription rule started", $"{rule.Name}: {rule.FilterText}", reference);
+                var text = rule.Name.Length == 0 || rule.Kind == RuleFilterKind.SnsFilterPolicy ? rule.FilterText : $"{rule.DisplayName}: {rule.FilterText}";
+                RecordOperationIntent(replace ? "Change subscription rule started" : "Add subscription rule started", text, reference);
                 await _workspace.SaveSubscriptionRuleAsync(topic, subscription, rule, replace, token).ConfigureAwait(true);
                 AddActivity("Success", replace ? "Subscription rule changed" : "Subscription rule added",
-                    $"{profile.Name} · {topic} / {subscription} · {rule.Name}: {rule.FilterText}", reference);
+                    $"{profile.Name} · {topic} / {subscription} · {text}", reference);
             },
             async (subscription, rule, token) =>
             {
@@ -88,7 +98,7 @@ public sealed partial class MainWindowViewModel
             editor => _dialogs.EditRuleAsync(editor, CancellationToken.None),
             (title, text, requiredText) => _dialogs.ConfirmAsync(title, text, isDangerous: true, requiredText: requiredText,
                 cancellationToken: CancellationToken.None));
-        var routing = new TopicRoutingViewModel(topic, profile.Name, canEdit, hint, services, message, origin);
+        var routing = new TopicRoutingViewModel(topic, profile.Name, canEdit, hint, services, message, origin, service);
         await _dialogs.ShowTopicRoutingAsync(routing, cancellationToken).ConfigureAwait(true);
         StatusText = routing.HasHeadline ? routing.Headline : $"Rules of {topic} reviewed";
     }

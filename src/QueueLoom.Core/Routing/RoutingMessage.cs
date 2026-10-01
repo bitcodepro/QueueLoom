@@ -12,6 +12,10 @@ public sealed class RoutingMessage
         : this(properties, (applicationProperties ?? throw new ArgumentNullException(nameof(applicationProperties)))
             .Select(property => new KeyValuePair<string, object?>(property.Name, Typed(property))))
     {
+        foreach (var property in applicationProperties)
+        {
+            _text[property.Name] = property.Value;
+        }
     }
 
     /// <summary>A message whose application properties are already typed values (text, numbers, Guid, dates…).</summary>
@@ -31,9 +35,60 @@ public sealed class RoutingMessage
 
     public IReadOnlyDictionary<string, object?> UserProperties => _user;
 
-    public static RoutingMessage From(MessageDraft draft) => new(draft.Properties, draft.ApplicationProperties);
+    /// <summary>The body as text, for SNS filter policies on the message body; null when it is not known.</summary>
+    public string? Body { get; init; }
 
-    public static RoutingMessage From(BrowsedMessage message) => new(message.Properties, message.ApplicationProperties);
+    public static RoutingMessage From(MessageDraft draft) =>
+        new(draft.Properties, draft.ApplicationProperties) { Body = draft.Body.Format == MessageBodyFormat.Base64 ? null : draft.Body.Content };
+
+    public static RoutingMessage From(BrowsedMessage message) => message.IsBodyTruncated
+        ? new(message.Properties, message.ApplicationProperties)
+        : From(message.CreateDraft());
+
+    /// <summary>
+    /// The attributes SNS and Pub/Sub see, as QueueLoom sends them: CorrelationId, Subject, ContentType, ReplyTo and To
+    /// when set, then every application property under its exact name (names are case-sensitive there).
+    /// </summary>
+    public IReadOnlyDictionary<string, object?> Attributes
+    {
+        get
+        {
+            if (_attributes is null)
+            {
+                var attributes = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var (name, value) in MessageAttributeConventions.StandardAttributes(Properties))
+                {
+                    attributes[name] = value;
+                }
+                foreach (var (name, value) in _user)
+                {
+                    attributes[name] = value;
+                }
+                _attributes = attributes;
+            }
+            return _attributes;
+        }
+    }
+
+    private Dictionary<string, object?>? _attributes;
+
+    /// <summary>The text each application property was given, where the message came with it (SNS and Pub/Sub send that text).</summary>
+    private readonly Dictionary<string, string> _text = new(StringComparer.Ordinal);
+
+    /// <summary>The text of an attribute (see <see cref="Attributes"/>) as SNS and Pub/Sub would carry it.</summary>
+    public string AttributeTextOf(string name) =>
+        _user.ContainsKey(name) && _text.TryGetValue(name, out var text)
+            ? text
+            : AttributeText(Attributes.GetValueOrDefault(name));
+
+    /// <summary>A value as the attribute text Pub/Sub carries: text as it is, anything else in QueueLoom's invariant form.</summary>
+    public static string AttributeText(object? value) => value switch
+    {
+        null => string.Empty,
+        string text => text,
+        bool flag => flag ? "true" : "false",
+        _ => ApplicationPropertyValues.FromObject(string.Empty, value).Value
+    };
 
     /// <summary>A system property by its SQL filter name (sys.Label, sys.MessageId…).</summary>
     public object? System(string name, out bool exists)

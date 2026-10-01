@@ -117,6 +117,10 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
 
     public bool SupportsSubscriptionRules => _current?.SupportsSubscriptionRules == true;
 
+    public RoutingService RoutingService => _current?.RoutingService ?? RoutingService.ServiceBus;
+
+    public string? RuleEditingNote => _current?.RuleEditingNote;
+
     public Task<IReadOnlyList<SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
         Current.GetTopicRulesAsync(topic, cancellationToken);
 

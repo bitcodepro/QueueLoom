@@ -98,14 +98,16 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         });
 
     [McpServerTool(Name = "check_topic_routing", Title = "Subscription rules and routing", ReadOnly = true, Idempotent = true)]
-    [Description("Azure Service Bus only. Lists every subscription of a topic with its rules (SQL or correlation filters). " +
-                 "When message fields are given, also says which subscriptions would receive such a message and, for the others, " +
-                 "which comparison failed. Use it when a message 'disappeared': a message no subscription matches is dropped silently. " +
-                 "As in Service Bus, values are compared case-sensitively and property names are not.")]
+    [Description("Lists every subscription of a topic with the rules that decide what it receives: Azure Service Bus SQL and " +
+                 "correlation rules, Amazon SNS filter policies, Google Pub/Sub filters, or the bindings of a RabbitMQ exchange " +
+                 "(pass the exchange as topic; the routing key is subject). When message fields are given, also says which " +
+                 "subscriptions would receive such a message and, for the others, which comparison failed. Use it when a message " +
+                 "'disappeared': a message no subscription matches is dropped silently. Service Bus compares property names " +
+                 "case-insensitively; SNS, Pub/Sub and RabbitMQ are case-sensitive.")]
     public Task<TopicRoutingInfo> CheckTopicRoutingAsync(
         [Description("Topic name.")] string topic,
         [Description(EnvironmentDescription)] string? environment = null,
-        [Description("Subject (sys.Label) of the message to check.")] string? subject = null,
+        [Description("Subject (sys.Label) of the message to check; the routing key in RabbitMQ.")] string? subject = null,
         [Description("Correlation ID of the message to check.")] string? correlationId = null,
         [Description("Message ID of the message to check.")] string? messageId = null,
         [Description("Content type of the message to check.")] string? contentType = null,
@@ -113,13 +115,14 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         [Description("Session ID of the message to check.")] string? sessionId = null,
         [Description("Application properties of the message to check, as a JSON object; strings, numbers and booleans keep their type, " +
                      "for example {\"region\": \"EU\", \"amount\": 250}.")] Dictionary<string, System.Text.Json.JsonElement>? properties = null,
+        [Description("Body of the message to check, for SNS filter policies on the message body.")] string? body = null,
         CancellationToken cancellationToken = default) =>
         McpGuard.RunAsync(async () =>
         {
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
-            var rules = await session.ReadAsync(profile, (workspace, token) => workspace.SupportsSubscriptionRules
-                    ? workspace.GetTopicRulesAsync(topic, token)
-                    : throw new InvalidOperationException($"{profile.Provider.DisplayName()} has no subscription rules; only Azure Service Bus does."),
+            var (rules, service) = await session.ReadAsync(profile, async (workspace, token) => workspace.SupportsSubscriptionRules
+                    ? (await workspace.GetTopicRulesAsync(topic, token).ConfigureAwait(false), workspace.RoutingService)
+                    : throw new InvalidOperationException($"{profile.Provider.DisplayName()} has no subscription rules or bindings."),
                 cancellationToken).ConfigureAwait(false);
             var applicationProperties = (properties ?? []).Select(pair => pair.Value.ValueKind switch
             {
@@ -132,20 +135,26 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 _ => new MessageApplicationProperty(pair.Key, ApplicationPropertyType.String, pair.Value.ToString())
             }).ToArray();
             var hasMessage = subject is not null || correlationId is not null || messageId is not null || contentType is not null ||
-                             to is not null || sessionId is not null || applicationProperties.Length > 0;
+                             to is not null || sessionId is not null || applicationProperties.Length > 0 || body is not null;
             var routing = hasMessage
                 ? QueueLoom.Core.Routing.TopicRouting.Route(topic, rules, new QueueLoom.Core.Routing.RoutingMessage(
-                    new EditableMessageProperties(messageId, correlationId, contentType, subject, to, SessionId: sessionId), applicationProperties))
+                    new EditableMessageProperties(messageId, correlationId, contentType, subject, to, SessionId: sessionId), applicationProperties)
+                {
+                    Body = body
+                }, service)
                 : null;
             return new TopicRoutingInfo(profile.Name, topic, routing?.Headline,
                 rules.Select(subscription =>
                 {
                     var result = routing?.Subscriptions.First(item => item.Subscription == subscription.Subscription);
                     return new SubscriptionRoutingInfo(subscription.Subscription,
-                        subscription.Rules.Select(rule => new RuleInfo(rule.Name, rule.KindLabel, rule.FilterText, rule.Action)).ToArray(),
+                        subscription.Rules.Select(rule => new RuleInfo(rule.DisplayName, rule.KindLabel, rule.FilterText, rule.Action)).ToArray(),
                         subscription.Warning,
                         result?.Outcome.ToString(),
-                        result?.Summary);
+                        result?.Summary)
+                    {
+                        Note = subscription.Note
+                    };
                 }).ToArray());
         });
 
