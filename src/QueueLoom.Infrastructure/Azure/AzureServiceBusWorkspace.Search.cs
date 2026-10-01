@@ -307,7 +307,7 @@ public sealed partial class AzureServiceBusWorkspace
                     azureMessage =>
                     {
                         scanned = checked(scanned + 1);
-                        if (!MatchesSearch(azureMessage, request.Query))
+                        if (!MatchesSearch(azureMessage, request.Search))
                         {
                             return;
                         }
@@ -453,34 +453,15 @@ public sealed partial class AzureServiceBusWorkspace
         int ScannedMessageCount,
         bool SafetyLimitReached);
 
-    private static bool MatchesSearch(ServiceBusReceivedMessage message, string query)
+    private static bool MatchesSearch(ServiceBusReceivedMessage message, MessageSearchQuery query)
     {
-        if (Contains(message.CorrelationId, query) ||
-            Contains(message.MessageId, query) ||
-            Contains(message.Subject, query) ||
-            Contains(message.SessionId, query) ||
-            Contains(message.ContentType, query) ||
-            Contains(message.DeadLetterReason, query) ||
-            Contains(message.DeadLetterErrorDescription, query))
-        {
-            return true;
-        }
-
-        foreach (var property in message.ApplicationProperties)
-        {
-            if (Contains(property.Key, query) ||
-                Contains(Convert.ToString(property.Value, CultureInfo.InvariantCulture), query))
-            {
-                return true;
-            }
-        }
-
         var body = message.Body.ToMemory();
-        var searchableLength = Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes);
-        return searchableLength > 0 && Encoding.UTF8.GetString(body.Span[..searchableLength])
-            .Contains(query, StringComparison.OrdinalIgnoreCase);
+        return query.Matches(
+            [message.CorrelationId, message.MessageId, message.Subject, message.SessionId, message.ContentType, message.To, message.ReplyTo,
+                message.DeadLetterReason, message.DeadLetterErrorDescription],
+            message.ApplicationProperties.Select(property =>
+                new KeyValuePair<string, string?>(property.Key, Convert.ToString(property.Value, CultureInfo.InvariantCulture))),
+            body[..Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes)],
+            message.ContentType);
     }
-
-    private static bool Contains(string? value, string query) =>
-        !string.IsNullOrEmpty(value) && value.Contains(query, StringComparison.OrdinalIgnoreCase);
 }

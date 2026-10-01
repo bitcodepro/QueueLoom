@@ -17,6 +17,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     private const string EnvironmentDescription =
         "Saved environment name (see list_environments). Optional when only one environment is saved.";
 
+    private const string QueryDescription =
+        "Plain text is found in IDs, subject, reason, properties and body, ignoring case. '/regex/' is a regular expression " +
+        "('/…/i' ignores case). '$.order.status == \'failed\'' checks a field of the JSON body (also gzip or base64): ==, !=, >, >=, <, <=, " +
+        "=~ /regex/, or the path alone for 'has the field'; join conditions with and / or; [0] picks a list item, [*] any.";
+
     [McpServerTool(Name = "list_environments", Title = "List environments", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Lists the environments saved in QueueLoom (name, kind such as Production, service such as Amazon SQS / SNS, " +
         "namespace/region/project, authentication, access mode).")]
@@ -193,7 +198,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [Description("Searches every dead-letter queue of the environment for text in the Message ID, Correlation ID, subject, " +
                  "application properties or body (first 1 MiB). Results can be passed to delete_dead_letter_messages.")]
     public Task<MessageListInfo> SearchDeadLettersAsync(
-        [Description("Text to look for.")] string query,
+        [Description(QueryDescription)] string query,
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Maximum number of matches, 1-500.")] int maxResults = 50,
         CancellationToken cancellationToken = default) =>
@@ -234,7 +239,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     public Task<ExportInfo> ExportMessagesAsync(
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Queue name, or 'topic/subscription'.")] string? entity = null,
-        [Description("Text to search the dead-letter queues for, instead of 'entity'.")] string? query = null,
+        [Description("Search the dead-letter queues instead of reading 'entity'. " + QueryDescription)] string? query = null,
         [Description("With 'entity': 'dlq' (default), 'transfer-dlq' or 'active'.")] string subQueue = "dlq",
         [Description("How many messages at most, 1-1,000.")] int maxMessages = 100,
         [Description("'json' (default; complete) or 'csv' (one row per message, for spreadsheets).")] string format = "json",

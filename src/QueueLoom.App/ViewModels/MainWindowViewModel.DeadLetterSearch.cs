@@ -29,6 +29,15 @@ public sealed partial class MainWindowViewModel
         {
             throw new InvalidOperationException("Enter a search value first.");
         }
+        try
+        {
+            // A broken /regular expression/ or $.json.path is reported before any environment is searched.
+            MessageSearchQuery.Parse(query);
+        }
+        catch (MessageSearchQueryException exception)
+        {
+            throw new InvalidOperationException(exception.Message, exception);
+        }
 
         var filter = SelectedDeadLetterEnvironmentFilter
             ?? throw new InvalidOperationException("Select an environment filter first.");

@@ -21,7 +21,8 @@
       <Grid ColumnDefinitions="*,8,150,8,Auto,8,Auto,8,Auto,8,Auto">
         <TextBox Grid.Column="0" Classes="search"
                  Text="{Binding DeadLetterSearchQuery}"
-                 PlaceholderText="Correlation ID, Message ID, subject, body, or application property  (Ctrl+F)"
+                 PlaceholderText="Text, /regex/ or $.order.status == 'failed'  (Ctrl+F)"
+                 ToolTip.Tip="Plain text is found in IDs, subject, reason, properties and body, ignoring case. /regex/ is a regular expression (/…/i ignores case). $.path == value checks a field of the JSON body, also when it is gzip or base64: ==, !=, &gt;, &lt;, =~ /regex/, or the path alone for 'has the field'; join with and / or. [0] picks a list item, [*] any."
                  MaxLength="1024"
                  IsEnabled="{Binding !IsBusy}"
                  AutomationProperties.Name="Dead-letter message search">

@@ -196,7 +196,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 var matches = new List<BrowsedMessage>();
                 foreach (var message in scanned)
                 {
-                    if (!DeadLetterSearchMatcher.IsMatch(message.Message, request.Query))
+                    if (!DeadLetterSearchMatcher.IsMatch(message.Message, request.Search))
                     {
                         continue;
                     }
