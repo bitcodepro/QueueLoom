@@ -35,7 +35,7 @@
     <StackPanel Spacing="7" IsVisible="{Binding IsCorrelation}">
       <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
                  Text="Every field you fill in must match exactly (case-sensitive); empty fields are not checked." />
-      <Grid ColumnDefinitions="*,12,*" RowDefinitions="Auto,Auto,8,Auto,Auto,8,Auto,Auto">
+      <Grid ColumnDefinitions="*,12,*" RowDefinitions="Auto,Auto,8,Auto,Auto,8,Auto,Auto,8,Auto,Auto">
         <TextBlock Text="SUBJECT (LABEL)" Classes="eyebrow" />
         <TextBox Grid.Row="1" Text="{Binding Subject}" AutomationProperties.Name="Subject" />
         <TextBlock Grid.Column="2" Text="CORRELATION ID" Classes="eyebrow" />
@@ -48,10 +48,16 @@
         <TextBox Grid.Row="7" Text="{Binding ContentType}" AutomationProperties.Name="Content type" />
         <TextBlock Grid.Row="6" Grid.Column="2" Text="SESSION ID" Classes="eyebrow" />
         <TextBox Grid.Row="7" Grid.Column="2" Text="{Binding SessionId}" AutomationProperties.Name="Session ID" />
+        <TextBlock Grid.Row="9" Text="MESSAGE ID" Classes="eyebrow" />
+        <TextBox Grid.Row="10" Text="{Binding MessageId}" AutomationProperties.Name="Message ID" />
+        <TextBlock Grid.Row="9" Grid.Column="2" Text="REPLY TO SESSION ID" Classes="eyebrow" />
+        <TextBox Grid.Row="10" Grid.Column="2" Text="{Binding ReplyToSessionId}" AutomationProperties.Name="Reply to session ID" />
       </Grid>
       <TextBlock Text="APPLICATION PROPERTIES · NAME = VALUE, ONE PER LINE" Classes="eyebrow" />
       <TextBox Text="{Binding CorrelationProperties}" AcceptsReturn="True" MinHeight="60" FontFamily="{StaticResource MonoFontFamily}"
-               PlaceholderText="tenant = acme" AutomationProperties.Name="Correlation properties" />
+               PlaceholderText="tenant = 'acme'&#10;amount = 250" AutomationProperties.Name="Correlation properties" />
+      <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 Text="'Quoted' values are text, 250 and 1.5 are numbers, true and false are booleans. A number never matches the same digits as text." />
     </StackPanel>
 
     <StackPanel Spacing="7">

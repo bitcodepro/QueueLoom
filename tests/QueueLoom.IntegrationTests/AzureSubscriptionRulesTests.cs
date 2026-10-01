@@ -27,11 +27,15 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
         ("created", new SubscriptionRule("created", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields(Subject: "order.created"))),
         ("tenant", new SubscriptionRule("tenant", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
         {
-            Properties = new Dictionary<string, string> { ["tenant"] = "acme" }
+            Properties = new Dictionary<string, object> { ["tenant"] = "acme" }
         })),
         ("like", new SubscriptionRule("like", RuleFilterKind.Sql, "sys.Label LIKE 'order.%' AND NOT (region IN ('US', 'CA'))")),
         ("missing", new SubscriptionRule("missing", RuleFilterKind.Sql, "priority IS NULL OR priority <> 'low'")),
-        ("case", new SubscriptionRule("case", RuleFilterKind.Sql, "region = 'eu'"))
+        ("case", new SubscriptionRule("case", RuleFilterKind.Sql, "region = 'eu'")),
+        ("numeric", new SubscriptionRule("numeric", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
+        {
+            Properties = new Dictionary<string, object> { ["amount"] = 250L }
+        }))
     ];
 
     public async Task InitializeAsync()
@@ -80,7 +84,8 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
     public async Task Rules_are_read_and_the_prediction_matches_what_Service_Bus_delivers()
     {
         var rules = await _workspace.GetTopicRulesAsync(_topic);
-        Assert.Equal(["case", "created", "eu-big", "everything", "like", "missing", "tenant"], rules.Select(item => item.Subscription));
+        Assert.Equal(["case", "created", "eu-big", "everything", "like", "missing", "numeric", "tenant"], rules.Select(item => item.Subscription));
+        Assert.IsNotType<string>(rules.Single(item => item.Subscription == "numeric").Rules.Single().Correlation!.Properties["amount"]);
         Assert.Equal(RuleFilterKind.True, rules.Single(item => item.Subscription == "everything").Rules.Single().Kind);
         Assert.Equal("acme", rules.Single(item => item.Subscription == "tenant").Rules.Single().Correlation!.Properties["tenant"]);
 
@@ -89,7 +94,8 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
             Draft("m1", "order.created", ("region", "EU"), ("amount", 250L), ("tenant", "acme")),
             Draft("m2", "order.cancelled", ("region", "eu"), ("amount", 50L), ("priority", "low")),
             Draft("m3", "Order.Created", ("region", "US"), ("tenant", "ACME")),
-            Draft("m4", null, ("amount", 101.5), ("priority", "high"))
+            Draft("m4", null, ("amount", 101.5), ("priority", "high")),
+            Draft("m5", "order.created", ("amount", "250"), ("region", "EU"))
         ];
 
         var sender = _client.CreateSender(_topic);
@@ -135,6 +141,27 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
                     $"{draft.Properties.MessageId} → {subscription.Subscription}: Service Bus {(actual ? "delivered" : "did not deliver")}, QueueLoom said {subscription.Summary}");
             }
         }
+    }
+
+    [EmulatorFact(Emulators.ServiceBus)]
+    public async Task Typed_correlation_values_survive_an_edit()
+    {
+        var rule = new SubscriptionRule("typed", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields(Subject: "s", ReplyToSessionId: "r-1")
+        {
+            Properties = new Dictionary<string, object> { ["amount"] = 250L, ["vip"] = true, ["code"] = "250" }
+        });
+        await _workspace.SaveSubscriptionRuleAsync(_topic, "everything", rule, replace: false);
+        var read = (await _workspace.GetTopicRulesAsync(_topic)).Single(item => item.Subscription == "everything").Rules.Single(item => item.Name == "typed");
+
+        await _workspace.SaveSubscriptionRuleAsync(_topic, "everything", read with { Action = "SET seen = 1" }, replace: true);
+        var edited = (await _workspace.GetTopicRulesAsync(_topic)).Single(item => item.Subscription == "everything").Rules.Single(item => item.Name == "typed");
+
+        Assert.Equal("r-1", edited.Correlation!.ReplyToSessionId);
+        Assert.True(RoutingValue.AreEqual(250L, edited.Correlation.Properties["amount"]));
+        Assert.IsNotType<string>(edited.Correlation.Properties["amount"]);
+        Assert.Equal(true, edited.Correlation.Properties["vip"]);
+        Assert.Equal("250", edited.Correlation.Properties["code"]);
+        Assert.NotNull(edited.Action);
     }
 
     [EmulatorFact(Emulators.ServiceBus)]

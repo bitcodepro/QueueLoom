@@ -29,12 +29,13 @@ public sealed record CorrelationFilterFields(
     string? ReplyToSessionId = null,
     string? ContentType = null)
 {
-    public IReadOnlyDictionary<string, string> Properties { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <summary>Application properties with their typed values: text, long, double or bool (and as Service Bus returns others).</summary>
+    public IReadOnlyDictionary<string, object> Properties { get; init; } = new Dictionary<string, object>(StringComparer.Ordinal);
 
     public bool IsEmpty => CorrelationId is null && MessageId is null && To is null && ReplyTo is null && Subject is null &&
                            SessionId is null && ReplyToSessionId is null && ContentType is null && Properties.Count == 0;
 
-    /// <summary>The set fields as "Subject = 'order.created' AND tenant = 'acme'".</summary>
+    /// <summary>The set fields as "Subject = 'order.created' AND tenant = 'acme' AND amount = 250".</summary>
     public string Describe()
     {
         var parts = new List<string>();
@@ -55,7 +56,7 @@ public sealed record CorrelationFilterFields(
         Add("ContentType", ContentType);
         foreach (var (name, value) in Properties.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
-            Add(name, value);
+            parts.Add($"{name} = {RoutingValue.Format(value)}");
         }
         return parts.Count == 0 ? "(no fields: matches every message)" : string.Join(" AND ", parts);
     }

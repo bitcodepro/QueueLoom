@@ -97,9 +97,10 @@ public sealed partial class AzureServiceBusWorkspace
                 Empty(correlation.CorrelationId), Empty(correlation.MessageId), Empty(correlation.To), Empty(correlation.ReplyTo),
                 Empty(correlation.Subject), Empty(correlation.SessionId), Empty(correlation.ReplyToSessionId), Empty(correlation.ContentType))
             {
+                // Values keep their type: a rule on amount = 250 must not turn into amount = '250' when it is saved again.
                 Properties = correlation.ApplicationProperties.ToDictionary(
                     pair => pair.Key,
-                    pair => Convert.ToString(pair.Value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                    pair => pair.Value ?? string.Empty,
                     StringComparer.Ordinal)
             }, Action: action),
             _ => new SubscriptionRule(rule.Name, RuleFilterKind.Sql, rule.Filter?.ToString(), Action: action)

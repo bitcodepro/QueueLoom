@@ -113,6 +113,8 @@ public sealed class TopicRoutingViewModel : ObservableObject
     private string _testSessionId;
     private string _testContentType;
     private string _testProperties;
+    private readonly EditableMessageProperties _baseProperties;
+    private bool _loaded;
 
     public TopicRoutingViewModel(string topic, string environmentName, bool canEdit, string editHint, TopicRoutingServices services,
         MessageDraft? message = null, string? messageOrigin = null)
@@ -124,6 +126,8 @@ public sealed class TopicRoutingViewModel : ObservableObject
         _services = services;
         MessageOrigin = messageOrigin;
         var properties = message?.Properties ?? EditableMessageProperties.Empty;
+        // Fields the window does not show (ReplyToSessionId, PartitionKey…) are kept for the check as they are.
+        _baseProperties = properties;
         _testSubject = properties.Subject ?? string.Empty;
         _testCorrelationId = properties.CorrelationId ?? string.Empty;
         _testMessageId = properties.MessageId ?? string.Empty;
@@ -132,7 +136,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
         _testSessionId = properties.SessionId ?? string.Empty;
         _testContentType = properties.ContentType ?? string.Empty;
         _testProperties = FormatProperties(message?.ApplicationProperties ?? []);
-        CheckCommand = new RelayCommand(Check, () => !IsBusy && Subscriptions.Count > 0);
+        CheckCommand = new RelayCommand(Check, () => !IsBusy && _loaded);
         RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
         AddRuleCommand = new AsyncRelayCommand(AddRuleAsync, () => !IsBusy && CanEdit && Selected is not null);
         EditRuleCommand = new AsyncRelayCommand<RuleItemViewModel>(EditRuleAsync, rule => !IsBusy && CanEdit && rule is not null);
@@ -225,7 +229,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
         {
             if (SetProperty(ref _isBusy, value))
             {
-                CheckCommand.NotifyCanExecuteChanged();
+                CheckCommand?.NotifyCanExecuteChanged();
                 RefreshCommand.NotifyCanExecuteChanged();
                 AddRuleCommand.NotifyCanExecuteChanged();
                 EditRuleCommand.NotifyCanExecuteChanged();
@@ -256,13 +260,17 @@ public sealed class TopicRoutingViewModel : ObservableObject
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        var checkAfterwards = HasHeadline || HasMessageOrigin;
         IsBusy = true;
         Error = string.Empty;
+        _loaded = false;
         try
         {
             var selected = Selected?.Name;
             var rules = await _services.LoadRules(cancellationToken).ConfigureAwait(true);
             Subscriptions.Clear();
+            Headline = string.Empty;
+            IsDropped = false;
             foreach (var subscription in rules)
             {
                 Subscriptions.Add(new RoutingSubscriptionViewModel(subscription));
@@ -270,16 +278,25 @@ public sealed class TopicRoutingViewModel : ObservableObject
             Selected = Subscriptions.FirstOrDefault(item => item.Name == selected) ?? Subscriptions.FirstOrDefault();
             OnPropertyChanged(nameof(WarningCount));
             OnPropertyChanged(nameof(SubscriptionsCaption));
+            _loaded = true;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            Error = exception.Message;
+            // Without the rules nothing can be said about routing: an old result or an empty list would read as
+            // "no subscription takes it", so both are cleared and only the error is shown.
+            Subscriptions.Clear();
+            Selected = null;
+            Headline = string.Empty;
+            IsDropped = false;
+            OnPropertyChanged(nameof(WarningCount));
+            OnPropertyChanged(nameof(SubscriptionsCaption));
+            Error = $"The rules of {Topic} could not be read: {exception.Message}";
         }
         finally
         {
             IsBusy = false;
         }
-        if (HasHeadline || HasMessageOrigin)
+        if (_loaded && checkAfterwards)
         {
             Check();
         }
@@ -288,6 +305,10 @@ public sealed class TopicRoutingViewModel : ObservableObject
     /// <summary>Works out, subscription by subscription, whether the test message would be copied there.</summary>
     public void Check()
     {
+        if (!_loaded)
+        {
+            return;
+        }
         Error = string.Empty;
         IReadOnlyList<MessageApplicationProperty> properties;
         try
@@ -299,9 +320,16 @@ public sealed class TopicRoutingViewModel : ObservableObject
             Error = exception.Message;
             return;
         }
-        var message = new RoutingMessage(new EditableMessageProperties(
-            Blank(TestMessageId), Blank(TestCorrelationId), Blank(TestContentType), Blank(TestSubject), Blank(TestTo), Blank(TestReplyTo),
-            Blank(TestSessionId)), properties);
+        var message = new RoutingMessage(_baseProperties with
+        {
+            MessageId = Blank(TestMessageId),
+            CorrelationId = Blank(TestCorrelationId),
+            ContentType = Blank(TestContentType),
+            Subject = Blank(TestSubject),
+            To = Blank(TestTo),
+            ReplyTo = Blank(TestReplyTo),
+            SessionId = Blank(TestSessionId)
+        }, properties);
         var result = TopicRouting.Route(Topic, Subscriptions.Select(item => item.Source).ToArray(), message);
         foreach (var subscription in Subscriptions)
         {
@@ -417,5 +445,6 @@ public sealed class TopicRoutingViewModel : ObservableObject
         return result;
     }
 
-    private static string? Blank(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    /// <summary>Empty means the message has no such property; anything else is kept exactly, spaces included.</summary>
+    private static string? Blank(string value) => string.IsNullOrEmpty(value) ? null : value;
 }

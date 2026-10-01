@@ -117,8 +117,14 @@ public static class TopicRouting
         foreach (var (name, expected) in filter.Properties)
         {
             var value = message.User(name, out var exists);
-            var actual = exists ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) : null;
-            Field(name, expected, actual);
+            if (!exists)
+            {
+                misses.Add($"{name} should be {RoutingValue.Format(expected)} but the message has none");
+            }
+            else if (!RoutingValue.AreEqual(expected, value))
+            {
+                misses.Add($"{name} should be {RoutingValue.Format(expected)} but is {RoutingValue.Format(value)}");
+            }
         }
         return misses.Count == 0
             ? new RuleResult(rule, RoutingOutcome.Receives, "Every field matches.")

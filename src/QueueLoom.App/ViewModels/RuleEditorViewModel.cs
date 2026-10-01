@@ -26,7 +26,9 @@ public sealed partial class RuleEditorViewModel : ObservableObject
     private string _sessionId = string.Empty;
     private string _contentType = string.Empty;
     private string _messageId = string.Empty;
+    private string _replyToSessionId = string.Empty;
     private string _correlationProperties = string.Empty;
+    private readonly Dictionary<string, (string Line, object Value)> _originalProperties = new(StringComparer.Ordinal);
     private string _error = string.Empty;
 
     public RuleEditorViewModel(string topic, string subscription, SubscriptionRule? existing = null)
@@ -49,8 +51,12 @@ public sealed partial class RuleEditorViewModel : ObservableObject
             _sessionId = correlation.SessionId ?? string.Empty;
             _contentType = correlation.ContentType ?? string.Empty;
             _messageId = correlation.MessageId ?? string.Empty;
-            _correlationProperties = string.Join(Environment.NewLine,
-                correlation.Properties.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key} = {pair.Value}"));
+            _replyToSessionId = correlation.ReplyToSessionId ?? string.Empty;
+            foreach (var (name, value) in correlation.Properties.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                _originalProperties[name] = (Line(name, value), value);
+            }
+            _correlationProperties = string.Join(Environment.NewLine, _originalProperties.Values.Select(original => original.Line));
         }
         if (existing?.Kind is RuleFilterKind.True or RuleFilterKind.False)
         {
@@ -175,7 +181,9 @@ public sealed partial class RuleEditorViewModel : ObservableObject
 
     public string MessageId { get => _messageId; set => SetProperty(ref _messageId, value ?? string.Empty); }
 
-    /// <summary>One "name = value" per line.</summary>
+    public string ReplyToSessionId { get => _replyToSessionId; set => SetProperty(ref _replyToSessionId, value ?? string.Empty); }
+
+    /// <summary>One "name = value" per line: 'quoted' is text, 250 and 1.5 are numbers, true and false are booleans.</summary>
     public string CorrelationProperties
     {
         get => _correlationProperties;
@@ -221,7 +229,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
             return new SubscriptionRule(name, RuleFilterKind.Sql, SqlExpression.Trim(), Action: action);
         }
 
-        var properties = new Dictionary<string, string>(StringComparer.Ordinal);
+        var properties = new Dictionary<string, object>(StringComparer.Ordinal);
         foreach (var line in CorrelationProperties.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var separator = line.IndexOf('=');
@@ -230,10 +238,14 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                 Error = $"Write each property as name = value; '{line}' has no '='.";
                 return null;
             }
-            properties[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            var property = line[..separator].Trim();
+            // A line left as it was keeps the exact value Service Bus returned, whatever its type.
+            properties[property] = _originalProperties.TryGetValue(property, out var original) && original.Line == line
+                ? original.Value
+                : RoutingValue.Parse(line[(separator + 1)..]);
         }
         var fields = new CorrelationFilterFields(Blank(CorrelationId), Blank(MessageId), Blank(To), Blank(ReplyTo), Blank(Subject),
-            Blank(SessionId), null, Blank(ContentType)) { Properties = properties };
+            Blank(SessionId), Blank(ReplyToSessionId), Blank(ContentType)) { Properties = properties };
         if (fields.IsEmpty)
         {
             Error = "Fill in at least one field or property: an empty correlation filter would take every message.";
@@ -242,7 +254,10 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         return new SubscriptionRule(name, RuleFilterKind.Correlation, Correlation: fields, Action: action);
     }
 
-    private static string? Blank(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    /// <summary>Empty means "not checked"; anything else is kept exactly, since correlation fields match exactly.</summary>
+    private static string? Blank(string value) => string.IsNullOrEmpty(value) ? null : value;
+
+    private static string Line(string name, object value) => $"{name} = {RoutingValue.Format(value)}";
 
     [GeneratedRegex(@"^[A-Za-z0-9$._-]+$")]
     private static partial Regex RuleName();

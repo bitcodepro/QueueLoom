@@ -134,3 +134,118 @@ public sealed partial class ViewModelStateTests
         Assert.Equal("acme", editor.TryBuild()!.Correlation!.Properties["tenant"]);
     }
 }
+
+public sealed class RoutingReviewRegressionTests
+{
+    private static readonly SubscriptionRule TypedRule = new("typed", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields(
+        Subject: "order.created", ReplyToSessionId: "reply-7")
+    {
+        Properties = new Dictionary<string, object>
+        {
+            ["amount"] = 250,
+            ["rate"] = 0.5,
+            ["vip"] = true,
+            ["tenant"] = "acme",
+            ["trace"] = Guid.Parse("4f3c2a1b-0000-4000-8000-000000000001")
+        }
+    });
+
+    [Fact]
+    public void CorrelationValues_KeepTheirTypeWhenOnlyTheActionChanges()
+    {
+        var editor = new RuleEditorViewModel("orders", "billing", TypedRule) { Action = "SET seen = true" };
+
+        var saved = editor.TryBuild()!;
+
+        Assert.Equal("SET seen = true", saved.Action);
+        Assert.Equal("reply-7", saved.Correlation!.ReplyToSessionId);
+        Assert.Equal("order.created", saved.Correlation.Subject);
+        foreach (var (name, value) in TypedRule.Correlation!.Properties)
+        {
+            Assert.Equal(value.GetType(), saved.Correlation.Properties[name].GetType());
+            Assert.Equal(value, saved.Correlation.Properties[name]);
+        }
+    }
+
+    [Fact]
+    public void CorrelationEditor_ReadsNumbersBooleansAndQuotedText()
+    {
+        var editor = new RuleEditorViewModel("orders", "billing")
+        {
+            Name = "typed",
+            Kind = RuleEditorViewModel.Kinds[1],
+            CorrelationProperties = "amount = 250\ncode = '250'\nvip = true\nrate = 1.5\nplain = acme"
+        };
+
+        var properties = editor.TryBuild()!.Correlation!.Properties;
+
+        Assert.Equal(250L, properties["amount"]);
+        Assert.Equal("250", properties["code"]);
+        Assert.Equal(true, properties["vip"]);
+        Assert.Equal(1.5, properties["rate"]);
+        Assert.Equal("acme", properties["plain"]);
+        Assert.Contains("amount = 250 AND code = '250'", new CorrelationFilterFields { Properties = properties }.Describe(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CorrelationMatching_TellsNumbersFromText()
+    {
+        var rule = new SubscriptionRule("amount", RuleFilterKind.Correlation,
+            Correlation: new CorrelationFilterFields { Properties = new Dictionary<string, object> { ["amount"] = 250L } });
+
+        RoutingOutcome Route(ApplicationPropertyType type, string value) => TopicRouting.Check(rule,
+            new RoutingMessage(EditableMessageProperties.Empty, [new MessageApplicationProperty("amount", type, value)])).Outcome;
+
+        Assert.Equal(RoutingOutcome.Receives, Route(ApplicationPropertyType.Int32, "250"));
+        Assert.Equal(RoutingOutcome.Receives, Route(ApplicationPropertyType.Int64, "250"));
+        Assert.Equal(RoutingOutcome.Skips, Route(ApplicationPropertyType.String, "250"));
+        Assert.Contains("amount should be 250 but is '250'", TopicRouting.Check(rule, new RoutingMessage(EditableMessageProperties.Empty,
+            [new MessageApplicationProperty("amount", ApplicationPropertyType.String, "250")])).Explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FailedRuleLoading_IsShownAsAnErrorNotAsADroppedMessage()
+    {
+        var services = new TopicRoutingServices(
+            _ => throw new InvalidOperationException("Reading subscription rules needs the Azure Service Bus Data Owner role."),
+            (_, _, _, _) => Task.CompletedTask, (_, _, _) => Task.CompletedTask,
+            _ => Task.FromResult<SubscriptionRule?>(null), (_, _, _) => Task.FromResult(false));
+        var draft = new MessageDraft(EditableMessageBody.Empty, new EditableMessageProperties(Subject: "order.created"));
+        var routing = new TopicRoutingViewModel("orders", "Prod", false, string.Empty, services, draft, "Dead letter order-1");
+
+        await routing.LoadAsync();
+        routing.Check();
+
+        Assert.Contains("Data Owner", routing.Error, StringComparison.Ordinal);
+        Assert.False(routing.HasHeadline);
+        Assert.False(routing.IsDropped);
+        Assert.Empty(routing.Subscriptions);
+        Assert.False(routing.CheckCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task RoutingWindow_ChecksTheSamePropertiesAsDirectRouting()
+    {
+        SubscriptionRules[] rules =
+        [
+            new("by-reply-session", [new SubscriptionRule("sql", RuleFilterKind.Sql, "sys.ReplyToSessionId = 'reply-7'")]),
+            new("by-partition", [new SubscriptionRule("sql", RuleFilterKind.Sql, "sys.PartitionKey = 'p-3'")]),
+            new("by-correlation", [new SubscriptionRule("corr", RuleFilterKind.Correlation,
+                Correlation: new CorrelationFilterFields(ReplyToSessionId: "reply-7"))]),
+            new("padded", [new SubscriptionRule("corr", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields(Subject: " order "))])
+        ];
+        var draft = new MessageDraft(EditableMessageBody.Empty,
+            new EditableMessageProperties(MessageId: "m-1", Subject: " order ", ReplyToSessionId: "reply-7", PartitionKey: "p-3"));
+        var services = new TopicRoutingServices(_ => Task.FromResult<IReadOnlyList<SubscriptionRules>>(rules),
+            (_, _, _, _) => Task.CompletedTask, (_, _, _) => Task.CompletedTask,
+            _ => Task.FromResult<SubscriptionRule?>(null), (_, _, _) => Task.FromResult(false));
+        var routing = new TopicRoutingViewModel("orders", "Dev", false, string.Empty, services, draft, "Draft");
+
+        await routing.LoadAsync();
+
+        var direct = TopicRouting.Route("orders", rules, RoutingMessage.From(draft));
+        Assert.Equal(direct.Subscriptions.Select(item => (item.Subscription, item.Outcome)),
+            routing.Subscriptions.Select(item => (item.Name, item.Result!.Outcome)));
+        Assert.All(routing.Subscriptions, item => Assert.True(item.Receives, item.Name));
+    }
+}
