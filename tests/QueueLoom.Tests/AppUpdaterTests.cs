@@ -87,9 +87,94 @@ public sealed class AppUpdaterTests : IDisposable
         var other = Path.Combine(downloads, "other-installation");
         Directory.CreateDirectory(other);
         File.WriteAllText(Path.Combine(other, "keep"), "keep");
+        MarkInstallerExited(target);
         updater.CleanUpPreviousUpdate(target);
         Assert.False(Directory.Exists(Path.GetDirectoryName(staging)));
         Assert.Equal("keep", File.ReadAllText(Path.Combine(other, "keep")));
+    }
+    [Fact]
+    public async Task Cleanup_AfterDeletingDownloadWithLockedReceipt_CanRetryAndUpdateAgain()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var (target, updater, receipt) = await DownloadAndInstall();
+        var path = UpdateRestart.ReceiptPath(target);
+        using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero);
+            Assert.False(Directory.Exists(receipt.DownloadDirectory));
+            Assert.True(File.Exists(path));
+        }
+        MarkInstallerExited(target);
+        updater.CleanUpPreviousUpdate(target);
+        Assert.False(File.Exists(path));
+        AppUpdater.Install(target, Staging(("QueueLoom.exe", "next program")));
+        Assert.Equal("next program", File.ReadAllText(target.Executable));
+    }
+
+    [Fact]
+    public async Task Cleanup_WhenTempDownloadWasAlreadyRemoved_CanUpdateAgain()
+    {
+        var (target, updater, receipt) = await DownloadAndInstall();
+        Directory.Delete(receipt.DownloadDirectory, true);
+        MarkInstallerExited(target);
+        updater.CleanUpPreviousUpdate(target);
+        Assert.False(File.Exists(UpdateRestart.ReceiptPath(target)));
+        AppUpdater.Install(target, Staging(("QueueLoom.exe", "next program")));
+        Assert.Equal("next program", File.ReadAllText(target.Executable));
+    }
+
+    [Fact]
+    public async Task Cleanup_WhenExistingDownloadHasLostOwnership_PreservesIt()
+    {
+        var (target, _, receipt) = await DownloadAndInstall();
+        File.Delete(Path.Combine(receipt.DownloadDirectory, UpdateRestart.DownloadMarker));
+        var unrelated = Path.Combine(receipt.DownloadDirectory, "user-file");
+        File.WriteAllText(unrelated, "keep");
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.Zero));
+        Assert.Equal("keep", File.ReadAllText(unrelated));
+        Assert.True(File.Exists(UpdateRestart.ReceiptPath(target)));
+    }
+
+    [Fact]
+    public void Install_WhileAnotherTransactionOwnerIsCleaning_LeavesInstallationUntouched()
+    {
+        var target = Target("win-x64");
+        File.WriteAllText(target.Executable, "old program");
+        using var cleaning = new FileStream(UpdateRestart.ReceiptPath(target) + ".handoff", FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+        Assert.Throws<IOException>(() => AppUpdater.Install(target, Staging(("QueueLoom.exe", "new program"))));
+        Assert.Equal("old program", File.ReadAllText(target.Executable));
+        Assert.False(File.Exists(UpdateRestart.ReceiptPath(target)));
+    }
+
+    [Fact]
+    public async Task StartupCleanup_WhileInstallerIsAlive_PreservesThePendingHandoff()
+    {
+        var (target, updater, receipt) = await DownloadAndInstall();
+        updater.CleanUpPreviousUpdate(target);
+        Assert.True(File.Exists(UpdateRestart.ReceiptPath(target)));
+        Assert.True(File.Exists(receipt.Entries.Single().Backup));
+        Assert.True(Directory.Exists(receipt.DownloadDirectory));
+    }
+    private async Task<(UpdateTarget Target, AppUpdater Updater, UpdateRestart.Receipt Receipt)> DownloadAndInstall()
+    {
+        var target = Target("win-x64");
+        File.WriteAllText(target.Executable, "old program");
+        var package = Zip(("QueueLoom.exe", "new program"));
+        var updater = new AppUpdater(Serve(package, Sha(package)), Path.Combine(_root, "download"));
+        var staging = await updater.DownloadAsync(Update, target, null, CancellationToken.None);
+        AppUpdater.Install(target, staging);
+        var receipt = System.Text.Json.JsonSerializer.Deserialize<UpdateRestart.Receipt>(
+            File.ReadAllText(UpdateRestart.ReceiptPath(target)))!;
+        return (target, updater, receipt);
+    }
+    private static void MarkInstallerExited(UpdateTarget target)
+    {
+        // These file-only tests simulate the successful next startup after the installer has exited.
+        var path = UpdateRestart.ReceiptPath(target);
+        var receipt = System.Text.Json.JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(receipt with { InstallerPid = int.MaxValue }));
     }
     private static readonly UpdateCheckResult Update =
         new(new Version(9, 1, 0), "v9.1.0", new Uri("https://github.com/bitcodepro/QueueLoom/releases/tag/v9.1.0"));
@@ -167,6 +252,7 @@ public sealed class AppUpdaterTests : IDisposable
         Assert.Equal("old program", File.ReadAllText(Directory.GetFiles(target.InstallDirectory, "QueueLoom.exe.*.old").Single()));
         Assert.Equal("new readme", File.ReadAllText(Path.Combine(target.InstallDirectory, "README.md")));
 
+        MarkInstallerExited(target);
         new AppUpdater(new HttpClient(), Path.Combine(_root, "download")).CleanUpPreviousUpdate(target);
         Assert.Empty(Directory.GetFiles(target.InstallDirectory, "QueueLoom.exe.*.old"));
     }

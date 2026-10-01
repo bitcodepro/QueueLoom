@@ -27,8 +27,11 @@ public sealed class UpdateRestartProcessTests : IDisposable
         File.WriteAllText(Path.Combine(_root, "user-notes.old"), "keep");
 
         // Production StartInstalled uses this process as its parent, so test the same protocol with our disposable parent.
+        var parentTicks = parent.StartTime.ToUniversalTime().Ticks;
+        // Explicitly exercise reconstructed birth-time differences on Unix instead of relying on clock jitter.
+        if (!OperatingSystem.IsWindows()) parentTicks += TimeSpan.TicksPerSecond;
         var helper = Start(target.Executable, "--update-helper", UpdateRestart.ReceiptPath(target), receipt.Id,
-            parent.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), parent.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            parent.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), parentTicks.ToString(System.Globalization.CultureInfo.InvariantCulture));
         await Task.Delay(250);
         Assert.False(File.Exists(Path.Combine(_root, "updated-started.txt")));
         Assert.True(File.Exists(receipt.Entries.Single().Backup));
@@ -167,6 +170,76 @@ public sealed class UpdateRestartProcessTests : IDisposable
         Assert.False(File.Exists(receipt.Entries.Single().Backup));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HealthyStartup_WhenDiagnosticCannotBeWritten_NeverRollsBack(bool lockedDiagnostic)
+    {
+        if (lockedDiagnostic && !OperatingSystem.IsWindows()) return;
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        // An existing unowned download causes cleanup to fail after the GUI confirms readiness.
+        var unowned = Path.Combine(_root, "unowned-" + receipt.Id);
+        Directory.CreateDirectory(unowned);
+        File.WriteAllText(Path.Combine(unowned, "keep"), "keep");
+        receipt = receipt with { DownloadDirectory = unowned };
+        File.WriteAllText(path, JsonSerializer.Serialize(receipt));
+        var updatedBytes = File.ReadAllBytes(target.Executable);
+        using var diagnosticLock = BlockDiagnostic(path, lockedDiagnostic);
+
+        var result = await UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0);
+
+        Assert.Equal(0, result);
+        Assert.Equal(updatedBytes, File.ReadAllBytes(target.Executable));
+        Assert.False(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
+        Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(unowned, "keep")));
+        using var child = Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(_root, "updated-started.txt")),
+            System.Globalization.CultureInfo.InvariantCulture));
+        Assert.False(child.HasExited);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedStartup_WhenDiagnosticCannotBeWritten_StillRestoresAndRestarts(bool lockedDiagnostic)
+    {
+        if (lockedDiagnostic && !OperatingSystem.IsWindows()) return;
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        var previousBytes = File.ReadAllBytes(receipt.Entries.Single().Backup!);
+        File.WriteAllText(Path.Combine(_root, "fail-startup"), "fail only updated startup");
+        using var diagnosticLock = BlockDiagnostic(path, lockedDiagnostic);
+
+        var result = await UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0);
+        await WaitFor(Path.Combine(_root, "recovered-started.txt"));
+
+        Assert.Equal(1, result);
+        Assert.Equal(previousBytes, File.ReadAllBytes(target.Executable));
+        Assert.True(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
+        Assert.True(JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!.Recovered);
+    }
+
+    private (UpdateTarget Target, UpdateRestart.Receipt Receipt) ChangedInstallation()
+    {
+        var target = Installation();
+        var staging = Path.Combine(_root, "staging");
+        Directory.CreateDirectory(staging);
+        var updated = Path.Combine(staging, Path.GetFileName(target.Executable));
+        File.Copy(Fixture, updated);
+        using (var changed = new FileStream(updated, FileMode.Append)) changed.Write([1, 2, 3, 4]);
+        AppUpdater.Install(target, staging);
+        var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(UpdateRestart.ReceiptPath(target)))!;
+        return (target, receipt);
+    }
+
+    private static FileStream? BlockDiagnostic(string path, bool locked)
+    {
+        if (locked) return new FileStream(path + ".error", FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        // Portable equivalent of an unwritable diagnostic destination.
+        Directory.CreateDirectory(path + ".error");
+        return null;
+    }
     private UpdateTarget Installation()
     {
         Assert.True(File.Exists(Fixture), "Update fixture must be built with the tests.");

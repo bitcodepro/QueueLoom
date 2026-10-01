@@ -9,7 +9,8 @@ public static class UpdateRestart
     public const string ReceiptName = ".queueloom-update.json";
     public const string DownloadMarker = ".queueloom-download";
     public sealed record Entry(string Current, string? Backup);
-    public sealed record Receipt(string Id, UpdateTarget Target, string DownloadDirectory, Entry[] Entries, bool Recovered = false);
+    public sealed record Receipt(string Id, UpdateTarget Target, string DownloadDirectory, Entry[] Entries, bool Recovered = false,
+        int InstallerPid = 0, long InstallerStartTicks = 0);
     private static string? _startupReceipt;
     private static string? _startupId;
 
@@ -99,8 +100,7 @@ public static class UpdateRestart
     {
         var receipt = Read(path, id);
         var ready = path + "." + id + ".ready";
-        using var handoff = new FileStream(path + ".handoff", FileMode.OpenOrCreate, FileAccess.ReadWrite,
-            FileShare.None, 1, FileOptions.DeleteOnClose);
+        using var handoff = OwnTransaction(path);
         File.WriteAllText(path + ".helper.tmp", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         File.Move(path + ".helper.tmp", path + ".helper", overwrite: true);
         try
@@ -108,7 +108,9 @@ public static class UpdateRestart
             try
             {
                 using var parent = Process.GetProcessById(parentPid);
-                if (parent.StartTime.ToUniversalTime().Ticks == parentStartTicks)
+                // Unix reconstructs StartTime from boot time; tiny cross-process differences must not imply exit.
+                // Waiting for any live PID there is conservative, including the rare PID-reuse case.
+                if (!OperatingSystem.IsWindows() || parent.StartTime.ToUniversalTime().Ticks == parentStartTicks)
                     await parent.WaitForExitAsync().WaitAsync(exitTimeout ?? TimeSpan.FromMinutes(2));
             }
             catch (ArgumentException) { /* Already exited. */ }
@@ -116,7 +118,7 @@ public static class UpdateRestart
         catch (Exception exception)
         {
             // Never replace files or kill a process when the old application is still running.
-            File.WriteAllText(path + ".error", "Waiting for the previous application to exit: " + exception.Message);
+            TryWriteError(path, "Waiting for the previous application to exit: " + exception.Message);
             return 1;
         }
 
@@ -149,13 +151,6 @@ public static class UpdateRestart
                     throw new TimeoutException("The updated application did not confirm startup.");
                 await Task.Delay(100);
             }
-            try { await CleanAsync(receipt, path, TimeSpan.FromSeconds(30)); }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
-            {
-                // A healthy updated application must never be rolled back because cleanup failed.
-                File.WriteAllText(path + ".error", "Update started successfully; cleanup will be retried: " + exception.Message);
-            }
-            return 0;
         }
         catch (Exception exception)
         {
@@ -164,7 +159,7 @@ public static class UpdateRestart
                 child.Kill();
                 await child.WaitForExitAsync();
             }
-            File.WriteAllText(path + ".error", "Updated application failed; restoring the previous version: " + exception.Message);
+            TryWriteError(path, "Updated application failed; restoring the previous version: " + exception.Message);
             Restore(receipt);
             File.WriteAllText(path, JsonSerializer.Serialize(receipt with { Recovered = true }));
             // The helper may still map the failed executable on Windows. Keep it as evidence, never delete the backup first.
@@ -173,6 +168,14 @@ public static class UpdateRestart
             return 1;
         }
         finally { child?.Dispose(); }
+
+        // Cleanup is outside the startup-failure handler: it cannot kill or roll back a healthy child.
+        try { await CleanAsync(receipt, path, TimeSpan.FromSeconds(30)); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            TryWriteError(path, "Update started successfully; cleanup will be retried: " + exception.Message);
+        }
+        return 0;
     }
 
     public static void Restore(Receipt receipt)
@@ -208,9 +211,16 @@ public static class UpdateRestart
                 {
                     var marker = Path.Combine(receipt.DownloadDirectory, DownloadMarker);
                     if (!Path.GetFileName(receipt.DownloadDirectory).EndsWith("-" + receipt.Id, StringComparison.Ordinal) ||
-                        !File.Exists(marker) || File.ReadAllText(marker) != receipt.Id)
+                        File.Exists(receipt.DownloadDirectory))
                         throw new InvalidDataException("The update download is not owned by this transaction.");
-                    TryDelete(receipt.DownloadDirectory);
+                    // A previous cleanup or OS temp maintenance may already have removed this owned directory.
+                    // Existing directories still require the exact marker before any deletion.
+                    if (Directory.Exists(receipt.DownloadDirectory))
+                    {
+                        if (!File.Exists(marker) || File.ReadAllText(marker) != receipt.Id)
+                            throw new InvalidDataException("The update download is not owned by this transaction.");
+                        TryDelete(receipt.DownloadDirectory);
+                    }
                     if (Directory.Exists(receipt.DownloadDirectory))
                     {
                         // Recursive deletion can remove the marker before reaching a locked archive.
@@ -229,6 +239,27 @@ public static class UpdateRestart
             if (deadline.Elapsed >= timeout) return; // Keep the receipt for the next successful startup.
             await Task.Delay(200);
         } while (true);
+    }
+
+    public static FileStream OwnTransaction(string path) => new(path + ".handoff", FileMode.OpenOrCreate,
+        FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+
+    public static bool InstallerIsAlive(Receipt receipt)
+    {
+        if (receipt.InstallerPid <= 0 || receipt.Recovered) return false;
+        try
+        {
+            using var process = Process.GetProcessById(receipt.InstallerPid);
+            return !process.HasExited && (!OperatingSystem.IsWindows() ||
+                process.StartTime.ToUniversalTime().Ticks == receipt.InstallerStartTicks);
+        }
+        catch (ArgumentException) { return false; }
+    }
+
+    private static void TryWriteError(string path, string message)
+    {
+        try { File.WriteAllText(path + ".error", message); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
     }
 
     private static void TryDelete(string path)

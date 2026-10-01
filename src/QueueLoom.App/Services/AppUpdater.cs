@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
@@ -169,6 +170,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         if (!File.Exists(marker) || !Path.GetFileName(downloadDirectory).EndsWith("-" + id, StringComparison.Ordinal))
             downloadDirectory = string.Empty;
         var receiptPath = UpdateRestart.ReceiptPath(target);
+        using var ownership = UpdateRestart.OwnTransaction(receiptPath);
         var entries = target.Bundle is { } appBundle
             ? new[] { new UpdateRestart.Entry(appBundle, Directory.Exists(appBundle) ? appBundle + "." + id + ".old" : null) }
             : Directory.EnumerateFiles(staging).Select(file =>
@@ -176,7 +178,9 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 var current = Path.Combine(target.InstallDirectory, Path.GetFileName(file));
                 return new UpdateRestart.Entry(current, File.Exists(current) ? current + "." + id + ".old" : null);
             }).ToArray();
-        var receipt = new UpdateRestart.Receipt(id, target, downloadDirectory, entries);
+        using var installer = Process.GetCurrentProcess();
+        var receipt = new UpdateRestart.Receipt(id, target, downloadDirectory, entries,
+            InstallerPid: installer.Id, InstallerStartTicks: installer.StartTime.ToUniversalTime().Ticks);
         var moves = new List<(string Current, string Old)>();
         var added = new List<string>();
         // A previous unfinished update must be recovered, not overwritten.
@@ -237,6 +241,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         catch (Exception exception) when (exception is IOException or System.ComponentModel.Win32Exception)
         {
             var path = UpdateRestart.ReceiptPath(target);
+            using var ownership = UpdateRestart.OwnTransaction(path);
             var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
             UpdateRestart.Read(path, receipt.Id);
             UpdateRestart.Restore(receipt);
@@ -251,15 +256,16 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         if (target is not null && File.Exists(UpdateRestart.ReceiptPath(target)))
         {
             var path = UpdateRestart.ReceiptPath(target);
-            // A helper owns cleanup until it has observed the new application's readiness signal.
-            try
-            {
-                using var handoff = new FileStream(path + ".handoff", FileMode.OpenOrCreate, FileAccess.ReadWrite,
-                    FileShare.None, 1, FileOptions.DeleteOnClose);
-            }
+            // Retain ownership through receipt validation and cleanup, including asynchronous retries.
+            FileStream ownership;
+            try { ownership = UpdateRestart.OwnTransaction(path); }
             catch (IOException) { return; }
+            using var retainedOwnership = ownership;
+            if (!File.Exists(path)) return;
             var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
             UpdateRestart.Read(path, receipt.Id);
+            // Protect the installed-but-not-yet-accepted handoff between Install and StartInstalled.
+            if (UpdateRestart.InstallerIsAlive(receipt)) return;
             // Startup was successful. Retry only the backups recorded by this update.
             UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero).GetAwaiter().GetResult();
         }
