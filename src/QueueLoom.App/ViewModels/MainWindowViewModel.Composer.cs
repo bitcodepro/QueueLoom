@@ -382,16 +382,16 @@ public sealed partial class MainWindowViewModel
         var sourceProperties = _draftSourceMessage?.Properties ?? EditableMessageProperties.Empty;
         var properties = sourceProperties with
         {
-            MessageId = NullIfWhiteSpace(DraftMessageId) ?? Guid.NewGuid().ToString("N"),
-            CorrelationId = NullIfWhiteSpace(DraftCorrelationId),
-            ContentType = NullIfWhiteSpace(DraftContentType),
-            Subject = NullIfWhiteSpace(DraftSubject),
-            To = NullIfWhiteSpace(DraftTo),
-            ReplyTo = NullIfWhiteSpace(DraftReplyTo),
-            SessionId = NullIfWhiteSpace(DraftSessionId),
-            ReplyToSessionId = NullIfWhiteSpace(DraftReplyToSessionId),
-            PartitionKey = NullIfWhiteSpace(DraftPartitionKey),
-            TransactionPartitionKey = NullIfWhiteSpace(DraftTransactionPartitionKey),
+            MessageId = NormalizeDraftProperty(DraftMessageId, sourceProperties.MessageId) ?? Guid.NewGuid().ToString("N"),
+            CorrelationId = NormalizeDraftProperty(DraftCorrelationId, sourceProperties.CorrelationId),
+            ContentType = NormalizeDraftProperty(DraftContentType, sourceProperties.ContentType),
+            Subject = NormalizeDraftProperty(DraftSubject, sourceProperties.Subject),
+            To = NormalizeDraftProperty(DraftTo, sourceProperties.To),
+            ReplyTo = NormalizeDraftProperty(DraftReplyTo, sourceProperties.ReplyTo),
+            SessionId = NormalizeDraftProperty(DraftSessionId, sourceProperties.SessionId),
+            ReplyToSessionId = NormalizeDraftProperty(DraftReplyToSessionId, sourceProperties.ReplyToSessionId),
+            PartitionKey = NormalizeDraftProperty(DraftPartitionKey, sourceProperties.PartitionKey),
+            TransactionPartitionKey = NormalizeDraftProperty(DraftTransactionPartitionKey, sourceProperties.TransactionPartitionKey),
             TimeToLive = timeToLive,
             ScheduledEnqueueTime = scheduledEnqueueTime
         };
@@ -399,6 +399,16 @@ public sealed partial class MainWindowViewModel
             new EditableMessageBody(DraftBody ?? string.Empty, DraftBodyFormat),
             properties,
             applicationProperties) { KafkaEnvelope = _draftSourceMessage?.KafkaEnvelope };
+    }
+
+    private string? NormalizeDraftProperty(string? value, string? original)
+    {
+        if (_draftSourceMessage?.KafkaEnvelope is null) return NullIfWhiteSpace(value);
+
+        // The editor shows null as empty text. Preserve the original projection when untouched,
+        // including empty/null and whitespace, so the mapper can retain raw Kafka metadata.
+        if (value == (original ?? string.Empty)) return original;
+        return string.IsNullOrEmpty(value) ? null : value;
     }
 
     private void BindDraftToConnectedEnvironment()
