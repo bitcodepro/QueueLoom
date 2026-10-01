@@ -1,5 +1,5 @@
 {
-  "checked_at_utc": "2026-10-01 19:43:07 UTC",
+  "checked_at_utc": "2026-10-01 19:59:09 UTC",
   "prs": [
     {
       "Name": "settings",
@@ -21,18 +21,18 @@
     {
       "Name": "credential-export",
       "Branch": "codex/audit-credential-export",
-      "Commit": "67b3d5bce136c47d04fdae074a6d72bd8e185f6c",
-      "Tree": "a1ba3f06290b75d24fce27eec779a5e355894ad8",
+      "Commit": "8a526a188eb3228410bb56ac8cc1274d46860f40",
+      "Tree": "0625bfcb03f70434bf349810a818647434f34922",
       "PR": 37,
       "URL": "https://github.com/bitcodepro/QueueLoom/pull/37",
       "Base": "codex/audit-resend-progress",
       "CI": {
-        "id": 36914079127,
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36914079127",
-        "head_sha": "67b3d5bce136c47d04fdae074a6d72bd8e185f6c",
-        "checked_at_utc": "2026-10-01 19:34:47 UTC"
+        "id": 36918223095,
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095",
+        "status": "in_progress",
+        "conclusion": null,
+        "head_sha": "8a526a188eb3228410bb56ac8cc1274d46860f40",
+        "checked_at_utc": "2026-10-01 19:59:09 UTC"
       },
       "previous_ci": {
         "id": 36907930014,
@@ -42,8 +42,16 @@
         "head_sha": "60db155138244ca6b2d18c49c502cdb35bf94b99",
         "checked_at_utc": "2026-10-01 19:02:33 UTC"
       },
-      "LocalFocusedPassed": 8,
-      "LocalTestedTree": "a1ba3f06290b75d24fce27eec779a5e355894ad8"
+      "LocalFocusedPassed": 31,
+      "LocalTestedTree": "0625bfcb03f70434bf349810a818647434f34922",
+      "previous_ci_legacy_load": {
+        "id": 36914079127,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36914079127",
+        "head_sha": "67b3d5bce136c47d04fdae074a6d72bd8e185f6c",
+        "checked_at_utc": "2026-10-01 19:34:47 UTC"
+      }
     },
     {
       "Name": "mcp-identities",
@@ -216,9 +224,12 @@
     }
   },
   "local_latest": {
-    "integrated_code_commit": "11375b1e43c64e7e1ae1ac3af86e95326873b814",
-    "unit_passed": 621,
+    "integrated_code_commit": "33a18c084818ea8eb639f05341deae6841f4062c",
+    "unit_passed": 643,
     "ui_passed": 30,
-    "integration_skipped": 53
+    "integration_skipped": 53,
+    "logs": "legacy-registry-edit-full-green.trx in each test project",
+    "pr37_scoped_passed": 31,
+    "pr37_new_command_cases": 22
   }
 }
