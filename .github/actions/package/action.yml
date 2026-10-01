@@ -39,3 +39,9 @@ runs:
         RID: ${{ inputs.rid }}
         VERSION: ${{ inputs.version }}
       run: ./.github/scripts/package.ps1 -Rid $env:RID -Version $env:VERSION
+
+    - name: Smoke test the packaged executable over MCP
+      shell: pwsh
+      env:
+        RID: ${{ inputs.rid }}
+      run: ./.github/scripts/smoke-package.ps1 -Rid $env:RID
