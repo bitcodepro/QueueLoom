@@ -233,9 +233,12 @@ public sealed class PubSubFilter
             var value = new StringBuilder();
             while (_position < text.Length && text[_position] != quote)
             {
-                if (text[_position] == '\\' && _position + 1 < text.Length)
+                if (text[_position] == '\\')
                 {
-                    _position++;
+                    // Google documents escapes such as \u0045, while the Pub/Sub emulator compares the backslash as it
+                    // is; with the two disagreeing, Pub/Sub has the last word instead of a guess.
+                    throw new SqlFilterNotSupportedException(
+                        "The filter uses a backslash escape, which QueueLoom cannot read the way Pub/Sub does; Pub/Sub decides.");
                 }
                 value.Append(text[_position++]);
             }

@@ -389,6 +389,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     public virtual Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException($"{Provider.DisplayName()} cannot change subscription rules in QueueLoom.");
 
+    public virtual Task DeleteSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule,
+        CancellationToken cancellationToken = default) =>
+        DeleteSubscriptionRuleAsync(topic, subscription, (rule ?? throw new ArgumentNullException(nameof(rule))).Name, cancellationToken);
+
     /// <summary>Reads what rules need; the topology is refreshed afterwards since a change may be visible in it.</summary>
     protected async Task<T> ReadRulesAsync<T>(Func<CancellationToken, Task<T>> read, CancellationToken cancellationToken)
     {

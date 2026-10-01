@@ -91,9 +91,9 @@ public sealed partial class MainWindowViewModel
             async (subscription, rule, token) =>
             {
                 var reference = ServiceBusEntityReference.Subscription(topic, subscription);
-                RecordOperationIntent("Delete subscription rule started", rule, reference);
+                RecordOperationIntent("Delete subscription rule started", rule.DisplayName, reference);
                 await _workspace.DeleteSubscriptionRuleAsync(topic, subscription, rule, token).ConfigureAwait(true);
-                AddActivity("Warning", "Subscription rule deleted", $"{profile.Name} · {topic} / {subscription} · {rule}", reference);
+                AddActivity("Warning", "Subscription rule deleted", $"{profile.Name} · {topic} / {subscription} · {rule.DisplayName}: {rule.FilterText}", reference);
             },
             editor => _dialogs.EditRuleAsync(editor, CancellationToken.None),
             (title, text, requiredText) => _dialogs.ConfirmAsync(title, text, isDangerous: true, requiredText: requiredText,

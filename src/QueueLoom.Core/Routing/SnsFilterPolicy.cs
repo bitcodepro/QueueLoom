@@ -503,23 +503,36 @@ public static class SnsFilterPolicy
         public override Scope? Child(string key) => null;
     }
 
-    private sealed class BodyScope(JsonElement element) : Scope
+    /// <summary>
+    /// Fields of the JSON body. As in SNS payload filtering, arrays are flattened: a key under an array of objects
+    /// (the Records of an S3 event) looks into every object, and a key whose value is an array matches on any item.
+    /// </summary>
+    private sealed class BodyScope(IReadOnlyList<JsonElement> elements) : Scope
     {
-        public override IReadOnlyList<Scalar>? Get(string key)
+        public BodyScope(JsonElement element)
+            : this([element])
         {
-            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(key, out var value))
-            {
-                return null;
-            }
-            return value.ValueKind == JsonValueKind.Array
-                ? value.EnumerateArray().Select(ToScalar).ToArray()
-                : [ToScalar(value)];
         }
 
-        public override Scope? Child(string key) =>
-            element.ValueKind == JsonValueKind.Object && element.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Object
-                ? new BodyScope(value)
-                : null;
+        public override IReadOnlyList<Scalar>? Get(string key)
+        {
+            var values = Values(key).ToArray();
+            return values.Length == 0 ? null : values.SelectMany(Flatten).Where(value => value.ValueKind != JsonValueKind.Object).Select(ToScalar).ToArray();
+        }
+
+        public override Scope? Child(string key)
+        {
+            var objects = Values(key).SelectMany(Flatten).Where(value => value.ValueKind == JsonValueKind.Object).ToArray();
+            return objects.Length == 0 ? null : new BodyScope(objects);
+        }
+
+        private IEnumerable<JsonElement> Values(string key) => elements
+            .SelectMany(Flatten)
+            .Where(element => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(key, out _))
+            .Select(element => element.GetProperty(key));
+
+        private static IEnumerable<JsonElement> Flatten(JsonElement element) =>
+            element.ValueKind == JsonValueKind.Array ? element.EnumerateArray().SelectMany(Flatten) : [element];
 
         private static Scalar ToScalar(JsonElement value) => value.ValueKind switch
         {

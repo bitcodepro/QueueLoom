@@ -200,6 +200,30 @@ public sealed class SnsFilterPolicyTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.LocalStack)]
+    public async Task The_scope_changes_in_an_order_SNS_accepts()
+    {
+        var name = SubscriptionName("everything");
+        var policy = new SubscriptionRule(AwsSqsSnsWorkspace.FilterPolicyRule, RuleFilterKind.SnsFilterPolicy);
+        async Task<SubscriptionRule?> Read() => (await _workspace.GetTopicRulesAsync(_topic)).Single(item => item.Subscription == name).Rules.SingleOrDefault();
+
+        // The first policy of an unfiltered subscription nests, so it needs the MessageBody scope first.
+        await _workspace.SaveSubscriptionRuleAsync(_topic, name, policy with { Expression = """{"order":{"status":["failed"]}}""", OnMessageBody = true }, replace: false);
+        Assert.True((await Read())!.OnMessageBody);
+        Assert.Contains("failed", (await Read())!.Expression, StringComparison.Ordinal);
+
+        await _workspace.SaveSubscriptionRuleAsync(_topic, name, policy with { Expression = """{"region":["EU"]}""", OnMessageBody = false }, replace: true);
+        Assert.False((await Read())!.OnMessageBody);
+        Assert.Contains("region", (await Read())!.Expression, StringComparison.Ordinal);
+
+        await _workspace.SaveSubscriptionRuleAsync(_topic, name, policy with { Expression = """{"order":{"region":["EU"]}}""", OnMessageBody = true }, replace: true);
+        Assert.True((await Read())!.OnMessageBody);
+        Assert.Contains("order", (await Read())!.Expression, StringComparison.Ordinal);
+
+        await _workspace.DeleteSubscriptionRuleAsync(_topic, name, (await Read())!);
+        Assert.Null(await Read());
+    }
+
+    [EmulatorFact(Emulators.LocalStack)]
     public async Task A_policy_is_added_changed_and_removed()
     {
         var name = SubscriptionName("everything");
@@ -513,6 +537,38 @@ public sealed class RabbitMqBindingTests : IAsyncLifetime
         };
         RoutingProof.AssertPredictionsMatch("events", rules, RoutingService.RabbitMq, messages, delivered);
         Assert.Equal(["a2"], delivered["unrouted"]);
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task A_queue_and_an_exchange_of_the_same_name_keep_their_own_bindings()
+    {
+        await _setup.ExchangeDeclareAsync("same", ExchangeType.Fanout, durable: true);
+        await _setup.QueueDeclareAsync("same", durable: true, exclusive: false, autoDelete: false);
+        await _setup.QueueBindAsync("same", "events", "same.key");
+        await _setup.ExchangeBindAsync("same", "events", "same.key");
+        await _workspace.GetTopologyAsync(forceRefresh: true);
+
+        var rules = (await _workspace.GetTopicRulesAsync("events")).Where(item => item.Subscription == "same").ToArray();
+        Assert.Equal(2, rules.Length);
+        var exchange = rules.Single(item => item.IsExchange);
+        Assert.True(exchange.Rules.Single().ToExchange);
+        Assert.False(rules.Single(item => !item.IsExchange).Rules.Single().ToExchange);
+
+        // Changing and deleting the exchange's binding leaves the queue's alone.
+        await _workspace.SaveSubscriptionRuleAsync("events", "same", exchange.Rules.Single() with { Expression = "same.other" }, replace: true);
+        rules = (await _workspace.GetTopicRulesAsync("events")).Where(item => item.Subscription == "same").ToArray();
+        Assert.Equal("same.other", rules.Single(item => item.IsExchange).Rules.Single().Expression);
+        Assert.Equal("same.key", rules.Single(item => !item.IsExchange).Rules.Single().Expression);
+
+        await _workspace.DeleteSubscriptionRuleAsync("events", "same", rules.Single(item => item.IsExchange).Rules.Single());
+        rules = (await _workspace.GetTopicRulesAsync("events")).Where(item => item.Subscription == "same").ToArray();
+        Assert.Equal("same.key", Assert.Single(rules).Rules.Single().Expression);
+        Assert.False(rules[0].IsExchange);
+
+        // Without saying which one, a shared name is refused rather than guessed.
+        await _setup.ExchangeBindAsync("same", "events", "same.again");
+        await _workspace.GetTopologyAsync(forceRefresh: true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _workspace.DeleteSubscriptionRuleAsync("events", "same", "same.again"));
     }
 
     [EmulatorFact(Emulators.RabbitMq)]

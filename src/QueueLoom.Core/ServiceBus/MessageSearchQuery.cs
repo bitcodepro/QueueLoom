@@ -261,26 +261,44 @@ public sealed partial class MessageSearchQuery
         private static bool AreEqual(JsonElement value, JsonElement expected) => (value.ValueKind, expected.ValueKind) switch
         {
             (JsonValueKind.String, JsonValueKind.String) => value.GetString() == expected.GetString(),
-            (JsonValueKind.Number, JsonValueKind.Number) => value.GetDouble() == expected.GetDouble(),
-            (JsonValueKind.String, JsonValueKind.Number) => double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number) &&
-                                                            number == expected.GetDouble(),
+            (JsonValueKind.Number, JsonValueKind.Number) => CompareNumbers(value.GetRawText(), expected.GetRawText()) == 0,
+            (JsonValueKind.String, JsonValueKind.Number) => CompareNumbers(value.GetString(), expected.GetRawText()) == 0,
             (JsonValueKind.True or JsonValueKind.False, JsonValueKind.True or JsonValueKind.False) => value.ValueKind == expected.ValueKind,
             (JsonValueKind.Null, JsonValueKind.Null) => true,
             _ => false
         };
+
+        /// <summary>
+        /// Two numbers written as JSON text, compared exactly: as decimals when both fit (whole numbers up to 28 digits,
+        /// so IDs above 2^53 stay apart), else as doubles. Null when either is not a number.
+        /// </summary>
+        private static int? CompareNumbers(string? left, string right)
+        {
+            if (left is null)
+            {
+                return null;
+            }
+            const NumberStyles Style = NumberStyles.Float;
+            if (decimal.TryParse(left, Style, CultureInfo.InvariantCulture, out var x) && decimal.TryParse(right, Style, CultureInfo.InvariantCulture, out var y))
+            {
+                return x.CompareTo(y);
+            }
+            return double.TryParse(left, Style, CultureInfo.InvariantCulture, out var a) && double.TryParse(right, Style, CultureInfo.InvariantCulture, out var b)
+                ? a.CompareTo(b)
+                : null;
+        }
 
         /// <summary>Numbers by value, text in ordinal order (so ISO dates compare as dates); null when they cannot be ordered.</summary>
         private static int? Compare(JsonElement value, JsonElement bound)
         {
             if (bound.ValueKind == JsonValueKind.Number)
             {
-                double? number = value.ValueKind switch
+                return value.ValueKind switch
                 {
-                    JsonValueKind.Number => value.GetDouble(),
-                    JsonValueKind.String when double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
+                    JsonValueKind.Number => CompareNumbers(value.GetRawText(), bound.GetRawText()),
+                    JsonValueKind.String => CompareNumbers(value.GetString(), bound.GetRawText()),
                     _ => null
                 };
-                return number?.CompareTo(bound.GetDouble());
             }
             return value.ValueKind == JsonValueKind.String && bound.ValueKind == JsonValueKind.String
                 ? Math.Sign(string.CompareOrdinal(value.GetString(), bound.GetString()))

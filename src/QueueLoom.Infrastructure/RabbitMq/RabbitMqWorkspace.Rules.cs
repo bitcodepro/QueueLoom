@@ -28,7 +28,7 @@ public sealed partial class RabbitMqWorkspace
                     IsExchange: binding.GetProperty("destination_type").GetString() == "exchange"))
                 .OrderBy(group => group.Key.Destination, StringComparer.Ordinal)
                 .Select(group => new SubscriptionRules(group.Key.Destination,
-                    group.Select((binding, index) => ToRule(type, binding, index, group.Count())).ToArray())
+                    group.Select((binding, index) => ToRule(type, binding, index, group.Count()) with { ToExchange = group.Key.IsExchange }).ToArray())
                 {
                     Service = RoutingService.RabbitMq,
                     IsExchange = group.Key.IsExchange,
@@ -54,7 +54,7 @@ public sealed partial class RabbitMqWorkspace
         ManageAsync(async token =>
         {
             ArgumentNullException.ThrowIfNull(rule);
-            var path = BindingPath(topic, subscription);
+            var path = BindingPath(topic, subscription, rule.ToExchange);
             var arguments = rule.Kind is RuleFilterKind.HeadersBinding or RuleFilterKind.OtherBinding
                 ? rule.Arguments.ToDictionary(pair => pair.Key, pair => pair.Value)
                 : new Dictionary<string, object?>();
@@ -73,16 +73,36 @@ public sealed partial class RabbitMqWorkspace
         }, cancellationToken);
 
     public override Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
-        ManageAsync(token => DeleteBindingAsync(BindingPath(topic, subscription), rule, token), cancellationToken);
+        ManageAsync(token => DeleteBindingAsync(BindingPath(topic, subscription, null), rule, token), cancellationToken);
+
+    public override Task DeleteSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule,
+        CancellationToken cancellationToken = default) =>
+        ManageAsync(token => DeleteBindingAsync(BindingPath(topic, subscription, rule.ToExchange), rule.Name, token), cancellationToken);
 
     private HttpClient Management => _management ?? throw new InvalidOperationException("Connect to the environment first.");
 
-    /// <summary>api/bindings/vhost/e/exchange/q/queue, or …/e/exchange when the destination is an exchange.</summary>
-    private string BindingPath(string exchange, string destination)
+    /// <summary>
+    /// api/bindings/vhost/e/exchange/q/queue, or …/e/exchange when the destination is an exchange. A queue and an
+    /// exchange can share a name, so the caller says which one it means; without that, a shared name is refused
+    /// rather than guessed, since a guess could change another destination's binding.
+    /// </summary>
+    private string BindingPath(string exchange, string destination, bool? toExchange)
     {
-        var kind = _index.FindQueue(destination) is not null ? "q" : _index.IsExchange(destination) ? "e" : null;
+        var isQueue = _index.FindQueue(destination) is not null;
+        var isExchange = _index.IsExchange(destination);
+        var kind = toExchange switch
+        {
+            true when isExchange => "e",
+            false when isQueue => "q",
+            null when isQueue && isExchange => throw new InvalidOperationException(
+                $"'{destination}' is the name of both a queue and an exchange; say which one the binding leads to."),
+            null when isQueue => "q",
+            null when isExchange => "e",
+            _ => null
+        };
         return kind is null
-            ? throw new InvalidOperationException($"'{destination}' is neither a queue nor an exchange. Refresh and try again.")
+            ? throw new InvalidOperationException(
+                $"{(toExchange == true ? "Exchange" : toExchange == false ? "Queue" : "Destination")} '{destination}' was not found. Refresh and try again.")
             : $"api/bindings/{Escape(_virtualHost)}/e/{Uri.EscapeDataString(exchange)}/{kind}/{Uri.EscapeDataString(destination)}";
     }
 

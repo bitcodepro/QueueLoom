@@ -239,16 +239,63 @@ public static class ProtoDecoder
         return node;
     }
 
+    /// <summary>
+    /// Adds what the wire holds for a field. A field the schema declares singular may appear more than once: the last
+    /// scalar wins and embedded messages merge, as Protobuf parsers do. Repeated and undeclared fields collect values.
+    /// </summary>
     private static void Add(Node node, int number, ProtoField? field, IEnumerable<object?> values, bool matched)
     {
         var name = matched && field is not null ? field.Name : $"#{number}";
+        var singular = matched && field is { IsRepeated: false };
         if (!node.TryGetValue(number, out var entry))
         {
             entry = (name, [], field?.IsRepeated == true);
             node[number] = entry;
         }
+        if (singular)
+        {
+            foreach (var value in values)
+            {
+                if (entry.Values.Count == 1 && entry.Values[0] is Node earlier && value is Node later)
+                {
+                    Merge(earlier, later);
+                }
+                else
+                {
+                    entry.Values.Clear();
+                    entry.Values.Add(value);
+                }
+            }
+            node[number] = (entry.Name, entry.Values, false);
+            return;
+        }
         entry.Values.AddRange(values);
         node[number] = (entry.Name, entry.Values, entry.Repeated || entry.Values.Count > 1);
+    }
+
+    /// <summary>Merges a later occurrence of a singular embedded message into the earlier one.</summary>
+    private static void Merge(Node target, Node source)
+    {
+        foreach (var (number, (name, values, repeated)) in source)
+        {
+            if (!target.TryGetValue(number, out var existing))
+            {
+                target[number] = (name, [.. values], repeated);
+            }
+            else if (repeated || existing.Repeated)
+            {
+                existing.Values.AddRange(values);
+                target[number] = (existing.Name, existing.Values, true);
+            }
+            else if (existing.Values.Count == 1 && existing.Values[0] is Node earlier && values.Count == 1 && values[0] is Node later)
+            {
+                Merge(earlier, later);
+            }
+            else
+            {
+                target[number] = (name, [.. values], false);
+            }
+        }
     }
 
     private static bool Fits(ProtoField field, int wireType) => (field.Type, wireType) switch
@@ -277,15 +324,24 @@ public static class ProtoDecoder
                     case ProtoFieldType.Double or ProtoFieldType.Fixed64 or ProtoFieldType.SFixed64:
                         Require(bytes, position, 8);
                         var wide = BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(position, 8));
-                        items.Add(field.Type == ProtoFieldType.Double ? BitConverter.UInt64BitsToDouble(wide)
-                            : field.Type == ProtoFieldType.SFixed64 ? (long)wide : wide);
+                        // Each kind is boxed as itself: a shared conditional would turn the integers into doubles.
+                        items.Add(field.Type switch
+                        {
+                            ProtoFieldType.Double => (object)BitConverter.UInt64BitsToDouble(wide),
+                            ProtoFieldType.SFixed64 => (long)wide,
+                            _ => wide
+                        });
                         position += 8;
                         break;
                     case ProtoFieldType.Float or ProtoFieldType.Fixed32 or ProtoFieldType.SFixed32:
                         Require(bytes, position, 4);
                         var narrow = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(position, 4));
-                        items.Add(field.Type == ProtoFieldType.Float ? (double)BitConverter.UInt32BitsToSingle(narrow)
-                            : field.Type == ProtoFieldType.SFixed32 ? (int)narrow : narrow);
+                        items.Add(field.Type switch
+                        {
+                            ProtoFieldType.Float => (object)(double)BitConverter.UInt32BitsToSingle(narrow),
+                            ProtoFieldType.SFixed32 => (int)narrow,
+                            _ => narrow
+                        });
                         position += 4;
                         break;
                     default:

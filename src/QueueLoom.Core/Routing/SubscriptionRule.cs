@@ -111,6 +111,12 @@ public sealed record SubscriptionRule(
 
     public string DisplayName => Title ?? Name;
 
+    /// <summary>
+    /// RabbitMQ: whether the binding leads to an exchange (true) or a queue (false). A queue and an exchange may
+    /// share a name, so a change to a binding says which one it means; null when unknown.
+    /// </summary>
+    public bool? ToExchange { get; init; }
+
     public bool IsBinding => Kind is RuleFilterKind.DirectBinding or RuleFilterKind.TopicBinding or RuleFilterKind.FanoutBinding
         or RuleFilterKind.HeadersBinding or RuleFilterKind.OtherBinding;
 

@@ -131,6 +131,9 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
     public Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
         Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
 
+    public Task DeleteSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, CancellationToken cancellationToken = default) =>
+        Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
+
     public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
         IReadOnlyList<BrowsedMessage> messages,
         CancellationToken cancellationToken = default) =>

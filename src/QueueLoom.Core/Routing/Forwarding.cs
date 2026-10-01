@@ -26,16 +26,22 @@ public static class Forwarding
             : value.Trim('/');
     }
 
-    /// <summary>Where a message sent to (or forwarded into) <paramref name="entity"/> can end up, followed hop by hop.</summary>
+    /// <summary>
+    /// Where a message sent to (or forwarded into) <paramref name="entity"/> can end up, followed hop by hop. The name
+    /// is looked up as a queue, then a topic, then a subscription ("topic/subscription"; topic names may hold '/').
+    /// </summary>
     public static ForwardingReport Follow(ServiceBusTopology topology, string entity)
     {
         ArgumentNullException.ThrowIfNull(topology);
         var map = new Map(topology);
-        var paths = new List<IReadOnlyList<string>>();
-        var loops = new List<IReadOnlyList<string>>();
-        var missing = new List<IReadOnlyList<string>>();
-        Walk(map, entity, [], paths, loops, missing);
-        return new ForwardingReport(entity, paths, loops, missing);
+        return Follow(map, entity, map.Start(entity));
+    }
+
+    private static ForwardingReport Follow(Map map, string entity, Node start)
+    {
+        var walk = new WalkResult();
+        Walk(map, start, [], 0, walk);
+        return new ForwardingReport(entity, walk.Paths, walk.Loops, walk.Missing) { LongestChain = walk.LongestChain };
     }
 
     /// <summary>
@@ -51,21 +57,22 @@ public static class Forwarding
             return topology;
         }
 
-        string? Note(string path, string? forwardTo, string? deadLettersTo, string? existing)
+        string? Note(string path, EntityKind kind, string? forwardTo, string? deadLettersTo, string? existing)
         {
             var notes = new List<string>();
             if (TargetName(forwardTo) is { } target)
             {
-                var report = Follow(topology, path);
+                var report = Follow(map, path, new Node(path, kind));
                 notes.Add(report.Describe(target));
             }
             if (TargetName(deadLettersTo) is { } deadLetterTarget)
             {
-                notes.Add(map.Exists(deadLetterTarget)
+                notes.Add(map.Target(deadLetterTarget).Kind != EntityKind.Missing
                     ? $"Dead letters are forwarded to {deadLetterTarget}"
                     : $"Dead letters are forwarded to {deadLetterTarget}, which does not exist");
             }
-            if (map.Sources(path) is { Count: > 0 } sources)
+            // Only queues and topics can be forwarded to; a subscription's path is never a target.
+            if (kind != EntityKind.Subscription && map.Sources(path) is { Count: > 0 } sources)
             {
                 notes.Add($"Gets forwarded messages from {string.Join(", ", sources.Take(3))}" + (sources.Count > 3 ? $" and {sources.Count - 3} more" : string.Empty));
             }
@@ -76,14 +83,14 @@ public static class Forwarding
             return existing is null ? string.Join(" · ", notes) : $"{existing} · {string.Join(" · ", notes)}";
         }
 
-        var queues = topology.Queues.Select(queue => queue with { Note = Note(queue.Name, queue.ForwardTo, queue.ForwardDeadLettersTo, queue.Note) });
+        var queues = topology.Queues.Select(queue => queue with { Note = Note(queue.Name, EntityKind.Queue, queue.ForwardTo, queue.ForwardDeadLettersTo, queue.Note) });
         var topics = topology.Topics.Select(topic => new ServiceBusTopic(topic.Name, topic.Runtime,
             topic.Subscriptions.Select(subscription => subscription with
             {
-                Note = Note($"{topic.Name}/{subscription.Name}", subscription.ForwardTo, subscription.ForwardDeadLettersTo, subscription.Note)
+                Note = Note($"{topic.Name}/{subscription.Name}", EntityKind.Subscription, subscription.ForwardTo, subscription.ForwardDeadLettersTo, subscription.Note)
             }), topic.Status)
         {
-            Note = Note(topic.Name, null, null, topic.Note)
+            Note = Note(topic.Name, EntityKind.Topic, null, null, topic.Note)
         });
         return new ServiceBusTopology(topology.FetchedAt, queues, topics)
         {
@@ -96,37 +103,65 @@ public static class Forwarding
         };
     }
 
-    private static void Walk(Map map, string entity, List<string> path, List<IReadOnlyList<string>> paths,
-        List<IReadOnlyList<string>> loops, List<IReadOnlyList<string>> missing)
+    private enum EntityKind
     {
-        if (path.Contains(entity, StringComparer.OrdinalIgnoreCase))
+        Queue,
+        Topic,
+        Subscription,
+        Missing
+    }
+
+    /// <summary>An entity with its kind: a queue and a subscription path may be spelled alike.</summary>
+    private readonly record struct Node(string Name, EntityKind Kind)
+    {
+        public bool Is(Node other) => Kind == other.Kind && string.Equals(Name, other.Name, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class WalkResult
+    {
+        public List<IReadOnlyList<string>> Paths { get; } = [];
+
+        public List<IReadOnlyList<string>> Loops { get; } = [];
+
+        public List<IReadOnlyList<string>> Missing { get; } = [];
+
+        public int LongestChain { get; set; }
+    }
+
+    /// <param name="hops">Forwards so far; a topic copying to its subscription is not one.</param>
+    private static void Walk(Map map, Node node, List<Node> path, int hops, WalkResult result)
+    {
+        result.LongestChain = Math.Max(result.LongestChain, hops);
+        if (path.Any(item => item.Is(node)))
         {
-            loops.Add([.. path, entity]);
+            result.Loops.Add([.. path.Select(item => item.Name), node.Name]);
             return;
         }
-        path.Add(entity);
+        path.Add(node);
         try
         {
-            if (path.Count > 3 * Forwarding.MaximumHops)
+            var names = path.Select(item => item.Name).ToArray();
+            if (hops > 3 * MaximumHops)
             {
                 // Far past what Service Bus forwards; the chain is reported as too long without following it further.
-                paths.Add([.. path]);
+                result.Paths.Add(names);
                 return;
             }
-            if (!map.Exists(entity))
+            if (node.Kind == EntityKind.Missing)
             {
-                missing.Add([.. path]);
+                result.Missing.Add(names);
                 return;
             }
-            var next = map.Next(entity);
+            var next = map.Next(node);
             if (next.Count == 0)
             {
-                paths.Add([.. path]);
+                result.Paths.Add(names);
                 return;
             }
             foreach (var target in next)
             {
-                Walk(map, target, path, paths, loops, missing);
+                var isCopy = node.Kind == EntityKind.Topic && target.Kind == EntityKind.Subscription;
+                Walk(map, target, path, isCopy ? hops : hops + 1, result);
             }
         }
         finally
@@ -135,11 +170,12 @@ public static class Forwarding
         }
     }
 
-    /// <summary>Entity names (case-insensitive, as in Service Bus) and the forwards between them.</summary>
+    /// <summary>Entities by name (case-insensitive, as in Service Bus) and the forwards between them.</summary>
     private sealed class Map
     {
         private readonly Dictionary<string, string?> _queues = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, List<(string Path, string? ForwardTo)>> _topics = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<string>> _topics = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string?> _subscriptions = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<string>> _sources = new(StringComparer.OrdinalIgnoreCase);
 
         public Map(ServiceBusTopology topology)
@@ -153,38 +189,44 @@ public static class Forwarding
             }
             foreach (var topic in topology.Topics)
             {
-                var subscriptions = new List<(string, string?)>();
+                var paths = new List<string>();
                 foreach (var subscription in topic.Subscriptions)
                 {
+                    // The full path is the key, so a topic named "orders/eu" keeps its subscriptions apart from "orders".
                     var path = $"{topic.Name}/{subscription.Name}";
-                    subscriptions.Add((path, TargetName(subscription.ForwardTo)));
+                    paths.Add(path);
+                    _subscriptions[path] = TargetName(subscription.ForwardTo);
                     AddSource(TargetName(subscription.ForwardTo), path);
                     AddSource(TargetName(subscription.ForwardDeadLettersTo), $"{path} (dead letters)");
                     HasForwarding |= subscription.ForwardTo is not null || subscription.ForwardDeadLettersTo is not null;
                 }
-                _topics[topic.Name] = subscriptions;
+                _topics[topic.Name] = paths;
             }
         }
 
         public bool HasForwarding { get; }
 
-        public bool Exists(string entity) =>
-            _queues.ContainsKey(entity) || _topics.ContainsKey(entity) || IsSubscription(entity);
+        /// <summary>Where a walk starts: a queue, else a topic, else a subscription.</summary>
+        public Node Start(string entity) =>
+            _queues.ContainsKey(entity) ? new Node(entity, EntityKind.Queue)
+            : _topics.ContainsKey(entity) ? new Node(entity, EntityKind.Topic)
+            : _subscriptions.ContainsKey(entity) ? new Node(entity, EntityKind.Subscription)
+            : new Node(entity, EntityKind.Missing);
 
-        /// <summary>A queue or subscription goes on to its forward target; a topic to each subscription.</summary>
-        public IReadOnlyList<string> Next(string entity)
+        /// <summary>A forward target: Service Bus forwards only to queues and topics.</summary>
+        public Node Target(string entity) =>
+            _queues.ContainsKey(entity) ? new Node(entity, EntityKind.Queue)
+            : _topics.ContainsKey(entity) ? new Node(entity, EntityKind.Topic)
+            : new Node(entity, EntityKind.Missing);
+
+        /// <summary>A queue or subscription goes on to its forward target; a topic copies to each subscription.</summary>
+        public IReadOnlyList<Node> Next(Node node) => node.Kind switch
         {
-            if (_queues.TryGetValue(entity, out var forwardTo))
-            {
-                return forwardTo is null ? [] : [forwardTo];
-            }
-            if (_topics.TryGetValue(entity, out var subscriptions))
-            {
-                return subscriptions.Select(subscription => subscription.Path).ToArray();
-            }
-            var forward = Subscription(entity)?.ForwardTo;
-            return forward is null ? [] : [forward];
-        }
+            EntityKind.Queue => _queues[node.Name] is { } forward ? [Target(forward)] : [],
+            EntityKind.Subscription => _subscriptions[node.Name] is { } forward ? [Target(forward)] : [],
+            EntityKind.Topic => _topics[node.Name].Select(path => new Node(path, EntityKind.Subscription)).ToArray(),
+            _ => []
+        };
 
         public IReadOnlyList<string> Sources(string entity) => _sources.TryGetValue(entity, out var sources) ? sources : [];
 
@@ -200,25 +242,6 @@ public static class Forwarding
             }
             list.Add(source);
         }
-
-        private bool IsSubscription(string entity) => Subscription(entity) is not null;
-
-        private (string Path, string? ForwardTo)? Subscription(string entity)
-        {
-            var slash = entity.IndexOf('/', StringComparison.Ordinal);
-            if (slash <= 0 || !_topics.TryGetValue(entity[..slash], out var subscriptions))
-            {
-                return null;
-            }
-            foreach (var subscription in subscriptions)
-            {
-                if (string.Equals(subscription.Path, entity, StringComparison.OrdinalIgnoreCase))
-                {
-                    return subscription;
-                }
-            }
-            return null;
-        }
     }
 }
 
@@ -230,7 +253,7 @@ public sealed record ForwardingReport(
     IReadOnlyList<IReadOnlyList<string>> Missing)
 {
     /// <summary>The most forwards any message makes; a topic copying to a subscription is not a forward.</summary>
-    public int LongestChain => Paths.Concat(Loops).Concat(Missing).Select(Hops).DefaultIfEmpty(0).Max();
+    public int LongestChain { get; init; }
 
     public bool IsTooLong => LongestChain > Forwarding.MaximumHops;
 
@@ -256,20 +279,5 @@ public sealed record ForwardingReport(
         return IsTooLong
             ? $"{chain}; {LongestChain} forwards is more than Service Bus allows ({Forwarding.MaximumHops}), so messages are dead-lettered on the way"
             : chain;
-    }
-
-    /// <summary>Forwards along a path: every step except a topic copying to one of its subscriptions.</summary>
-    private static int Hops(IReadOnlyList<string> path)
-    {
-        var hops = 0;
-        for (var index = 1; index < path.Count; index++)
-        {
-            var isCopy = path[index].StartsWith(path[index - 1] + "/", StringComparison.OrdinalIgnoreCase);
-            if (!isCopy)
-            {
-                hops++;
-            }
-        }
-        return hops;
     }
 }

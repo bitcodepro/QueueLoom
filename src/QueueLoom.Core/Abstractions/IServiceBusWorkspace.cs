@@ -101,6 +101,10 @@ public interface IServiceBusWorkspace : IAsyncDisposable
     Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This service has no subscription rules.");
 
+    /// <summary>Deletes the rule as it was read, so the service can tell which destination it belongs to.</summary>
+    Task DeleteSubscriptionRuleAsync(string topic, string subscription, Routing.SubscriptionRule rule, CancellationToken cancellationToken = default) =>
+        DeleteSubscriptionRuleAsync(topic, subscription, rule.Name, cancellationToken);
+
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default);

@@ -10,7 +10,7 @@ namespace QueueLoom.App.ViewModels;
 public sealed record TopicRoutingServices(
     Func<CancellationToken, Task<IReadOnlyList<SubscriptionRules>>> LoadRules,
     Func<string, SubscriptionRule, bool, CancellationToken, Task> SaveRule,
-    Func<string, string, CancellationToken, Task> DeleteRule,
+    Func<string, SubscriptionRule, CancellationToken, Task> DeleteRule,
     Func<RuleEditorViewModel, Task<SubscriptionRule?>> EditRule,
     Func<string, string, string?, Task<bool>> Confirm);
 
@@ -426,7 +426,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
         var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, null, Service, BindingKind)).ConfigureAwait(true);
         if (rule is not null)
         {
-            await ChangeAsync(token => _services.SaveRule(subscription.Name, rule, false, token), cancellationToken).ConfigureAwait(true);
+            await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription), false, token), cancellationToken).ConfigureAwait(true);
         }
     }
 
@@ -436,7 +436,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
         var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, item!.Rule, Service, BindingKind)).ConfigureAwait(true);
         if (rule is not null)
         {
-            await ChangeAsync(token => _services.SaveRule(subscription.Name, rule, true, token), cancellationToken).ConfigureAwait(true);
+            await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription), true, token), cancellationToken).ConfigureAwait(true);
         }
     }
 
@@ -462,9 +462,13 @@ public sealed class TopicRoutingViewModel : ObservableObject
             typeName).ConfigureAwait(true);
         if (confirmed)
         {
-            await ChangeAsync(token => _services.DeleteRule(subscription.Name, item.Rule.Name, token), cancellationToken).ConfigureAwait(true);
+            await ChangeAsync(token => _services.DeleteRule(subscription.Name, item.Rule, token), cancellationToken).ConfigureAwait(true);
         }
     }
+
+    /// <summary>RabbitMQ: a queue and an exchange may share a name, so the binding says which one it leads to.</summary>
+    private SubscriptionRule ForDestination(SubscriptionRule rule, RoutingSubscriptionViewModel subscription) =>
+        Service == RoutingService.RabbitMq ? rule with { ToExchange = subscription.Source.IsExchange } : rule;
 
     /// <summary>RabbitMQ: every binding of an exchange is of the exchange's kind; a new one takes the kind of the others.</summary>
     private RuleFilterKind? BindingKind => Subscriptions.SelectMany(item => item.Source.Rules).FirstOrDefault(rule => rule.IsBinding)?.Kind;

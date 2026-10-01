@@ -89,13 +89,18 @@ public static class TopicRouting
             return new SubscriptionRouting(subscription.Subscription, outcome, results, subscription.Warning);
         }).ToArray();
 
-        // An alternate exchange gets the message only when no binding of the exchange took it.
-        var regular = routed.OfType<SubscriptionRouting>().ToArray();
-        var fallback = regular.Any(item => item.Outcome == RoutingOutcome.Receives)
-            ? (RoutingOutcome.Skips, "A binding takes the message, so the alternate exchange does not get it.")
-            : regular.Any(item => item.Outcome == RoutingOutcome.Unknown)
-                ? (RoutingOutcome.Unknown, "Gets the message only if no binding takes it, which RabbitMQ decides.")
-                : (RoutingOutcome.Receives, "No binding takes the message, so the alternate exchange gets it.");
+        // An alternate exchange gets the message when it reaches no queue. A queue bound directly settles that; an
+        // exchange bound in between may itself route the message nowhere, which only its own bindings tell.
+        var regular = subscriptions.Select((subscription, index) => (subscription.IsExchange, Routing: routed[index]))
+            .Where(item => item.Routing is not null)
+            .ToArray();
+        var fallback = regular.Any(item => !item.IsExchange && item.Routing!.Outcome == RoutingOutcome.Receives)
+            ? (RoutingOutcome.Skips, "A queue takes the message, so the alternate exchange does not get it.")
+            : regular.Any(item => item.IsExchange && item.Routing!.Outcome == RoutingOutcome.Receives)
+                ? (RoutingOutcome.Unknown, "Only an exchange takes the message; the alternate exchange gets it if that exchange reaches no queue, which RabbitMQ decides.")
+                : regular.Any(item => item.Routing!.Outcome == RoutingOutcome.Unknown)
+                    ? (RoutingOutcome.Unknown, "Gets the message only if no binding takes it, which RabbitMQ decides.")
+                    : (RoutingOutcome.Receives, "No binding takes the message, so the alternate exchange gets it.");
         var result = subscriptions.Select((subscription, index) => routed[index] ??
             new SubscriptionRouting(subscription.Subscription, fallback.Item1, [], subscription.Warning) { Reason = fallback.Item2 }).ToArray();
         return new TopicRoutingResult(topic, result) { Service = service };
@@ -177,6 +182,10 @@ public static class TopicRouting
         catch (SqlFilterSyntaxException exception)
         {
             return new RuleResult(rule, RoutingOutcome.Unknown, $"QueueLoom cannot read this filter ({exception.Message}); Pub/Sub decides.");
+        }
+        catch (SqlFilterNotSupportedException exception)
+        {
+            return new RuleResult(rule, RoutingOutcome.Unknown, exception.Message);
         }
     }
 

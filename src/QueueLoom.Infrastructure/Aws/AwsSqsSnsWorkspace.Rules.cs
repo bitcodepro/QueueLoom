@@ -50,16 +50,22 @@ public sealed partial class AwsSqsSnsWorkspace
             SnsFilterPolicy.Validate(rule.Expression, rule.OnMessageBody);
             var current = await FindSubscriptionAsync(topic, subscription, token).ConfigureAwait(false);
             var scope = rule.OnMessageBody ? "MessageBody" : "MessageAttributes";
-            if (current.FilterPolicyOnBody != rule.OnMessageBody && current.FilterPolicy is not null)
+            if (current.FilterPolicyOnBody == rule.OnMessageBody)
             {
-                // The scope decides how SNS reads the policy, so it changes first and the new policy follows.
-                await SetAttributeAsync(current.Arn, "FilterPolicyScope", scope, token).ConfigureAwait(false);
                 await SetAttributeAsync(current.Arn, "FilterPolicy", rule.Expression, token).ConfigureAwait(false);
                 return;
             }
-            await SetAttributeAsync(current.Arn, "FilterPolicy", rule.Expression, token).ConfigureAwait(false);
-            if (current.FilterPolicyOnBody != rule.OnMessageBody)
+            // SNS checks a policy against the scope in force, so the order follows the new policy: a body policy (it may
+            // nest) is set once the scope is MessageBody, as AWS documents; an attribute policy (always flat, so valid
+            // under either scope) goes first and the scope follows.
+            if (rule.OnMessageBody)
             {
+                await SetAttributeAsync(current.Arn, "FilterPolicyScope", scope, token).ConfigureAwait(false);
+                await SetAttributeAsync(current.Arn, "FilterPolicy", rule.Expression, token).ConfigureAwait(false);
+            }
+            else
+            {
+                await SetAttributeAsync(current.Arn, "FilterPolicy", rule.Expression, token).ConfigureAwait(false);
                 await SetAttributeAsync(current.Arn, "FilterPolicyScope", scope, token).ConfigureAwait(false);
             }
         }, cancellationToken);

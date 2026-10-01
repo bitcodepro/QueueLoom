@@ -10,6 +10,12 @@ public sealed record RuleKindOption(RuleFilterKind Kind, string Label)
     public override string ToString() => Label;
 }
 
+/// <summary>An x-match mode of a RabbitMQ headers binding, as RabbitMQ spells it, with what it means.</summary>
+public sealed record HeaderMatchOption(string Value, string Label)
+{
+    public override string ToString() => Label;
+}
+
 /// <summary>
 /// Adds or changes one subscription rule: a Service Bus SQL or correlation rule, an SNS filter policy or a RabbitMQ
 /// binding. Filters are read as they are typed, so mistakes show before the service is asked; the service still has
@@ -35,7 +41,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
     private string _policy = string.Empty;
     private RuleKindOption _policyScope;
     private string _bindingKey = string.Empty;
-    private RuleKindOption _headersMatch;
+    private HeaderMatchOption _headersMatch;
     private string _headers = string.Empty;
     private readonly SubscriptionRule? _existing;
 
@@ -53,7 +59,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         _policy = existing?.Kind == RuleFilterKind.SnsFilterPolicy ? PrettyJson(existing.Expression ?? string.Empty) : string.Empty;
         _bindingKey = existing?.IsBinding == true ? existing.Expression ?? string.Empty : string.Empty;
         _headersMatch = HeaderModes.FirstOrDefault(mode => existing?.Arguments.TryGetValue("x-match", out var value) == true &&
-                                                           value is string text && mode.Label.StartsWith(text + " ", StringComparison.Ordinal))
+                                                           value is string text && mode.Value == text)
                         ?? HeaderModes[0];
         if (existing?.Kind == RuleFilterKind.HeadersBinding)
         {
@@ -103,11 +109,16 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         new(RuleFilterKind.SnsFilterPolicy, "Message body (JSON)")
     ];
 
-    /// <summary>x-match of a RabbitMQ headers binding.</summary>
-    public static IReadOnlyList<RuleKindOption> HeaderModes { get; } =
+    /// <summary>
+    /// x-match of a RabbitMQ headers binding. "all" and "any" leave headers starting with "x-" out of the
+    /// comparison; the "-with-x" forms compare them too.
+    /// </summary>
+    public static IReadOnlyList<HeaderMatchOption> HeaderModes { get; } =
     [
-        new(RuleFilterKind.HeadersBinding, "all (every header must match)"),
-        new(RuleFilterKind.HeadersBinding, "any (one header is enough)")
+        new("all", "all (every header must match)"),
+        new("any", "any (one header is enough)"),
+        new("all-with-x", "all-with-x (every header, x- ones included)"),
+        new("any-with-x", "any-with-x (one header, x- ones included)")
     ];
 
     public string Topic { get; }
@@ -228,7 +239,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
 
     public string BindingKey { get => _bindingKey; set => SetProperty(ref _bindingKey, value ?? string.Empty); }
 
-    public RuleKindOption HeadersMatch { get => _headersMatch; set => SetProperty(ref _headersMatch, value ?? HeaderModes[0]); }
+    public HeaderMatchOption HeadersMatch { get => _headersMatch; set => SetProperty(ref _headersMatch, value ?? HeaderModes[0]); }
 
     /// <summary>One "name = value" per line: 'quoted' is text, 250 and 1.5 are numbers, true and false are booleans.</summary>
     public string Headers { get => _headers; set => SetProperty(ref _headers, value ?? string.Empty); }
@@ -459,7 +470,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         var arguments = new Dictionary<string, object?>(StringComparer.Ordinal);
         if (IsHeadersBinding)
         {
-            arguments["x-match"] = ReferenceEquals(HeadersMatch, HeaderModes[1]) ? "any" : "all";
+            arguments["x-match"] = HeadersMatch.Value;
             foreach (var line in Headers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 var separator = line.IndexOf('=');
