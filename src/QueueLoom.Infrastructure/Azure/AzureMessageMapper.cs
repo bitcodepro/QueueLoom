@@ -95,61 +95,10 @@ internal static class AzureMessageMapper
         return message;
     }
 
-    internal static MessageApplicationProperty ToDomainProperty(KeyValuePair<string, object> property)
-    {
-        var (type, value) = property.Value switch
-        {
-            string typed => (ApplicationPropertyType.String, typed),
-            bool typed => (ApplicationPropertyType.Boolean, typed.ToString(CultureInfo.InvariantCulture)),
-            byte typed => (ApplicationPropertyType.Byte, typed.ToString(CultureInfo.InvariantCulture)),
-            sbyte typed => (ApplicationPropertyType.SByte, typed.ToString(CultureInfo.InvariantCulture)),
-            short typed => (ApplicationPropertyType.Int16, typed.ToString(CultureInfo.InvariantCulture)),
-            ushort typed => (ApplicationPropertyType.UInt16, typed.ToString(CultureInfo.InvariantCulture)),
-            int typed => (ApplicationPropertyType.Int32, typed.ToString(CultureInfo.InvariantCulture)),
-            uint typed => (ApplicationPropertyType.UInt32, typed.ToString(CultureInfo.InvariantCulture)),
-            long typed => (ApplicationPropertyType.Int64, typed.ToString(CultureInfo.InvariantCulture)),
-            ulong typed => (ApplicationPropertyType.UInt64, typed.ToString(CultureInfo.InvariantCulture)),
-            float typed => (ApplicationPropertyType.Single, typed.ToString("R", CultureInfo.InvariantCulture)),
-            double typed => (ApplicationPropertyType.Double, typed.ToString("R", CultureInfo.InvariantCulture)),
-            decimal typed => (ApplicationPropertyType.Decimal, typed.ToString(CultureInfo.InvariantCulture)),
-            char typed => (ApplicationPropertyType.Character, typed.ToString()),
-            Guid typed => (ApplicationPropertyType.Guid, typed.ToString("D")),
-            DateTime typed => (ApplicationPropertyType.DateTime, typed.ToString("O", CultureInfo.InvariantCulture)),
-            DateTimeOffset typed => (ApplicationPropertyType.DateTimeOffset, typed.ToString("O", CultureInfo.InvariantCulture)),
-            TimeSpan typed => (ApplicationPropertyType.TimeSpan, typed.ToString("c", CultureInfo.InvariantCulture)),
-            Uri typed => (ApplicationPropertyType.Uri, typed.ToString()),
-            byte[] typed => (ApplicationPropertyType.Binary, Convert.ToBase64String(typed)),
-            BinaryData typed => (ApplicationPropertyType.Binary, Convert.ToBase64String(typed.ToArray())),
-            _ => (ApplicationPropertyType.String, Convert.ToString(property.Value, CultureInfo.InvariantCulture) ?? string.Empty)
-        };
+    internal static MessageApplicationProperty ToDomainProperty(KeyValuePair<string, object> property) =>
+        ApplicationPropertyValues.FromObject(property.Key, property.Value is BinaryData binary ? binary.ToArray() : property.Value);
 
-        return new MessageApplicationProperty(property.Key, type, value);
-    }
-
-    private static object ParseApplicationProperty(MessageApplicationProperty property) => property.Type switch
-    {
-        ApplicationPropertyType.String => property.Value,
-        ApplicationPropertyType.Boolean => bool.Parse(property.Value),
-        ApplicationPropertyType.Byte => byte.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.SByte => sbyte.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Int16 => short.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.UInt16 => ushort.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Int32 => int.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.UInt32 => uint.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Int64 => long.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.UInt64 => ulong.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Single => float.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Double => double.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Decimal => decimal.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Character => property.Value[0],
-        ApplicationPropertyType.Guid => Guid.Parse(property.Value),
-        ApplicationPropertyType.DateTime => DateTime.Parse(property.Value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-        ApplicationPropertyType.DateTimeOffset => DateTimeOffset.Parse(property.Value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-        ApplicationPropertyType.TimeSpan => TimeSpan.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Uri => new Uri(property.Value, UriKind.RelativeOrAbsolute),
-        ApplicationPropertyType.Binary => Convert.FromBase64String(property.Value),
-        _ => throw new ArgumentOutOfRangeException(nameof(property), property.Type, "Unsupported application property type.")
-    };
+    private static object ParseApplicationProperty(MessageApplicationProperty property) => ApplicationPropertyValues.ToObject(property);
 
     private static DomainMessageState MapState(AzureMessageState state) =>
         state switch

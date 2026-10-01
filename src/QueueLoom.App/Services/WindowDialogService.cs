@@ -95,6 +95,12 @@ public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogSer
     public Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         ShowDialogAsync<object?>(new QueueDialogWindow(viewModel), cancellationToken);
 
+    public Task ShowTopicRoutingAsync(TopicRoutingViewModel viewModel, CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<object?>(new TopicRoutingWindow(viewModel), cancellationToken);
+
+    public Task<QueueLoom.Core.Routing.SubscriptionRule?> EditRuleAsync(RuleEditorViewModel viewModel, CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<QueueLoom.Core.Routing.SubscriptionRule?>(new RuleEditorWindow(viewModel), cancellationToken);
+
     public Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         ShowDialogAsync<object?>(new CompareDialogWindow(viewModel), cancellationToken);
 
@@ -110,8 +116,20 @@ public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogSer
         using var registration = cancellationToken.Register(
             static state => Dispatcher.UIThread.Post(((Window)state!).Close),
             dialog);
-        var result = await dialog.ShowDialog<T>(owner.Window).ConfigureAwait(true);
-        cancellationToken.ThrowIfCancellationRequested();
-        return result;
+        // A dialog opened from another dialog (a rule editor from the routing window) belongs to that dialog.
+        var parent = _openDialogs.Count > 0 ? _openDialogs[^1] : owner.Window;
+        _openDialogs.Add(dialog);
+        try
+        {
+            var result = await dialog.ShowDialog<T>(parent).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        finally
+        {
+            _openDialogs.Remove(dialog);
+        }
     }
+
+    private readonly List<Window> _openDialogs = [];
 }

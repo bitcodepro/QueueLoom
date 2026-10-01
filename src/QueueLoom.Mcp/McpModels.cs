@@ -30,6 +30,14 @@ public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, 
 
 public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? Count, string? Error);
 
+public sealed record RuleInfo(string Name, string Kind, string Filter, string? Action);
+
+/// <param name="Outcome">Receives, Skips or Unknown (only Service Bus can tell), when a message was given.</param>
+public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<RuleInfo> Rules, string? Warning, string? Outcome, string? Explanation);
+
+/// <param name="Headline">For a given message: how many subscriptions receive it, or that it is dropped.</param>
+public sealed record TopicRoutingInfo(string Environment, string Topic, string? Headline, IReadOnlyList<SubscriptionRoutingInfo> Subscriptions);
+
 public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count);
 
 public sealed record DeadLetterTrendInfo(string Source, long Start, long Now, long Change);

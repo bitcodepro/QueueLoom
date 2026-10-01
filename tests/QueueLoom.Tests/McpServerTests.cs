@@ -29,10 +29,10 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.Equal(
-            ["delete_dead_letter_messages", "export_messages", "get_dead_letter_history", "get_entities", "list_environments", "peek_messages",
+            ["check_topic_routing", "delete_dead_letter_messages", "export_messages", "get_dead_letter_history", "get_entities", "list_environments", "peek_messages",
              "purge_dead_letters", "resend_dead_letters", "scan_dead_letters", "search_dead_letters", "send_message"],
             tools.Select(tool => tool.Name).Order());
-        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages", "get_dead_letter_history" })
+        foreach (var name in new[] { "list_environments", "get_entities", "scan_dead_letters", "peek_messages", "search_dead_letters", "export_messages", "get_dead_letter_history", "check_topic_routing" })
         {
             Assert.True(tools.Single(tool => tool.Name == name).ProtocolTool.Annotations?.ReadOnlyHint);
         }
@@ -56,6 +56,32 @@ public sealed class McpServerTests
         Assert.Equal(2, history.GetProperty("now").GetInt64());
         Assert.Equal("orders", history.GetProperty("sources")[0].GetProperty("source").GetString());
         Assert.Contains("1-720", await server.CallForErrorAsync("get_dead_letter_history", new() { ["hours"] = 5000 }), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TopicRouting_ExplainsWhichSubscriptionsReceiveAMessage()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        server.Workspace.SupportsSubscriptionRules = true;
+        server.Workspace.TopicRules["orders"] =
+        [
+            new QueueLoom.Core.Routing.SubscriptionRules("billing",
+                [new QueueLoom.Core.Routing.SubscriptionRule("eu", QueueLoom.Core.Routing.RuleFilterKind.Sql, "region = 'EU' AND amount > 100")]),
+            new QueueLoom.Core.Routing.SubscriptionRules("legacy", [])
+        ];
+
+        var rulesOnly = await server.CallAsync("check_topic_routing", new() { ["topic"] = "orders" });
+        Assert.False(rulesOnly.TryGetProperty("headline", out _));
+        Assert.Equal("region = 'EU' AND amount > 100", rulesOnly.GetProperty("subscriptions")[0].GetProperty("rules")[0].GetProperty("filter").GetString());
+
+        var routed = await server.CallAsync("check_topic_routing", new()
+        {
+            ["topic"] = "orders",
+            ["properties"] = new Dictionary<string, object> { ["region"] = "EU", ["amount"] = 250 }
+        });
+        Assert.Equal("1 of 2 subscriptions receive it.", routed.GetProperty("headline").GetString());
+        Assert.Equal("Receives", routed.GetProperty("subscriptions")[0].GetProperty("outcome").GetString());
+        Assert.Equal("Has no rules, so it receives no messages at all.", routed.GetProperty("subscriptions")[1].GetProperty("warning").GetString());
     }
 
     public sealed class MemoryHistoryStore : IDeadLetterHistoryStore
@@ -87,7 +113,7 @@ public sealed class McpServerTests
         var tools = await server.Client.ListToolsAsync();
 
         Assert.DoesNotContain(tools, tool => tool.ProtocolTool.Annotations?.ReadOnlyHint != true);
-        Assert.Equal(7, tools.Count);
+        Assert.Equal(8, tools.Count);
     }
 
     [Fact]

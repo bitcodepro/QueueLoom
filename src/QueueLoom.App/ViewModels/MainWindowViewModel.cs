@@ -244,6 +244,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeResend();
         InitializeCompare();
         InitializeEnvironmentTransfer();
+        InitializeRouting();
         InitializeExport();
         InitializeSavedSearches();
         InitializeAlerts(alerts);

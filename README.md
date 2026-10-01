@@ -18,12 +18,12 @@ A desktop app for Windows, macOS and Linux for message queues in **Azure Service
   <tr>
     <td><img src="docs/images/compare-messages.png" alt="Two dead letters compared line by line"></td>
     <td><img src="docs/images/resend-dialog.png" alt="Resend with find and replace, scheduled for 03:00"></td>
-    <td></td>
+    <td><img src="docs/images/rules-and-routing.png" alt="Subscription rules of a topic and where a message would go"></td>
   </tr>
   <tr>
     <td align="center">Compare two messages</td>
     <td align="center">Find and replace, resend later</td>
-    <td></td>
+    <td align="center">Rules and routing</td>
   </tr>
 </table>
 
@@ -64,6 +64,7 @@ The badge next to each environment (**AZURE**, **AWS**, **GCP**, **RABBITMQ**, *
 - **See who reads.** Explorer and Monitors show how many consumers a RabbitMQ queue has, and how far each Kafka consumer group is behind (its lag).
 - **Manage queues** (optional). Turn on **Allow creating, changing and deleting queues** for an environment, and **Explorer** → **Manage** creates a queue with its dead-letter queue, changes its settings (time to live, deliveries before dead-lettering, lock) or deletes it. For Pub/Sub it does the same for subscriptions: select a topic to add one. Deleting asks you to type the name.
 - **Share environments.** **Environments** → **Export…** saves every environment's settings to a file, without passwords, keys or connection strings; **Import…** adds them on another computer, read-only until you unlock them.
+- **Find out where messages go** (Azure Service Bus). Each subscription of a topic receives only the messages its rules (SQL or correlation filters) let through (values are compared case-sensitively, property names are not), and a message no subscription takes is dropped without an error. **Explorer** → **Rules…** lists every subscription's rules and warns about subscriptions that receive nothing. **Check routing** on a message, or on a draft in **Composer**, shows which subscriptions would receive it and, for the others, which comparison failed (for example *region = 'EU' is false (region is 'eu')*). With queue management allowed, rules can be added, changed and deleted there too.
 - **Session-enabled** Azure queues and subscriptions work too: their dead letters like any other, their active messages session by session.
 - **Scheduled and deferred** Azure messages are marked in the list of active messages, with the time a scheduled one is due. Tick them (or click **Scheduled** or **Deferred** above the list) to cancel or remove them; each is backed up first.
 
@@ -121,7 +122,7 @@ QueueLoom can act as an [MCP](https://modelcontextprotocol.io) server, so an ass
 - **Claude Code:** `claude mcp add queueloom -- "C:\Tools\QueueLoom\QueueLoom.exe" --mcp`
 
 **What the assistant may do:**
-- **Read freely:** list environments and queues, scan and search dead letters, view messages, see how dead letters changed over the last hours or days, and export messages to a JSON or CSV file (saved in the `exports` folder of the data folder). Reading never removes anything.
+- **Read freely:** list environments and queues, scan and search dead letters, view messages, see how dead letters changed over the last hours or days, check which subscriptions of an Azure topic a message would reach, and export messages to a JSON or CSV file (saved in the `exports` folder of the data folder). Reading never removes anything.
 - **Change only with your approval:** delete messages, empty a dead-letter queue, resend dead letters (as copies or as a move) or send a message. Creating and deleting queues is not available to assistants. QueueLoom shows you this window, and nothing happens until you press **Approve**:
 
 <img src="docs/images/mcp-approval.png" alt="QueueLoom asking to approve a deletion requested by an AI assistant" width="520">

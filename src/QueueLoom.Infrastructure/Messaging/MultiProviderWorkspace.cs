@@ -1,3 +1,4 @@
+using QueueLoom.Core.Routing;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
@@ -113,6 +114,18 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
 
     public Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
         Current.DeleteQueueAsync(queue, cancellationToken);
+
+    public bool SupportsSubscriptionRules => _current?.SupportsSubscriptionRules == true;
+
+    public Task<IReadOnlyList<SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
+        Current.GetTopicRulesAsync(topic, cancellationToken);
+
+    public Task SaveSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, bool replace,
+        CancellationToken cancellationToken = default) =>
+        Current.SaveSubscriptionRuleAsync(topic, subscription, rule, replace, cancellationToken);
+
+    public Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
+        Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
 
     public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
         IReadOnlyList<BrowsedMessage> messages,

@@ -35,6 +35,13 @@ public interface IUserDialogService
     Task<object?> EditQueueAsync(QueueDialogViewModel viewModel, CancellationToken cancellationToken = default) =>
         Task.FromResult<object?>(viewModel.IsNew ? viewModel.TryBuildDefinition() : viewModel.TryBuildSettings());
 
+    /// <summary>Shows a topic's subscriptions, their rules and where a message would go.</summary>
+    Task ShowTopicRoutingAsync(TopicRoutingViewModel viewModel, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    /// <summary>Adds or changes a subscription rule. Null means cancelled.</summary>
+    Task<QueueLoom.Core.Routing.SubscriptionRule?> EditRuleAsync(RuleEditorViewModel viewModel, CancellationToken cancellationToken = default) =>
+        Task.FromResult(viewModel.TryBuild());
+
     /// <summary>Shows two messages side by side.</summary>
     Task ShowComparisonAsync(CompareDialogViewModel viewModel, CancellationToken cancellationToken = default) => Task.CompletedTask;
 

@@ -362,6 +362,9 @@
                           Command="{Binding CopyTextCommand}" CommandParameter="{Binding SelectedMessage?.BodyText}" />
                   <Button Content="Copy properties" Classes="quiet copyAction"
                           Command="{Binding CopyTextCommand}" CommandParameter="{Binding SelectedMessage?.PropertiesJson}" />
+                  <Button Content="Check routing" Classes="quiet copyAction" Command="{Binding CheckMessageRoutingCommand}"
+                          IsVisible="{Binding SupportsRouting}"
+                          ToolTip.Tip="Which subscriptions of its topic would receive this message if it were sent again, and why the others would not" />
                   <Button Content="Open as draft" Classes="primary copyAction" Command="{Binding OpenMessageAsDraftCommand}"
                           ToolTip.Tip="Copy this message into the composer; the original message is unchanged" />
                 </StackPanel>

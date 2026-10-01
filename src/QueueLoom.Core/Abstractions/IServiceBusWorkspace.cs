@@ -77,6 +77,21 @@ public interface IServiceBusWorkspace : IAsyncDisposable
     Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This service does not support queue management in QueueLoom.");
 
+    /// <summary>True where topic subscriptions have rules that filter what they receive (Azure Service Bus).</summary>
+    bool SupportsSubscriptionRules => false;
+
+    /// <summary>Every subscription of the topic with its rules.</summary>
+    Task<IReadOnlyList<Routing.SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service has no subscription rules.");
+
+    /// <summary>Adds a rule, or replaces the filter and action of the rule with the same name.</summary>
+    Task SaveSubscriptionRuleAsync(string topic, string subscription, Routing.SubscriptionRule rule, bool replace,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service has no subscription rules.");
+
+    Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This service has no subscription rules.");
+
     Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default);

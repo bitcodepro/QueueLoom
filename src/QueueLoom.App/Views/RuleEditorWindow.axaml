@@ -1,0 +1,77 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.RuleEditorWindow"
+        x:DataType="vm:RuleEditorViewModel"
+        Title="{Binding Title}"
+        Width="620"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+  <StackPanel Margin="26" Spacing="14">
+    <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+
+    <Grid ColumnDefinitions="*,12,*">
+      <StackPanel Spacing="7">
+        <TextBlock Text="NAME" Classes="eyebrow" />
+        <TextBox Text="{Binding Name}" IsEnabled="{Binding IsNew}" PlaceholderText="eu-orders" AutomationProperties.Name="Rule name" />
+      </StackPanel>
+      <StackPanel Grid.Column="2" Spacing="7">
+        <TextBlock Text="FILTER" Classes="eyebrow" />
+        <ComboBox ItemsSource="{x:Static vm:RuleEditorViewModel.Kinds}" SelectedItem="{Binding Kind}" HorizontalAlignment="Stretch"
+                  AutomationProperties.Name="Filter kind" />
+      </StackPanel>
+    </Grid>
+
+    <StackPanel Spacing="7" IsVisible="{Binding IsSql}">
+      <TextBlock Text="SQL FILTER" Classes="eyebrow" />
+      <TextBox Text="{Binding SqlExpression}" AcceptsReturn="True" MinHeight="80" TextWrapping="Wrap"
+               FontFamily="{StaticResource MonoFontFamily}" PlaceholderText="region = 'EU' AND amount &gt; 100"
+               AutomationProperties.Name="SQL filter" />
+      <TextBlock Text="{Binding SqlCheck}" FontSize="12" TextWrapping="Wrap"
+                 Classes.muted="{Binding !HasSqlProblem}" Classes.danger="{Binding HasSqlProblem}" />
+    </StackPanel>
+
+    <StackPanel Spacing="7" IsVisible="{Binding IsCorrelation}">
+      <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 Text="Every field you fill in must match exactly (values are case-sensitive, property names are not); empty fields are not checked." />
+      <Grid ColumnDefinitions="*,12,*" RowDefinitions="Auto,Auto,8,Auto,Auto,8,Auto,Auto,8,Auto,Auto">
+        <TextBlock Text="SUBJECT (LABEL)" Classes="eyebrow" />
+        <TextBox Grid.Row="1" Text="{Binding Subject}" AutomationProperties.Name="Subject" />
+        <TextBlock Grid.Column="2" Text="CORRELATION ID" Classes="eyebrow" />
+        <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding CorrelationId}" AutomationProperties.Name="Correlation ID" />
+        <TextBlock Grid.Row="3" Text="TO" Classes="eyebrow" />
+        <TextBox Grid.Row="4" Text="{Binding To}" AutomationProperties.Name="To" />
+        <TextBlock Grid.Row="3" Grid.Column="2" Text="REPLY TO" Classes="eyebrow" />
+        <TextBox Grid.Row="4" Grid.Column="2" Text="{Binding ReplyTo}" AutomationProperties.Name="Reply to" />
+        <TextBlock Grid.Row="6" Text="CONTENT TYPE" Classes="eyebrow" />
+        <TextBox Grid.Row="7" Text="{Binding ContentType}" AutomationProperties.Name="Content type" />
+        <TextBlock Grid.Row="6" Grid.Column="2" Text="SESSION ID" Classes="eyebrow" />
+        <TextBox Grid.Row="7" Grid.Column="2" Text="{Binding SessionId}" AutomationProperties.Name="Session ID" />
+        <TextBlock Grid.Row="9" Text="MESSAGE ID" Classes="eyebrow" />
+        <TextBox Grid.Row="10" Text="{Binding MessageId}" AutomationProperties.Name="Message ID" />
+        <TextBlock Grid.Row="9" Grid.Column="2" Text="REPLY TO SESSION ID" Classes="eyebrow" />
+        <TextBox Grid.Row="10" Grid.Column="2" Text="{Binding ReplyToSessionId}" AutomationProperties.Name="Reply to session ID" />
+      </Grid>
+      <TextBlock Text="APPLICATION PROPERTIES · NAME = VALUE, ONE PER LINE" Classes="eyebrow" />
+      <TextBox Text="{Binding CorrelationProperties}" AcceptsReturn="True" MinHeight="60" FontFamily="{StaticResource MonoFontFamily}"
+               PlaceholderText="tenant = 'acme'&#10;amount = 250" AutomationProperties.Name="Correlation properties" />
+      <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 Text="'Quoted' values are text (\n is a line break), 250 is an Int64, &lt;Int32&gt; 250 an Int32, 1.5 a Double, true and false booleans, &lt;DateTime&gt; 2026-10-01T12:00:00Z a date. The type must match the message's exactly: an Int32 7 does not match an Int64 7, and 250 never matches '250'." />
+    </StackPanel>
+
+    <StackPanel Spacing="7">
+      <TextBlock Text="ACTION · OPTIONAL" Classes="eyebrow" />
+      <TextBox Text="{Binding Action}" FontFamily="{StaticResource MonoFontFamily}" PlaceholderText="SET priority = 'high'"
+               AutomationProperties.Name="Rule action" />
+      <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                 Text="Changes the copy a matching message leaves in this subscription, for example SET or REMOVE a property." />
+    </StackPanel>
+
+    <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+      <Button Content="Cancel" Classes="quiet" Click="CancelClick" />
+      <Button Content="{Binding ConfirmLabel}" Classes="primary" Click="ConfirmClick" />
+    </StackPanel>
+  </StackPanel>
+</Window>

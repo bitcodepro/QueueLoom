@@ -1,0 +1,146 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:QueueLoom.App.ViewModels"
+        x:Class="QueueLoom.App.Views.TopicRoutingWindow"
+        x:DataType="vm:TopicRoutingViewModel"
+        Title="{Binding Title}"
+        Width="1120" Height="760" MinWidth="820" MinHeight="520"
+        WindowStartupLocation="CenterOwner">
+  <Window.Styles>
+    <Style Selector="Border.outcome">
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="6,1" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Border.outcome.receives">
+      <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}" />
+    </Style>
+    <Style Selector="Border.outcome.skips">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+    </Style>
+    <Style Selector="Border.outcome.unknown">
+      <Setter Property="Background" Value="{DynamicResource WarningSoftBrush}" />
+    </Style>
+    <Style Selector="Border.headline">
+      <Setter Property="Background" Value="{DynamicResource SuccessSoftBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="12,8" />
+    </Style>
+    <Style Selector="Border.headline.dropped">
+      <Setter Property="Background" Value="{DynamicResource DangerSoftBrush}" />
+    </Style>
+  </Window.Styles>
+  <Grid Margin="22" RowDefinitions="Auto,12,*,12,Auto">
+    <StackPanel Spacing="4">
+      <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+      <TextBlock Classes="muted" TextWrapping="Wrap"
+                 Text="Each subscription gets a copy of a message when at least one of its rules matches. Values are compared case-sensitively; property names are not. A message that matches no subscription is dropped without an error." />
+      <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+    </StackPanel>
+
+    <Grid Grid.Row="2" ColumnDefinitions="360,14,*">
+      <!-- The test message -->
+      <Border Classes="card">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="9">
+            <TextBlock Text="Where would this message go?" Classes="sectionTitle" />
+            <TextBlock Text="{Binding MessageOrigin}" Classes="muted" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasMessageOrigin}" />
+            <Grid ColumnDefinitions="*,8,*" RowDefinitions="Auto,Auto,8,Auto,Auto,8,Auto,Auto">
+              <TextBlock Text="SUBJECT (LABEL)" Classes="eyebrow" />
+              <TextBox Grid.Row="1" Text="{Binding TestSubject}" AutomationProperties.Name="Test subject" />
+              <TextBlock Grid.Column="2" Text="CORRELATION ID" Classes="eyebrow" />
+              <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding TestCorrelationId}" AutomationProperties.Name="Test correlation ID" />
+              <TextBlock Grid.Row="3" Text="MESSAGE ID" Classes="eyebrow" />
+              <TextBox Grid.Row="4" Text="{Binding TestMessageId}" AutomationProperties.Name="Test message ID" />
+              <TextBlock Grid.Row="3" Grid.Column="2" Text="CONTENT TYPE" Classes="eyebrow" />
+              <TextBox Grid.Row="4" Grid.Column="2" Text="{Binding TestContentType}" AutomationProperties.Name="Test content type" />
+              <TextBlock Grid.Row="6" Text="TO" Classes="eyebrow" />
+              <TextBox Grid.Row="7" Text="{Binding TestTo}" AutomationProperties.Name="Test to" />
+              <TextBlock Grid.Row="6" Grid.Column="2" Text="SESSION ID" Classes="eyebrow" />
+              <TextBox Grid.Row="7" Grid.Column="2" Text="{Binding TestSessionId}" AutomationProperties.Name="Test session ID" />
+            </Grid>
+            <TextBlock Text="APPLICATION PROPERTIES · ONE PER LINE" Classes="eyebrow" />
+            <TextBox Text="{Binding TestProperties}" AcceptsReturn="True" MinHeight="120" TextWrapping="NoWrap"
+                     FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
+                     PlaceholderText="region = 'EU'&#10;amount = 250&#10;vip = true" AutomationProperties.Name="Test properties" />
+            <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
+                       Text="'Quoted' values are text (\n is a line break), 250 and 1.5 are numbers, true and false are booleans, and &lt;Guid&gt;, &lt;DateTime&gt;, &lt;TimeSpan&gt; or &lt;Single&gt; mark other types." />
+            <Button Content="Check routing" Classes="primary" HorizontalAlignment="Stretch" Command="{Binding CheckCommand}" />
+            <Border Classes="headline" Classes.dropped="{Binding IsDropped}" IsVisible="{Binding HasHeadline}">
+              <TextBlock Text="{Binding Headline}" TextWrapping="Wrap" FontWeight="SemiBold" />
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+
+      <!-- Subscriptions and their rules -->
+      <Border Grid.Column="2" Classes="card">
+        <Grid RowDefinitions="Auto,8,*">
+          <Grid ColumnDefinitions="*,Auto,8,Auto">
+            <StackPanel Spacing="2" VerticalAlignment="Center">
+              <TextBlock Text="Subscriptions and rules" Classes="sectionTitle" />
+              <TextBlock Text="{Binding SubscriptionsCaption}" Classes="muted" FontSize="12" />
+            </StackPanel>
+            <Button Grid.Column="1" Content="Refresh" Classes="quiet" Command="{Binding RefreshCommand}" />
+            <Button Grid.Column="3" Content="Add rule…" Classes="quiet" Command="{Binding AddRuleCommand}"
+                    IsVisible="{Binding CanEdit}" ToolTip.Tip="Add a rule to the selected subscription" />
+          </Grid>
+          <ListBox Grid.Row="2" ItemsSource="{Binding Subscriptions}" SelectedItem="{Binding Selected}" Classes="tableRows"
+                   AutomationProperties.Name="Subscriptions">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:RoutingSubscriptionViewModel">
+                <StackPanel Spacing="6" Margin="2,6">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Spacing="1">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding RulesText}" Classes="muted" FontSize="11" />
+                    </StackPanel>
+                    <Border Grid.Column="1" Classes="outcome" Classes.receives="{Binding Receives}" Classes.skips="{Binding Skips}"
+                            Classes.unknown="{Binding IsUnknown}" IsVisible="{Binding HasResult}" VerticalAlignment="Top">
+                      <TextBlock Text="{Binding ResultLabel}" FontSize="11" FontWeight="SemiBold" />
+                    </Border>
+                  </Grid>
+                  <TextBlock Text="{Binding Warning}" Classes="warning" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasWarning}" />
+                  <TextBlock Text="{Binding ResultText}" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasResultText}"
+                             Classes.muted="{Binding Receives}" />
+                  <ItemsControl ItemsSource="{Binding Rules}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:RuleItemViewModel">
+                        <Border BorderBrush="{DynamicResource HairlineBrush}" BorderThickness="2,0,0,0" Padding="10,3" Margin="0,2">
+                          <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel Spacing="2">
+                              <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
+                              </StackPanel>
+                              <SelectableTextBlock Text="{Binding Filter}" FontFamily="{StaticResource MonoFontFamily}" FontSize="12" TextWrapping="Wrap" />
+                              <TextBlock Text="{Binding ActionText}" Classes="muted" FontSize="11" TextWrapping="Wrap" IsVisible="{Binding HasAction}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top"
+                                        IsVisible="{Binding $parent[Window].((vm:TopicRoutingViewModel)DataContext).CanEdit}">
+                              <Button Content="Edit" Classes="quiet copyAction"
+                                      Command="{Binding $parent[Window].((vm:TopicRoutingViewModel)DataContext).EditRuleCommand}"
+                                      CommandParameter="{Binding}" />
+                              <Button Content="Delete" Classes="danger copyAction"
+                                      Command="{Binding $parent[Window].((vm:TopicRoutingViewModel)DataContext).DeleteRuleCommand}"
+                                      CommandParameter="{Binding}" />
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Grid Grid.Row="4" ColumnDefinitions="*,Auto">
+      <TextBlock Text="{Binding EditHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+      <Button Grid.Column="1" Content="Close" Classes="quiet" Click="CloseClick" />
+    </Grid>
+  </Grid>
+</Window>

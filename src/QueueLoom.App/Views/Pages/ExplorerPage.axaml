@@ -10,7 +10,7 @@
       <TextBlock Text="Queues, topics, subscriptions and live runtime counters. Click a column header to sort." Classes="muted" />
     </StackPanel>
 
-    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
+    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
       <TextBox Grid.Column="0" MinWidth="150" Text="{Binding SearchText}" Classes="search"
                PlaceholderText="Filter entities…  (Ctrl+F)" AutomationProperties.Name="Filter entities">
         <TextBox.InnerLeftContent>
@@ -26,7 +26,10 @@
               ToolTip.Tip="Peek 100 messages without locking them; load more in Messages" />
       <Button Grid.Column="8" Content="Transfer DLQ" Classes="quiet" Command="{Binding BrowseSelectedTransferDeadLettersCommand}"
               ToolTip.Tip="View messages in the selected transfer dead-letter queue" />
-      <DropDownButton Grid.Column="10" Content="Manage" IsVisible="{Binding CanManageQueues}"
+      <Button Grid.Column="10" Content="Rules…" Classes="quiet" Command="{Binding OpenTopicRoutingCommand}"
+              IsVisible="{Binding SupportsRouting}"
+              ToolTip.Tip="See which messages each subscription of the selected topic receives, check where a message would go, and change the rules" />
+      <DropDownButton Grid.Column="12" Content="Manage" IsVisible="{Binding CanManageQueues}"
                       ToolTip.Tip="{Binding ManageQueuesHint}" AutomationProperties.Name="Manage queues">
         <DropDownButton.Flyout>
           <MenuFlyout Placement="BottomEdgeAlignedRight">
