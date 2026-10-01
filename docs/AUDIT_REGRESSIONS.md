@@ -110,17 +110,20 @@ Both late repairs were re-reviewed independently using gpt-6.1-sol high with no 
 
 ### Current PR heads and CI
 
-Checked at 2026-10-01 19:28:17 UTC. A successful preceding-head run is retained as history in the machine-readable evidence and is never attributed to a new head.
+Checked at 2026-10-01 19:39:40 UTC. A successful preceding-head run is retained as history in the machine-readable evidence and is never attributed to a new head.
 
 | PR | Current head | CI run | State |
 | --- | --- | --- | --- |
 | [#36](https://github.com/bitcodepro/QueueLoom/pull/36) | `9e64c1474dbdc9f49e3c832c0ecedf37d9d52fd5` | [36907859584](https://github.com/bitcodepro/QueueLoom/actions/runs/36907859584) | completed / success |
-| [#37](https://github.com/bitcodepro/QueueLoom/pull/37) | `67b3d5bce136c47d04fdae074a6d72bd8e185f6c` | [36914079127](https://github.com/bitcodepro/QueueLoom/actions/runs/36914079127) | in_progress |
+| [#37](https://github.com/bitcodepro/QueueLoom/pull/37) | `67b3d5bce136c47d04fdae074a6d72bd8e185f6c` | [36914079127](https://github.com/bitcodepro/QueueLoom/actions/runs/36914079127) | completed / success |
 | [#38](https://github.com/bitcodepro/QueueLoom/pull/38) | `8309de1cf06486551c30eb3a513ccec2d44618c7` | [36908019485](https://github.com/bitcodepro/QueueLoom/actions/runs/36908019485) | completed / success |
 | [#39](https://github.com/bitcodepro/QueueLoom/pull/39) | `197f4279ff556748802f27d6285c6c8daf05e65b` | [36908123721](https://github.com/bitcodepro/QueueLoom/actions/runs/36908123721) | completed / success |
 | [#41](https://github.com/bitcodepro/QueueLoom/pull/41) | `292d4c6c4f2e7f49a1971046cf986d3506dfbe79` | [36908220797](https://github.com/bitcodepro/QueueLoom/actions/runs/36908220797) | completed / success |
 | [#42](https://github.com/bitcodepro/QueueLoom/pull/42) | `a50b78207b0b186c2da8474290df6a99c4dca5af` | [36907724975](https://github.com/bitcodepro/QueueLoom/actions/runs/36907724975) | completed / success |
 | [#43](https://github.com/bitcodepro/QueueLoom/pull/43) | `f6ae5bc2f98d38165844e92c4fdeca3b90c4d625` | [36908243546](https://github.com/bitcodepro/QueueLoom/actions/runs/36908243546) | completed / success |
-| [#44](https://github.com/bitcodepro/QueueLoom/pull/44) | `03a7d1d51865ffae6c003a3eb322934945cdf755` | [36914173949](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949) | in_progress |
+| [#44](https://github.com/bitcodepro/QueueLoom/pull/44) | `03a7d1d51865ffae6c003a3eb322934945cdf755` | [36914173949](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949) | attempt 2 in_progress; initial emulator infrastructure failure |
+
+PR44 attempt 1 passed Windows, Linux and macOS build/tests, all four packages and downloaded-package verification. Its emulator job [110543933812](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949/job/110543933812) failed in **Wait for the emulators**, before tests, because Docker could not obtain HTTP headers from `https://mcr.microsoft.com/v2/` within the timeout (exit 125). Only failed jobs were retried; attempt 2 is pending. This is infrastructure failure, not an assertion failure, and no emulator green result is claimed for the updated PR44 head yet.
 
 All PRs remain drafts. Review #42 first, then independent fixes; #44 remains stacked on #39. No merge, release or live user-broker action was performed.
+
