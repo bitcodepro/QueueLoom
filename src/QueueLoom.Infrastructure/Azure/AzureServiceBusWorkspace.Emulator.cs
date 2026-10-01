@@ -32,36 +32,60 @@ public sealed partial class AzureServiceBusWorkspace
     // its dead letters, which never use sessions, and leaves the active count at zero.
     // An entity that auto-forwards holds nothing and cannot be peeked at all; one that forwards its dead letters has
     // an empty dead-letter queue.
-    private async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, bool requiresSession,
-        string? forwardTo, string? forwardDeadLettersTo, CancellationToken token) =>
+    private static async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, bool requiresSession,
+        string? forwardTo, string? forwardDeadLettersTo,
+        Func<ServiceBusEntityReference, SubQueue, CancellationToken, Task<long>> sampleCount, CancellationToken token) =>
         new(new ServiceBusMessageCounts(
-            active: requiresSession || forwardTo is not null ? 0 : await SampleEmulatorCountAsync(source, SubQueue.None, token).ConfigureAwait(false),
-            deadLetter: forwardDeadLettersTo is not null ? 0 : await SampleEmulatorCountAsync(source, SubQueue.DeadLetter, token).ConfigureAwait(false)))
+            active: requiresSession || forwardTo is not null ? 0 : await sampleCount(source, SubQueue.None, token).ConfigureAwait(false),
+            deadLetter: forwardDeadLettersTo is not null ? 0 : await sampleCount(source, SubQueue.DeadLetter, token).ConfigureAwait(false)))
         {
             IsEmulatorSample = true
         };
 
-    private async Task<ServiceBusTopology> SampleEmulatorTopologyAsync(ServiceBusTopology topology, CancellationToken token)
+    private Task<ServiceBusTopology> SampleEmulatorTopologyAsync(ServiceBusTopology topology, CancellationToken token) =>
+        SampleEmulatorTopologyAsync(topology, SampleEmulatorCountAsync, _timeProvider, token);
+
+    internal static async Task<ServiceBusTopology> SampleEmulatorTopologyAsync(ServiceBusTopology topology,
+        Func<ServiceBusEntityReference, SubQueue, CancellationToken, Task<long>> sampleCount,
+        TimeProvider timeProvider, CancellationToken token)
     {
         var queues = new List<ServiceBusQueue>();
         foreach (var queue in topology.Queues)
-            queues.Add(queue with
+        {
+            try
             {
-                Runtime = await SampleEmulatorRuntimeAsync(queue.Reference, queue.RequiresSession, queue.ForwardTo, queue.ForwardDeadLettersTo, token)
-                    .ConfigureAwait(false)
-            });
+                queues.Add(queue with
+                {
+                    Runtime = await SampleEmulatorRuntimeAsync(queue.Reference, queue.RequiresSession, queue.ForwardTo,
+                        queue.ForwardDeadLettersTo, sampleCount, token).ConfigureAwait(false)
+                });
+            }
+            catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.MessagingEntityNotFound)
+            {
+                // Discovery and peeking are separate requests; omit an entity deleted between them.
+            }
+        }
         var topics = new List<ServiceBusTopic>();
         foreach (var topic in topology.Topics)
         {
             var subscriptions = new List<ServiceBusSubscription>();
             foreach (var subscription in topic.Subscriptions)
-                subscriptions.Add(subscription with
+            {
+                try
                 {
-                    Runtime = await SampleEmulatorRuntimeAsync(subscription.Reference, subscription.RequiresSession, subscription.ForwardTo,
-                        subscription.ForwardDeadLettersTo, token).ConfigureAwait(false)
-                });
+                    subscriptions.Add(subscription with
+                    {
+                        Runtime = await SampleEmulatorRuntimeAsync(subscription.Reference, subscription.RequiresSession,
+                            subscription.ForwardTo, subscription.ForwardDeadLettersTo, sampleCount, token).ConfigureAwait(false)
+                    });
+                }
+                catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.MessagingEntityNotFound)
+                {
+                    // A subscription (or its parent topic) disappeared after discovery.
+                }
+            }
             topics.Add(new ServiceBusTopic(topic.Name, topic.Runtime, subscriptions, topic.Status));
         }
-        return new ServiceBusTopology(_timeProvider.GetUtcNow(), queues, topics) { UsesSampledCounts = true };
+        return new ServiceBusTopology(timeProvider.GetUtcNow(), queues, topics) { UsesSampledCounts = true };
     }
 }
