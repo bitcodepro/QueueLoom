@@ -51,7 +51,8 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
         {
             (RoutingService.Sns, 0) => "no filter policy · receives every message",
             (RoutingService.PubSub, 0) => "no filter · receives every message",
-            (RoutingService.Sns or RoutingService.PubSub, _) => Source.Rules[0].KindLabel,
+            (RoutingService.Sns, _) => $"filter policy on the {Source.Rules[0].KindLabel.ToLowerInvariant()}",
+            (RoutingService.PubSub, _) => "filter on the attributes",
             (RoutingService.RabbitMq, 1) => $"1 binding · {Source.Rules[0].KindLabel}",
             (RoutingService.RabbitMq, var count) => $"{count} bindings",
             (_, 0) => "no rules",
@@ -194,7 +195,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
     };
 
     /// <summary>In RabbitMQ the routing key is what bindings look at; QueueLoom sends Subject as the routing key.</summary>
-    public string SubjectLabel => Service == RoutingService.RabbitMq ? "ROUTING KEY (SUBJECT)" : "SUBJECT (LABEL)";
+    public string SubjectLabel => Service == RoutingService.RabbitMq ? "ROUTING KEY" : "SUBJECT (LABEL)";
 
     public string PropertiesLabel => Service switch
     {

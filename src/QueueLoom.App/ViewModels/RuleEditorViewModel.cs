@@ -448,7 +448,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         using var document = JsonDocument.Parse(Policy);
         return new SubscriptionRule(_existing?.Name ?? "FilterPolicy", RuleFilterKind.SnsFilterPolicy)
         {
-            Expression = JsonSerializer.Serialize(document.RootElement),
+            Expression = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { Encoder = ReadableJson }),
             OnMessageBody = PolicyOnBody,
             Title = "Filter policy"
         };
@@ -505,12 +505,15 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         };
     }
 
+    // Policies hold comparisons such as ">"; they stay readable instead of becoming \u003E.
+    private static readonly System.Text.Encodings.Web.JavaScriptEncoder ReadableJson = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+
     private static string PrettyJson(string json)
     {
         try
         {
             using var document = JsonDocument.Parse(json);
-            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true, Encoder = ReadableJson });
         }
         catch (JsonException)
         {

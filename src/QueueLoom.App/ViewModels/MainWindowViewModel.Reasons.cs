@@ -155,8 +155,9 @@ public sealed partial class MainWindowViewModel
             .ThenBy(item => item.Cause.Label, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        // Causes only add something when some description sets messages of one reason apart, or names what failed.
-        var useful = causes.Any(item => item.Cause.Pattern is not null);
+        // Causes only add something when the error descriptions split at least one reason into several kinds of failure.
+        var useful = causes.Any(item => item.Cause.Pattern is not null) &&
+                     causes.Length > causes.Select(item => item.Cause.Reason).Distinct(StringComparer.Ordinal).Count();
         _causeCount = useful ? causes.Length : 0;
         DeadLetterCauses.Clear();
         foreach (var (cause, selected) in useful ? causes.Take(MaximumCauseChips) : [])
