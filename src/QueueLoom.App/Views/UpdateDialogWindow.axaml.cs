@@ -29,6 +29,7 @@ public sealed partial class UpdateDialogWindow : Window
         if (_viewModel is not null)
         {
             await _viewModel.InstallAsync();
+            if (_viewModel.IsReady) Close(UpdateDialogResult.Restart);
         }
     }
 

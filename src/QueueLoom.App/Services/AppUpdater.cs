@@ -3,6 +3,7 @@ using System.Formats.Tar;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace QueueLoom.App.Services;
 
@@ -25,7 +26,7 @@ public sealed record UpdateProgress(long Downloaded, long? Total)
 public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = null)
 {
     public const string ReleasesDownload = "https://github.com/bitcodepro/QueueLoom/releases/download";
-    private const string OldSuffix = ".old";
+    private const string DownloadMarker = UpdateRestart.DownloadMarker;
 
     private readonly string _downloadRoot = downloadRoot ?? Path.Combine(Path.GetTempPath(), "QueueLoom-update");
 
@@ -98,66 +99,93 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     {
         var version = update.Version.ToString(3);
         var package = PackageUri(update.Tag, version, target.Rid);
-        var folder = Path.Combine(_downloadRoot, version);
-        if (Directory.Exists(folder))
-        {
-            Directory.Delete(folder, recursive: true);
-        }
+        var id = Guid.NewGuid().ToString("N");
+        var folder = Path.Combine(_downloadRoot, version + "-" + id);
         Directory.CreateDirectory(folder);
-
-        var archive = Path.Combine(folder, PackageName(version, target.Rid));
-        var expected = await DownloadChecksumAsync(new Uri(package + ".sha256"), cancellationToken).ConfigureAwait(false);
-        using (var response = await httpClient.GetAsync(package, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
+        File.WriteAllText(Path.Combine(folder, DownloadMarker), id);
+        try
         {
-            if (!response.IsSuccessStatusCode)
+
+            var archive = Path.Combine(folder, PackageName(version, target.Rid));
+            var expected = await DownloadChecksumAsync(new Uri(package + ".sha256"), cancellationToken).ConfigureAwait(false);
+            using (var response = await httpClient.GetAsync(package, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
             {
-                throw new InvalidOperationException(
-                    $"The package for this system could not be downloaded ({(int)response.StatusCode}). Download it from the releases page instead.");
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidOperationException(
+                        $"The package for this system could not be downloaded ({(int)response.StatusCode}). Download it from the releases page instead.");
+                }
+
+                var total = response.Content.Headers.ContentLength;
+                await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                await using var file = File.Create(archive);
+                var buffer = new byte[81_920];
+                long downloaded = 0;
+                int read;
+                while ((read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                {
+                    await file.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    downloaded += read;
+                    progress?.Report(new UpdateProgress(downloaded, total));
+                }
             }
 
-            var total = response.Content.Headers.ContentLength;
-            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            await using var file = File.Create(archive);
-            var buffer = new byte[81_920];
-            long downloaded = 0;
-            int read;
-            while ((read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+            await using (var stream = File.OpenRead(archive))
             {
-                await file.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                downloaded += read;
-                progress?.Report(new UpdateProgress(downloaded, total));
+                var actual = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
+                if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("The downloaded package does not match its published checksum, so it was not installed.");
+                }
             }
-        }
 
-        await using (var stream = File.OpenRead(archive))
-        {
-            var actual = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-            if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+            var staging = Path.Combine(folder, "files");
+            Directory.CreateDirectory(staging);
+            if (archive.EndsWith(".tar.gz", StringComparison.Ordinal))
             {
-                throw new InvalidOperationException("The downloaded package does not match its published checksum, so it was not installed.");
+                await using var stream = File.OpenRead(archive);
+                await using var gzip = new GZipStream(stream, CompressionMode.Decompress);
+                await TarFile.ExtractToDirectoryAsync(gzip, staging, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
             }
+            else
+            {
+                await ZipFile.ExtractToDirectoryAsync(archive, staging, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
+            }
+            return staging;
         }
-
-        var staging = Path.Combine(folder, "files");
-        Directory.CreateDirectory(staging);
-        if (archive.EndsWith(".tar.gz", StringComparison.Ordinal))
+        catch
         {
-            await using var stream = File.OpenRead(archive);
-            await using var gzip = new GZipStream(stream, CompressionMode.Decompress);
-            await TarFile.ExtractToDirectoryAsync(gzip, staging, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
+            TryDelete(folder);
+            throw;
         }
-        else
-        {
-            await ZipFile.ExtractToDirectoryAsync(archive, staging, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
-        }
-        return staging;
     }
 
     /// <summary>Puts the unpacked files in place; the running ones become ".old". Rolls back on any failure.</summary>
     public static void Install(UpdateTarget target, string staging)
     {
+        var downloadDirectory = Path.GetDirectoryName(Path.GetFullPath(staging))!;
+        var marker = Path.Combine(downloadDirectory, DownloadMarker);
+        var id = File.Exists(marker) ? File.ReadAllText(marker) : Guid.NewGuid().ToString("N");
+        if (!Guid.TryParseExact(id, "N", out _)) throw new InvalidDataException("Invalid update download marker.");
+        if (!File.Exists(marker) || !Path.GetFileName(downloadDirectory).EndsWith("-" + id, StringComparison.Ordinal))
+            downloadDirectory = string.Empty;
+        var receiptPath = UpdateRestart.ReceiptPath(target);
+        using var ownership = UpdateRestart.OwnTransaction(receiptPath);
+        var entries = target.Bundle is { } appBundle
+            ? new[] { new UpdateRestart.Entry(appBundle, Directory.Exists(appBundle) ? appBundle + "." + id + ".old" : null) }
+            : Directory.EnumerateFiles(staging).Select(file =>
+            {
+                var current = Path.Combine(target.InstallDirectory, Path.GetFileName(file));
+                return new UpdateRestart.Entry(current, File.Exists(current) ? current + "." + id + ".old" : null);
+            }).ToArray();
+        using var installer = Process.GetCurrentProcess();
+        var receipt = new UpdateRestart.Receipt(id, target, downloadDirectory, entries,
+            InstallerPid: installer.Id, InstallerStartTicks: installer.StartTime.ToUniversalTime().Ticks);
         var moves = new List<(string Current, string Old)>();
         var added = new List<string>();
+        // A previous unfinished update must be recovered, not overwritten.
+        using (var stream = new FileStream(receiptPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            JsonSerializer.Serialize(stream, receipt);
         try
         {
             if (target.Bundle is { } bundle)
@@ -167,7 +195,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 {
                     throw new InvalidOperationException("The package does not contain QueueLoom.app.");
                 }
-                ReplaceDirectory(bundle, newBundle, moves, added);
+                ReplaceDirectory(bundle, newBundle, moves, added, id);
                 MakeExecutable(Path.Combine(bundle, "Contents", "MacOS", "QueueLoom"));
             }
             else
@@ -179,7 +207,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 }
                 foreach (var file in Directory.EnumerateFiles(staging))
                 {
-                    ReplaceFile(Path.Combine(target.InstallDirectory, Path.GetFileName(file)), file, moves, added);
+                    ReplaceFile(Path.Combine(target.InstallDirectory, Path.GetFileName(file)), file, moves, added, id);
                 }
                 MakeExecutable(target.Executable);
             }
@@ -201,6 +229,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                     File.Move(old, current, overwrite: true);
                 }
             }
+            File.Delete(receiptPath);
             throw;
         }
     }
@@ -208,24 +237,38 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// <summary>Starts the installed version; the caller then closes this one.</summary>
     public static void StartInstalled(UpdateTarget target)
     {
-        var start = target.Bundle is { } bundle
-            ? new ProcessStartInfo("open") { ArgumentList = { "-n", bundle } }
-            : new ProcessStartInfo(target.Executable) { WorkingDirectory = target.InstallDirectory };
-        start.UseShellExecute = false;
-        Process.Start(start)?.Dispose();
+        try { UpdateRestart.Start(target); }
+        catch (Exception exception) when (exception is IOException or System.ComponentModel.Win32Exception)
+        {
+            var path = UpdateRestart.ReceiptPath(target);
+            using var ownership = UpdateRestart.OwnTransaction(path);
+            var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
+            UpdateRestart.Read(path, receipt.Id);
+            UpdateRestart.Restore(receipt);
+            File.WriteAllText(path, JsonSerializer.Serialize(receipt with { Recovered = true }));
+            throw new IOException("The restart helper could not start. The previous version was restored and is still running.", exception);
+        }
     }
 
     /// <summary>Removes what the previous update left behind (the ".old" files and the download).</summary>
     public void CleanUpPreviousUpdate(UpdateTarget? target)
     {
-        if (target is not null)
+        if (target is not null && File.Exists(UpdateRestart.ReceiptPath(target)))
         {
-            foreach (var old in Directory.EnumerateFileSystemEntries(target.InstallDirectory, "*" + OldSuffix))
-            {
-                TryDelete(old);
-            }
+            var path = UpdateRestart.ReceiptPath(target);
+            // Retain ownership through receipt validation and cleanup, including asynchronous retries.
+            FileStream ownership;
+            try { ownership = UpdateRestart.OwnTransaction(path); }
+            catch (IOException) { return; }
+            using var retainedOwnership = ownership;
+            if (!File.Exists(path)) return;
+            var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
+            UpdateRestart.Read(path, receipt.Id);
+            // Protect the installed-but-not-yet-accepted handoff between Install and StartInstalled.
+            if (UpdateRestart.InstallerIsAlive(receipt)) return;
+            // Startup was successful. Retry only the backups recorded by this update.
+            UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero).GetAwaiter().GetResult();
         }
-        TryDelete(_downloadRoot);
     }
 
     private async Task<string> DownloadChecksumAsync(Uri uri, CancellationToken cancellationToken)
@@ -242,12 +285,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             : throw new InvalidOperationException("The published checksum could not be read, so the update was not installed.");
     }
 
-    private static void ReplaceFile(string current, string replacement, List<(string, string)> moves, List<string> added)
+    private static void ReplaceFile(string current, string replacement, List<(string, string)> moves, List<string> added, string id)
     {
         if (File.Exists(current))
         {
-            var old = current + OldSuffix;
-            TryDelete(old);
+            var old = current + "." + id + ".old";
             File.Move(current, old);
             moves.Add((current, old));
         }
@@ -258,10 +300,9 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         File.Move(replacement, current);
     }
 
-    private static void ReplaceDirectory(string current, string replacement, List<(string, string)> moves, List<string> added)
+    private static void ReplaceDirectory(string current, string replacement, List<(string, string)> moves, List<string> added, string id)
     {
-        var old = current + OldSuffix;
-        TryDelete(old);
+        var old = current + "." + id + ".old";
         Directory.Move(current, old);
         moves.Add((current, old));
         added.Add(current);

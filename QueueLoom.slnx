@@ -9,5 +9,6 @@
     <Project Path="tests/QueueLoom.IntegrationTests/QueueLoom.IntegrationTests.csproj" />
     <Project Path="tests/QueueLoom.Tests/QueueLoom.Tests.csproj" />
     <Project Path="tests/QueueLoom.UiTests/QueueLoom.UiTests.csproj" />
+    <Project Path="tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj" />
   </Folder>
 </Solution>

@@ -19,6 +19,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Target Name="CopyUpdateFixture" AfterTargets="Build">
+    <ItemGroup>
+      <UpdateFixtureFiles Include="../QueueLoom.UpdateFixture/bin/$(Configuration)/net10.0/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(UpdateFixtureFiles)" DestinationFolder="$(OutDir)UpdateFixture" />
+  </Target>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 
