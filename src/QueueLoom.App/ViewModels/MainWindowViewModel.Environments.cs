@@ -127,6 +127,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        result = result with { Profile = result.Profile with { ConfigurationRevision = Guid.NewGuid() } };
         var secretKey = ProfileSecretKey.ConnectionString(result.Profile.Id);
         string? removedConnectionString = null;
         // Switching to a method without a stored secret (for example to Entra ID) removes the old secret.
@@ -188,84 +189,107 @@ public sealed partial class MainWindowViewModel
             previousConnectionString = await _secretVault.RetrieveAsync(secretKey, cancellationToken)
                 .ConfigureAwait(true);
         }
+        var registryKey = ProfileSecretKey.SchemaRegistryPassword(result.Profile.Id);
+        var changesRegistryPassword = result.SchemaRegistryPassword is not null || result.RemovesSchemaRegistryPassword;
+        string? previousRegistryPassword = null;
+        if (changesRegistryPassword)
+        {
+            previousRegistryPassword = await _secretVault.RetrieveAsync(registryKey, cancellationToken)
+                .ConfigureAwait(true);
+        }
 
         var secretReplacementAttempted = false;
+        var registryPasswordAttempted = false;
+        var metadataRollbackNeeded = false;
         try
         {
             if (replacesConnectionString)
             {
                 secretReplacementAttempted = true;
                 await _secretVault.StoreAsync(
-                    secretKey,
-                    result.ConnectionString!,
-                    cancellationToken).ConfigureAwait(true);
+                    secretKey, result.ConnectionString!, cancellationToken).ConfigureAwait(true);
+            }
+            if (changesRegistryPassword)
+            {
+                registryPasswordAttempted = true;
+                await SaveSchemaRegistryPasswordAsync(result, cancellationToken).ConfigureAwait(true);
             }
 
-            await _profileRepository.UpsertAsync(result.Profile, cancellationToken).ConfigureAwait(true);
-            await _profileRepository.SetSelectedProfileIdAsync(result.Profile.Id, cancellationToken).ConfigureAwait(true);
-            await SaveSchemaRegistryPasswordAsync(result, cancellationToken).ConfigureAwait(true);
+            // Complete credential operations before committing metadata. The real vault and
+            // repository share a storage lock, so these operations must not be nested.
+            if (_profileRepository is IAtomicProfileRepository atomicRepository)
+            {
+                await atomicRepository.UpsertAndSelectAsync(result.Profile, cancellationToken).ConfigureAwait(true);
+            }
+            else
+            {
+                metadataRollbackNeeded = true;
+                await _profileRepository.UpsertAsync(result.Profile, cancellationToken).ConfigureAwait(true);
+                await _profileRepository.SetSelectedProfileIdAsync(result.Profile.Id, cancellationToken).ConfigureAwait(true);
+            }
         }
         catch (Exception saveException)
         {
             var rollbackFailures = new List<Exception>();
-
-            try
-            {
-                if (previousProfile is null)
-                {
-                    await _profileRepository.DeleteAsync(result.Profile.Id, CancellationToken.None)
-                        .ConfigureAwait(true);
-                }
-                else
-                {
-                    await _profileRepository.UpsertAsync(previousProfile, CancellationToken.None)
-                        .ConfigureAwait(true);
-                }
-            }
-            catch (Exception rollbackException)
-            {
-                rollbackFailures.Add(rollbackException);
-            }
-
-            try
-            {
-                await _profileRepository.SetSelectedProfileIdAsync(
-                        previousSelectedProfileId,
-                        CancellationToken.None)
-                    .ConfigureAwait(true);
-            }
-            catch (Exception rollbackException)
-            {
-                rollbackFailures.Add(rollbackException);
-            }
-
-            if (secretReplacementAttempted)
+            if (metadataRollbackNeeded)
             {
                 try
                 {
-                    if (previousConnectionString is null)
-                    {
-                        await _secretVault.RemoveAsync(secretKey, CancellationToken.None).ConfigureAwait(true);
-                    }
+                    if (previousProfile is null)
+                        await _profileRepository.DeleteAsync(result.Profile.Id, CancellationToken.None).ConfigureAwait(true);
                     else
-                    {
-                        await _secretVault.StoreAsync(secretKey, previousConnectionString, CancellationToken.None)
-                            .ConfigureAwait(true);
-                    }
+                        await _profileRepository.UpsertAsync(previousProfile, CancellationToken.None).ConfigureAwait(true);
+                }
+                catch (Exception rollbackException)
+                {
+                    rollbackFailures.Add(rollbackException);
+                }
+                try
+                {
+                    await _profileRepository.SetSelectedProfileIdAsync(
+                        previousSelectedProfileId, CancellationToken.None).ConfigureAwait(true);
                 }
                 catch (Exception rollbackException)
                 {
                     rollbackFailures.Add(rollbackException);
                 }
             }
-
+            if (registryPasswordAttempted)
+            {
+                try
+                {
+                    if (previousRegistryPassword is null)
+                        await _secretVault.RemoveAsync(registryKey, CancellationToken.None).ConfigureAwait(true);
+                    else
+                        await _secretVault.StoreAsync(registryKey, previousRegistryPassword, CancellationToken.None)
+                            .ConfigureAwait(true);
+                }
+                catch (Exception rollbackException)
+                {
+                    rollbackFailures.Add(rollbackException);
+                }
+            }
+            if (secretReplacementAttempted)
+            {
+                try
+                {
+                    if (previousConnectionString is null)
+                        await _secretVault.RemoveAsync(secretKey, CancellationToken.None).ConfigureAwait(true);
+                    else
+                        await _secretVault.StoreAsync(secretKey, previousConnectionString, CancellationToken.None)
+                            .ConfigureAwait(true);
+                }
+                catch (Exception rollbackException)
+                {
+                    rollbackFailures.Add(rollbackException);
+                }
+            }
             if (rollbackFailures.Count > 0)
             {
                 throw new AggregateException(
                     "Saving the environment failed and its previous state could not be fully restored.",
                     [saveException, .. rollbackFailures]);
             }
-
             throw;
         }
     }

@@ -14,6 +14,8 @@ public sealed record ServiceBusProfile(
     ProfileAccessMode AccessMode = ProfileAccessMode.ReadOnly)
 {
     public int EmulatorManagementPort { get; init; } = 5300;
+    /// <summary>Changes when an environment is edited, including credentials held separately in the vault.</summary>
+    public Guid ConfigurationRevision { get; init; }
 
     /// <summary>Profiles saved before other clouds were supported have no provider and are Azure Service Bus.</summary>
     public MessagingProvider Provider { get; init; } = MessagingProvider.AzureServiceBus;
