@@ -150,6 +150,11 @@ public sealed partial class MainWindow : Window
                 _ = SavePreferenceBestEffortAsync(() =>
                     _settingsStore.UpdateAsync(settings => settings with { AlertWebhookUrl = webhook }));
                 break;
+            case nameof(MainWindowViewModel.ProtobufSchemaPath):
+                var protobuf = string.IsNullOrWhiteSpace(_viewModel.ProtobufSchemaPath) ? null : _viewModel.ProtobufSchemaPath;
+                _ = SavePreferenceBestEffortAsync(() =>
+                    _settingsStore.UpdateAsync(settings => settings with { ProtobufSchemaPath = protobuf }));
+                break;
             case nameof(MainWindowViewModel.BackupRetentionDays):
                 var retention = _viewModel.BackupRetentionDays;
                 _ = SavePreferenceBestEffortAsync(() =>

@@ -9,6 +9,7 @@ using QueueLoom.Core.Abstractions;
 using QueueLoom.Infrastructure.Azure;
 using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Logging;
+using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Infrastructure.Security;
 using QueueLoom.Mcp;
@@ -34,6 +35,7 @@ internal static class McpMode
             ReadOnly: args.Any(arg => string.Equals(arg, ReadOnlyArgument, StringComparison.OrdinalIgnoreCase)),
             ExportDirectory: Path.Combine(paths.RootDirectory, "exports"));
         var logs = new FileLoggerProvider(Path.Combine(paths.RootDirectory, "logs"));
+        LoadProtobufSchemas(paths);
 
         if (!settings.ReadOnly && HasDesktopSession())
         {
@@ -44,6 +46,23 @@ internal static class McpMode
 
         RunServerAsync(settings, paths, logs, new ElicitationApprover()).GetAwaiter().GetResult();
         return 0;
+    }
+
+    /// <summary>The .proto files chosen in the app give Protobuf bodies their field names here too; a failure only loses the names.</summary>
+    private static void LoadProtobufSchemas(QueueLoomPaths paths)
+    {
+        try
+        {
+            using var store = new JsonAppSettingsStore(paths);
+            if (store.LoadAsync().GetAwaiter().GetResult().ProtobufSchemaPath is { Length: > 0 } path)
+            {
+                ProtoSchemaCatalog.Current = ProtoSchemaSet.Load(path);
+            }
+        }
+        catch (Exception exception) when (exception is ProtoSchemaException or IOException or UnauthorizedAccessException
+                                              or System.Text.Json.JsonException)
+        {
+        }
     }
 
     private static Task RunServerAsync(

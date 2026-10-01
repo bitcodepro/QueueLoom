@@ -139,7 +139,8 @@ internal static class McpMapping
     public static MessageInfo ToInfo(BrowsedMessage message)
     {
         var body = EditableMessageBody.FromBytes(message.Body.Span);
-        var decoded = BodyDecoder.Decode(message.Body, message.Properties.ContentType);
+        var decoded = BodyDecoder.Decode(message.Body, message.Properties.ContentType, message.Schema,
+            messageType: ProtoSchemaCatalog.HintFrom(message.Properties.ContentType, message.ApplicationProperties));
         var text = body.Content;
         var truncated = message.IsBodyTruncated || text.Length > MaximumBodyCharacters;
         if (text.Length > MaximumBodyCharacters)

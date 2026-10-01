@@ -253,6 +253,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeQueueManagement();
         InitializeRetention();
         InitializeReasons();
+        InitializeProtobuf();
         RefreshDeadLetterEnvironmentFilters();
     }
 
