@@ -1,6 +1,6 @@
 # Audit regression evidence
 
-Base: `ec86a7000987689e73358efe37f6412bdc2588d3`. Tests use isolated temporary storage and in-process fakes. No live broker or user data was used. Every candidate below failed at a behavioral assertion before its corresponding production path was changed. Test source was later separated by PR scope; method names are unchanged except where noted.
+Base: `ec86a7000987689e73358efe37f6412bdc2588d3`. Initial red reproductions used isolated temporary storage and in-process fakes. Final CI also used ephemeral broker containers and test-specific virtual hosts. No user broker or user data was used. Every candidate below failed at a behavioral assertion before its corresponding production path was changed. Test source was later separated by PR scope; method names are unchanged except where noted.
 
 | Candidate | Reusable regression test | Original failed assertion and cause | Fix |
 | --- | --- | --- | --- |
@@ -21,7 +21,7 @@ Base: `ec86a7000987689e73358efe37f6412bdc2588d3`. Tests use isolated temporary s
 - Original logs: `audit-red.trx` (9 failed, 1 passed), `schedule-purge-red.trx` (5 failed), `resolver-red.trx` (4 failed, 1 passed), `kafka-backup-red.trx` (1 failed), `rabbit-fake-red.trx` (6 failed).
 - First combined red/green closure: `all-regressions-green.trx`, 29 passed. Later tests add provider case sensitivity, migration and legacy Run now checks.
 - Full solution validation initially passed 580 unit and 30 headless UI tests; after added case-sensitivity coverage, 581 unit and 30 UI tests passed. Latest results are in `review-validation.trx` under each test project's TestResults directory.
-- Broker integration was not executed: Docker is unavailable and no broker environment variables were configured. 53 integration cases, including two new RabbitMQ batch-size-one no-ID/duplicate-ID cases, were discovered and skipped. AMQP fakes do **not** prove real broker protocol or requeue behavior.
+- Local broker integration was skipped because Docker is unavailable and no broker environment variables were configured. 53 integration cases, including two new RabbitMQ cases, were discovered locally. Final CI broker-backed execution is documented below. AMQP fakes do **not** prove real broker protocol or requeue behavior.
 - The unchanged baseline had 550 unit passes and one intermittent existing failure: `ResendMarked_MoveSendsThenRemovesTheOriginals` expected status containing `2 originals removed`, but a posted progress callback left `Sent 2 of 2`. Later full runs passed without altering that production path. This is distinct from the audit regressions.
 - Environment failures were corrected before asserting RabbitMQ reproduction: required SDK 10.0.401 was installed inside the task workspace; disk-full xUnit launch failure and a proxy fixture's void-return bug were not counted as defect evidence. Only task-owned disposable SDK components were cleaned.
 
@@ -69,4 +69,29 @@ Every remote tree matched the independently tested local scoped tree. Focused br
 | [#43](https://github.com/bitcodepro/QueueLoom/pull/43) | rabbit-lifecycle | `f6ae5bc2f98d38165844e92c4fdeca3b90c4d625` | `codex/audit-resend-progress` | [run 36908243546](https://github.com/bitcodepro/QueueLoom/actions/runs/36908243546) |
 | [#44](https://github.com/bitcodepro/QueueLoom/pull/44) | kafka-envelope | `2df29190cc2699c7466d253eba5ab19078994b5d` | `codex/audit-scheduled-safety` | [run 36908445296](https://github.com/bitcodepro/QueueLoom/actions/runs/36908445296) |
 
-At 18:41 UTC, #42 and #37 complete workflows passed; all three platform build/test jobs passed on #36, #38, #39, #41 and #43. Remaining broker/package jobs and #44 were still running. Final outcomes will be appended after completion. No main branch, merge, tag, or release changed.
+Final check at 2026-10-01 19:02:33 UTC: all eight current-head workflows completed successfully, including platform builds/tests, emulator jobs, packages and downloaded-package verification. Release/version jobs were skipped. The table identifies the tested head and run for each PR; no main branch, merge, tag or release changed.
+
+## Final broker-backed coverage
+
+The RabbitMQ PR's [emulator job](https://github.com/bitcodepro/QueueLoom/actions/runs/36908243546/job/110524118501) at head `f6ae5bc2f98d38165844e92c4fdeca3b90c4d625` started `rabbitmq:4-management`, set `QUEUELOOM_RABBITMQ=localhost:5673`, and ran the complete integration namespace. Its log reports **53 integration tests passed, 0 failed, 0 skipped**, plus **3 broker UI tests passed**. Each RabbitMQ fixture creates a unique virtual host and deletes it on disposal.
+
+Exactly two broker-backed regressions were added in [RabbitMqWorkspaceTests.cs](https://github.com/bitcodepro/QueueLoom/blob/f6ae5bc2f98d38165844e92c4fdeca3b90c4d625/tests/QueueLoom.IntegrationTests/RabbitMqWorkspaceTests.cs):
+
+- `QueueLoom.IntegrationTests.RabbitMqWorkspaceTests.Purge_with_batch_size_one_deletes_both_messages_without_application_ids`
+- `QueueLoom.IntegrationTests.RabbitMqWorkspaceTests.Purge_with_batch_size_one_deletes_both_messages_with_the_same_application_id`
+
+Both publish two distinct records, reject them into the dead-letter queue, purge with batch size 1, and assert DeletedCount 2, no failures, zero ready messages remaining and two persisted backups. Their passing execution is established by the exact-head test source, the all-integration filter, configured RabbitMQ environment and the complete 53-pass/zero-skip result. The default logger does not print individual successful test names, and successful-run TRX files are not uploaded by the current workflow.
+
+The following seven broker-backed tests already existed in that class and also belong to this successful run; they are prior coverage, not newly added audit regressions:
+
+- `Topology_follows_dead_letter_exchanges_and_marks_the_shared_queue`
+- `Dead_letters_of_a_shared_queue_are_read_per_source_and_stay_in_place`
+- `Deleting_and_moving_dead_letters_touch_only_the_chosen_ones`
+- `Reading_a_quorum_queue_does_not_use_up_its_delivery_limit`
+- `Sending_to_an_exchange_uses_the_subject_as_routing_key_and_reports_unroutable_messages`
+- `Snapshot_counts_dead_letters_per_queue`
+- `Queues_are_created_as_quorum_queues_with_a_dead_letter_queue_and_deleted`
+
+The original candidate-8 failures were reproduced against unchanged production code through the actual RabbitChannel over an interface fake; an unchanged-code broker red run was not performed. Mapping, cancellation, backup and CloseAsync fault-injection regressions remain application/fake tests. The two new broker cases verify fixed purge behavior; they do not directly assert channel counts or unacked state after those injected failures.
+
+The [Kafka PR emulator job](https://github.com/bitcodepro/QueueLoom/actions/runs/36908445296/job/110524802374) passed 51 integration and 3 broker UI tests with zero skips at head `2df29190cc2699c7466d253eba5ab19078994b5d`. Its Kafka broker tests predate this audit. New raw-key/header/tombstone and durable replay regressions use the production mapper/store with isolated fakes; no new raw-envelope broker roundtrip test was added.

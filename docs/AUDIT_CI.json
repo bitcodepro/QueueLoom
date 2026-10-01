@@ -1,0 +1,177 @@
+{
+  "checked_at_utc": "2026-10-01 19:02:33 UTC",
+  "prs": [
+    {
+      "Name": "settings",
+      "Branch": "codex/audit-settings",
+      "Commit": "9e64c1474dbdc9f49e3c832c0ecedf37d9d52fd5",
+      "Tree": "ff843dda606817c6ddea1dedbdd8bf93475f209a",
+      "PR": 36,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/36",
+      "Base": "codex/audit-resend-progress",
+      "CI": {
+        "id": 36907859584,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36907859584",
+        "head_sha": "9e64c1474dbdc9f49e3c832c0ecedf37d9d52fd5",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "credential-export",
+      "Branch": "codex/audit-credential-export",
+      "Commit": "60db155138244ca6b2d18c49c502cdb35bf94b99",
+      "Tree": "02d88dd00a7d9208a8ca180471fa14f4c0e32d05",
+      "PR": 37,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/37",
+      "Base": "codex/audit-resend-progress",
+      "CI": {
+        "id": 36907930014,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36907930014",
+        "head_sha": "60db155138244ca6b2d18c49c502cdb35bf94b99",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "mcp-identities",
+      "Branch": "codex/audit-mcp-identities",
+      "Commit": "8309de1cf06486551c30eb3a513ccec2d44618c7",
+      "Tree": "12879a175405a49ecd5c5522c33885b5ffe85d36",
+      "PR": 38,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/38",
+      "Base": "codex/audit-resend-progress",
+      "CI": {
+        "id": 36908019485,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36908019485",
+        "head_sha": "8309de1cf06486551c30eb3a513ccec2d44618c7",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "scheduled-safety",
+      "Branch": "codex/audit-scheduled-safety",
+      "Commit": "197f4279ff556748802f27d6285c6c8daf05e65b",
+      "Tree": "c0da3a043a5d2cfcc5b9263187f9c9ead5f4cc43",
+      "PR": 39,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/39",
+      "Base": "codex/audit-resend-progress",
+      "CI": {
+        "id": 36908123721,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36908123721",
+        "head_sha": "197f4279ff556748802f27d6285c6c8daf05e65b",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "purge-profile",
+      "Branch": "codex/audit-purge-profile",
+      "Commit": "292d4c6c4f2e7f49a1971046cf986d3506dfbe79",
+      "Tree": "86caf9cf2827eb6e1fc310f40243dd45e21ec6d6",
+      "PR": 41,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/41",
+      "Base": "codex/audit-resend-progress",
+      "CI": {
+        "id": 36908220797,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36908220797",
+        "head_sha": "292d4c6c4f2e7f49a1971046cf986d3506dfbe79",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "resend-progress",
+      "Branch": "codex/audit-resend-progress",
+      "Commit": "a50b78207b0b186c2da8474290df6a99c4dca5af",
+      "Tree": "0d7b1742aa85ed3efa413260bd088ffadb5312b7",
+      "PR": 42,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/42",
+      "Base": "main",
+      "CI": {
+        "id": 36907724975,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36907724975",
+        "head_sha": "a50b78207b0b186c2da8474290df6a99c4dca5af",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "rabbit-lifecycle",
+      "Branch": "codex/audit-rabbit-lifecycle",
+      "Commit": "f6ae5bc2f98d38165844e92c4fdeca3b90c4d625",
+      "Tree": "7a8a1742071deab3330b78790256f30d06fe617c",
+      "PR": 43,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/43",
+      "Base": "codex/audit-resend-progress",
+      "CI": {
+        "id": 36908243546,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36908243546",
+        "head_sha": "f6ae5bc2f98d38165844e92c4fdeca3b90c4d625",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    },
+    {
+      "Name": "kafka-envelope",
+      "Branch": "codex/audit-kafka-envelope",
+      "Commit": "2df29190cc2699c7466d253eba5ab19078994b5d",
+      "Tree": "395e8a82866ac52f9d66caf1e1f9efd709862a48",
+      "PR": 44,
+      "URL": "https://github.com/bitcodepro/QueueLoom/pull/44",
+      "Base": "codex/audit-scheduled-safety",
+      "CI": {
+        "id": 36908445296,
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36908445296",
+        "head_sha": "2df29190cc2699c7466d253eba5ab19078994b5d",
+        "checked_at_utc": "2026-10-01 19:02:33 UTC"
+      }
+    }
+  ],
+  "rabbitmq": {
+    "run": 36908243546,
+    "job": 110524118501,
+    "head": "f6ae5bc2f98d38165844e92c4fdeca3b90c4d625",
+    "integration": {
+      "passed": 53,
+      "failed": 0,
+      "skipped": 0
+    },
+    "broker_ui": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "new_regressions": [
+      "QueueLoom.IntegrationTests.RabbitMqWorkspaceTests.Purge_with_batch_size_one_deletes_both_messages_without_application_ids",
+      "QueueLoom.IntegrationTests.RabbitMqWorkspaceTests.Purge_with_batch_size_one_deletes_both_messages_with_the_same_application_id"
+    ],
+    "individual_successful_names_logged": false,
+    "baseline_broker_red_run": false
+  },
+  "kafka": {
+    "run": 36908445296,
+    "job": 110524802374,
+    "integration": {
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0
+    },
+    "broker_ui": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "new_raw_envelope_broker_roundtrip": false
+  }
+}
