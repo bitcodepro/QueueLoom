@@ -553,10 +553,12 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         IProgress<DeadLetterPurgeProgress>? progress,
         CancellationToken cancellationToken)
     {
+        DeadLetterPurgeSourceResult? result = null;
+        string? cleanupError = null;
         long backedUp = 0;
         long deleted = 0;
         var emptyReceives = 0;
-        var skipped = new List<LeasedMessage>();
+        var outstanding = new List<LeasedMessage>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         progress?.Report(new DeadLetterPurgeProgress(target.Source, target.SubQueue, targetNumber, targetCount, 0, 0,
             DeadLetterPurgeStage.Starting));
@@ -567,6 +569,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 cancellationToken.ThrowIfCancellationRequested();
                 var wanted = (int)Math.Min(Math.Min(batchSize, channel.MaximumBatchSize), maximumMessages - deleted);
                 var batch = await channel.ReceiveAsync(wanted, cancellationToken).ConfigureAwait(false);
+                outstanding.AddRange(batch);
                 if (batch.Count == 0)
                 {
                     emptyReceives++;
@@ -580,7 +583,6 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                     if (!message.BelongsToSource || !seen.Add(message.Identity) || deleted + toSettle.Count >= maximumMessages)
                     {
                         // Another source's message, a duplicate delivery or over the limit: leave it alone.
-                        skipped.Add(message);
                         continue;
                     }
 
@@ -592,32 +594,39 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 progress?.Report(new DeadLetterPurgeProgress(target.Source, target.SubQueue, targetNumber, targetCount,
                     backedUp, deleted, DeadLetterPurgeStage.Deleting));
                 var failed = await channel.SettleAsync(toSettle, CancellationToken.None).ConfigureAwait(false);
+                foreach (var settled in toSettle.Except(failed)) outstanding.Remove(settled);
                 deleted += toSettle.Count - failed.Count;
                 if (failed.Count > 0)
                 {
-                    return new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
+                    result = new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
                         $"{failed.Count} message(s) could not be deleted from {channel.PhysicalName}. Their backups are kept.");
+                    break;
                 }
             }
 
             progress?.Report(new DeadLetterPurgeProgress(target.Source, target.SubQueue, targetNumber, targetCount,
                 backedUp, deleted, DeadLetterPurgeStage.Completed));
-            return new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
+            result ??= new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
                 LimitReached: deleted >= maximumMessages);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted, "Cancelled.");
+            result ??= new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted, "Cancelled.");
         }
         catch (Exception exception)
         {
-            return new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
+            result ??= new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
                 exception.GetBaseException().Message);
         }
         finally
         {
-            await ReleaseQuietlyAsync(channel, skipped).ConfigureAwait(false);
+            cleanupError = await ReleaseQuietlyAsync(channel, outstanding).ConfigureAwait(false);
         }
+
+        return cleanupError is null ? result! : result! with
+        {
+            Error = string.IsNullOrWhiteSpace(result!.Error) ? cleanupError : result.Error + " " + cleanupError
+        };
     }
 
     private static async Task<IReadOnlyList<DeadLetterMessageDeletionResult>> DeleteFromChannelAsync(
@@ -716,24 +725,29 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 : key.SequenceNumber == message.SequenceNumber;
     }
 
-    private static async Task ReleaseQuietlyAsync(ILeasedMessageChannel channel, List<LeasedMessage> held)
+    private static async Task<string?> ReleaseQuietlyAsync(ILeasedMessageChannel channel, List<LeasedMessage> held)
     {
-        if (held.Count == 0)
-        {
-            return;
-        }
-
+        string? error = null;
         try
         {
-            await channel.ReleaseAsync(held, CancellationToken.None).ConfigureAwait(false);
+            if (held.Count > 0) await channel.ReleaseAsync(held, CancellationToken.None).ConfigureAwait(false);
         }
         catch
         {
-            // Releasing is a courtesy: a held message becomes visible again by itself once its hold expires.
+            error = "Channel cleanup failed; verify remaining deliveries before retrying.";
         }
-        held.Clear();
-    }
+        finally
+        {
+            held.Clear();
+            if (channel is IAsyncDisposable disposable)
+            {
+                try { await disposable.DisposeAsync().ConfigureAwait(false); }
+                catch { error = "Channel cleanup failed; verify remaining deliveries before retrying."; }
+            }
+        }
 
+        return error;
+    }
     private async Task<ServiceBusTopology> GetTopologyCoreAsync(bool forceRefresh, CancellationToken cancellationToken)
     {
         GetConnectedProfile();

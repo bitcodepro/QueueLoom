@@ -16,7 +16,8 @@ namespace QueueLoom.Infrastructure.Messaging;
 /// </param>
 public sealed record LeasedMessage(BrowsedMessage Message, string LeaseHandle, bool BelongsToSource = true)
 {
-    public string Identity => Message.Properties.MessageId ?? LeaseHandle;
+    public string? DeliveryIdentity { get; init; }
+    public string Identity => DeliveryIdentity ?? Message.Properties.MessageId ?? LeaseHandle;
 }
 
 /// <summary>One readable place: a queue, a subscription or the dead-letter destination behind one of them.</summary>

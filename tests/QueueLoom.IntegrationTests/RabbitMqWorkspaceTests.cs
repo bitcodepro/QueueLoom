@@ -115,6 +115,28 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.RabbitMq)]
+    public Task Purge_with_batch_size_one_deletes_both_messages_without_application_ids() => PurgeRepeatedIdsAsync(null);
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public Task Purge_with_batch_size_one_deletes_both_messages_with_the_same_application_id() => PurgeRepeatedIdsAsync("repeated-fixture-id");
+
+    private async Task PurgeRepeatedIdsAsync(string? id)
+    {
+        for (var index = 0; index < 2; index++)
+            await _setup.BasicPublishAsync(string.Empty, "orders", mandatory: false,
+                new BasicProperties { MessageId = id }, Encoding.UTF8.GetBytes($"fixture-{index}"));
+        await RejectAsync("orders", 2);
+        await WaitForAsync(topology => topology.Queues.Single(queue => queue.Name == "orders").Runtime.MessageCounts.DeadLetter == 2);
+        var result = await _workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
+            [new DeadLetterPurgeTarget(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter)],
+            batchSize: 1, maximumMessagesPerSubQueue: 10));
+        Assert.Equal(2, result.DeletedCount);
+        Assert.False(result.HasFailures);
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("dead-letters")).MessageCount);
+        Assert.Equal(2, (await new JsonDeadLetterBackupRepository(QueueLoomPaths.ForRoot(_directory.Path)).ListAsync()).Count);
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
     public async Task Dead_letters_of_a_shared_queue_are_read_per_source_and_stay_in_place()
     {
         await PublishAsync("orders", "o-1", "o-2");
