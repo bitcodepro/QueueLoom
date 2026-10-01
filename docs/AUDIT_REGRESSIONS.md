@@ -61,7 +61,7 @@ Every remote tree matched the independently tested local scoped tree. Focused br
 | Draft PR | Scope | Head SHA | Base | CI run |
 | --- | --- | --- | --- | --- |
 | [#36](https://github.com/bitcodepro/QueueLoom/pull/36) | settings | `9e64c1474dbdc9f49e3c832c0ecedf37d9d52fd5` | `codex/audit-resend-progress` | [run 36907859584](https://github.com/bitcodepro/QueueLoom/actions/runs/36907859584) |
-| [#37](https://github.com/bitcodepro/QueueLoom/pull/37) | `8a526a188eb3228410bb56ac8cc1274d46860f40` | [36918223095](https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095) | in_progress |
+| [#37](https://github.com/bitcodepro/QueueLoom/pull/37) | `8a526a188eb3228410bb56ac8cc1274d46860f40` | [36918223095](https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095) | completed / success |
 | [#38](https://github.com/bitcodepro/QueueLoom/pull/38) | mcp-identities | `8309de1cf06486551c30eb3a513ccec2d44618c7` | `codex/audit-resend-progress` | [run 36908019485](https://github.com/bitcodepro/QueueLoom/actions/runs/36908019485) |
 | [#39](https://github.com/bitcodepro/QueueLoom/pull/39) | scheduled-safety | `197f4279ff556748802f27d6285c6c8daf05e65b` | `codex/audit-resend-progress` | [run 36908123721](https://github.com/bitcodepro/QueueLoom/actions/runs/36908123721) |
 | [#41](https://github.com/bitcodepro/QueueLoom/pull/41) | purge-profile | `292d4c6c4f2e7f49a1971046cf986d3506dfbe79` | `codex/audit-resend-progress` | [run 36908220797](https://github.com/bitcodepro/QueueLoom/actions/runs/36908220797) |
@@ -116,11 +116,11 @@ Credentials now finish before metadata commit. `IAtomicProfileRepository.UpsertA
 
 **22 new actual-command cases pass:** Store/Remove failure before and after mutation, cancellation after successful secret storage, real metadata-file access failure after successful secret storage, real encrypted-vault successful repairs, and a repair without credential changes. Failures assert original profile, byte-identical metadata, selected ID, unrelated profile and old password; strict legacy write/export rejection still holds. The exact isolated PR37 scope passed **31/31** including prior credential tests and the existing selection/connection-string rollback regression. Its uploaded Git tree `0625bfcb03f70434bf349810a818647434f34922` equals the locally tested tree. Log: `credential-rollback-review/tests/QueueLoom.Tests/TestResults/legacy-registry-edit-isolated-green.trx`.
 
-Independent gpt-6.1-sol high read-only review found no actionable code issue. Latest integrated Release validation passed **643 unit and 30 UI tests**; **53 broker tests skipped locally**. Log: `legacy-registry-edit-full-green.trx` in each project. Integrated code commit: `33a18c084818ea8eb639f05341deae6841f4062c`. Only PR37 changed; PR44 and the six other draft heads retain their preceding successful CI results. New PR37 run [36918223095](https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095) is pending; prior success is not attributed to its new head.
+Independent gpt-6.1-sol high read-only review found no actionable code issue. Latest integrated Release validation passed **643 unit and 30 UI tests**; **53 broker tests skipped locally**. Log: `legacy-registry-edit-full-green.trx` in each project. Integrated code commit: `33a18c084818ea8eb639f05341deae6841f4062c`. Only PR37 changed; PR44 and the six other draft heads retain their preceding successful CI results. Final PR37 run [36918223095](https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095) completed successfully at exact head `8a526a188eb3228410bb56ac8cc1274d46860f40`: all three platform build/test jobs, all four packages and downloaded-package verification passed. Its [emulator job 110557432688](https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095/job/110557432688) passed **51 integration tests and 3 broker UI tests with zero failures/skips**. All eight current draft heads have successful CI. Release/version jobs were skipped; no merge or release occurred.
 
 ### Current PR heads and CI
 
-Checked at 2026-10-01 19:59:09 UTC. A successful preceding-head run is retained as history in the machine-readable evidence and is never attributed to a new head.
+Checked at 2026-10-01 20:04:47 UTC. A successful preceding-head run is retained as history in the machine-readable evidence and is never attributed to a new head.
 
 | PR | Current head | CI run | State |
 | --- | --- | --- | --- |

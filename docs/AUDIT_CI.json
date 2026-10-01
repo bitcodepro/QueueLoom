@@ -1,5 +1,5 @@
 {
-  "checked_at_utc": "2026-10-01 19:59:09 UTC",
+  "checked_at_utc": "2026-10-01 20:04:47 UTC",
   "prs": [
     {
       "Name": "settings",
@@ -29,10 +29,15 @@
       "CI": {
         "id": 36918223095,
         "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36918223095",
-        "status": "in_progress",
-        "conclusion": null,
+        "status": "completed",
+        "conclusion": "success",
         "head_sha": "8a526a188eb3228410bb56ac8cc1274d46860f40",
-        "checked_at_utc": "2026-10-01 19:59:09 UTC"
+        "checked_at_utc": "2026-10-01 20:04:47 UTC",
+        "run_attempt": 1,
+        "emulator_job_id": 110557432688,
+        "integration_passed": 51,
+        "integration_skipped": 0,
+        "broker_ui_passed": 3
       },
       "previous_ci": {
         "id": 36907930014,
