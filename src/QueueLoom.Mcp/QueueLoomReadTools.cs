@@ -31,7 +31,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
 
     [McpServerTool(Name = "get_entities", Title = "List queues, topics and subscriptions", ReadOnly = true, Idempotent = true)]
     [Description("Lists queues, topics and subscriptions with active, dead-letter, transfer dead-letter and scheduled message counts. " +
-                 "Subscriptions are named 'topic/subscription'.")]
+                   "Subscriptions are named 'topic/subscription'. Use typedEntity to disambiguate queues and exchanges with the same name.")]
     public Task<TopologyInfo> GetEntitiesAsync(
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Optional case-insensitive text that entity names must contain.")] string? filter = null,
@@ -48,7 +48,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     new[] { McpMapping.ToInfo(topic.Reference, topic.Runtime, topic.Status) with { Kind = Kind(topology.TopicKindName) } }
                         .Concat(topic.Subscriptions.Select(subscription =>
                             McpMapping.ToInfo(subscription.Reference, subscription.Runtime, subscription.Status)))))
-                .Where(entity => string.IsNullOrWhiteSpace(filter) ||
+                  .Select(entity => entity with { TypedEntity = $"{entity.Kind.ToLowerInvariant()}:{entity.Entity}" })
+                  .Where(entity => string.IsNullOrWhiteSpace(filter) ||
                                  entity.Entity.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase))
                 .ToArray();
             return new TopologyInfo(profile.Name, topology.FetchedAt, topology.UsesSampledCounts, entities);
