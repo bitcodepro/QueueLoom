@@ -40,6 +40,18 @@ public sealed record ScheduledResend(
     IReadOnlyList<ScheduledResendItem> Items)
 {
     public const int MaximumPending = 50;
+    public string? ConfigurationIdentity { get; init; }
+
+    public static string IdentityFor(QueueLoom.Core.Profiles.ServiceBusProfile profile) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            System.Text.Json.JsonSerializer.Serialize(profile with
+            {
+                Name = string.Empty,
+                Environment = QueueLoom.Core.Profiles.EnvironmentKind.Development,
+                CustomEnvironmentName = null,
+                AccessMode = QueueLoom.Core.Profiles.ProfileAccessMode.ReadOnly,
+                AllowQueueManagement = false
+            }))));
 
     public bool IsDue(DateTimeOffset now) => DueAt <= now;
 }
