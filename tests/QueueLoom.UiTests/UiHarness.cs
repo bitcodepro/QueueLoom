@@ -230,15 +230,30 @@ internal sealed class WindowFixture : IAsyncDisposable
     {
         Window.Close();
         await SettleAsync();
-        _settings.Dispose();
         _offlineHttp.Dispose();
-        try
+        // A preference saved just before closing (the window saves them in the background) may still hold its
+        // temporary file open; on Windows that blocks the delete until the save is done.
+        for (var attempt = 0; ; attempt++)
         {
-            Directory.Delete(_dataDirectory, recursive: true);
+            try
+            {
+                Directory.Delete(_dataDirectory, recursive: true);
+                break;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                break;
+            }
+            catch (IOException) when (attempt < 40)
+            {
+                await Task.Delay(50);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 40)
+            {
+                await Task.Delay(50);
+            }
         }
-        catch (DirectoryNotFoundException)
-        {
-        }
+        _settings.Dispose();
     }
 
     private sealed class OfflineHandler : HttpMessageHandler
