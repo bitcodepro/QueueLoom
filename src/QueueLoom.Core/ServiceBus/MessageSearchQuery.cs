@@ -577,8 +577,9 @@ public sealed partial class MessageSearchQuery
             if (position < span.Length && span[position] is 'e' or 'E')
             {
                 position++;
+                // Compared directly: Math.Abs would overflow on long.MinValue.
                 if (!long.TryParse(span[position..], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent) ||
-                    Math.Abs(exponent) > 1_000_000_000)
+                    exponent is < -1_000_000_000 or > 1_000_000_000)
                 {
                     return false;
                 }

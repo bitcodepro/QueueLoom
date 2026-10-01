@@ -145,6 +145,22 @@ public sealed class ReviewRegressionTests
         Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(message));
     }
 
+    [Theory]
+    [InlineData("""{"n": 1e-9223372036854775808}""")]
+    [InlineData("""{"n": "1e-9223372036854775808"}""")]
+    [InlineData("""{"n": 1e9223372036854775807}""")]
+    [InlineData("""{"n": 1e-9999999999999999999999}""")]
+    public void Exponents_out_of_range_are_not_numbers_and_never_throw(string body)
+    {
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1,
+            Encoding.UTF8.GetBytes(body), EditableMessageProperties.Empty);
+        foreach (var query in new[] { "$.n > 0", "$.n == 0", "$.n < 1" })
+        {
+            Assert.False(MessageSearchQuery.Parse(query).Matches(message));
+        }
+        Assert.True(MessageSearchQuery.Parse("$.n").Matches(message));
+    }
+
     private static SubscriptionRules[] SameNamedDestinations() =>
     [
         new("dest", [new SubscriptionRule("q", RuleFilterKind.DirectBinding) { Expression = "q", Title = "'q'", ToExchange = false }])
