@@ -57,7 +57,7 @@
       <TextBox Text="{Binding CorrelationProperties}" AcceptsReturn="True" MinHeight="60" FontFamily="{StaticResource MonoFontFamily}"
                PlaceholderText="tenant = 'acme'&#10;amount = 250" AutomationProperties.Name="Correlation properties" />
       <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
-                 Text="'Quoted' values are text, 250 and 1.5 are numbers, true and false are booleans. A number never matches the same digits as text." />
+                 Text="'Quoted' values are text (\n is a line break), 250 is an Int64, &lt;Int32&gt; 250 an Int32, 1.5 a Double, true and false booleans, &lt;DateTime&gt; 2026-10-01T12:00:00Z a date. The type must match the message's exactly: an Int32 7 does not match an Int64 7, and 250 never matches '250'." />
     </StackPanel>
 
     <StackPanel Spacing="7">

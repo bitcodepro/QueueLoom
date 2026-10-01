@@ -40,6 +40,18 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
         ("name-case-correlation", new SubscriptionRule("name-case-correlation", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
         {
             Properties = new Dictionary<string, object> { ["Tenant"] = "acme" }
+        })),
+        ("typed", new SubscriptionRule("typed", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
+        {
+            Properties = new Dictionary<string, object>
+            {
+                ["ratio"] = 0.5,
+                ["due"] = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc)
+            }
+        })),
+        ("int-vs-long", new SubscriptionRule("int-vs-long", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
+        {
+            Properties = new Dictionary<string, object> { ["count"] = 7L }
         }))
     ];
 
@@ -89,8 +101,8 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
     public async Task Rules_are_read_and_the_prediction_matches_what_Service_Bus_delivers()
     {
         var rules = await _workspace.GetTopicRulesAsync(_topic);
-        Assert.Equal(["case", "created", "eu-big", "everything", "like", "missing", "name-case-correlation", "name-case-sql", "numeric", "tenant"],
-            rules.Select(item => item.Subscription));
+        Assert.Equal(["case", "created", "eu-big", "everything", "int-vs-long", "like", "missing", "name-case-correlation", "name-case-sql", "numeric",
+            "tenant", "typed"], rules.Select(item => item.Subscription));
         Assert.IsNotType<string>(rules.Single(item => item.Subscription == "numeric").Rules.Single().Correlation!.Properties["amount"]);
         Assert.Equal(RuleFilterKind.True, rules.Single(item => item.Subscription == "everything").Rules.Single().Kind);
         Assert.Equal("acme", rules.Single(item => item.Subscription == "tenant").Rules.Single().Correlation!.Properties["tenant"]);
@@ -101,7 +113,13 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
             Draft("m2", "order.cancelled", ("region", "eu"), ("amount", 50L), ("priority", "low")),
             Draft("m3", "Order.Created", ("region", "US"), ("tenant", "ACME")),
             Draft("m4", null, ("amount", 101.5), ("priority", "high")),
-            Draft("m5", "order.created", ("amount", "250"), ("region", "EU"))
+            Draft("m5", "order.created", ("amount", "250"), ("region", "EU")),
+            Typed("m6", new("trace", ApplicationPropertyType.Guid, "4f3c2a1b-0000-4000-8000-000000000001"),
+                new("ratio", ApplicationPropertyType.Single, "0.5"), new("due", ApplicationPropertyType.DateTime, "2026-10-01T12:00:00.0000000Z"),
+                new("count", ApplicationPropertyType.Int32, "7"), new("note", ApplicationPropertyType.String, "line1\nline2")),
+            Typed("m7", new("trace", ApplicationPropertyType.String, "4f3c2a1b-0000-4000-8000-000000000001"),
+                new("ratio", ApplicationPropertyType.Double, "0.2"), new("due", ApplicationPropertyType.DateTime, "2026-10-01T12:00:00.0000000Z"),
+                new("count", ApplicationPropertyType.String, "7"))
         ];
 
         var sender = _client.CreateSender(_topic);
@@ -110,12 +128,7 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
             var message = new ServiceBusMessage(BinaryData.FromString("{}")) { MessageId = draft.Properties.MessageId, Subject = draft.Properties.Subject };
             foreach (var property in draft.ApplicationProperties)
             {
-                message.ApplicationProperties[property.Name] = property.Type switch
-                {
-                    ApplicationPropertyType.Int64 => long.Parse(property.Value, System.Globalization.CultureInfo.InvariantCulture),
-                    ApplicationPropertyType.Double => double.Parse(property.Value, System.Globalization.CultureInfo.InvariantCulture),
-                    _ => property.Value
-                };
+                message.ApplicationProperties[property.Name] = ApplicationPropertyValues.ToObject(property);
             }
             await sender.SendMessageAsync(message);
         }
@@ -190,6 +203,9 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
         await _workspace.DeleteSubscriptionRuleAsync(_topic, "everything", "vip");
         Assert.DoesNotContain((await _workspace.GetTopicRulesAsync(_topic)).Single(item => item.Subscription == "everything").Rules, item => item.Name == "vip");
     }
+
+    private static MessageDraft Typed(string id, params MessageApplicationProperty[] properties) =>
+        new(new EditableMessageBody("{}", MessageBodyFormat.Json), new EditableMessageProperties(MessageId: id), properties);
 
     private static MessageDraft Draft(string id, string? subject, params (string Name, object Value)[] properties) =>
         new(new EditableMessageBody("{}", MessageBodyFormat.Json), new EditableMessageProperties(MessageId: id, Subject: subject),

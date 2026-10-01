@@ -114,10 +114,15 @@ public static class TopicRouting
         Field("SessionId", filter.SessionId, properties.SessionId);
         Field("ReplyToSessionId", filter.ReplyToSessionId, properties.ReplyToSessionId);
         Field("ContentType", filter.ContentType, properties.ContentType);
+        var unknowns = new List<string>();
         foreach (var (name, expected) in filter.Properties)
         {
             var value = message.User(name, out var exists);
-            if (!exists)
+            if (!RoutingValue.IsComparable(expected) || exists && !RoutingValue.IsComparable(value))
+            {
+                unknowns.Add($"{name} holds a {(RoutingValue.IsComparable(expected) ? value : expected)!.GetType().Name}, which QueueLoom cannot compare; Service Bus decides");
+            }
+            else if (!exists)
             {
                 misses.Add($"{name} should be {RoutingValue.Format(expected)} but the message has none");
             }
@@ -126,8 +131,10 @@ public static class TopicRouting
                 misses.Add($"{name} should be {RoutingValue.Format(expected)} but is {RoutingValue.Format(value)}");
             }
         }
-        return misses.Count == 0
-            ? new RuleResult(rule, RoutingOutcome.Receives, "Every field matches.")
-            : new RuleResult(rule, RoutingOutcome.Skips, string.Join("; ", misses.Take(3)));
+        return misses.Count > 0
+            ? new RuleResult(rule, RoutingOutcome.Skips, string.Join("; ", misses.Take(3)))
+            : unknowns.Count > 0
+                ? new RuleResult(rule, RoutingOutcome.Unknown, string.Join("; ", unknowns.Take(3)))
+                : new RuleResult(rule, RoutingOutcome.Receives, "Every field matches.");
     }
 }

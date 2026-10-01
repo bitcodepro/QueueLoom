@@ -64,7 +64,7 @@
                      FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
                      PlaceholderText="region = 'EU'&#10;amount = 250&#10;vip = true" AutomationProperties.Name="Test properties" />
             <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
-                       Text="'Quoted' values are text, 250 and 1.5 are numbers, true and false are booleans." />
+                       Text="'Quoted' values are text (\n is a line break), 250 and 1.5 are numbers, true and false are booleans, and &lt;Guid&gt;, &lt;DateTime&gt;, &lt;TimeSpan&gt; or &lt;Single&gt; mark other types." />
             <Button Content="Check routing" Classes="primary" HorizontalAlignment="Stretch" Command="{Binding CheckCommand}" />
             <Border Classes="headline" Classes.dropped="{Binding IsDropped}" IsVisible="{Binding HasHeadline}">
               <TextBlock Text="{Binding Headline}" TextWrapping="Wrap" FontWeight="SemiBold" />

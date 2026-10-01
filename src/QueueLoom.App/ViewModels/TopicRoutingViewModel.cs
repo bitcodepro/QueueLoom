@@ -114,6 +114,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
     private string _testContentType;
     private string _testProperties;
     private readonly EditableMessageProperties _baseProperties;
+    private readonly Dictionary<string, (string Line, object? Value)> _originalProperties = new(StringComparer.Ordinal);
     private bool _loaded;
 
     public TopicRoutingViewModel(string topic, string environmentName, bool canEdit, string editHint, TopicRoutingServices services,
@@ -135,7 +136,13 @@ public sealed class TopicRoutingViewModel : ObservableObject
         _testReplyTo = properties.ReplyTo ?? string.Empty;
         _testSessionId = properties.SessionId ?? string.Empty;
         _testContentType = properties.ContentType ?? string.Empty;
-        _testProperties = FormatProperties(message?.ApplicationProperties ?? []);
+        // Each property keeps its exact typed value while its line is left as it is; only edited lines are read back.
+        foreach (var property in message?.ApplicationProperties ?? [])
+        {
+            var value = RoutingMessage.Typed(property);
+            _originalProperties[property.Name] = (Line(property.Name, value), value);
+        }
+        _testProperties = string.Join(Environment.NewLine, _originalProperties.Values.Select(original => original.Line));
         CheckCommand = new RelayCommand(Check, () => !IsBusy && _loaded);
         RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
         AddRuleCommand = new AsyncRelayCommand(AddRuleAsync, () => !IsBusy && CanEdit && Selected is not null);
@@ -310,10 +317,10 @@ public sealed class TopicRoutingViewModel : ObservableObject
             return;
         }
         Error = string.Empty;
-        IReadOnlyList<MessageApplicationProperty> properties;
+        IReadOnlyList<KeyValuePair<string, object?>> properties;
         try
         {
-            properties = ParseProperties(TestProperties);
+            properties = ParseProperties(TestProperties, _originalProperties);
         }
         catch (FormatException exception)
         {
@@ -398,20 +405,17 @@ public sealed class TopicRoutingViewModel : ObservableObject
         await LoadAsync(cancellationToken).ConfigureAwait(true);
     }
 
-    internal static string FormatProperties(IEnumerable<MessageApplicationProperty> properties) =>
-        string.Join(Environment.NewLine, properties.Select(property => $"{property.Name} = {property.Type switch
-        {
-            ApplicationPropertyType.Boolean => property.Value.ToLowerInvariant(),
-            ApplicationPropertyType.Byte or ApplicationPropertyType.SByte or ApplicationPropertyType.Int16 or ApplicationPropertyType.UInt16 or
-                ApplicationPropertyType.Int32 or ApplicationPropertyType.UInt32 or ApplicationPropertyType.Int64 or ApplicationPropertyType.UInt64 or
-                ApplicationPropertyType.Single or ApplicationPropertyType.Double or ApplicationPropertyType.Decimal => property.Value,
-            _ => $"'{property.Value.Replace("'", "''", StringComparison.Ordinal)}'"
-        }}"));
+    private static string Line(string name, object? value) => $"{name} = {RoutingValue.Format(value)}";
 
-    /// <summary>Reads "name = value" lines: 'quoted' text, whole or decimal numbers, true or false; anything else is text.</summary>
-    public static IReadOnlyList<MessageApplicationProperty> ParseProperties(string text)
+    /// <summary>
+    /// Reads "name = value" lines: 'quoted' text (\n for a line break), whole or decimal numbers, true or false, and
+    /// tagged values such as &lt;Guid&gt; …; anything else is text. A line identical to one in <paramref name="originals"/>
+    /// keeps that property's original value and type.
+    /// </summary>
+    public static IReadOnlyList<KeyValuePair<string, object?>> ParseProperties(string text,
+        IReadOnlyDictionary<string, (string Line, object? Value)>? originals = null)
     {
-        var result = new List<MessageApplicationProperty>();
+        var result = new List<KeyValuePair<string, object?>>();
         foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var separator = line.IndexOf('=');
@@ -420,27 +424,9 @@ public sealed class TopicRoutingViewModel : ObservableObject
                 throw new FormatException($"Write each property as name = value; '{line}' has no '='.");
             }
             var name = line[..separator].Trim();
-            var value = line[(separator + 1)..].Trim();
-            if (value.Length >= 2 && value[0] == '\'' && value[^1] == '\'')
-            {
-                result.Add(new(name, ApplicationPropertyType.String, value[1..^1].Replace("''", "'", StringComparison.Ordinal)));
-            }
-            else if (value is "true" or "false" or "TRUE" or "FALSE")
-            {
-                result.Add(new(name, ApplicationPropertyType.Boolean, value.ToLowerInvariant()));
-            }
-            else if (long.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _))
-            {
-                result.Add(new(name, ApplicationPropertyType.Int64, value));
-            }
-            else if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
-            {
-                result.Add(new(name, ApplicationPropertyType.Double, value));
-            }
-            else
-            {
-                result.Add(new(name, ApplicationPropertyType.String, value));
-            }
+            result.Add(new(name, originals is not null && originals.TryGetValue(name, out var original) && original.Line == line
+                ? original.Value
+                : RoutingValue.Parse(line[(separator + 1)..])));
         }
         return result;
     }

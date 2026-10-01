@@ -71,7 +71,18 @@ public sealed class SqlFilter
     {
         public string Display => scope == "user" ? name : $"{scope}.{name}";
 
-        public override object? Evaluate(Context context) => Resolve(context, out _);
+        /// <summary>
+        /// Numbers are widened to long or double for comparison. Guid, date, time span, character, URI and binary
+        /// values are left to Service Bus: how SQL compares them with literals is not something to guess.
+        /// </summary>
+        public override object? Evaluate(Context context)
+        {
+            var value = RoutingValue.Normalize(Resolve(context, out _));
+            return value is null or string or bool or long or double
+                ? value
+                : throw new SqlFilterNotSupportedException(
+                    $"{Display} is a {value.GetType().Name}; QueueLoom leaves comparisons on such values to Service Bus.");
+        }
 
         public object? Resolve(Context context, out bool exists) =>
             scope == "sys" ? context.Message.System(name, out exists) : context.Message.User(name, out exists);

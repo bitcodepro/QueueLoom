@@ -9,14 +9,21 @@ public sealed class RoutingMessage
     private readonly Dictionary<string, object?> _user;
 
     public RoutingMessage(EditableMessageProperties properties, IEnumerable<MessageApplicationProperty> applicationProperties)
+        : this(properties, (applicationProperties ?? throw new ArgumentNullException(nameof(applicationProperties)))
+            .Select(property => new KeyValuePair<string, object?>(property.Name, Typed(property))))
+    {
+    }
+
+    /// <summary>A message whose application properties are already typed values (text, numbers, Guid, dates…).</summary>
+    public RoutingMessage(EditableMessageProperties properties, IEnumerable<KeyValuePair<string, object?>> applicationProperties)
     {
         ArgumentNullException.ThrowIfNull(properties);
         ArgumentNullException.ThrowIfNull(applicationProperties);
         Properties = properties;
         _user = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var property in applicationProperties)
+        foreach (var (name, value) in applicationProperties)
         {
-            _user[property.Name] = Typed(property);
+            _user[name] = value;
         }
     }
 
@@ -72,18 +79,17 @@ public sealed class RoutingMessage
         return null;
     }
 
-    private static object? Typed(MessageApplicationProperty property)
+    /// <summary>The value as Service Bus would carry it, with the same conversion used for sending.</summary>
+    public static object? Typed(MessageApplicationProperty property)
     {
-        var value = property.Value;
-        return property.Type switch
+        try
         {
-            ApplicationPropertyType.Boolean => bool.TryParse(value, out var flag) ? flag : value,
-            ApplicationPropertyType.Byte or ApplicationPropertyType.SByte or ApplicationPropertyType.Int16 or ApplicationPropertyType.UInt16 or
-                ApplicationPropertyType.Int32 or ApplicationPropertyType.UInt32 or ApplicationPropertyType.Int64 or ApplicationPropertyType.UInt64 =>
-                long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer) ? integer : value,
-            ApplicationPropertyType.Single or ApplicationPropertyType.Double or ApplicationPropertyType.Decimal =>
-                double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var real) ? real : value,
-            _ => value
-        };
+            return ApplicationPropertyValues.ToObject(property);
+        }
+        catch (FormatException)
+        {
+            // A value that does not fit its type cannot be sent either; compare it as the text it is.
+            return property.Value;
+        }
     }
 }

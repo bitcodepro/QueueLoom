@@ -244,6 +244,12 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                 ? original.Value
                 : RoutingValue.Parse(line[(separator + 1)..]);
         }
+        if (properties.FirstOrDefault(pair => !RoutingValue.IsAllowedInCorrelationRule(pair.Value)) is { Key: not null } unsupported)
+        {
+            Error = $"{unsupported.Key}: Service Bus rules accept text, <Int32> or Int64 numbers, decimals (Double), true/false and " +
+                    $"<DateTime> values, not a {unsupported.Value.GetType().Name}.";
+            return null;
+        }
         var fields = new CorrelationFilterFields(Blank(CorrelationId), Blank(MessageId), Blank(To), Blank(ReplyTo), Blank(Subject),
             Blank(SessionId), Blank(ReplyToSessionId), Blank(ContentType)) { Properties = properties };
         if (fields.IsEmpty)
