@@ -101,7 +101,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [Description("Azure Service Bus only. Lists every subscription of a topic with its rules (SQL or correlation filters). " +
                  "When message fields are given, also says which subscriptions would receive such a message and, for the others, " +
                  "which comparison failed. Use it when a message 'disappeared': a message no subscription matches is dropped silently. " +
-                 "Text comparisons are case-sensitive, as in Service Bus.")]
+                 "As in Service Bus, values are compared case-sensitively and property names are not.")]
     public Task<TopicRoutingInfo> CheckTopicRoutingAsync(
         [Description("Topic name.")] string topic,
         [Description(EnvironmentDescription)] string? environment = null,

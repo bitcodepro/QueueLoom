@@ -34,7 +34,7 @@
     <StackPanel Spacing="4">
       <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
       <TextBlock Classes="muted" TextWrapping="Wrap"
-                 Text="Each subscription gets a copy of a message when at least one of its rules matches. Text comparisons are case-sensitive. A message that matches no subscription is dropped without an error." />
+                 Text="Each subscription gets a copy of a message when at least one of its rules matches. Values are compared case-sensitively; property names are not. A message that matches no subscription is dropped without an error." />
       <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
     </StackPanel>
 

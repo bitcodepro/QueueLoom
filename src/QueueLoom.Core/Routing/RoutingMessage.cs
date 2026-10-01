@@ -49,10 +49,27 @@ public sealed class RoutingMessage
         return value;
     }
 
+    /// <summary>
+    /// An application property by name. Service Bus matches property names without regard to case (values keep it),
+    /// so "Region" finds "region"; an exact match wins when a message has both.
+    /// </summary>
     public object? User(string name, out bool exists)
     {
-        exists = _user.TryGetValue(name, out var value);
-        return value;
+        if (_user.TryGetValue(name, out var value))
+        {
+            exists = true;
+            return value;
+        }
+        foreach (var (key, candidate) in _user)
+        {
+            if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                exists = true;
+                return candidate;
+            }
+        }
+        exists = false;
+        return null;
     }
 
     private static object? Typed(MessageApplicationProperty property)

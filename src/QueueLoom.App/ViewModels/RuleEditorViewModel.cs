@@ -123,7 +123,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         {
             if (string.IsNullOrWhiteSpace(SqlExpression))
             {
-                return "For example: region = 'EU' AND amount > 100, sys.Label LIKE 'order.%', tenant IN ('acme', 'globex'). Text is case-sensitive.";
+                return "For example: region = 'EU' AND amount > 100, sys.Label LIKE 'order.%', tenant IN ('acme', 'globex'). Values are case-sensitive; property names are not.";
             }
             try
             {

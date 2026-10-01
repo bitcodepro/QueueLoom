@@ -40,6 +40,18 @@ public sealed class SqlFilterTests
         Assert.Equal(expected, SqlFilter.Parse(filter).Evaluate(Order) == true);
 
     [Fact]
+    public void PropertyNames_IgnoreCaseButValuesDoNot()
+    {
+        Assert.Equal(true, SqlFilter.Parse("Region = 'EU' AND user.AMOUNT > 100").Evaluate(Order));
+        Assert.Equal(false, SqlFilter.Parse("REGION = 'eu'").Evaluate(Order));
+        var correlation = new SubscriptionRule("c", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
+        {
+            Properties = new Dictionary<string, object> { ["Region"] = "EU" }
+        });
+        Assert.Equal(RoutingOutcome.Receives, TopicRouting.Check(correlation, Order).Outcome);
+    }
+
+    [Fact]
     public void MissingProperties_AreUnknownAndNeverMatch()
     {
         Assert.Null(SqlFilter.Parse("priority = 'high'").Evaluate(Order));

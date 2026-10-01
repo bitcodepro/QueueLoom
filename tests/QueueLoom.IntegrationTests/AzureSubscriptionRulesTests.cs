@@ -35,6 +35,11 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
         ("numeric", new SubscriptionRule("numeric", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
         {
             Properties = new Dictionary<string, object> { ["amount"] = 250L }
+        })),
+        ("name-case-sql", new SubscriptionRule("name-case-sql", RuleFilterKind.Sql, "Region = 'EU' AND user.TENANT = 'acme'")),
+        ("name-case-correlation", new SubscriptionRule("name-case-correlation", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
+        {
+            Properties = new Dictionary<string, object> { ["Tenant"] = "acme" }
         }))
     ];
 
@@ -84,7 +89,8 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
     public async Task Rules_are_read_and_the_prediction_matches_what_Service_Bus_delivers()
     {
         var rules = await _workspace.GetTopicRulesAsync(_topic);
-        Assert.Equal(["case", "created", "eu-big", "everything", "like", "missing", "numeric", "tenant"], rules.Select(item => item.Subscription));
+        Assert.Equal(["case", "created", "eu-big", "everything", "like", "missing", "name-case-correlation", "name-case-sql", "numeric", "tenant"],
+            rules.Select(item => item.Subscription));
         Assert.IsNotType<string>(rules.Single(item => item.Subscription == "numeric").Rules.Single().Correlation!.Properties["amount"]);
         Assert.Equal(RuleFilterKind.True, rules.Single(item => item.Subscription == "everything").Rules.Single().Kind);
         Assert.Equal("acme", rules.Single(item => item.Subscription == "tenant").Rules.Single().Correlation!.Properties["tenant"]);

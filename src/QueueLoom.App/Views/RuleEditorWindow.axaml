@@ -34,7 +34,7 @@
 
     <StackPanel Spacing="7" IsVisible="{Binding IsCorrelation}">
       <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
-                 Text="Every field you fill in must match exactly (case-sensitive); empty fields are not checked." />
+                 Text="Every field you fill in must match exactly (values are case-sensitive, property names are not); empty fields are not checked." />
       <Grid ColumnDefinitions="*,12,*" RowDefinitions="Auto,Auto,8,Auto,Auto,8,Auto,Auto,8,Auto,Auto">
         <TextBlock Text="SUBJECT (LABEL)" Classes="eyebrow" />
         <TextBox Grid.Row="1" Text="{Binding Subject}" AutomationProperties.Name="Subject" />
