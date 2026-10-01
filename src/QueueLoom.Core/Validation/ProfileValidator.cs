@@ -8,7 +8,17 @@ public static partial class ProfileValidator
     public const int MaxNameLength = 100;
     public const int MaxEnvironmentNameLength = 50;
 
-    public static ValidationResult Validate(ServiceBusProfile? profile)
+    public static ValidationResult Validate(ServiceBusProfile? profile) =>
+        Validate(profile, allowLegacyRegistryUrl: false);
+
+    /// <summary>
+    /// Loads previously accepted registry URLs without hiding environments or altering credentials.
+    /// New/edited profiles and environment transfer continue to use strict validation.
+    /// </summary>
+    public static ValidationResult ValidatePersistedProfile(ServiceBusProfile? profile) =>
+        Validate(profile, allowLegacyRegistryUrl: true);
+
+    private static ValidationResult Validate(ServiceBusProfile? profile, bool allowLegacyRegistryUrl)
     {
         if (profile is null)
         {
@@ -43,7 +53,7 @@ public static partial class ProfileValidator
                 ValidateRabbitMq(profile, errors);
                 break;
             case MessagingProvider.Kafka:
-                ValidateKafka(profile, errors);
+                ValidateKafka(profile, errors, allowLegacyRegistryUrl);
                 break;
             default:
                 ValidateNamespace(profile, errors);
@@ -290,7 +300,7 @@ public static partial class ProfileValidator
         }
     }
 
-    private static void ValidateKafka(ServiceBusProfile profile, ICollection<ValidationError> errors)
+    private static void ValidateKafka(ServiceBusProfile profile, ICollection<ValidationError> errors, bool allowLegacyRegistryUrl)
     {
         var settings = profile.Kafka;
         if (settings is null || string.IsNullOrWhiteSpace(settings.BootstrapServers))
@@ -317,7 +327,7 @@ public static partial class ProfileValidator
         }
         if (settings.SchemaRegistryUrl is { } registry &&
             (!Uri.TryCreate(registry, UriKind.Absolute, out var registryUri) || registryUri.Scheme is not ("http" or "https") ||
-             !string.IsNullOrEmpty(registryUri.UserInfo) || !string.IsNullOrEmpty(registryUri.Query) || !string.IsNullOrEmpty(registryUri.Fragment)))
+             !allowLegacyRegistryUrl && (!string.IsNullOrEmpty(registryUri.UserInfo) || !string.IsNullOrEmpty(registryUri.Query) || !string.IsNullOrEmpty(registryUri.Fragment))))
         {
             errors.Add(new ValidationError("profile.kafka.schema_registry.invalid",
                 "The Schema Registry URL must use http:// or https:// without credentials, query or fragment. Enter credentials separately.", nameof(profile.Kafka)));

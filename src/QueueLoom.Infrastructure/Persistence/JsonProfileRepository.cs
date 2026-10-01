@@ -224,7 +224,7 @@ public sealed class JsonProfileRepository : IProfileRepository, IDisposable
                     document.Profiles[index] = profile with { AccessMode = ProfileAccessMode.ReadOnly };
                 }
 
-                var validation = ProfileValidator.Validate(document.Profiles[index]);
+                var validation = ProfileValidator.ValidatePersistedProfile(document.Profiles[index]);
                 if (!validation.IsValid)
                 {
                     throw new InvalidDataException(
