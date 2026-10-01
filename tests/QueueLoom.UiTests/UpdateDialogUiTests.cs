@@ -10,6 +10,23 @@ namespace QueueLoom.UiTests;
 public sealed class UpdateDialogUiTests
 {
     [Fact]
+    public Task UpdateClick_AutomaticallyRequestsRestartAfterSuccessfulInstall() => UiSession.RunAsync(async () =>
+    {
+        var update = new UpdateCheckResult(new Version(9, 1, 0), "v9.1.0", new Uri("https://example.test/release"));
+        var owner = new Window();
+        owner.Show();
+        var dialog = new UpdateDialogWindow(new UpdateDialogViewModel("1.5.3", update, (_, _) => Task.CompletedTask), null);
+        var result = dialog.ShowDialog<UpdateDialogResult>(owner);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        var install = dialog.GetVisualDescendants().OfType<Button>().Single(button => button.Content as string == "Update now");
+        install.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.True(result.IsCompleted, "Update now must request restart without requiring a second click.");
+        Assert.Equal(UpdateDialogResult.Restart, await result);
+        owner.Close();
+    });
+
+    [Fact]
     public Task UpdateDialog_ShowsTheRightButtonsInEachStage() => UiSession.RunAsync(async () =>
     {
         BindingErrors.Instance.Clear();

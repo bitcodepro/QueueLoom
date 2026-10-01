@@ -88,7 +88,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        await CheckForUpdatesAsync();
+        if (!UpdateRestart.AcknowledgeStartup()) await CheckForUpdatesAsync();
     }
 
     private async Task InitializeAsync(MainWindowViewModel viewModel, JsonAppSettingsStore settingsStore)
@@ -215,7 +215,14 @@ public sealed partial class MainWindow : Window
             var dialog = new UpdateDialogViewModel(GitHubUpdateChecker.CurrentVersion.ToString(3), update, install, reason);
             if (await _dialogService.ShowUpdateAsync(dialog, _launcher) == UpdateDialogResult.Restart && target is not null)
             {
-                AppUpdater.StartInstalled(target);
+                try { await Task.Run(() => AppUpdater.StartInstalled(target)); }
+                catch (Exception exception)
+                {
+                    _logger?.LogWarning(exception, "Update restart handoff failed");
+                    await _dialogService.ShowMessageAsync("QueueLoom could not restart", SensitiveDataRedactor.SummarizeException(exception), isError: true);
+                    return;
+                }
+                _quitRequested = true;
                 Close();
             }
         }

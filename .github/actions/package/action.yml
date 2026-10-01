@@ -45,3 +45,10 @@ runs:
       env:
         RID: ${{ inputs.rid }}
       run: ./.github/scripts/smoke-package.ps1 -Rid $env:RID
+
+    - name: Smoke test Windows update restart and cleanup
+      if: inputs.rid == 'win-x64'
+      shell: pwsh
+      run: |
+        dotnet build tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj -c Release
+        ./.github/scripts/smoke-update.ps1
