@@ -127,6 +127,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        result = result with { Profile = result.Profile with { ConfigurationRevision = Guid.NewGuid() } };
         var secretKey = ProfileSecretKey.ConnectionString(result.Profile.Id);
         string? removedConnectionString = null;
         // Switching to a method without a stored secret (for example to Entra ID) removes the old secret.

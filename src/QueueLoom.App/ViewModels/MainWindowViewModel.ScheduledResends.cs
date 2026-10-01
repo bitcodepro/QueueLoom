@@ -79,6 +79,7 @@ public sealed partial class MainWindowViewModel
             {
                 continue;
             }
+            if (_connectedProfile is null || item.Resend.ConfigurationIdentity != ScheduledResend.IdentityFor(_connectedProfile)) continue;
             await RunWorkspaceOperationAsync("Running a scheduled resend", ct => RunScheduledAsync(item, ct), cancellationToken,
                 allowCancellation: true).ConfigureAwait(true);
         }
@@ -103,9 +104,10 @@ public sealed partial class MainWindowViewModel
             options.Mode,
             options.MessagesPerSecond,
             options.Destination?.DisplayName ?? "their sources",
-            items.Select(ScheduledResendItem.From).ToArray());
+            items.Select(ScheduledResendItem.From).ToArray())
+        { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
+        _scheduledStore?.Save(ScheduledResends.Select(item => item.Resend).Append(resend).ToArray());
         ScheduledResends.Add(CreateScheduledItem(resend));
-        SaveScheduled();
         UpdateScheduledStatuses();
         StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {ScheduledResends[^1].Title}. It is listed on Activity.";
         AddActivity("Info", "Resend scheduled", $"{profile.Name} · {ScheduledResends[^1].Title} · {sendAt.ToLocalTime():g}", options.Destination);
@@ -113,6 +115,7 @@ public sealed partial class MainWindowViewModel
 
     private async Task RunScheduledAsync(ScheduledResendItemViewModel item, CancellationToken cancellationToken)
     {
+        if (!ScheduledResends.Contains(item)) return;
         var resend = item.Resend;
         if (ConnectedProfileId != resend.ProfileId)
         {
@@ -122,10 +125,14 @@ public sealed partial class MainWindowViewModel
         {
             throw new InvalidOperationException($"Unlock write access to {resend.EnvironmentName} first.");
         }
+        if (_connectedProfile is null || resend.ConfigurationIdentity != ScheduledResend.IdentityFor(_connectedProfile))
+        {
+            throw new InvalidOperationException("The environment configuration changed or this is a legacy schedule. Cancel it and schedule again after reviewing the destination.");
+        }
 
         // Taken off the list before sending, so a crash in the middle never sends the same messages twice.
+        SaveScheduled(ScheduledResends.Where(pending => pending != item).Select(pending => pending.Resend).ToArray());
         ScheduledResends.Remove(item);
-        SaveScheduled();
         RecordOperationIntent(resend.Mode == ResendMode.Move ? "Scheduled move started" : "Scheduled resend started",
             $"{resend.Items.Count:N0} messages · {resend.DestinationDisplay}", null);
         var progress = new Progress<ResendProgress>(update =>
@@ -147,11 +154,19 @@ public sealed partial class MainWindowViewModel
 
     private void CancelScheduled(ScheduledResendItemViewModel? item)
     {
-        if (item is null || !ScheduledResends.Remove(item))
+        if (item is null || !ScheduledResends.Contains(item))
         {
             return;
         }
-        SaveScheduled();
+        try
+        {
+            SaveScheduled(ScheduledResends.Where(pending => pending != item).Select(pending => pending.Resend).ToArray());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+        ScheduledResends.Remove(item);
         StatusText = "Scheduled resend cancelled; nothing was sent";
         AddActivity("Info", "Scheduled resend cancelled", $"{item.Resend.EnvironmentName} · {item.Title}");
     }
@@ -162,7 +177,10 @@ public sealed partial class MainWindowViewModel
         foreach (var item in ScheduledResends)
         {
             var resend = item.Resend;
-            item.Status = !resend.IsDue(now)
+            item.Status = resend.ConfigurationIdentity is null ||
+                          _connectedProfile?.Id == resend.ProfileId && resend.ConfigurationIdentity != ScheduledResend.IdentityFor(_connectedProfile)
+                ? "Configuration changed or legacy schedule: cancel and schedule again"
+                : !resend.IsDue(now)
                 ? $"Waits {Until(resend.DueAt - now)}"
                 : ConnectedProfileId != resend.ProfileId
                     ? $"Due: connect {resend.EnvironmentName} to send"
@@ -179,15 +197,16 @@ public sealed partial class MainWindowViewModel
     private ScheduledResendItemViewModel CreateScheduledItem(ScheduledResend resend) =>
         new(resend, RunScheduledResendCommand, CancelScheduledResendCommand);
 
-    private void SaveScheduled()
+    private void SaveScheduled(IReadOnlyList<ScheduledResend> resends)
     {
         try
         {
-            _scheduledStore?.Save(ScheduledResends.Select(item => item.Resend).ToArray());
+            _scheduledStore?.Save(resends);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             ErrorText = $"Scheduled resends could not be saved: {exception.Message}";
+            throw new IOException(ErrorText, exception);
         }
     }
 
