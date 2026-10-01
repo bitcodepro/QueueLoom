@@ -7,6 +7,13 @@ namespace QueueLoom.Tests;
 
 public sealed class DeepAuditSessionTests
 {
+    [Fact]
+    public async Task SessionLimitFailsExplicitlyBeforeReturningAnIncompleteGlobalPage()
+    {
+        var sessions = Enumerable.Range(1, 101).Reverse().Select(i => new[] { Message(i) }).ToArray();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Browse(ServiceBusEntityReference.Queue("orders"), sessions, null));
+        Assert.Contains("global", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -45,9 +52,8 @@ public sealed class DeepAuditSessionTests
         var task = (Task<IReadOnlyList<BrowsedMessage>>)typeof(AzureServiceBusWorkspace)
             .GetMethod("BrowseSessionsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(owner, [new BrowseMessagesRequest(source, maxMessages: 100, fromSequenceNumber: cursor), CancellationToken.None])!;
-        var result = await task;
-        Assert.All(client.Receivers, receiver => Assert.True(receiver.Disposed));
-        return result;
+        try { return await task; }
+        finally { Assert.All(client.Receivers, receiver => Assert.True(receiver.Disposed)); }
     }
 
     private sealed class SessionClient(ServiceBusReceivedMessage[][] sessions) : ServiceBusClient

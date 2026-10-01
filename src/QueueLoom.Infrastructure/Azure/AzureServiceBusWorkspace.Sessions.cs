@@ -28,7 +28,7 @@ public sealed partial class AzureServiceBusWorkspace
         {
             // Read each available session's prefix, then merge globally. Stopping after one session can skip
             // lower sequence numbers in another session when the next page uses a global cursor.
-            while (receivers.Count < MaximumSessionsPerBrowse)
+            while (receivers.Count <= MaximumSessionsPerBrowse)
             {
                 ServiceBusSessionReceiver receiver;
                 using (var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
@@ -53,6 +53,8 @@ public sealed partial class AzureServiceBusWorkspace
 
                 // Kept open until the end, so the same session is not handed out again.
                 receivers.Add(receiver);
+                if (receivers.Count > MaximumSessionsPerBrowse)
+                    throw new InvalidOperationException($"More than {MaximumSessionsPerBrowse} sessions are available. Global page order cannot be guaranteed; browse again when fewer sessions are available.");
                 var remaining = perSessionLimit;
                 long? cursor = request.FromSequenceNumber;
                 while (remaining > 0)
