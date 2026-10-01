@@ -21,7 +21,7 @@ public sealed class AzureForwardingTests : IAsyncLifetime
     private ServiceBusClient _client = null!;
     private AzureServiceBusWorkspace _workspace = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.ServiceBus)))
         {
@@ -47,7 +47,7 @@ public sealed class AzureForwardingTests : IAsyncLifetime
         await _administration.CreateSubscriptionAsync(new CreateSubscriptionOptions(_topic, "keep"));
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_administration is not null)
         {

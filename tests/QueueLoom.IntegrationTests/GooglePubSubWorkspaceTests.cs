@@ -25,7 +25,7 @@ public sealed class GooglePubSubWorkspaceTests : IAsyncLifetime
     private string _audit = null!;
     private string _deadLetterReader = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.PubSub)))
         {
@@ -87,7 +87,7 @@ public sealed class GooglePubSubWorkspaceTests : IAsyncLifetime
         await _workspace.ConnectAsync(profile);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {

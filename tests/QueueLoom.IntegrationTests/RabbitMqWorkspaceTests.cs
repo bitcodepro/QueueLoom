@@ -25,7 +25,7 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
     private IChannel _setup = null!;
     private RabbitMqWorkspace _workspace = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.RabbitMq)))
         {
@@ -81,7 +81,7 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         await _workspace.ConnectAsync(profile);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using QueueLoom.Core.Abstractions;
 
 namespace QueueLoom.IntegrationTests;
@@ -8,7 +9,8 @@ namespace QueueLoom.IntegrationTests;
 /// </summary>
 public sealed class EmulatorFactAttribute : FactAttribute
 {
-    public EmulatorFactAttribute(string variable)
+    public EmulatorFactAttribute(string variable, [CallerFilePath] string? sourceFilePath = null,
+        [CallerLineNumber] int sourceLineNumber = -1) : base(sourceFilePath, sourceLineNumber)
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(variable)))
         {

@@ -55,7 +55,7 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
         }))
     ];
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.ServiceBus)))
         {
@@ -83,7 +83,7 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
         await _administration.CreateSubscriptionAsync(new CreateSubscriptionOptions(_topic, "everything") { DefaultMessageTimeToLive = TimeSpan.FromMinutes(30) });
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_administration is not null)
         {

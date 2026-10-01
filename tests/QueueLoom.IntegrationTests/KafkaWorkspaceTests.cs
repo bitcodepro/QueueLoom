@@ -26,7 +26,7 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
 
     private string DeadLetters => _orders + ".DLT";
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.Kafka)))
         {
@@ -53,7 +53,7 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
         await _workspace.ConnectAsync(profile);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {

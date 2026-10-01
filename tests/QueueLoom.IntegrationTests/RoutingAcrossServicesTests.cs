@@ -77,7 +77,7 @@ public sealed class SnsFilterPolicyTests : IAsyncLifetime
         ("everything", null, false)
     ];
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.LocalStack)))
         {
@@ -120,7 +120,7 @@ public sealed class SnsFilterPolicyTests : IAsyncLifetime
         await _workspace.GetTopologyAsync(forceRefresh: true);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {
@@ -271,7 +271,7 @@ public sealed class PubSubFilterTests : IAsyncLifetime
 
     private string Name(string subscription) => $"{_topic}-{subscription}";
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.PubSub)))
         {
@@ -308,7 +308,7 @@ public sealed class PubSubFilterTests : IAsyncLifetime
         await _workspace.GetTopologyAsync(forceRefresh: true);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {
@@ -390,7 +390,7 @@ public sealed class RabbitMqBindingTests : IAsyncLifetime
     private IChannel _setup = null!;
     private RabbitMqWorkspace _workspace = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.RabbitMq)))
         {
@@ -447,7 +447,7 @@ public sealed class RabbitMqBindingTests : IAsyncLifetime
         await _workspace.GetTopologyAsync(forceRefresh: true);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {

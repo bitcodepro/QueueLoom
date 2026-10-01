@@ -30,8 +30,8 @@ This inventory was prepared from the restored NuGet dependency graph for the cur
 | System.Management / System.CodeDom (via Google.Api.Gax) | 7.0.2 / 7.0.0 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
 | System.Security.Cryptography.ProtectedData | 10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
 | Microsoft.Extensions.* (including DependencyInjection, Hosting and Logging), Microsoft.Bcl.AsyncInterfaces, System.Memory.Data | 10.0.9–10.0.11 | MIT | [dotnet/runtime](https://github.com/dotnet/runtime), [license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) |
-| SkiaSharp and native assets | 3.119.4 | MIT package; native third-party notices apply | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [license](https://github.com/mono/SkiaSharp/blob/main/LICENSE.md) |
-| HarfBuzzSharp and native assets | 8.3.1.3 | MIT package; bundled HarfBuzz notice applies | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [HarfBuzz license](https://github.com/harfbuzz/harfbuzz/blob/main/COPYING) |
+| SkiaSharp and native assets | 4.153.1 | MIT package; native third-party notices apply | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [license](https://github.com/mono/SkiaSharp/blob/main/LICENSE.md) |
+| HarfBuzzSharp and native assets | 14.2.1.301 | MIT package; bundled HarfBuzz notice applies | [mono/SkiaSharp](https://github.com/mono/SkiaSharp), [HarfBuzz license](https://github.com/harfbuzz/harfbuzz/blob/main/COPYING) |
 | MicroCom.Runtime | 0.11.6 | MIT | [kekekeks/MicroCom](https://github.com/kekekeks/MicroCom), [license](https://github.com/kekekeks/MicroCom/blob/master/LICENSE) |
 | Tmds.DBus.Protocol | 0.94.1 | MIT | [tmds/Tmds.DBus](https://github.com/tmds/Tmds.DBus), [license](https://github.com/tmds/Tmds.DBus/blob/main/LICENSE) |
 | Avalonia.Angle.Windows.Natives | 2.1.27548.20260419 | See bundled `LICENSE` | [NuGet package](https://www.nuget.org/packages/Avalonia.Angle.Windows.Natives/2.1.27548.20260419) |
@@ -46,8 +46,8 @@ Test packages are used during development but are not included in the normal pub
 | Microsoft.NET.Test.Sdk and Microsoft Test Platform packages | 18.10.1 | MIT | [microsoft/vstest](https://github.com/microsoft/vstest), [license](https://github.com/microsoft/vstest/blob/main/LICENSE) |
 | Avalonia.Headless / Avalonia.Skia (UI tests) | 12.1.3 | MIT | [AvaloniaUI/Avalonia](https://github.com/AvaloniaUI/Avalonia), [license](https://github.com/AvaloniaUI/Avalonia/blob/main/licence.md) |
 | coverlet.collector | 10.1.0 | MIT | [coverlet-coverage/coverlet](https://github.com/coverlet-coverage/coverlet), [license](https://github.com/coverlet-coverage/coverlet/blob/master/LICENSE) |
-| xunit / xunit.analyzers | 2.9.3 / 1.18.0 | Apache-2.0 | [xunit/xunit](https://github.com/xunit/xunit), [license](https://github.com/xunit/xunit/blob/main/LICENSE) |
-| xunit.runner.visualstudio | 3.1.5 | Apache-2.0 | [xunit/visualstudio.xunit](https://github.com/xunit/visualstudio.xunit), [license](https://github.com/xunit/visualstudio.xunit/blob/main/LICENSE) |
+| xunit.v3.mtp-off / xunit.analyzers | 4.0.1 / 2.1.0 | Apache-2.0 | [xunit/xunit](https://github.com/xunit/xunit), [license](https://github.com/xunit/xunit/blob/main/LICENSE) |
+| xunit.runner.visualstudio | 4.0.0 | Apache-2.0 | [xunit/visualstudio.xunit](https://github.com/xunit/visualstudio.xunit), [license](https://github.com/xunit/visualstudio.xunit/blob/main/LICENSE) |
 
 ## MIT license text used by the listed MIT components
 

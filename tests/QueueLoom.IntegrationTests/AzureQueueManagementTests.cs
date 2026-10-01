@@ -12,7 +12,7 @@ public sealed class AzureQueueManagementTests : IAsyncLifetime
     private readonly TemporaryDirectory _directory = new();
     private AzureServiceBusWorkspace _workspace = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.ServiceBus)))
         {
@@ -28,7 +28,7 @@ public sealed class AzureQueueManagementTests : IAsyncLifetime
         await _workspace.ConnectAsync(profile);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {

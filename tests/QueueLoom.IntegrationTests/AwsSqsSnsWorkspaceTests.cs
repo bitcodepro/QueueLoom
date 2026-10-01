@@ -30,7 +30,7 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
     private string _billing = null!;
     private string _billingDeadLetters = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Emulators.LocalStack)))
         {
@@ -100,7 +100,7 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
         await _workspace.ConnectAsync(profile);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_workspace is not null)
         {
