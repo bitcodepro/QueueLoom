@@ -49,6 +49,11 @@ public sealed class MessageItemViewModel : ObservableObject
 
     public BrowsedMessage Message { get; }
 
+    private (string Reason, string? Pattern)? _causeKey;
+
+    /// <summary>The dead-letter reason and the pattern of its description, worked out once per message.</summary>
+    public (string Reason, string? Pattern) CauseKey => _causeKey ??= DeadLetterCauses.KeyOf(Message);
+
     /// <summary>Ticked by the operator to include the message in "Delete selected".</summary>
     public bool IsMarked
     {
