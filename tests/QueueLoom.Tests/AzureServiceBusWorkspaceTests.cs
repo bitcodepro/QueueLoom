@@ -7,6 +7,82 @@ namespace QueueLoom.Tests;
 
 public sealed class AzureServiceBusWorkspaceTests
 {
+    [Theory]
+    [InlineData(false, SubQueue.None)]
+    [InlineData(false, SubQueue.DeadLetter)]
+    [InlineData(true, SubQueue.None)]
+    [InlineData(true, SubQueue.DeadLetter)]
+    public async Task EmulatorTopology_OmitsOnlyEntityDeletedBetweenDiscoveryAndSampling(bool subscription, SubQueue failingQueue)
+    {
+        var topology = SamplingTopology();
+        var deleted = subscription ? topology.Topics[0].Subscriptions[0].Reference : topology.Queues[0].Reference;
+        var calls = new List<(ServiceBusEntityReference Source, SubQueue Queue)>();
+
+        var result = await AzureServiceBusWorkspace.SampleEmulatorTopologyAsync(topology,
+            (source, queue, _) =>
+            {
+                calls.Add((source, queue));
+                if (source == deleted && queue == failingQueue)
+                    throw new ServiceBusException("Deleted after discovery", ServiceBusFailureReason.MessagingEntityNotFound);
+                return Task.FromResult(queue == SubQueue.None ? 7L : 3L);
+            }, TimeProvider.System, CancellationToken.None);
+
+        Assert.True(result.UsesSampledCounts);
+        Assert.DoesNotContain(deleted, result.MessageSources);
+        Assert.Equal(3, result.MessageSources.Count());
+        Assert.Single(result.Topics);
+        foreach (var runtime in result.Queues.Select(queue => queue.Runtime)
+                     .Concat(result.Topics.SelectMany(topic => topic.Subscriptions.Select(item => item.Runtime))))
+        {
+            Assert.True(runtime.IsEmulatorSample);
+            Assert.Equal(7, runtime.MessageCounts.Active);
+            Assert.Equal(3, runtime.MessageCounts.DeadLetter);
+        }
+        Assert.Contains((deleted, failingQueue), calls);
+        // The discovered snapshot stays intact, including when active sampling succeeded before deletion.
+        Assert.Equal(4, topology.MessageSources.Count());
+    }
+
+    [Theory]
+    [InlineData(ServiceBusFailureReason.GeneralError)]
+    [InlineData(ServiceBusFailureReason.ServiceCommunicationProblem)]
+    [InlineData(ServiceBusFailureReason.ServiceTimeout)]
+    public async Task EmulatorTopology_PropagatesOtherServiceBusFailures(ServiceBusFailureReason reason)
+    {
+        var failure = new ServiceBusException("Sampling failed", reason);
+        var actual = await Assert.ThrowsAsync<ServiceBusException>(() =>
+            AzureServiceBusWorkspace.SampleEmulatorTopologyAsync(SamplingTopology(),
+                (_, _, _) => throw failure, TimeProvider.System, CancellationToken.None));
+        Assert.Same(failure, actual);
+    }
+
+    [Fact]
+    public async Task EmulatorTopology_PropagatesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            AzureServiceBusWorkspace.SampleEmulatorTopologyAsync(SamplingTopology(),
+                (_, _, token) => Task.FromCanceled<long>(token), TimeProvider.System, cancellation.Token));
+    }
+
+    [Fact]
+    public async Task EmulatorTopology_PropagatesAccessDenied()
+    {
+        var failure = new UnauthorizedAccessException("Access denied");
+        var actual = await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            AzureServiceBusWorkspace.SampleEmulatorTopologyAsync(SamplingTopology(),
+                (_, _, _) => throw failure, TimeProvider.System, CancellationToken.None));
+        Assert.Same(failure, actual);
+    }
+
+    private static ServiceBusTopology SamplingTopology() => new(DateTimeOffset.UtcNow,
+        [new ServiceBusQueue("deleted-queue", ServiceBusEntityRuntime.Empty),
+            new ServiceBusQueue("surviving-queue", ServiceBusEntityRuntime.Empty)],
+        [new ServiceBusTopic("events", ServiceBusEntityRuntime.Empty,
+            [new ServiceBusSubscription("events", "deleted-subscription", ServiceBusEntityRuntime.Empty),
+                new ServiceBusSubscription("events", "surviving-subscription", ServiceBusEntityRuntime.Empty)])]);
+
     [Fact]
     public void ClientOptions_UseBoundedInteractiveRetries()
     {
