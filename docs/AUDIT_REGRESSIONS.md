@@ -110,7 +110,7 @@ Both late repairs were re-reviewed independently using gpt-6.1-sol high with no 
 
 ### Current PR heads and CI
 
-Checked at 2026-10-01 19:39:40 UTC. A successful preceding-head run is retained as history in the machine-readable evidence and is never attributed to a new head.
+Checked at 2026-10-01 19:43:07 UTC. A successful preceding-head run is retained as history in the machine-readable evidence and is never attributed to a new head.
 
 | PR | Current head | CI run | State |
 | --- | --- | --- | --- |
@@ -121,9 +121,9 @@ Checked at 2026-10-01 19:39:40 UTC. A successful preceding-head run is retained 
 | [#41](https://github.com/bitcodepro/QueueLoom/pull/41) | `292d4c6c4f2e7f49a1971046cf986d3506dfbe79` | [36908220797](https://github.com/bitcodepro/QueueLoom/actions/runs/36908220797) | completed / success |
 | [#42](https://github.com/bitcodepro/QueueLoom/pull/42) | `a50b78207b0b186c2da8474290df6a99c4dca5af` | [36907724975](https://github.com/bitcodepro/QueueLoom/actions/runs/36907724975) | completed / success |
 | [#43](https://github.com/bitcodepro/QueueLoom/pull/43) | `f6ae5bc2f98d38165844e92c4fdeca3b90c4d625` | [36908243546](https://github.com/bitcodepro/QueueLoom/actions/runs/36908243546) | completed / success |
-| [#44](https://github.com/bitcodepro/QueueLoom/pull/44) | `03a7d1d51865ffae6c003a3eb322934945cdf755` | [36914173949](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949) | attempt 2 in_progress; initial emulator infrastructure failure |
+| [#44](https://github.com/bitcodepro/QueueLoom/pull/44) | `03a7d1d51865ffae6c003a3eb322934945cdf755` | [36914173949](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949) | completed / success (attempt 2; infrastructure retry) |
 
-PR44 attempt 1 passed Windows, Linux and macOS build/tests, all four packages and downloaded-package verification. Its emulator job [110543933812](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949/job/110543933812) failed in **Wait for the emulators**, before tests, because Docker could not obtain HTTP headers from `https://mcr.microsoft.com/v2/` within the timeout (exit 125). Only failed jobs were retried; attempt 2 is pending. This is infrastructure failure, not an assertion failure, and no emulator green result is claimed for the updated PR44 head yet.
+PR44 attempt 1 passed Windows, Linux and macOS build/tests, all four packages and downloaded-package verification. Its emulator job [110543933812](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949/job/110543933812) failed in **Wait for the emulators**, before tests, because Docker could not obtain HTTP headers from `https://mcr.microsoft.com/v2/` within the timeout (exit 125). Only failed jobs were requested for retry. Attempt 2 completed successfully at the same head: [emulator job 110549471734](https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949/job/110549471734) passed **51 integration tests and 3 broker UI tests, with zero failures or skips**. The first attempt was an infrastructure failure, not an assertion failure. All eight current draft heads now have successful CI; Kafka broker tests in this run predate the audit.
 
 All PRs remain drafts. Review #42 first, then independent fixes; #44 remains stacked on #39. No merge, release or live user-broker action was performed.
 

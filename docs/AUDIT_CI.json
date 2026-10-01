@@ -1,5 +1,5 @@
 {
-  "checked_at_utc": "2026-10-01 19:39:40 UTC",
+  "checked_at_utc": "2026-10-01 19:43:07 UTC",
   "prs": [
     {
       "Name": "settings",
@@ -140,11 +140,11 @@
       "Base": "codex/audit-scheduled-safety",
       "CI": {
         "id": 36914173949,
-        "status": "in_progress",
-        "conclusion": null,
+        "status": "completed",
+        "conclusion": "success",
         "url": "https://github.com/bitcodepro/QueueLoom/actions/runs/36914173949",
         "head_sha": "03a7d1d51865ffae6c003a3eb322934945cdf755",
-        "checked_at_utc": "2026-10-01 19:39:40 UTC",
+        "checked_at_utc": "2026-10-01 19:43:07 UTC",
         "run_attempt": 2,
         "initial_failure": {
           "job_id": 110543933812,
@@ -152,7 +152,8 @@
           "cause": "Docker registry mcr.microsoft.com timed out awaiting HTTP headers; exit 125 before emulator tests",
           "retry_requested": true,
           "successful_jobs": "Windows/Linux/macOS build and test; four packages and downloaded-package verification"
-        }
+        },
+        "retry_emulator_job": 110549471734
       },
       "previous_ci": {
         "id": 36908445296,
@@ -202,7 +203,17 @@
     },
     "new_raw_envelope_broker_roundtrip": false,
     "head": "2df29190cc2699c7466d253eba5ab19078994b5d",
-    "evidence_scope": "preceding head; exact current-head status is listed under prs"
+    "evidence_scope": "preceding head; exact current-head status is listed under prs",
+    "current_head": {
+      "sha": "03a7d1d51865ffae6c003a3eb322934945cdf755",
+      "run_id": 36914173949,
+      "run_attempt": 2,
+      "emulator_job_id": 110549471734,
+      "integration_passed": 51,
+      "integration_skipped": 0,
+      "broker_ui_passed": 3,
+      "note": "Kafka broker tests predate this audit; new Kafka fidelity regressions use fakes/production mapper and stores."
+    }
   },
   "local_latest": {
     "integrated_code_commit": "11375b1e43c64e7e1ae1ac3af86e95326873b814",
