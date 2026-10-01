@@ -6,7 +6,7 @@ using QueueLoom.Core.Validation;
 
 namespace QueueLoom.Infrastructure.Persistence;
 
-public sealed class JsonProfileRepository : IProfileRepository, IDisposable
+public sealed class JsonProfileRepository : IAtomicProfileRepository, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -69,9 +69,20 @@ public sealed class JsonProfileRepository : IProfileRepository, IDisposable
         }
     }
 
-    public async Task UpsertAsync(
+    public Task UpsertAsync(
         ServiceBusProfile profile,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        UpsertCoreAsync(profile, select: false, cancellationToken);
+
+    public Task UpsertAndSelectAsync(
+        ServiceBusProfile profile,
+        CancellationToken cancellationToken = default) =>
+        UpsertCoreAsync(profile, select: true, cancellationToken);
+
+    private async Task UpsertCoreAsync(
+        ServiceBusProfile profile,
+        bool select,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
         var validation = ProfileValidator.Validate(profile);
@@ -98,6 +109,8 @@ public sealed class JsonProfileRepository : IProfileRepository, IDisposable
             {
                 document.Profiles.Add(profile);
             }
+
+            if (select) document.SelectedProfileId = profile.Id;
 
             await SaveAsync(document, cancellationToken).ConfigureAwait(false);
         }
