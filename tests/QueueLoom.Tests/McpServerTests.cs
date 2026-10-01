@@ -87,6 +87,32 @@ public sealed class McpServerTests
     }
 
     [Fact]
+    public async Task TopicRouting_KeepsASameNamedQueueAndExchangeApart()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        server.Workspace.SupportsSubscriptionRules = true;
+        server.Workspace.RoutingService = QueueLoom.Core.Routing.RoutingService.RabbitMq;
+        server.Workspace.TopicRules["source"] =
+        [
+            new QueueLoom.Core.Routing.SubscriptionRules("dest",
+                [new QueueLoom.Core.Routing.SubscriptionRule("q", QueueLoom.Core.Routing.RuleFilterKind.DirectBinding) { Expression = "q", Title = "'q'" }])
+                { Service = QueueLoom.Core.Routing.RoutingService.RabbitMq },
+            new QueueLoom.Core.Routing.SubscriptionRules("dest",
+                [new QueueLoom.Core.Routing.SubscriptionRule("e", QueueLoom.Core.Routing.RuleFilterKind.DirectBinding) { Expression = "e", Title = "'e'" }])
+                { Service = QueueLoom.Core.Routing.RoutingService.RabbitMq, IsExchange = true }
+        ];
+
+        var routed = await server.CallAsync("check_topic_routing", new() { ["topic"] = "source", ["subject"] = "q" });
+
+        var rows = routed.GetProperty("subscriptions");
+        Assert.Equal("Receives", rows[0].GetProperty("outcome").GetString());
+        Assert.False(rows[0].GetProperty("isExchange").GetBoolean());
+        Assert.Equal("Skips", rows[1].GetProperty("outcome").GetString());
+        Assert.True(rows[1].GetProperty("isExchange").GetBoolean());
+        Assert.Contains("is not 'e'", rows[1].GetProperty("explanation").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ExplainDeadLetters_GroupsTheDeadLettersByCause()
     {
         await using var server = await McpTestServer.StartAsync();

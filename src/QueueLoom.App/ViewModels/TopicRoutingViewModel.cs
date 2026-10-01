@@ -412,9 +412,11 @@ public sealed class TopicRoutingViewModel : ObservableObject
             SessionId = Blank(TestSessionId)
         }, properties) { Body = TestBody };
         var result = TopicRouting.Route(Topic, Subscriptions.Select(item => item.Source).ToArray(), message, Service);
-        foreach (var subscription in Subscriptions)
+        // Results come back in the order of the subscriptions given; names alone are not unique (in RabbitMQ a queue
+        // and an exchange may share one).
+        for (var index = 0; index < Subscriptions.Count; index++)
         {
-            subscription.Result = result.Subscriptions.FirstOrDefault(item => item.Subscription == subscription.Name);
+            Subscriptions[index].Result = result.Subscriptions[index];
         }
         Headline = result.Headline;
         IsDropped = result.IsDropped;

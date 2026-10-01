@@ -122,6 +122,56 @@ public sealed class ReviewRegressionTests
         Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(message));
     }
 
+    [Theory]
+    [InlineData("$.tiny == 0", false)]
+    [InlineData("$.tiny > 0", true)]
+    [InlineData("$.minus < 0", true)]
+    [InlineData("$.minus == 0", false)]
+    [InlineData("$.tiny == 0.00000000000000000000000000001", true)]
+    [InlineData("$.tiny == 10e-30", true)]
+    [InlineData("$.tiny < 2e-29", true)]
+    [InlineData("$.big == 1E+400", true)]
+    [InlineData("$.big > 9.99e399", true)]
+    [InlineData("$.text == 1e-29", true)]
+    [InlineData("$.text > 0", true)]
+    [InlineData("$.ten == 1e1", true)]
+    [InlineData("$.ten == 10.000", true)]
+    [InlineData("$.zero == -0", true)]
+    public void JSON_search_compares_tiny_and_huge_numbers_exactly(string query, bool expected)
+    {
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1,
+            Encoding.UTF8.GetBytes("""{"tiny": 1e-29, "minus": -1e-29, "big": 1e400, "text": "0.1E-28", "ten": 10, "zero": 0.0}"""),
+            EditableMessageProperties.Empty);
+        Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(message));
+    }
+
+    private static SubscriptionRules[] SameNamedDestinations() =>
+    [
+        new("dest", [new SubscriptionRule("q", RuleFilterKind.DirectBinding) { Expression = "q", Title = "'q'", ToExchange = false }])
+            { Service = RoutingService.RabbitMq },
+        new("dest", [new SubscriptionRule("e", RuleFilterKind.DirectBinding) { Expression = "e", Title = "'e'", ToExchange = true }])
+            { Service = RoutingService.RabbitMq, IsExchange = true }
+    ];
+
+    [Fact]
+    public async Task The_routing_window_keeps_results_of_a_same_named_queue_and_exchange_apart()
+    {
+        var rules = SameNamedDestinations();
+        var services = new TopicRoutingServices(
+            _ => Task.FromResult<IReadOnlyList<SubscriptionRules>>(rules),
+            (_, _, _, _) => Task.CompletedTask,
+            (_, _, _) => Task.CompletedTask,
+            _ => Task.FromResult<SubscriptionRule?>(null),
+            (_, _, _) => Task.FromResult(false));
+        var draft = new MessageDraft(EditableMessageBody.Empty, new EditableMessageProperties(Subject: "q"), []);
+        var viewModel = new TopicRoutingViewModel("source", "Dev", false, string.Empty, services, draft, "test", RoutingService.RabbitMq);
+        await viewModel.LoadAsync();
+
+        Assert.Equal([RoutingOutcome.Receives, RoutingOutcome.Skips], viewModel.Subscriptions.Select(item => item.Result!.Outcome));
+        Assert.Contains("'q'", viewModel.Subscriptions[0].ResultText, StringComparison.Ordinal);
+        Assert.Contains("is not 'e'", viewModel.Subscriptions[1].ResultText, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void A_singular_Protobuf_field_seen_twice_keeps_the_last_value_and_merges_messages()
     {

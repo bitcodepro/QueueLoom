@@ -269,23 +269,16 @@ public sealed partial class MessageSearchQuery
         };
 
         /// <summary>
-        /// Two numbers written as JSON text, compared exactly: as decimals when both fit (whole numbers up to 28 digits,
-        /// so IDs above 2^53 stay apart), else as doubles. Null when either is not a number.
+        /// Two numbers written as JSON text, compared exactly whatever their size or spelling (1e-29, 0.1E1, 9007199254740993):
+        /// each is read as a whole-number coefficient and a power of ten. Null when either is not a number.
         /// </summary>
         private static int? CompareNumbers(string? left, string right)
         {
-            if (left is null)
+            if (!ExactNumber.TryParse(left, out var x) || !ExactNumber.TryParse(right, out var y))
             {
                 return null;
             }
-            const NumberStyles Style = NumberStyles.Float;
-            if (decimal.TryParse(left, Style, CultureInfo.InvariantCulture, out var x) && decimal.TryParse(right, Style, CultureInfo.InvariantCulture, out var y))
-            {
-                return x.CompareTo(y);
-            }
-            return double.TryParse(left, Style, CultureInfo.InvariantCulture, out var a) && double.TryParse(right, Style, CultureInfo.InvariantCulture, out var b)
-                ? a.CompareTo(b)
-                : null;
+            return x.CompareTo(y);
         }
 
         /// <summary>Numbers by value, text in ordinal order (so ISO dates compare as dates); null when they cannot be ordered.</summary>
@@ -539,5 +532,111 @@ public sealed partial class MessageSearchQuery
         }
 
         private MessageSearchQueryException Error(string message) => new($"At character {_position + 1}: {message}");
+    }
+
+    /// <summary>A decimal number held exactly: <see cref="Coefficient"/> × 10^<see cref="Exponent"/>, without trailing zeros.</summary>
+    private readonly record struct ExactNumber(System.Numerics.BigInteger Coefficient, long Exponent) : IComparable<ExactNumber>
+    {
+        private const int MaximumDigits = 1_000;
+
+        /// <summary>JSON number syntax, also with a leading '+' and surrounding spaces (numbers kept as text).</summary>
+        public static bool TryParse(string? text, out ExactNumber number)
+        {
+            number = default;
+            var span = (text ?? string.Empty).AsSpan().Trim();
+            var position = 0;
+            var negative = false;
+            if (position < span.Length && span[position] is '-' or '+')
+            {
+                negative = span[position] == '-';
+                position++;
+            }
+            var digits = new StringBuilder();
+            var fraction = 0L;
+            var seenDigit = false;
+            while (position < span.Length && char.IsAsciiDigit(span[position]))
+            {
+                digits.Append(span[position++]);
+                seenDigit = true;
+            }
+            if (position < span.Length && span[position] == '.')
+            {
+                position++;
+                while (position < span.Length && char.IsAsciiDigit(span[position]))
+                {
+                    digits.Append(span[position++]);
+                    fraction++;
+                    seenDigit = true;
+                }
+            }
+            if (!seenDigit || digits.Length > MaximumDigits)
+            {
+                return false;
+            }
+            var exponent = 0L;
+            if (position < span.Length && span[position] is 'e' or 'E')
+            {
+                position++;
+                if (!long.TryParse(span[position..], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent) ||
+                    Math.Abs(exponent) > 1_000_000_000)
+                {
+                    return false;
+                }
+                position = span.Length;
+            }
+            if (position != span.Length)
+            {
+                return false;
+            }
+
+            var coefficient = System.Numerics.BigInteger.Parse(digits.ToString(), CultureInfo.InvariantCulture);
+            exponent -= fraction;
+            if (coefficient.IsZero)
+            {
+                number = new ExactNumber(0, 0);
+                return true;
+            }
+            while (coefficient % 10 == 0)
+            {
+                coefficient /= 10;
+                exponent++;
+            }
+            number = new ExactNumber(negative ? -coefficient : coefficient, exponent);
+            return true;
+        }
+
+        public int CompareTo(ExactNumber other)
+        {
+            var sign = Coefficient.Sign;
+            if (sign != other.Coefficient.Sign)
+            {
+                return sign.CompareTo(other.Coefficient.Sign);
+            }
+            if (sign == 0)
+            {
+                return 0;
+            }
+            // Same sign: compare magnitudes by their number of digits first, so huge exponents are never expanded.
+            var magnitude = Digits(Coefficient) + Exponent;
+            var otherMagnitude = Digits(other.Coefficient) + other.Exponent;
+            if (magnitude != otherMagnitude)
+            {
+                return magnitude.CompareTo(otherMagnitude) * sign;
+            }
+            var shift = Exponent - other.Exponent;
+            var left = System.Numerics.BigInteger.Abs(Coefficient);
+            var right = System.Numerics.BigInteger.Abs(other.Coefficient);
+            if (shift > 0)
+            {
+                left *= System.Numerics.BigInteger.Pow(10, (int)shift);
+            }
+            else if (shift < 0)
+            {
+                right *= System.Numerics.BigInteger.Pow(10, (int)-shift);
+            }
+            return left.CompareTo(right) * sign;
+        }
+
+        private static long Digits(System.Numerics.BigInteger value) => System.Numerics.BigInteger.Abs(value).ToString(CultureInfo.InvariantCulture).Length;
     }
 }

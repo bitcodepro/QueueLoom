@@ -149,16 +149,18 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 }, service)
                 : null;
             return new TopicRoutingInfo(profile.Name, topic, routing?.Headline,
-                rules.Select(subscription =>
+                // Results come back in the order of the rules; a RabbitMQ queue and exchange may share a name.
+                rules.Select((subscription, index) =>
                 {
-                    var result = routing?.Subscriptions.First(item => item.Subscription == subscription.Subscription);
+                    var result = routing?.Subscriptions[index];
                     return new SubscriptionRoutingInfo(subscription.Subscription,
                         subscription.Rules.Select(rule => new RuleInfo(rule.DisplayName, rule.KindLabel, rule.FilterText, rule.Action)).ToArray(),
                         subscription.Warning,
                         result?.Outcome.ToString(),
                         result?.Summary)
                     {
-                        Note = subscription.Note
+                        Note = subscription.Note,
+                        IsExchange = service == QueueLoom.Core.Routing.RoutingService.RabbitMq ? subscription.IsExchange : null
                     };
                 }).ToArray());
         });

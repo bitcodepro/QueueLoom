@@ -37,6 +37,9 @@ public sealed record SubscriptionRoutingInfo(string Subscription, IReadOnlyList<
 {
     /// <summary>For example "Alternate exchange: gets what no binding takes", or an SNS subscription's endpoint.</summary>
     public string? Note { get; init; }
+
+    /// <summary>RabbitMQ: the destination is an exchange, not a queue (the two may share a name).</summary>
+    public bool? IsExchange { get; init; }
 }
 
 /// <param name="Headline">For a given message: how many subscriptions receive it, or that it is dropped.</param>
