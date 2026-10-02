@@ -32,6 +32,7 @@ public sealed partial class MainWindowViewModel
     private OperationHistoryViewModel? _selectedOperation;
     private OperationItemViewModel? _selectedOperationItem;
     public ObservableCollection<OperationHistoryViewModel> OperationHistory { get; } = [];
+    public bool HasOperationHistory => OperationHistory.Count > 0;
     public ObservableCollection<OperationItemViewModel> OperationItems { get; } = [];
     public OperationHistoryViewModel? SelectedOperation
     {
@@ -66,6 +67,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeOperationHistory()
     {
+        OperationHistory.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasOperationHistory));
         RefreshOperationHistoryCommand = new AsyncRelayCommand(_ => { RefreshOperationHistory(); return Task.CompletedTask; }, () => !IsBusy && _replayStore is not null);
         ContinueOperationCommand = new AsyncRelayCommand(token => RunWorkspaceOperationAsync("Continuing unattempted items", ct => RecoverOperationAsync(false, ct), token),
             () => !IsBusy && CanWrite && SelectedOperation is not null);
