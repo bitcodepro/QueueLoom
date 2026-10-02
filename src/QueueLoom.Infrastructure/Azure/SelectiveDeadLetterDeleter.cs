@@ -59,6 +59,7 @@ internal static class SelectiveDeadLetterDeleter
         var scanned = 0;
         var emptyReceives = 0;
         var cancelled = false;
+        string? receiveError = null;
 
         try
         {
@@ -82,6 +83,12 @@ internal static class SelectiveDeadLetterDeleter
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     cancelled = true;
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    // Earlier completions are irreversible facts, even when the next receive fails.
+                    receiveError = exception.GetBaseException().Message;
                     break;
                 }
 
@@ -159,23 +166,24 @@ internal static class SelectiveDeadLetterDeleter
                 {
                     await receiver.AbandonAsync(message).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException)
+                catch (Exception)
                 {
-                    // The lock already expired; the message is back in the queue unchanged either way.
+                    // Cleanup uses no caller token. A timeout leaves the lock to expire;
+                    // it must not erase confirmed settlements or prevent releasing other locks.
                 }
             }
         }
 
-        var reason = cancelled
+        var reason = receiveError ?? (cancelled
             ? null
             : scanned >= maximumScanned
                 ? $"Not reached within the first {maximumScanned:N0} messages of this dead-letter queue; it was left unchanged."
-                : "Not in the dead-letter queue any more (already deleted, resubmitted or expired).";
+                : "Not in the dead-letter queue any more (already deleted, resubmitted or expired).");
         foreach (var key in pending.Values)
         {
             results.Add(new DeadLetterMessageDeletionResult(
                 key,
-                cancelled ? DeadLetterMessageDeletionOutcome.Cancelled : DeadLetterMessageDeletionOutcome.NotFound,
+                receiveError is not null ? DeadLetterMessageDeletionOutcome.Failed : cancelled ? DeadLetterMessageDeletionOutcome.Cancelled : DeadLetterMessageDeletionOutcome.NotFound,
                 reason));
         }
 
@@ -211,7 +219,7 @@ internal static class SelectiveDeadLetterDeleter
             await receiver.CompleteAsync(message).ConfigureAwait(false);
             return new DeadLetterMessageDeletionResult(key, DeadLetterMessageDeletionOutcome.Deleted);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             return new DeadLetterMessageDeletionResult(
                 key,

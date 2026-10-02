@@ -26,8 +26,8 @@ public sealed partial class MainWindowViewModel
 
     public bool HasDeadLetterMessages => Messages.Any(message => message.IsDeadLetter);
 
-    /// <summary>False for Kafka, which cannot remove single messages; emptying a dead-letter topic still works.</summary>
-    public bool CanDeleteSelectedMessages => _topology?.CanDeleteSelectedMessages ?? true;
+    /// <summary>Requires a service that can safely identify and remove a previously reviewed message.</summary>
+    public bool CanDeleteSelectedMessages => ConnectedProvider != MessagingProvider.RabbitMq && (_topology?.CanDeleteSelectedMessages ?? true);
 
     public bool ShowDeleteMarkedMessages => HasDeletableMessages && CanDeleteSelectedMessages;
 
