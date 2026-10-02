@@ -10,7 +10,8 @@ public sealed class StaticOneofRegressionTests
         syntax = "proto3";
         message M { oneof choice { int32 a = 1; int32 b = 2; Child c = 3; }
           Child plain = 4; oneof other { int32 d = 5; int32 e = 6; } }
-        message Child { oneof inner { int32 x = 1; int32 y = 2; } repeated int32 list = 3; int32 z = 4; }
+        message Child { oneof inner { int32 x = 1; int32 y = 2; Tiny m = 5; int32 n = 6; } repeated int32 list = 3; int32 z = 4; }
+        message Tiny { int32 old = 1; int32 fresh = 2; }
         """;
 
     [Theory]
@@ -30,6 +31,8 @@ public sealed class StaticOneofRegressionTests
     [InlineData(true, "1A02080108011A021002", "{\"c\":{\"y\":2}}")]
     [InlineData(false, "22020801220410020803", "{\"plain\":{\"x\":3}}")]
     [InlineData(true, "22020801220410020803", "{\"plain\":{\"x\":3}}")]
+    [InlineData(false, "22042A020801220630012A021002", "{\"plain\":{\"m\":{\"fresh\":2}}}")]
+    [InlineData(true, "22042A020801220630012A021002", "{\"plain\":{\"m\":{\"fresh\":2}}}")]
     public void LastMemberWinsAndRepeatedEmbeddedMessagesMerge(bool descriptor, string hex, string expected)
     {
         var schemas = descriptor ? ProtoSchemaSet.FromDescriptorSet(Descriptor()) : ProtoSchemaSet.FromProtoFiles([("oneof.proto", Proto)]);
@@ -64,8 +67,10 @@ public sealed class StaticOneofRegressionTests
                 group is { } index ? Number(9, index) : [], reference is null ? [] : Text(6, reference));
         var m = Message("M", [Field("a", 1, 5, 0), Field("b", 2, 5, 0), Field("c", 3, 11, 0, ".Child"),
             Field("plain", 4, 11, reference: ".Child"), Field("d", 5, 5, 1), Field("e", 6, 5, 1)], ["choice", "other"]);
-        var child = Message("Child", [Field("x", 1, 5, 0), Field("y", 2, 5, 0), Field("list", 3, 5, repeated: true), Field("z", 4, 5)], ["inner"]);
-        return Bytes(1, Join(Text(1, "oneof.proto"), Bytes(4, m), Bytes(4, child)));
+        var child = Message("Child", [Field("x", 1, 5, 0), Field("y", 2, 5, 0), Field("list", 3, 5, repeated: true), Field("z", 4, 5),
+            Field("m", 5, 11, 0, ".Tiny"), Field("n", 6, 5, 0)], ["inner"]);
+        var tiny = Message("Tiny", [Field("old", 1, 5), Field("fresh", 2, 5)], []);
+        return Bytes(1, Join(Text(1, "oneof.proto"), Bytes(4, m), Bytes(4, child), Bytes(4, tiny)));
     }
     private static byte[] Text(int number, string text) => Bytes(number, Encoding.UTF8.GetBytes(text));
     private static byte[] Bytes(int number, byte[] data) => Join(Varint((number << 3) | 2), Varint(data.Length), data);
