@@ -1,0 +1,22 @@
+QueueLoom v1.5.8
+
+Local diagnostics export
+
+Choose Export diagnostics in Settings or beside an operation or updater error.
+Review the readable report and structured JSON, then choose a new local ZIP file.
+No diagnostics are uploaded, sent, or attached to GitHub automatically. Existing
+files are never replaced.
+
+Reports include bounded, recorded technical facts from the current session:
+application and OS versions, architectures, broker and operation kinds, stages,
+timestamps, safe error codes and application stack methods. Updater checksum and
+recovery results are included when recorded. Unconfirmed outcomes remain unknown.
+
+Collection excludes credentials, tokens, connection strings, message bodies and
+headers, arbitrary exception messages, logs, configuration and local paths.
+Broker addresses and entity references use report-local placeholders. Unknown
+endpoints are omitted. Download progress preserves updater terminal diagnostics;
+profile operations identify their captured target.
+
+Review both previewed files before sharing publicly. Reports retain technical
+context and are troubleshooting summaries, not complete audits or delivery proof.
