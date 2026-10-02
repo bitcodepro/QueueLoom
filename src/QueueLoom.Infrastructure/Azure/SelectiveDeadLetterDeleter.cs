@@ -166,9 +166,10 @@ internal static class SelectiveDeadLetterDeleter
                 {
                     await receiver.AbandonAsync(message).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException)
+                catch (Exception)
                 {
-                    // The lock already expired; the message is back in the queue unchanged either way.
+                    // Cleanup uses no caller token. A timeout leaves the lock to expire;
+                    // it must not erase confirmed settlements or prevent releasing other locks.
                 }
             }
         }
@@ -218,7 +219,7 @@ internal static class SelectiveDeadLetterDeleter
             await receiver.CompleteAsync(message).ConfigureAwait(false);
             return new DeadLetterMessageDeletionResult(key, DeadLetterMessageDeletionOutcome.Deleted);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             return new DeadLetterMessageDeletionResult(
                 key,
