@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <None Update="Fixtures/diagnostics-rename-barrier.c" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

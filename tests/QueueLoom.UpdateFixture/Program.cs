@@ -1,5 +1,27 @@
 using QueueLoom.App.Services;
 
+if (args.Length == 5 && args[0] == "--export-diagnostics")
+{
+    var preview = new DiagnosticsPreview($"Report from {args[3]}\n", $"{{\"export\":\"{args[3]}\"}}");
+    File.WriteAllText(args[2] + ".ready", "ready");
+    var wait = System.Diagnostics.Stopwatch.StartNew();
+    while (!File.Exists(args[4]))
+    {
+        if (wait.Elapsed > TimeSpan.FromSeconds(20)) return 71;
+        await Task.Delay(5);
+    }
+    try
+    {
+        await preview.SaveAsync(args[1]);
+        File.WriteAllText(args[2] + ".result", "saved");
+    }
+    catch (IOException)
+    {
+        File.WriteAllText(args[2] + ".result", "collision");
+    }
+    return 0;
+}
+
 if (args.Length == 5 && args[0] == "--update-settings")
 {
     using var store = new QueueLoom.Infrastructure.Persistence.JsonAppSettingsStore(
