@@ -175,6 +175,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             };
             if (queue.IsFifo)
             {
+                RejectFutureScheduling(message, "Amazon SQS FIFO queues");
                 request.MessageGroupId = AwsMessageMapper.GroupId(message);
                 request.MessageDeduplicationId = AwsMessageMapper.DeduplicationId(message);
             }
@@ -189,6 +190,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         if (destination.Kind == ServiceBusEntityKind.Topic)
         {
+            RejectFutureScheduling(message, "Amazon SNS topics");
             var topic = _index.FindTopic(destination.Name)
                 ?? throw new InvalidOperationException($"Topic '{destination.Name}' was not found. Refresh and try again.");
             var request = new Sns.PublishRequest
@@ -208,6 +210,12 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
         }
 
         throw new ArgumentException("Messages can only be sent to queues or topics.", nameof(destination));
+    }
+
+    private void RejectFutureScheduling(MessageDraft message, string destination)
+    {
+        if (message.Properties.ScheduledEnqueueTime > TimeProvider.GetUtcNow())
+            throw new InvalidOperationException($"{destination} do not support scheduling individual messages. Clear the scheduled time to send immediately.");
     }
 
     private AmazonSQSClient Sqs => _sqs ?? throw new InvalidOperationException("Connect to an environment first.");

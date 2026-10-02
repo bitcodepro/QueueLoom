@@ -28,7 +28,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeProtobuf()
     {
-        LoadProtobufSchemasCommand = new AsyncRelayCommand(ChooseProtobufSchemasAsync, () => !IsBusy);
+        LoadProtobufSchemasCommand = _commands.Create(ChooseProtobufSchemasAsync, () => !IsBusy);
         ClearProtobufSchemasCommand = new RelayCommand(() =>
         {
             ProtoSchemaCatalog.Current = ProtoSchemaSet.Empty;

@@ -21,6 +21,7 @@ public sealed partial class RabbitMqWorkspace
 
     public override async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
+        using var operation = await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
         using var response = await management.GetAsync($"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(queue)}", cancellationToken)
             .ConfigureAwait(false);

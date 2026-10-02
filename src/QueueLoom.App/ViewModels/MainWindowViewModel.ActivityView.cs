@@ -17,7 +17,7 @@ public sealed partial class MainWindowViewModel
     {
         try { _activityCutoff = (_activityJournal as IActivityViewJournal)?.ClearViewCutoff; }
         catch (Exception exception) { ErrorText = SanitizeException(exception); }
-        ClearActivityViewCommand = new AsyncRelayCommand(async token =>
+        ClearActivityViewCommand = _commands.Create(async token =>
         {
             var cutoff = DateTimeOffset.UtcNow;
             if (!await _dialogs.ConfirmAsync("Clear Activity view", "Hide Activity entries up to now? Newer entries remain visible. This is a restorable display filter; journal files, operation/retry history, backups, schedules and message data are retained.",

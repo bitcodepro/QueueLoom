@@ -26,7 +26,11 @@ public enum ProtoFieldType
 }
 
 /// <summary>A field of a message; <see cref="TypeName"/> is the full name of its message or enum type.</summary>
-public sealed record ProtoField(string Name, int Number, ProtoFieldType Type, string? TypeName, bool IsRepeated);
+public sealed record ProtoField(string Name, int Number, ProtoFieldType Type, string? TypeName, bool IsRepeated)
+{
+    /// <summary>The containing oneof, scoped to this message; null for an ordinary field.</summary>
+    public string? Oneof { get; init; }
+}
 
 public sealed class ProtoMessageType(string fullName, IReadOnlyList<ProtoField> fields, bool isMapEntry = false)
 {
@@ -172,12 +176,12 @@ public sealed class ProtoSchemaSet
         {
             if (field.Type is not null)
             {
-                return new ProtoField(field.Name, field.Number, field.Type.Value, null, field.IsRepeated);
+                return new ProtoField(field.Name, field.Number, field.Type.Value, null, field.IsRepeated) { Oneof = field.Oneof };
             }
             // Protobuf scoping: the innermost enclosing scope that declares the name wins.
             var resolved = ResolveName(field.TypeReference!, declaration.FullName, candidate => messageNames.Contains(candidate) || enumNames.Contains(candidate));
             var type = resolved is not null && enumNames.Contains(resolved) ? ProtoFieldType.Enum : ProtoFieldType.Message;
-            return new ProtoField(field.Name, field.Number, type, resolved ?? field.TypeReference, field.IsRepeated);
+            return new ProtoField(field.Name, field.Number, type, resolved ?? field.TypeReference, field.IsRepeated) { Oneof = field.Oneof };
         }).ToArray(), declaration.IsMapEntry));
         return new ProtoSchemaSet(messages, enums, names);
     }
@@ -251,6 +255,9 @@ public sealed class ProtoSchemaSet
         var isMapEntry = fields.Where(field => field.Number == 7 && field.Bytes is not null)
             .Any(options => Wire.Fields(options.Bytes!).Any(option => option.Number == 7 && option.Varint == 1));
         var declared = new List<ProtoField>();
+        var oneofs = fields.Where(field => field.Number == 8 && field.Bytes is not null)
+            .Select(field => Wire.Fields(field.Bytes!).Where(part => part.Number == 1 && part.Bytes is not null)
+                .Select(part => Encoding.UTF8.GetString(part.Bytes!)).FirstOrDefault() ?? string.Empty).ToArray();
         foreach (var field in fields)
         {
             switch (field.Number)
@@ -261,8 +268,13 @@ public sealed class ProtoSchemaSet
                         .Select(part => Encoding.UTF8.GetString(part.Bytes!)).FirstOrDefault() ?? string.Empty;
                     long Number(int number) => parts.Where(part => part.Number == number).Select(part => (long)part.Varint).FirstOrDefault();
                     var typeName = Text(6);
+                    var oneofIndex = parts.FirstOrDefault(part => part.Number == 9 && part.WireType == 0);
+                    var oneof = oneofIndex.Number == 9
+                        ? oneofIndex.Varint < (ulong)oneofs.Length ? oneofs[(int)oneofIndex.Varint]
+                            : throw new InvalidDataException("A field refers to an undeclared oneof.")
+                        : null;
                     declared.Add(new ProtoField(Text(1), (int)Number(3), (ProtoFieldType)Number(5),
-                        typeName.Length == 0 ? null : typeName.TrimStart('.'), Number(4) == 3));
+                        typeName.Length == 0 ? null : typeName.TrimStart('.'), Number(4) == 3) { Oneof = oneof });
                     break;
                 case 3 when field.Bytes is not null:
                     ReadMessage(field.Bytes, fullName, messages, enums);
@@ -363,7 +375,10 @@ public sealed class ProtoSchemaSet
 /// <summary>Reads the declarations of a .proto file; options, services and extensions are skipped.</summary>
 internal sealed class ProtoTextParser(string text)
 {
-    internal sealed record FieldDeclaration(string Name, int Number, ProtoFieldType? Type, string? TypeReference, bool IsRepeated);
+    internal sealed record FieldDeclaration(string Name, int Number, ProtoFieldType? Type, string? TypeReference, bool IsRepeated)
+    {
+        public string? Oneof { get; init; }
+    }
 
     internal sealed record MessageDeclaration(string FullName, List<FieldDeclaration> Fields, bool IsMapEntry);
 
@@ -422,7 +437,7 @@ internal sealed class ProtoTextParser(string text)
         ParseBody(fullName, fields, messages, enums);
     }
 
-    private void ParseBody(string fullName, List<FieldDeclaration> fields, List<MessageDeclaration> messages, List<ProtoEnumType> enums)
+    private void ParseBody(string fullName, List<FieldDeclaration> fields, List<MessageDeclaration> messages, List<ProtoEnumType> enums, string? oneof = null)
     {
         while (true)
         {
@@ -447,10 +462,10 @@ internal sealed class ProtoTextParser(string text)
                     SkipBlock();
                     continue;
                 case "oneof":
-                    Next();
+                    var groupName = Next();
                     Expect("{");
                     // A oneof's fields belong to the message; options inside are skipped.
-                    ParseBody(fullName, fields, messages, enums);
+                    ParseBody(fullName, fields, messages, enums, groupName);
                     continue;
                 case "map":
                     Expect("<");
@@ -480,7 +495,7 @@ internal sealed class ProtoTextParser(string text)
             Expect("=");
             var number = ParseNumber();
             SkipFieldOptions();
-            fields.Add(Field(fieldName, number, token, repeated));
+            fields.Add(Field(fieldName, number, token, repeated) with { Oneof = oneof });
         }
     }
 

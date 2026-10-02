@@ -72,7 +72,7 @@ public sealed class MessageExportTests
         await MessageExport.WriteAsync(path, [new("Dev", Text), new("Dev", Binary)]);
 
         var lines = await File.ReadAllLinesAsync(path);
-        Assert.Equal("environment,source,subQueue,messageId,correlationId,subject,contentType,sessionId,enqueuedAtUtc,deliveryCount,deadLetterReason,deadLetterDescription,applicationProperties,bodyEncoding,body", lines[0]);
+        Assert.Equal("environment,source,subQueue,messageId,correlationId,subject,contentType,sessionId,enqueuedAtUtc,deliveryCount,deadLetterReason,deadLetterDescription,applicationProperties,partition,offset,bodyEncoding,body", lines[0]);
         Assert.Contains(lines, line => line.Contains("m-8", StringComparison.Ordinal) && line.EndsWith(",base64,/wAQ", StringComparison.Ordinal));
     }
 }

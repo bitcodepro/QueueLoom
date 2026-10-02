@@ -48,7 +48,7 @@ internal static class RoutingProof
     }
 }
 
-/// <summary>SNS filter policies against LocalStack: QueueLoom's prediction for each message is what SNS delivers.</summary>
+/// <summary>Delivery proof for shared AWS/LocalStack behavior, with the empty-attribute divergence recorded explicitly.</summary>
 public sealed class SnsFilterPolicyTests : IAsyncLifetime
 {
     private const string Region = "eu-west-1";
@@ -153,7 +153,9 @@ public sealed class SnsFilterPolicyTests : IAsyncLifetime
             RoutingProof.Draft("m5", null, ("Region", "EU")),
             RoutingProof.Draft("m6", "order.x", ("region", "Asia")),
             new MessageDraft(new EditableMessageBody("""{"order": {"status": "failed"}}""", MessageBodyFormat.Json),
-                new EditableMessageProperties(MessageId: "m7"), [])
+                new EditableMessageProperties(MessageId: "m7"), [new("other", ApplicationPropertyType.String, "present")]),
+            new MessageDraft(new EditableMessageBody("""{"order": {"status": "failed"}}""", MessageBodyFormat.Json),
+                new EditableMessageProperties(MessageId: "m8"), [])
         ];
         foreach (var message in messages)
         {
@@ -184,7 +186,20 @@ public sealed class SnsFilterPolicyTests : IAsyncLifetime
             delivered[SubscriptionName(name)] = ids;
         }
 
-        RoutingProof.AssertPredictionsMatch(_topic, rules, RoutingService.Sns, messages, delivered);
+        RoutingProof.AssertPredictionsMatch(_topic, rules, RoutingService.Sns, messages[..^1], delivered);
+        var missingName = SubscriptionName("missing");
+        var empty = messages[^1];
+        // The pinned LocalStack 4.14 evaluator checks only whether the key exists. It
+        // incorrectly delivers an attribute-free message for exists:false. AWS requires
+        // at least one attribute: https://docs.aws.amazon.com/sns/latest/dg/attribute-key-matching.html
+        // Preserve the empty-message probe and assert the divergence explicitly, while
+        // every other subscription and the nonempty missing-key cases still agree.
+        // Emulator source: localstack/services/sns/filter.py at tag v4.14.0.
+        var prediction = TopicRouting.Route(_topic, rules, RoutingMessage.From(empty), RoutingService.Sns);
+        Assert.Equal(RoutingOutcome.Skips, prediction.Subscriptions.Single(item => item.Subscription == missingName).Outcome);
+        Assert.Contains("m8", delivered[missingName]);
+        RoutingProof.AssertPredictionsMatch(_topic, rules.Where(item => item.Subscription != missingName).ToArray(),
+            RoutingService.Sns, [empty], delivered);
     }
 
     private static bool SameMessage(MessageDraft draft, Message message)

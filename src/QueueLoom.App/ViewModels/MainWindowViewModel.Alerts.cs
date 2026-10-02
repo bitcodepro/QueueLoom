@@ -58,7 +58,7 @@ public sealed partial class MainWindowViewModel
     private void InitializeAlerts(IMonitorAlertService? alerts)
     {
         _alerts = alerts;
-        SendTestAlertCommand = new AsyncRelayCommand(
+        SendTestAlertCommand = _commands.Create(
             token => RunOperationAsync("Sending a test alert", SendTestAlertAsync, token),
             () => !IsBusy && _alerts is not null && (SystemNotifications || HasValidAlertWebhook));
     }

@@ -106,6 +106,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private bool _pendingBackupRefresh;
     private ServiceBusTopology? _topology;
     private bool _isDisposed;
+    private readonly AsyncCommandLifetime _commands = new();
+    private readonly AsyncOperationLifetime _operations = new();
+    private readonly CancellationTokenSource _shutdownCancellation = new();
+    private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _disposeStarted;
 
     public MainWindowViewModel(
         IProfileRepository profileRepository,
@@ -152,31 +157,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         ];
         _selectedNavigation = Navigation[0];
 
-        AddEnvironmentCommand = new AsyncRelayCommand(
+        AddEnvironmentCommand = _commands.Create(
             token => RunOperationAsync("Saving environment", AddEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy);
-        EditEnvironmentCommand = new AsyncRelayCommand(
+        EditEnvironmentCommand = _commands.Create(
             token => RunProfileOperationAsync("Updating environment", EditEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedProfile is not null);
-        DeleteEnvironmentCommand = new AsyncRelayCommand(
+        DeleteEnvironmentCommand = _commands.Create(
             token => RunProfileOperationAsync("Deleting environment", DeleteEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedProfile is not null);
-        ConnectCommand = new AsyncRelayCommand(
+        ConnectCommand = _commands.Create(
             token => RunProfileOperationAsync("Connecting", ConnectSelectedAsync, token),
             () => !IsBusy && SelectedProfile is not null);
-        DisconnectCommand = new AsyncRelayCommand(
+        DisconnectCommand = _commands.Create(
             token => RunProfileOperationAsync("Disconnecting", DisconnectSelectedAsync, token),
             () => !IsBusy && IsSelectedProfileConnected);
-        RefreshTopologyCommand = new AsyncRelayCommand(
+        RefreshTopologyCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Refreshing topology", RefreshTopologyAsync, token),
             () => !IsBusy && IsConnected);
-        ScanCurrentEnvironmentCommand = new AsyncRelayCommand(
+        ScanCurrentEnvironmentCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Scanning dead letters", ScanCurrentEnvironmentAsync, token),
             () => !IsBusy && IsConnected);
-        ScanAllEnvironmentsCommand = new AsyncRelayCommand(
+        ScanAllEnvironmentsCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Scanning all environments", ScanAllEnvironmentsAsync, token),
             () => !IsBusy && Profiles.Count > 0);
-        SearchDeadLettersCommand = new AsyncRelayCommand(
+        SearchDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Searching dead letters", SearchDeadLettersAsync, token),
             () => !IsBusy && Profiles.Count > 0 && !string.IsNullOrWhiteSpace(DeadLetterSearchQuery));
         ClearDeadLetterSearchCommand = new RelayCommand(
@@ -188,54 +193,54 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         CancelCurrentOperationCommand = new RelayCommand(
             CancelCurrentOperation,
             () => IsBusy && _currentOperationCancellation is { IsCancellationRequested: false });
-        BrowseSelectedActiveCommand = new AsyncRelayCommand(
+        BrowseSelectedActiveCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Peeking messages", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.Active, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
-        BrowseSelectedDeadLettersCommand = new AsyncRelayCommand(
+        BrowseSelectedDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Peeking DLQ", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.DeadLetter, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected);
-        BrowseSelectedTransferDeadLettersCommand = new AsyncRelayCommand(
+        BrowseSelectedTransferDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Peeking transfer DLQ", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.TransferDeadLetter, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && SupportsTransferDeadLetter);
-        BrowseDlqSourceCommand = new AsyncRelayCommand(
+        BrowseDlqSourceCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { Count: > 0 });
-        PurgeEnvironmentDeadLettersCommand = new AsyncRelayCommand(
+        PurgeEnvironmentDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Purging environment dead letters", PurgeEnvironmentDeadLettersAsync, token),
             () => !IsBusy && CanPurgeEnvironmentDeadLetters);
-        PurgeTopicDeadLettersCommand = new AsyncRelayCommand(
+        PurgeTopicDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Purging topic dead letters", PurgeTopicDeadLettersAsync, token),
             () => !IsBusy && CanPurgeTopicDeadLetters);
-        PurgeSelectedDeadLettersCommand = new AsyncRelayCommand(
+        PurgeSelectedDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Purging selected dead letters", PurgeSelectedDeadLettersAsync, token),
             () => !IsBusy && CanPurgeSelectedDeadLetters);
         NewMessageCommand = new RelayCommand(NewMessage, () => !IsBusy && IsConnected);
         OpenMessageAsDraftCommand = new RelayCommand(
             OpenSelectedMessageAsDraft,
             () => !IsBusy && CanOpenSelectedMessageAsDraft);
-        RefreshBackupsCommand = new AsyncRelayCommand(
+        RefreshBackupsCommand = _commands.Create(
             token => RunOperationAsync("Loading backups", RefreshBackupsAsync, token),
             () => !IsBusy && _backupRepository is not null);
-        LoadSelectedBackupCommand = new AsyncRelayCommand(
+        LoadSelectedBackupCommand = _commands.Create(
             token => RunOperationAsync("Loading backup message", LoadSelectedBackupAsync, token),
             () => !IsBusy && SelectedBackup?.IsReadable == true && _backupRepository is not null);
-        DeleteSelectedBackupCommand = new AsyncRelayCommand(
+        DeleteSelectedBackupCommand = _commands.Create(
             token => RunOperationAsync("Deleting local backup", DeleteSelectedBackupAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedBackup is not null && _backupRepository is not null);
-        DeleteVisibleBackupsCommand = new AsyncRelayCommand(
+        DeleteVisibleBackupsCommand = _commands.Create(
             token => RunOperationAsync("Deleting local backups", DeleteVisibleBackupsAsync, token, allowCancellation: false),
             () => !IsBusy && FilteredBackupMessages.Count > 0 && _backupRepository is not null);
         OpenBackupAsDraftCommand = new RelayCommand(
             OpenBackupAsDraft,
             () => !IsBusy && CanOpenBackupAsDraft);
-        SendDraftCommand = new AsyncRelayCommand(
+        SendDraftCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Sending message", SendDraftAsync, token, allowCancellation: false),
             () => !IsBusy && IsConnected && CanWrite &&
                   !HasDraftEnvironmentMismatch && SelectedDestination is not null);
-        ToggleMonitorCommand = new AsyncRelayCommand(
+        ToggleMonitorCommand = _commands.Create(
             token => RunGuardedAsync("Monitor", ToggleMonitorAsync, token),
             () => IsMonitoring || (!IsBusy && Profiles.Count > 0));
-        UnlockWritesCommand = new AsyncRelayCommand(
+        UnlockWritesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Unlocking writes", UnlockWritesAsync, token, allowCancellation: false),
             () => !IsBusy && IsConnected && !CanWrite);
 
@@ -464,9 +469,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         bool allowCancellation = true,
         DiagnosticContext? diagnosticContext = null)
     {
+        using var lifetime = _operations.TryEnter();
+        if (lifetime is null) return;
         var diagnosticOperation = Diagnostics.Begin(operation, diagnosticContext?.Profile?.Provider,
             diagnosticContext?.Profile?.EndpointDisplay, diagnosticContext?.Entity);
-        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCancellation.Token);
         _operationId = Guid.NewGuid();
         _currentOperationCancellation = allowCancellation ? operationCancellation : null;
         IsBusy = true;
@@ -526,6 +533,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     /// </summary>
     private async Task RunGuardedAsync(string operation, Func<CancellationToken, Task> action, CancellationToken cancellationToken)
     {
+        using var lifetime = _operations.TryEnter();
+        if (lifetime is null) return;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCancellation.Token);
+        cancellationToken = cancellation.Token;
         var diagnosticOperation = Diagnostics.Begin(operation, _connectedProfile?.Provider, _connectedProfile?.EndpointDisplay);
         try
         {
@@ -652,57 +663,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private static string? NullIfWhiteSpace(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_isDisposed)
-        {
-            return;
-        }
-        _isDisposed = true;
+        if (Interlocked.Exchange(ref _disposeStarted, 1) == 0) _ = CompleteDisposalAsync();
+        return new ValueTask(_shutdownCompletion.Task);
+    }
 
+    private async Task CompleteDisposalAsync()
+    {
+        try { await DisposeCoreAsync().ConfigureAwait(true); _shutdownCompletion.TrySetResult(); }
+        catch (Exception error) { _shutdownCompletion.TrySetException(error); }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        _isDisposed = true;
+        var operationsDrained = _operations.StopAndDrainAsync();
+        var commandsDrained = _commands.StopAndDrainAsync();
+        _shutdownCancellation.Cancel();
         _monitorCancellation?.Cancel();
         _writeUnlockCancellation?.Cancel();
-        await StopScheduledResendsAsync().ConfigureAwait(true);
+        var schedulesDrained = StopScheduledResendsAsync();
         _currentOperationCancellation?.Cancel();
-
-        var commands = new[]
-        {
-            ExportDiagnosticsCommand,
-            AddEnvironmentCommand,
-            EditEnvironmentCommand,
-            DeleteEnvironmentCommand,
-            ConnectCommand,
-            DisconnectCommand,
-            RefreshTopologyCommand,
-            ScanCurrentEnvironmentCommand,
-            ScanAllEnvironmentsCommand,
-            SearchDeadLettersCommand,
-            BrowseSelectedActiveCommand,
-            BrowseSelectedDeadLettersCommand,
-            BrowseSelectedTransferDeadLettersCommand,
-            BrowseDlqSourceCommand,
-            RefreshBackupsCommand,
-            LoadSelectedBackupCommand,
-            DeleteSelectedBackupCommand,
-            DeleteVisibleBackupsCommand,
-            PurgeEnvironmentDeadLettersCommand,
-            PurgeTopicDeadLettersCommand,
-            PurgeSelectedDeadLettersCommand,
-            DeleteMarkedMessagesCommand,
-            ResendMarkedMessagesCommand,
-            ExportMessagesCommand,
-            SendTestAlertCommand,
-            DeleteOldBackupsCommand,
-            SendDraftCommand,
-            ToggleMonitorCommand,
-            UnlockWritesCommand
-        };
-        foreach (var command in commands)
-        {
-            command.Cancel();
-        }
-
-        var pending = commands.Select(command => command.Completion).ToList();
+        var pending = new List<Task> { operationsDrained, commandsDrained, schedulesDrained };
         if (_monitorTask is not null)
         {
             pending.Add(_monitorTask);
@@ -728,12 +711,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _writeUnlockCancellation = null;
         _writeUnlockTask = null;
 
-        foreach (var command in commands)
-        {
-            command.Dispose();
-        }
-
         await _workspace.DisposeAsync().ConfigureAwait(true);
         _workspaceGate.Dispose();
+        _shutdownCancellation.Dispose();
     }
 }

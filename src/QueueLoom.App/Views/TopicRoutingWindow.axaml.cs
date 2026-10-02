@@ -15,7 +15,16 @@ public sealed partial class TopicRoutingWindow : Window
     {
         DataContext = viewModel;
         InitializeComponent();
-        Opened += async (_, _) => await viewModel.LoadAsync();
+        Opened += async (_, _) =>
+        {
+            try { await viewModel.LoadAsync(); }
+            catch (OperationCanceledException) when (!IsVisible) { }
+        };
+        Closed += async (_, _) =>
+        {
+            try { await viewModel.DisposeAsync(); }
+            catch (OperationCanceledException) { }
+        };
     }
 
     private void CloseClick(object? sender, RoutedEventArgs args) => Close(null);

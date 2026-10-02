@@ -15,6 +15,7 @@ public sealed partial class KafkaWorkspace
 
     public override async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
+        using var operation = await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
         var configs = await Admin.DescribeConfigsAsync([new ConfigResource { Type = ResourceType.Topic, Name = queue }]).ConfigureAwait(false);
         var retention = configs[0].Entries.TryGetValue("retention.ms", out var entry) &&
                         long.TryParse(entry.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds) && milliseconds > 0

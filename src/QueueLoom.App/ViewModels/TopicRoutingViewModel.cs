@@ -112,8 +112,13 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
 /// The subscriptions of one topic with their rules, and a test: which of them would receive a given message and
 /// why the others would not. Rules can be added, changed and deleted when queue management and write access allow it.
 /// </summary>
-public sealed class TopicRoutingViewModel : ObservableObject
+public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
 {
+    private readonly AsyncCommandLifetime _commands = new();
+    private readonly AsyncOperationLifetime _operations = new();
+    private readonly CancellationTokenSource _shutdownCancellation = new();
+    private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _disposeStarted;
     private readonly TopicRoutingServices _services;
     private RoutingSubscriptionViewModel? _selected;
     private string _headline = string.Empty;
@@ -131,6 +136,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
     private string _testBody;
     private readonly EditableMessageProperties _baseProperties;
     private readonly Dictionary<string, (string Line, object? Value)> _originalProperties = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MessageApplicationProperty> _originalAttributes = new(StringComparer.Ordinal);
     private bool _loaded;
 
     public TopicRoutingViewModel(string topic, string environmentName, bool canEdit, string editHint, TopicRoutingServices services,
@@ -159,13 +165,14 @@ public sealed class TopicRoutingViewModel : ObservableObject
         {
             var value = RoutingMessage.Typed(property);
             _originalProperties[property.Name] = (Line(property.Name, value), value);
+            _originalAttributes[property.Name] = property;
         }
         _testProperties = string.Join(Environment.NewLine, _originalProperties.Values.Select(original => original.Line));
         CheckCommand = new RelayCommand(Check, () => !IsBusy && _loaded);
-        RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
-        AddRuleCommand = new AsyncRelayCommand(AddRuleAsync, () => !IsBusy && CanEdit && CanAddTo(Selected));
-        EditRuleCommand = new AsyncRelayCommand<RuleItemViewModel>(EditRuleAsync, rule => !IsBusy && CanEdit && rule?.CanChange == true);
-        DeleteRuleCommand = new AsyncRelayCommand<RuleItemViewModel>(DeleteRuleAsync, rule => !IsBusy && CanEdit && rule is not null);
+        RefreshCommand = _commands.Create(LoadAsync, () => !IsBusy);
+        AddRuleCommand = _commands.Create(AddRuleAsync, () => !IsBusy && CanEdit && CanAddTo(Selected));
+        EditRuleCommand = _commands.Create<RuleItemViewModel>(EditRuleAsync, rule => !IsBusy && CanEdit && rule?.CanChange == true);
+        DeleteRuleCommand = _commands.Create<RuleItemViewModel>(DeleteRuleAsync, rule => !IsBusy && CanEdit && rule is not null);
     }
 
     public string Topic { get; }
@@ -341,6 +348,10 @@ public sealed class TopicRoutingViewModel : ObservableObject
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        using var operation = _operations.TryEnter();
+        if (operation is null) return;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCancellation.Token);
+        cancellationToken = cancellation.Token;
         var checkAfterwards = HasHeadline || HasMessageOrigin;
         IsBusy = true;
         Error = string.Empty;
@@ -361,7 +372,7 @@ public sealed class TopicRoutingViewModel : ObservableObject
             OnPropertyChanged(nameof(SubscriptionsCaption));
             _loaded = true;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Without the rules nothing can be said about routing: an old result or an empty list would read as
             // "no subscription takes it", so both are cleared and only the error is shown.
@@ -391,10 +402,18 @@ public sealed class TopicRoutingViewModel : ObservableObject
             return;
         }
         Error = string.Empty;
-        IReadOnlyList<KeyValuePair<string, object?>> properties;
+        IReadOnlyList<MessageApplicationProperty> properties;
         try
         {
-            properties = ParseProperties(TestProperties, _originalProperties);
+            // Match the original text against this occurrence, not another line with
+            // the same name. RoutingMessage applies later duplicate names last.
+            properties = TestProperties.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .SelectMany(line => ParseProperties(line, _originalProperties).Select(pair =>
+                    _originalProperties.TryGetValue(pair.Key, out var originalLine) && originalLine.Line == line &&
+                    _originalAttributes.TryGetValue(pair.Key, out var original)
+                        ? original
+                        : ApplicationPropertyValues.FromObject(pair.Key, pair.Value)))
+                .ToArray();
         }
         catch (FormatException exception)
         {
@@ -481,19 +500,25 @@ public sealed class TopicRoutingViewModel : ObservableObject
 
     private async Task ChangeAsync(Func<CancellationToken, Task> change, CancellationToken cancellationToken)
     {
+        using var operation = _operations.TryEnter();
+        if (operation is null) return;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCancellation.Token);
+        cancellationToken = cancellation.Token;
         IsBusy = true;
         Error = string.Empty;
         try
         {
             await change(cancellationToken).ConfigureAwait(true);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             Error = exception.Message;
-            IsBusy = false;
             return;
         }
-        IsBusy = false;
+        finally
+        {
+            IsBusy = false;
+        }
         await LoadAsync(cancellationToken).ConfigureAwait(true);
     }
 
@@ -525,4 +550,24 @@ public sealed class TopicRoutingViewModel : ObservableObject
 
     /// <summary>Empty means the message has no such property; anything else is kept exactly, spaces included.</summary>
     private static string? Blank(string value) => string.IsNullOrEmpty(value) ? null : value;
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) == 0) _ = CompleteDisposalAsync();
+        return new ValueTask(_shutdownCompletion.Task);
+    }
+
+    private async Task CompleteDisposalAsync()
+    {
+        try
+        {
+            var operations = _operations.StopAndDrainAsync();
+            var commands = _commands.StopAndDrainAsync();
+            _shutdownCancellation.Cancel();
+            await Task.WhenAll(operations, commands).ConfigureAwait(true);
+            _shutdownCompletion.TrySetResult();
+        }
+        catch (Exception error) { _shutdownCompletion.TrySetException(error); }
+        finally { _shutdownCancellation.Dispose(); }
+    }
 }

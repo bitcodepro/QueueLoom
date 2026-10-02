@@ -1,3 +1,4 @@
+using QueueLoom.Infrastructure.Azure;
 using QueueLoom.Core.Routing;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
@@ -15,9 +16,11 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
 {
     private readonly Func<MessagingProvider, IServiceBusWorkspace> _factory;
     private readonly Dictionary<MessagingProvider, IServiceBusWorkspace> _workspaces = [];
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly AsyncOperationGate _operationGate = new();
     private IServiceBusWorkspace? _current;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private readonly TaskCompletionSource _disposalCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _disposeStarted;
 
     public MultiProviderWorkspace(Func<MessagingProvider, IServiceBusWorkspace> factory)
     {
@@ -39,82 +42,81 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
     {
         ArgumentNullException.ThrowIfNull(profile);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        using var lifecycle = await _operationGate.EnterLifecycleAsync(cancellationToken).ConfigureAwait(false);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_workspaces.TryGetValue(profile.Provider, out var target))
         {
-            if (!_workspaces.TryGetValue(profile.Provider, out var target))
-            {
-                target = _factory(profile.Provider);
-                _workspaces[profile.Provider] = target;
-            }
-
-            // Only one environment is connected at a time, whichever cloud it is in.
-            if (_current is not null && !ReferenceEquals(_current, target) &&
-                _current.ConnectionState != WorkspaceConnectionState.Disconnected)
-            {
-                await _current.DisconnectAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            _current = target;
-            ConnectedProvider = profile.Provider;
-            await target.ConnectAsync(profile, cancellationToken).ConfigureAwait(false);
+            target = _factory(profile.Provider);
+            _workspaces[profile.Provider] = target;
         }
-        finally
+
+        // Only one environment is connected at a time, whichever cloud it is in.
+        if (_current is not null && !ReferenceEquals(_current, target) &&
+            _current.ConnectionState != WorkspaceConnectionState.Disconnected)
         {
-            _gate.Release();
+            await _current.DisconnectAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        _current = target;
+        ConnectedProvider = profile.Provider;
+        await target.ConnectAsync(profile, cancellationToken).ConfigureAwait(false);
     }
 
-    public Task DisconnectAsync(CancellationToken cancellationToken = default) =>
-        _current?.DisconnectAsync(cancellationToken) ?? Task.CompletedTask;
+    public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var lifecycle = await _operationGate.EnterLifecycleAsync(cancellationToken).ConfigureAwait(false);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_current is not null) await _current.DisconnectAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     public Task SetAccessModeAsync(ProfileAccessMode accessMode, CancellationToken cancellationToken = default) =>
-        Current.SetAccessModeAsync(accessMode, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.SetAccessModeAsync(accessMode, cancellationToken), cancellationToken);
 
     public Task<ServiceBusTopology> GetTopologyAsync(bool forceRefresh = false, CancellationToken cancellationToken = default) =>
-        Current.GetTopologyAsync(forceRefresh, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.GetTopologyAsync(forceRefresh, cancellationToken), cancellationToken);
 
     public Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
         BrowseMessagesRequest request,
         CancellationToken cancellationToken = default) =>
-        Current.BrowseMessagesAsync(request, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.BrowseMessagesAsync(request, cancellationToken), cancellationToken);
 
     public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
         DeadLetterSearchRequest request,
         CancellationToken cancellationToken = default) =>
-        Current.SearchDeadLettersAsync(request, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.SearchDeadLettersAsync(request, cancellationToken), cancellationToken);
 
     public Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) =>
-        Current.SendMessageAsync(request, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.SendMessageAsync(request, cancellationToken), cancellationToken);
 
     public Task ResubmitDeadLetterAsync(ResubmitDeadLetterRequest request, CancellationToken cancellationToken = default) =>
-        Current.ResubmitDeadLetterAsync(request, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.ResubmitDeadLetterAsync(request, cancellationToken), cancellationToken);
 
     public Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
         DeadLetterPurgeRequest request,
         CancellationToken cancellationToken = default,
         IProgress<DeadLetterPurgeProgress>? progress = null) =>
-        Current.PurgeDeadLettersAsync(request, cancellationToken, progress);
+        WithWorkspaceAsync(workspace => workspace.PurgeDeadLettersAsync(request, cancellationToken, progress), cancellationToken);
 
     public Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
         DeleteDeadLetterMessagesRequest request,
         CancellationToken cancellationToken = default,
         IProgress<DeadLetterMessageDeletionProgress>? progress = null) =>
-        Current.DeleteDeadLetterMessagesAsync(request, cancellationToken, progress);
+        WithWorkspaceAsync(workspace => workspace.DeleteDeadLetterMessagesAsync(request, cancellationToken, progress), cancellationToken);
 
     public QueueManagementCapabilities? QueueManagement => _current?.QueueManagement;
 
     public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
-        Current.GetQueueSettingsAsync(queue, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.GetQueueSettingsAsync(queue, cancellationToken), cancellationToken);
 
     public Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
-        Current.CreateQueueAsync(definition, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.CreateQueueAsync(definition, cancellationToken), cancellationToken);
 
     public Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
-        Current.UpdateQueueSettingsAsync(queue, settings, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.UpdateQueueSettingsAsync(queue, settings, cancellationToken), cancellationToken);
 
     public Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
-        Current.DeleteQueueAsync(queue, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.DeleteQueueAsync(queue, cancellationToken), cancellationToken);
 
     public bool SupportsSubscriptionRules => _current?.SupportsSubscriptionRules == true;
 
@@ -123,42 +125,70 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace
     public string? RuleEditingNote => _current?.RuleEditingNote;
 
     public Task<IReadOnlyList<SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
-        Current.GetTopicRulesAsync(topic, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.GetTopicRulesAsync(topic, cancellationToken), cancellationToken);
 
     public Task SaveSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, bool replace,
         CancellationToken cancellationToken = default) =>
-        Current.SaveSubscriptionRuleAsync(topic, subscription, rule, replace, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.SaveSubscriptionRuleAsync(topic, subscription, rule, replace, cancellationToken), cancellationToken);
 
     public Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
-        Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken), cancellationToken);
 
     public Task DeleteSubscriptionRuleAsync(string topic, string subscription, SubscriptionRule rule, CancellationToken cancellationToken = default) =>
-        Current.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.DeleteSubscriptionRuleAsync(topic, subscription, rule, cancellationToken), cancellationToken);
 
     public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
         IReadOnlyList<BrowsedMessage> messages,
         CancellationToken cancellationToken = default) =>
-        Current.RemovePendingMessagesAsync(messages, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.RemovePendingMessagesAsync(messages, cancellationToken), cancellationToken);
 
     public Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(
         DeadLetterMonitorScope scope,
         CancellationToken cancellationToken = default) =>
-        Current.GetDeadLetterSnapshotAsync(scope, cancellationToken);
+        WithWorkspaceAsync(workspace => workspace.GetDeadLetterSnapshotAsync(scope, cancellationToken), cancellationToken);
 
-    public async ValueTask DisposeAsync()
+    private async Task WithWorkspaceAsync(Func<IServiceBusWorkspace, Task> action, CancellationToken cancellationToken)
     {
-        if (_disposed)
-        {
-            return;
-        }
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        await action(Current).ConfigureAwait(false);
+    }
 
-        _disposed = true;
-        foreach (var workspace in _workspaces.Values)
+    private async Task<T> WithWorkspaceAsync<T>(Func<IServiceBusWorkspace, Task<T>> action, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        return await action(Current).ConfigureAwait(false);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) == 0)
         {
-            await workspace.DisposeAsync().ConfigureAwait(false);
+            _disposed = true;
+            _ = CompleteDisposalAsync();
         }
-        _workspaces.Clear();
-        _gate.Dispose();
+        return new ValueTask(_disposalCompletion.Task);
+    }
+
+    private async Task CompleteDisposalAsync()
+    {
+        try
+        {
+            using var lifecycle = await _operationGate.EnterLifecycleAsync().ConfigureAwait(false);
+            var errors = new List<Exception>();
+            foreach (var workspace in _workspaces.Values)
+            {
+                try { await workspace.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception error) { errors.Add(error); }
+            }
+            _workspaces.Clear();
+            _current = null;
+            ConnectedProvider = null;
+            if (errors.Count > 0) throw new AggregateException(errors);
+            _disposalCompletion.TrySetResult();
+        }
+        catch (Exception error) { _disposalCompletion.TrySetException(error); }
     }
 
     private IServiceBusWorkspace Current

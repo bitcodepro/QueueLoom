@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Core.Routing;
@@ -19,14 +18,22 @@ public static class RabbitBindings
     {
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(routingKey);
-        var regex = "^" + string.Join(@"\.", pattern.Split('.').Select(word => word switch
+        var words = routingKey.Length == 0 ? [] : routingKey.Split('.');
+        // Dynamic programming keeps adjacent # wildcards independent, including their
+        // zero-word alternatives, without regex rewriting or exponential backtracking.
+        var previous = new bool[words.Length + 1];
+        previous[0] = true;
+        foreach (var word in pattern.Length == 0 ? Array.Empty<string>() : pattern.Split('.'))
         {
-            "*" => @"[^.]+",
-            "#" => @".*",
-            _ => Regex.Escape(word)
-        })) + "$";
-        regex = regex.Replace(@"\..*", @"(\..*)?", StringComparison.Ordinal).Replace(@".*\.", @"(.*\.)?", StringComparison.Ordinal);
-        return Regex.IsMatch(routingKey, regex, RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            var current = new bool[words.Length + 1];
+            current[0] = word == "#" && previous[0];
+            for (var i = 1; i <= words.Length; i++)
+                current[i] = word == "#"
+                    ? previous[i] || current[i - 1]
+                    : previous[i - 1] && (word == "*" || word == words[i - 1]);
+            previous = current;
+        }
+        return previous[words.Length];
     }
 
     /// <summary>

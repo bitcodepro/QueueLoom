@@ -28,7 +28,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     private ServiceBusProfile? _profile;
     private ServiceBusTopology? _cachedTopology;
     private WorkspaceConnectionState _connectionState;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private readonly TaskCompletionSource _disposalCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _disposeStarted;
 
     protected LeasedMessagingWorkspace(DeadLetterJsonBackupStore? backupStore, TimeProvider? timeProvider)
     {
@@ -108,6 +110,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ThrowIfDisposed();
         using (await _operationGate.EnterLifecycleAsync(cancellationToken).ConfigureAwait(false))
         {
+            ThrowIfDisposed();
             await CloseAsync().ConfigureAwait(false);
             _profile = null;
             _cachedTopology = null;
@@ -129,6 +132,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     {
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         return await GetTopologyCoreAsync(forceRefresh, cancellationToken).ConfigureAwait(false);
     }
 
@@ -139,6 +143,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(request);
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
 
         // There is no position to continue from: every browse starts at whatever the service hands out
         // first. "Load more" therefore returns the first page again rather than duplicating messages.
@@ -164,6 +169,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(request);
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
 
         var profile = GetConnectedProfile();
         var startedAt = TimeProvider.GetUtcNow();
@@ -245,6 +251,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(request);
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         EnsureWriteAllowed();
         var topology = await GetTopologyCoreAsync(false, cancellationToken).ConfigureAwait(false);
         await SendCoreAsync(topology, request.Destination, request.Message, cancellationToken).ConfigureAwait(false);
@@ -271,6 +278,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(request);
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         EnsureWriteAllowed();
 
         var profile = GetConnectedProfile();
@@ -322,6 +330,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(request);
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         EnsureWriteAllowed();
 
         var profile = GetConnectedProfile();
@@ -404,6 +413,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     {
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         GetConnectedProfile();
         return await read(cancellationToken).ConfigureAwait(false);
     }
@@ -413,6 +423,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     {
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
         await change(cancellationToken).ConfigureAwait(false);
         _cachedTopology = null;
@@ -425,6 +436,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(scope);
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         var profile = GetConnectedProfile();
         var topology = await GetTopologyCoreAsync(true, cancellationToken).ConfigureAwait(false);
 
@@ -491,17 +503,43 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
 
     internal const int SampleLimit = 1_000;
 
-    public async ValueTask DisposeAsync()
+    /// <summary>Read-only provider management calls also retain clients until their entire scope finishes.</summary>
+    protected async ValueTask<IDisposable> EnterReadOperationAsync(CancellationToken cancellationToken)
     {
-        if (_disposed)
-        {
-            return;
-        }
+        ThrowIfDisposed();
+        var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        try { ThrowIfDisposed(); return operation; }
+        catch { operation.Dispose(); throw; }
+    }
 
-        _disposed = true;
-        await CloseAsync().ConfigureAwait(false);
-        _topologyGate.Dispose();
-        GC.SuppressFinalize(this);
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) == 0)
+        {
+            _disposed = true;
+            _ = CompleteDisposalAsync();
+        }
+        return new ValueTask(_disposalCompletion.Task);
+    }
+
+    private async Task CompleteDisposalAsync()
+    {
+        try
+        {
+            // Held-message release and connection cleanup use clients even after caller
+            // cancellation. Lifecycle admission waits until those entire scopes finish.
+            using (await _operationGate.EnterLifecycleAsync().ConfigureAwait(false))
+            {
+                await CloseAsync().ConfigureAwait(false);
+                _profile = null;
+                _cachedTopology = null;
+                _connectionState = WorkspaceConnectionState.Disconnected;
+                _topologyGate.Dispose();
+            }
+            GC.SuppressFinalize(this);
+            _disposalCompletion.TrySetResult();
+        }
+        catch (Exception error) { _disposalCompletion.TrySetException(error); }
     }
 
     protected ServiceBusProfile GetConnectedProfile() =>

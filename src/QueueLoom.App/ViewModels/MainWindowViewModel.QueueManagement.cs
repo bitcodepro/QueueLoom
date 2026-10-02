@@ -48,13 +48,13 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeQueueManagement()
     {
-        CreateQueueCommand = new AsyncRelayCommand(
+        CreateQueueCommand = _commands.Create(
             token => RunWorkspaceOperationAsync($"Creating a {QueueKindName}", CreateQueueAsync, token),
             () => !IsBusy && CanManageQueues && CanWrite && (!ManagesSubscriptions || SelectedTopicName is not null));
-        EditQueueSettingsCommand = new AsyncRelayCommand(
+        EditQueueSettingsCommand = _commands.Create(
             token => RunWorkspaceOperationAsync($"Changing {SelectedEntity?.Name}", EditQueueSettingsAsync, token),
             () => !IsBusy && CanManageQueues && CanWrite && IsManageableSelection && _workspace.QueueManagement?.CanUpdate == true);
-        DeleteQueueCommand = new AsyncRelayCommand(
+        DeleteQueueCommand = _commands.Create(
             token => RunWorkspaceOperationAsync($"Deleting {SelectedEntity?.Name}", DeleteQueueAsync, token),
             () => !IsBusy && CanManageQueues && CanWrite && IsManageableSelection);
     }

@@ -19,7 +19,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeResend()
     {
-        ResendMarkedMessagesCommand = new AsyncRelayCommand(
+        ResendMarkedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Resending selected messages", ResendMarkedMessagesAsync, token, allowCancellation: true),
             () => !IsBusy && CanWrite && HasMarkedMessages);
     }

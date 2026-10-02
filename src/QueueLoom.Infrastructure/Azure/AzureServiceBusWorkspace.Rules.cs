@@ -16,6 +16,8 @@ public sealed partial class AzureServiceBusWorkspace
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         var administration = GetAdministrationClient();
         var result = new List<SubscriptionRules>();
         try

@@ -29,13 +29,13 @@ public sealed partial class MainWindowViewModel
     private void InitializeReplayFeatures()
     {
         InitializeOperationHistory();
-        RestoreFilteredBackupsCommand = new AsyncRelayCommand(
+        RestoreFilteredBackupsCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Restoring filtered backups", ct => PrepareReplayAsync(true, ct), token),
             () => CanPrepareReplay && FilteredBackupMessages.Count is > 0 and <= 1000);
-        ReplayLoadedMessagesCommand = new AsyncRelayCommand(
+        ReplayLoadedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Replaying loaded messages", ct => PrepareReplayAsync(false, ct), token),
             () => CanPrepareReplay && Messages.Count is > 0 and <= 1000);
-        ResumeReplayCommand = new AsyncRelayCommand(
+        ResumeReplayCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Resuming latest batch", ResumeReplayAsync, token),
             () => !IsBusy && CanWrite && _replayStore is not null);
         FilteredBackupMessages.CollectionChanged += (_, _) => NotifyReplayFeatures();

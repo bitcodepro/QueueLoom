@@ -11,7 +11,7 @@ public sealed partial class MainWindowViewModel
     private void InitializeDiagnostics(DiagnosticsJournal? diagnostics)
     {
         Diagnostics = diagnostics ?? new();
-        ExportDiagnosticsCommand = new AsyncRelayCommand(ExportDiagnosticsAsync);
+        ExportDiagnosticsCommand = _commands.Create(ExportDiagnosticsAsync);
     }
 
     private async Task ExportDiagnosticsAsync(CancellationToken token)

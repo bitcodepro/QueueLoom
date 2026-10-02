@@ -9,8 +9,6 @@ namespace QueueLoom.Infrastructure.Kafka;
 
 internal static class KafkaMessageMapper
 {
-    internal const string PartitionProperty = "kafka.partition";
-    internal const string OffsetProperty = "kafka.offset";
     internal const string MessageIdHeader = "MessageId";
 
     /// <summary>Headers written by Spring Kafka's dead-letter recoverer and by Kafka Connect's error handler.</summary>
@@ -39,8 +37,6 @@ internal static class KafkaMessageMapper
                 .Where(header => DeadLetterHeaderPrefixes.Any(prefix => header.Key.StartsWith(prefix, StringComparison.Ordinal)))
                 .OrderBy(header => header.Key, StringComparer.Ordinal)
                 .Select(header => new MessageApplicationProperty(header.Key, ApplicationPropertyType.String, DeadLetterHeaderText(header.Key, header.Value))))
-            .Append(new MessageApplicationProperty(PartitionProperty, ApplicationPropertyType.Int32, result.Partition.Value.ToString(CultureInfo.InvariantCulture)))
-            .Append(new MessageApplicationProperty(OffsetProperty, ApplicationPropertyType.Int64, result.Offset.Value.ToString(CultureInfo.InvariantCulture)))
             .ToArray();
 
         var (reason, description) = DeadLetterInfo(headers);
@@ -89,9 +85,8 @@ internal static class KafkaMessageMapper
         }
         foreach (var property in draft.ApplicationProperties)
         {
-            // Position and dead-letter details describe the original; a resent copy gets its own.
-            if (property.Name is PartitionProperty or OffsetProperty ||
-                DeadLetterHeaderPrefixes.Any(prefix => property.Name.StartsWith(prefix, StringComparison.Ordinal)))
+            // Position is stored separately. Position-like header names belong to the sender.
+            if (DeadLetterHeaderPrefixes.Any(prefix => property.Name.StartsWith(prefix, StringComparison.Ordinal)))
             {
                 continue;
             }
