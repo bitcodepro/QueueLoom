@@ -1,6 +1,7 @@
 using System.Globalization;
 using QueueLoom.App.Services;
 using QueueLoom.Core.Diagnostics;
+using QueueLoom.App.Commands;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -41,17 +42,24 @@ public sealed class UpdateDialogViewModel : ObservableObject
         string currentVersion,
         UpdateCheckResult update,
         Func<IProgress<UpdateProgress>, CancellationToken, Task>? install,
-        string? cannotInstallReason = null)
+        string? cannotInstallReason = null,
+        AsyncRelayCommand? exportDiagnostics = null,
+        DiagnosticsJournal? diagnostics = null)
     {
         CurrentVersion = currentVersion;
         Update = update;
         _install = install;
+        ExportDiagnosticsCommand = exportDiagnostics;
+        _diagnostics = diagnostics ?? new();
         CannotInstallReason = install is null
             ? cannotInstallReason ?? "This copy of QueueLoom cannot replace itself."
             : null;
     }
 
     public UpdateCheckResult Update { get; }
+    private readonly DiagnosticsJournal _diagnostics;
+    public AsyncRelayCommand? ExportDiagnosticsCommand { get; }
+    public bool HasDiagnostics => ExportDiagnosticsCommand is not null;
 
     public string CurrentVersion { get; }
 
@@ -160,6 +168,8 @@ public sealed class UpdateDialogViewModel : ObservableObject
         }
 
         _cancellation = new CancellationTokenSource();
+        var diagnosticOperation = _diagnostics.Begin("Update");
+        _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: UpdatePhase.ChecksumFetch);
         var cancellation = _cancellation;
         var attempt = Interlocked.Increment(ref _attempt);
         _canRetry = false;
@@ -174,6 +184,7 @@ public sealed class UpdateDialogViewModel : ObservableObject
             if (Volatile.Read(ref _running) == 0 || attempt != Volatile.Read(ref _attempt) || !IsDownloading) return;
             if (update.Phase < _phase) return;
             _phase = update.Phase;
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: update.Phase);
             OnPropertyChanged(nameof(Phase)); OnPropertyChanged(nameof(StageLabel)); OnPropertyChanged(nameof(Message)); OnPropertyChanged(nameof(CanCancel));
             IsProgressKnown = update.Percent.HasValue;
             Progress = update.Percent ?? 0;
@@ -186,9 +197,11 @@ public sealed class UpdateDialogViewModel : ObservableObject
             await _install(progress, cancellation.Token).ConfigureAwait(true);
             ProgressText = "Installation finished; restart and startup acknowledgement pending.";
             Stage = UpdateDialogStage.Ready;
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Completed);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Cancelled, updateStage: _phase);
             if (_phase is UpdatePhase.Installation or UpdatePhase.Restart or UpdatePhase.Recovery)
             { Error = "Interrupted during installation. Inspect the update receipt before retrying."; Stage = UpdateDialogStage.Failed; }
             else { ProgressText = "Cancelled before installation."; Stage = UpdateDialogStage.Available; }
@@ -197,6 +210,7 @@ public sealed class UpdateDialogViewModel : ObservableObject
         {
             if (exception is UpdateStageException failure) { _phase = failure.Phase; _canRetry = failure.SafeToRetry; }
             Error = SensitiveDataRedactor.SummarizeException(exception);
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Failed, error: exception, updateStage: _phase);
             OnPropertyChanged(nameof(StageLabel));
             Stage = UpdateDialogStage.Failed;
         }

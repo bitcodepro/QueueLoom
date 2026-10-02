@@ -1,0 +1,26 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:services="using:QueueLoom.App.Services" x:Class="QueueLoom.App.Views.DiagnosticsPreviewWindow"
+        x:DataType="services:DiagnosticsPreview" Title="Review local diagnostics" Width="820" Height="660"
+        MinWidth="500" MinHeight="400" WindowStartupLocation="CenterOwner">
+  <Grid Margin="24" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
+    <TextBlock Text="Review local diagnostics" FontSize="22" FontWeight="SemiBold" />
+    <TextBlock Grid.Row="1" Text="These are the exact two files that will be saved. Review before sharing publicly. Only a bounded summary from this session is included. Nothing is uploaded or sent."
+               TextWrapping="Wrap" />
+    <TabControl Grid.Row="2">
+      <TabItem Header="report.txt">
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+          <SelectableTextBlock Text="{Binding Report}" FontFamily="monospace" FontSize="12" TextWrapping="Wrap" />
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="diagnostics.json">
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+          <SelectableTextBlock Text="{Binding Json}" FontFamily="monospace" FontSize="12" />
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+      <Button Content="Cancel" Classes="quiet" Click="CancelClick" />
+      <Button Content="Choose ZIP destination" Classes="primary" Click="SaveClick" />
+    </StackPanel>
+  </Grid>
+</Window>

@@ -33,8 +33,20 @@ public sealed class UpdateStageException(UpdatePhase phase, string message, bool
 /// puts the new files in place of the running ones. The running files are renamed (".old"), which every OS allows,
 /// and removed at the next start; if anything fails, they are renamed back.
 /// </summary>
-public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = null)
+public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = null, DiagnosticsJournal? diagnostics = null)
 {
+    static AppUpdater()
+    {
+        UpdateRestart.RecoveryRecorded += fact =>
+        {
+            var operation = DiagnosticsJournal.Session.Begin("Update");
+            DiagnosticsJournal.Session.Record(operation, DiagnosticStage.Completed, DiagnosticOutcome.Confirmed,
+                updateStage: fact == UpdateRestart.RecordedRecovery.Restored ? UpdatePhase.Recovery : UpdatePhase.Restart,
+                restart: fact == UpdateRestart.RecordedRecovery.StartupAcknowledged ? DiagnosticRecovery.StartupAcknowledged : DiagnosticRecovery.Unknown,
+                rollback: fact == UpdateRestart.RecordedRecovery.Restored ? DiagnosticRecovery.Restored : DiagnosticRecovery.Unknown);
+        };
+    }
+    private readonly DiagnosticsJournal _diagnostics = diagnostics ?? DiagnosticsJournal.Session;
     public const string ReleasesDownload = "https://github.com/bitcodepro/QueueLoom/releases/download";
     private const string DownloadMarker = UpdateRestart.DownloadMarker;
 
@@ -112,6 +124,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         var id = Guid.NewGuid().ToString("N");
         var folder = Path.Combine(_downloadRoot, version + "-" + id);
         var phase = UpdatePhase.ChecksumFetch;
+        var diagnosticOperation = _diagnostics.Begin("Update");
         try
         {
             Directory.CreateDirectory(folder);
@@ -119,8 +132,10 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
 
             var archive = Path.Combine(folder, PackageName(version, target.Rid));
             progress?.Report(new UpdateProgress(0, null) { Phase = phase });
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: phase);
             var expected = await DownloadChecksumAsync(new Uri(package + ".sha256"), cancellationToken).ConfigureAwait(false);
             phase = UpdatePhase.Downloading;
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: phase);
             progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             using (var response = await httpClient.GetAsync(package, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
             {
@@ -145,17 +160,20 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             }
 
             phase = UpdatePhase.Verification;
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: phase);
             progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             await using (var stream = File.OpenRead(archive))
             {
                 var actual = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
                 if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
                 {
+                    _diagnostics.Record(diagnosticOperation, DiagnosticStage.Failed, updateStage: phase, checksum: DiagnosticCheck.Mismatch);
                     throw new InvalidOperationException("The downloaded package does not match its published checksum, so it was not installed.");
                 }
             }
 
             phase = UpdatePhase.Extraction;
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: phase, checksum: DiagnosticCheck.Verified);
             progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             var staging = Path.Combine(folder, "files");
             Directory.CreateDirectory(staging);
@@ -173,6 +191,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         }
         catch (Exception exception)
         {
+            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Failed, error: exception, updateStage: phase);
             TryDelete(folder);
             if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested) throw;
             throw new UpdateStageException(phase, exception.Message, true, exception);
@@ -183,11 +202,18 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     public static async Task InstallWithProgressAsync(UpdateTarget target, string staging, IProgress<UpdateProgress> progress, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        var diagnosticOperation = DiagnosticsJournal.Session.Begin("Update");
+        DiagnosticsJournal.Session.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: UpdatePhase.Installation);
         progress.Report(new UpdateProgress(0, null) { Phase = UpdatePhase.Installation });
-        try { await Task.Run(() => Install(target, staging), CancellationToken.None); }
+        try
+        {
+            await Task.Run(() => Install(target, staging), CancellationToken.None);
+            DiagnosticsJournal.Session.Record(diagnosticOperation, DiagnosticStage.Completed, DiagnosticOutcome.Confirmed, updateStage: UpdatePhase.Installation);
+        }
         catch (Exception exception)
         {
             var safe = !File.Exists(UpdateRestart.ReceiptPath(target));
+            DiagnosticsJournal.Session.Record(diagnosticOperation, DiagnosticStage.Failed, error: exception, updateStage: safe ? UpdatePhase.Installation : UpdatePhase.Recovery);
             throw new UpdateStageException(safe ? UpdatePhase.Installation : UpdatePhase.Recovery,
                 exception.Message, safe, exception);
         }
@@ -270,9 +296,17 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// <summary>Starts the installed version; the caller then closes this one.</summary>
     public static void StartInstalled(UpdateTarget target)
     {
-        try { UpdateRestart.Start(target); }
+        var operation = DiagnosticsJournal.Session.Begin("Update");
+        try
+        {
+            UpdateRestart.Start(target);
+            DiagnosticsJournal.Session.Record(operation, DiagnosticStage.Executing, updateStage: UpdatePhase.Restart,
+                restart: DiagnosticRecovery.Requested);
+        }
         catch (Exception exception) when (exception is IOException or System.ComponentModel.Win32Exception)
         {
+            DiagnosticsJournal.Session.Record(operation, DiagnosticStage.Failed, error: exception, updateStage: UpdatePhase.Restart,
+                restart: DiagnosticRecovery.Failed);
             var path = UpdateRestart.ReceiptPath(target);
             using var ownership = UpdateRestart.OwnTransaction(path);
             var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;

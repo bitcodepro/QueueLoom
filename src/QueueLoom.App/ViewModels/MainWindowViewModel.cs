@@ -122,7 +122,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         ILogger<MainWindowViewModel>? logger = null,
         IMonitorAlertService? alerts = null,
         IDeadLetterHistoryStore? history = null,
-        IScheduledResendStore? scheduledResends = null)
+        IScheduledResendStore? scheduledResends = null,
+        DiagnosticsJournal? diagnostics = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -136,6 +137,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _notifications = notifications;
         _theme = theme;
         _logger = logger ?? NullLogger<MainWindowViewModel>.Instance;
+        InitializeDiagnostics(diagnostics);
 
         Navigation =
         [
@@ -448,6 +450,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         CancellationToken cancellationToken,
         bool allowCancellation = true)
     {
+        var diagnosticOperation = Diagnostics.Begin(operation, _connectedProfile?.Provider ?? SelectedProfile?.Provider,
+            _connectedProfile?.EndpointDisplay ?? SelectedProfile?.Namespace, SelectedEntity?.Reference.DisplayName);
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _operationId = Guid.NewGuid();
         _currentOperationCancellation = allowCancellation ? operationCancellation : null;
@@ -457,7 +461,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         StatusText = operation;
         try
         {
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing);
             await action(operationCancellation.Token).ConfigureAwait(true);
+            // Wrapper completion can include a dismissed confirmation or handled partial failure.
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Completed);
             if (StatusText == operation)
             {
                 // The action reported nothing more specific; do not leave a stale "in progress" text.
@@ -466,11 +473,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         }
         catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
         {
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Cancelled);
             StatusText = "Operation cancelled";
             AddActivity("Warning", operation, "Cancelled; completed changes are retained. Inspect the saved operation result.");
         }
         catch (Exception exception)
         {
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Failed,
+                exception is DeliveryRejectedException ? DiagnosticOutcome.Rejected : DiagnosticOutcome.Unknown, error: exception);
             _logger.LogError(exception, "{Operation} failed", operation);
             ErrorText = SanitizeException(exception);
             StatusText = $"{operation} failed";
@@ -502,15 +512,19 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     /// </summary>
     private async Task RunGuardedAsync(string operation, Func<CancellationToken, Task> action, CancellationToken cancellationToken)
     {
+        var diagnosticOperation = Diagnostics.Begin(operation, _connectedProfile?.Provider, _connectedProfile?.EndpointDisplay);
         try
         {
             await action(cancellationToken).ConfigureAwait(true);
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Completed);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Cancelled);
         }
         catch (Exception exception)
         {
+            Diagnostics.Record(diagnosticOperation, DiagnosticStage.Failed, error: exception);
             _logger.LogError(exception, "{Operation} failed", operation);
             ErrorText = SanitizeException(exception);
             AddActivity("Error", operation, ErrorText);
@@ -639,6 +653,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
         var commands = new[]
         {
+            ExportDiagnosticsCommand,
             AddEnvironmentCommand,
             EditEnvironmentCommand,
             DeleteEnvironmentCommand,

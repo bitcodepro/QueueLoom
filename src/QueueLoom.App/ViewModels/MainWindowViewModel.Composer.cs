@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using QueueLoom.App.Models;
 using QueueLoom.App.Serialization;
+using QueueLoom.App.Services;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 
@@ -355,9 +356,11 @@ public sealed partial class MainWindowViewModel
         }
         else
         {
+            var diagnosticSend = Diagnostics.Begin("Sending message", profile.Provider, profile.EndpointDisplay, destination.Reference.DisplayName);
             await _workspace.SendMessageAsync(
                 new SendMessageRequest(destination.Reference, draft),
                 cancellationToken).ConfigureAwait(true);
+            Diagnostics.Record(diagnosticSend, DiagnosticStage.Completed, DiagnosticOutcome.Confirmed);
             StatusText = "Message accepted";
             AddActivity(
                 "Success",

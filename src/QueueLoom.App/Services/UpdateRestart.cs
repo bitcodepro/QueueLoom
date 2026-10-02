@@ -6,6 +6,13 @@ namespace QueueLoom.App.Services;
 /// <summary>An update handoff runs without Avalonia or application storage. Only its own files are removed.</summary>
 public static class UpdateRestart
 {
+    public enum RecordedRecovery { StartupAcknowledged, Restored }
+    public static event Action<RecordedRecovery>? RecoveryRecorded;
+    private static void RecordRecovery(RecordedRecovery fact)
+    {
+        try { RecoveryRecorded?.Invoke(fact); }
+        catch { /* Optional diagnostics must never interrupt recovery. */ }
+    }
     public const string ReceiptName = ".queueloom-update.json";
     public const string DownloadMarker = ".queueloom-download";
     public sealed record Entry(string Current, string? Backup);
@@ -92,6 +99,7 @@ public static class UpdateRestart
         File.Move(ready + ".tmp", ready, overwrite: true);
         _startupReceipt = null;
         _startupId = null;
+        RecordRecovery(RecordedRecovery.StartupAcknowledged);
         return true;
     }
 
@@ -198,6 +206,7 @@ public static class UpdateRestart
         }
         if (!File.Exists(receipt.Target.Executable))
             throw new IOException("Recovery did not restore a runnable previous executable. Keep the update receipt and remaining files.");
+        RecordRecovery(RecordedRecovery.Restored);
     }
 
     public static async Task CleanAsync(Receipt receipt, string path, TimeSpan timeout)
