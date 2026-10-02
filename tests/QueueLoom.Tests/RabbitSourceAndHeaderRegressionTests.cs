@@ -14,6 +14,25 @@ namespace QueueLoom.Tests;
 public sealed class RabbitSourceAndHeaderRegressionTests
 {
     [Theory]
+    [InlineData("non-table")]
+    [InlineData("missing-name")]
+    [InlineData("invalid-text")]
+    public void NewestDeath_InvalidAttributionNeverFallsBackToAnOlderDeath(string malformed)
+    {
+        object? newest = malformed switch
+        {
+            "non-table" => null,
+            "missing-name" => new Dictionary<string, object?>(),
+            _ => new Dictionary<string, object?> { ["queue"] = new byte[] { 255 } }
+        };
+        var properties = new BasicProperties { Headers = new Dictionary<string, object?>
+        {
+            ["x-death"] = new List<object?> { newest, new Dictionary<string, object?> { ["queue"] = "orders"u8.ToArray() } }
+        } };
+        Assert.Null(RabbitMqMessageMapper.DeadLetteredFrom(properties));
+    }
+
+    [Theory]
     [InlineData("deleted")]
     [InlineData("reconfigured")]
     [InlineData("shared")]

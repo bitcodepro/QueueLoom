@@ -85,6 +85,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        RequireManagementWriteAccess(profile);
         RecordOperationIntent($"Create {QueueKindName} started", definition.Name, null);
         await _workspace.CreateQueueAsync(definition, cancellationToken).ConfigureAwait(true);
         await RefreshAfterQueueChangeAsync(cancellationToken).ConfigureAwait(true);
@@ -107,6 +108,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        RequireManagementWriteAccess(profile);
         RecordOperationIntent($"Change {QueueKindName} started", queue, selected.Reference);
         await _workspace.UpdateQueueSettingsAsync(queue, settings, cancellationToken).ConfigureAwait(true);
         await RefreshAfterQueueChangeAsync(cancellationToken).ConfigureAwait(true);
@@ -135,6 +137,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
+        RequireManagementWriteAccess(profile);
         RecordOperationIntent($"Delete {QueueKindName} started", entity.Name, entity.Reference);
         await _workspace.DeleteQueueAsync(entity.Name, cancellationToken).ConfigureAwait(true);
         await RefreshAfterQueueChangeAsync(cancellationToken).ConfigureAwait(true);
@@ -145,13 +148,21 @@ public sealed partial class MainWindowViewModel
     private (ServiceBusProfile Profile, QueueManagementCapabilities Capabilities) RequireQueueManagement()
     {
         var profile = _connectedProfile ?? throw new InvalidOperationException("Connect to an environment first.");
-        profile.EnsureQueueManagementAllowed();
-        if (!CanWrite)
-        {
-            throw new InvalidOperationException("Unlock write access first.");
-        }
+        RequireManagementWriteAccess(profile);
         return (profile, _workspace.QueueManagement ?? throw new InvalidOperationException(
             $"{profile.Provider.DisplayName()} queues cannot be managed from QueueLoom."));
+    }
+
+    private void RequireManagementWriteAccess(ServiceBusProfile expectedProfile)
+    {
+        var current = _connectedProfile ?? throw new InvalidOperationException("Connect to an environment first.");
+        if (current.Id != expectedProfile.Id || _workspace.ConnectedProfileId != expectedProfile.Id)
+            throw new InvalidOperationException("The connected environment changed. Reopen the dialog and review the change.");
+        current.EnsureQueueManagementAllowed();
+        if (!CanWrite)
+        {
+            throw new InvalidOperationException("Write access is unavailable or expired. Unlock writes again and review the change.");
+        }
     }
 
     private async Task RefreshAfterQueueChangeAsync(CancellationToken cancellationToken) =>

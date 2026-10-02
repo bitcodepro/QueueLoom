@@ -158,8 +158,9 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 $"Queue '{queue.Name}' has no dead-letter queue. Set a dead-letter exchange on it (x-dead-letter-exchange or a policy) " +
                 "and bind a queue to that exchange.");
         }
-        return Readable(deadLetterQueue, source, subQueue,
-            belongsTo: _index.IsSharedDeadLetterQueue(deadLetterQueue.Name) ? queue.Name : null);
+        // Retained dead letters outlive their source queue and its current dead-letter configuration.
+        // Current topology cannot prove exclusive ownership of the physical dead-letter queue.
+        return Readable(deadLetterQueue, source, subQueue, belongsTo: queue.Name);
     }
 
     private RabbitChannel Readable(RabbitQueueInfo queue, ServiceBusEntityReference source, ServiceBusSubQueue subQueue, string? belongsTo) =>

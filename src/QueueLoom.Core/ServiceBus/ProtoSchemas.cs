@@ -243,7 +243,10 @@ public sealed class ProtoSchemaSet
     private static void ReadMessage(byte[] data, string scope, List<ProtoMessageType> messages, List<ProtoEnumType> enums)
     {
         var fields = Wire.Fields(data).ToArray();
-        var name = fields.Where(field => field.Number == 1).Select(field => Encoding.UTF8.GetString(field.Bytes!)).First();
+        var name = fields.Where(field => field.Number == 1 && field.Bytes is not null)
+            .Select(field => Encoding.UTF8.GetString(field.Bytes!)).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(name))
+            throw new InvalidDataException("A descriptor message is missing its name.");
         var fullName = scope.Length == 0 ? name : $"{scope}.{name}";
         var isMapEntry = fields.Where(field => field.Number == 7 && field.Bytes is not null)
             .Any(options => Wire.Fields(options.Bytes!).Any(option => option.Number == 7 && option.Varint == 1));
@@ -523,11 +526,12 @@ internal sealed class ProtoTextParser(string text)
     private int ParseNumber()
     {
         var token = Next();
-        return token.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-            ? Convert.ToInt32(token[2..], 16)
-            : int.TryParse(token, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var number)
-                ? number
-                : throw new ProtoSchemaException($"Expected a field number, not '{token}'.");
+        var hexadecimal = token.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+        if (int.TryParse(hexadecimal ? token[2..] : token,
+                hexadecimal ? System.Globalization.NumberStyles.AllowHexSpecifier : System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var number) && number >= 0)
+            return number;
+        throw new ProtoSchemaException($"Expected a field number, not '{token}'.");
     }
 
     /// <summary>Skips "[deprecated = true]" after a field, then its semicolon.</summary>

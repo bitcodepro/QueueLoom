@@ -47,6 +47,8 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            await using var transaction = await CrossProcessFileLock.AcquireAsync(paths.SettingsFile + ".lock", cancellationToken)
+                .ConfigureAwait(false);
             var current = await ReadAsync(cancellationToken).ConfigureAwait(false);
             var updated = update(current).Normalize();
             var document = JsonSerializer.Serialize(

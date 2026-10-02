@@ -5,6 +5,14 @@ namespace QueueLoom.Tests;
 
 public sealed class MalformedSchemaRegressionTests
 {
+    [Fact]
+    public void ValidNegativeEnumValues_ContinueToLoad()
+    {
+        var schema = ProtoSchemaSet.FromProtoFiles(
+            [("valid.proto", "enum State { UNKNOWN = 0; FAILED = -1; } message Valid { State state = 1; }")]);
+        Assert.Equal("FAILED", schema.FindEnum("State")!.Values[-1]);
+    }
+
     [Theory]
     [InlineData("0x")]
     [InlineData("0xGG")]

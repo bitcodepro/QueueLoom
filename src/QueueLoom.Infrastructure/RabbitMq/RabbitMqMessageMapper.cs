@@ -10,6 +10,8 @@ namespace QueueLoom.Infrastructure.RabbitMq;
 
 internal static class RabbitMqMessageMapper
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     /// <summary>AMQP "type" and "app-id" have no Service Bus equivalent; they travel as properties with these names.</summary>
     internal const string TypeProperty = "amqp-type";
     internal const string AppIdProperty = "amqp-app-id";
@@ -67,7 +69,7 @@ internal static class RabbitMqMessageMapper
             deadLetterReason: death?.Reason,
             deadLetterErrorDescription: death is null
                 ? null
-                : $"From {death.Queue}" + (death.Count > 1 ? $", {death.Count} times" : string.Empty) +
+                : $"From {death.Queue ?? "(unknown queue)"}" + (death.Count > 1 ? $", {death.Count} times" : string.Empty) +
                   (death.Time is { } time ? $", at {time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : string.Empty))
         { HasSequenceNumber = false };
     }
@@ -130,7 +132,8 @@ internal static class RabbitMqMessageMapper
 
     private static MessageApplicationProperty ToProperty(string name, object? value) => value switch
     {
-        byte[] bytes => new MessageApplicationProperty(name, ApplicationPropertyType.String, Encoding.UTF8.GetString(bytes)),
+        byte[] bytes => ByteProperty(name, bytes),
+        string text => new MessageApplicationProperty(name, ApplicationPropertyType.String, text),
         bool flag => new MessageApplicationProperty(name, ApplicationPropertyType.Boolean, flag ? "true" : "false"),
         int number => new MessageApplicationProperty(name, ApplicationPropertyType.Int32, number.ToString(CultureInfo.InvariantCulture)),
         long number => new MessageApplicationProperty(name, ApplicationPropertyType.Int64, number.ToString(CultureInfo.InvariantCulture)),
@@ -143,6 +146,18 @@ internal static class RabbitMqMessageMapper
         _ => new MessageApplicationProperty(name, ApplicationPropertyType.String, JsonSerializer.Serialize(ToJsonValue(value)))
     };
 
+    private static MessageApplicationProperty ByteProperty(string name, byte[] bytes)
+    {
+        try
+        {
+            return new MessageApplicationProperty(name, ApplicationPropertyType.String, StrictUtf8.GetString(bytes));
+        }
+        catch (DecoderFallbackException)
+        {
+            return new MessageApplicationProperty(name, ApplicationPropertyType.Binary, Convert.ToBase64String(bytes));
+        }
+    }
+
     private static object? ToJsonValue(object? value) => value switch
     {
         byte[] bytes => Encoding.UTF8.GetString(bytes),
@@ -152,7 +167,7 @@ internal static class RabbitMqMessageMapper
         _ => value
     };
 
-    private sealed record Death(string Queue, string Reason, long Count, DateTimeOffset? Time, string? RoutingKey);
+    private sealed record Death(string? Queue, string Reason, long Count, DateTimeOffset? Time, string? RoutingKey);
 
     private static Death? FirstDeath(IDictionary<string, object?> headers)
     {
@@ -161,20 +176,25 @@ internal static class RabbitMqMessageMapper
             return null;
         }
 
-        foreach (var entry in entries.OfType<IDictionary<string, object?>>())
+        foreach (var item in entries)
         {
-            string? Text(string key) => entry.TryGetValue(key, out var item) ? item switch
+            // A malformed newest entry cannot establish ownership; never infer it from an older death.
+            if (item is not IDictionary<string, object?> entry) return null;
+            string? Text(string key)
             {
-                byte[] bytes => Encoding.UTF8.GetString(bytes),
-                string text => text,
-                _ => null
-            } : null;
+                if (!entry.TryGetValue(key, out var item)) return null;
+                try
+                {
+                    return item switch { byte[] bytes => StrictUtf8.GetString(bytes), string text => text, _ => null };
+                }
+                catch (DecoderFallbackException) { return null; }
+            }
 
             var routingKeys = entry.TryGetValue("routing-keys", out var keys) && keys is IEnumerable<object?> list
                 ? list.Select(key => key is byte[] bytes ? Encoding.UTF8.GetString(bytes) : key?.ToString()).FirstOrDefault()
                 : null;
             return new Death(
-                Text("queue") ?? "(unknown queue)",
+                Text("queue"),
                 Text("reason") switch
                 {
                     "rejected" => "Rejected by a consumer",

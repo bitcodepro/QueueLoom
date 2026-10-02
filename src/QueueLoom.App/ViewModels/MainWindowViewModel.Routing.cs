@@ -81,6 +81,7 @@ public sealed partial class MainWindowViewModel
             token => _workspace.GetTopicRulesAsync(topic, token),
             async (subscription, rule, replace, token) =>
             {
+                RequireManagementWriteAccess(profile);
                 var reference = ServiceBusEntityReference.Subscription(topic, subscription);
                 var text = rule.Name.Length == 0 || rule.Kind == RuleFilterKind.SnsFilterPolicy ? rule.FilterText : $"{rule.DisplayName}: {rule.FilterText}";
                 RecordOperationIntent(replace ? "Change subscription rule started" : "Add subscription rule started", text, reference);
@@ -90,6 +91,7 @@ public sealed partial class MainWindowViewModel
             },
             async (subscription, rule, token) =>
             {
+                RequireManagementWriteAccess(profile);
                 var reference = ServiceBusEntityReference.Subscription(topic, subscription);
                 RecordOperationIntent("Delete subscription rule started", rule.DisplayName, reference);
                 await _workspace.DeleteSubscriptionRuleAsync(topic, subscription, rule, token).ConfigureAwait(true);

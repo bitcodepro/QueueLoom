@@ -24,8 +24,12 @@ public sealed class SettingsTransactionRegressionTests
             await WaitFor(first + ".read", a); // A has read the old document and cannot commit until released.
             b = Start("interval", second);
             await WaitFor(second + ".started", b);
-            // Give B a chance to finish while A owns its transaction. A correct store blocks B until A commits.
-            await Task.WhenAny(b.WaitForExitAsync(), Task.Delay(TimeSpan.FromSeconds(2)));
+            // Witness A's cross-process ownership while its update callback is held, without a scheduling delay.
+            Assert.ThrowsAny<IOException>(() =>
+            {
+                using var competing = new FileStream(paths.SettingsFile + ".lock", FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite, FileShare.None);
+            });
             await File.WriteAllTextAsync(release, "release");
             await Task.WhenAll(a.WaitForExitAsync(), b.WaitForExitAsync()).WaitAsync(TimeSpan.FromSeconds(15));
             Assert.Equal(0, a.ExitCode);
