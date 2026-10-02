@@ -1,0 +1,32 @@
+# Five findings: regression evidence
+
+Baseline: `63c8ae18aa0fd0e24d0b0373783d0449323d8677` (main, v1.5.10).
+Tests were added and executed before any production code changed. Local fixtures use temporary storage, AMQP interface fakes and independent child processes. Broker integration tests create a unique virtual host in the CI RabbitMQ container. No user broker or data is used.
+
+| Finding | Regression | Red result on unchanged production code |
+| --- | --- | --- |
+| Retained RabbitMQ dead-letter attribution | `SourcePurge_LeavesForeignAndUnattributedMessages` | Deleted/reconfigured source cases expected 1 deletion, got 5; current shared-topology control passed. Fixtures include foreign, absent attribution, missing queue name and an older matching death after a newer foreign death. |
+| RabbitMQ headers | `Headers_RoundTripUnchangedThroughDraftAndBackup` | Invalid UTF-8 `[255]` became `[239,191,189]`; two other malformed sequences changed too. Ordinary byte-text controls also exposed a separate string-header quoting defect: an ordinary string gained JSON quote bytes. Assertions verify draft resend and persisted backup restoration. |
+| Expired management grants | `QueueManagement_ExpiryInsideDialogMakesZeroMutations`, `Routing_ExpiryInsideEditorOrConfirmationMakesZeroMutations` | All 3 queue and 3 routing cases recorded provider mutations after the expiry timestamp was set in an open dialog/editor/confirmation, while the provider still had read/write mode. Expected mutation lists were empty. |
+| Settings transactions | `TwoProcesses_PreserveBothIndependentSettingsUpdates`, `ContendingStore_CancellationDoesNotRunTheUpdateOrOverwriteSettings` | Process A holds its read/modify transaction while B updates another setting: expected interval 321, got 60. A second store ran its callback instead of waiting and observing cancellation. |
+| Malformed schemas | `InvalidHexNumbers_AreControlledSchemaErrors`, `DescriptorWithoutMessageName_IsAControlledSchemaError`, desktop import, real MCP startup and headless UI import cases | Missing descriptor name leaked `InvalidOperationException`; invalid/oversized hex leaked `FormatException`/`OverflowException`; bare `0x` leaked `ArgumentOutOfRangeException`. Desktop and UI imports escaped their handlers. MCP descriptor/overflow processes exited before initialization; the invalid-hex startup timed out. |
+
+Local red results: `five-findings-red.trx` (26 failed, 1 passed) and `five-findings-ui-red.trx` (3 failed). Logs and TRX files are kept in the task evidence directory on E:, outside the repository.
+
+The locked restore succeeded with the existing .NET 10.0.401 SDK and package cache on E:, with NuGet vulnerability checking enabled. Local Docker is unavailable; actual isolated broker execution is delegated to the existing GitHub Actions emulator job. Integration tests compile locally; compilation is not broker execution.
+
+The unchanged production tree was published as commit `dd979d6ae77a6e6e392a3e02502c27df6305a49a` in [PR #53](https://github.com/bitcodepro/QueueLoom/pull/53), using the authenticated bitcodepro connector. Its tree `14bbe07d65ce2010695bea57ccf116d452e841c9` exactly matches the locally tested red tree. Local Git's unrelated Forsbeatz credential was not changed.
+
+[Red CI run 37022475013](https://github.com/bitcodepro/QueueLoom/actions/runs/37022475013) reproduced failures on Windows, Linux and macOS. Its isolated emulator job passed the 59 existing integration tests and failed all 3 new RabbitMQ cases: both topology-change browses returned own/foreign/unattributed messages instead of only own, and binary resend changed bytes. All 5 emulator UI tests passed.
+
+The original 27 unit/process regressions passed after repair (`five-findings-green.trx`), with unchanged assertions. The first full local Release run passed 841 unit tests and 56 UI tests (including all 3 original failing UI imports); 62 broker integration cases were discovered and skipped locally because there is no Docker. The full run's log retains all counts; its shared TRX filename was overwritten between projects, so final validation uses generated per-run names.
+
+Final diff review found a further attribution edge case: a malformed newest x-death entry was skipped in favor of an older matching entry. `NewestDeath_InvalidAttributionNeverFallsBackToAnOlderDeath(non-table)` first failed (`orders` instead of null), with 2 malformed-name controls passing. The repair now refuses this inference and preserves missing/invalid attribution. The settings process test additionally witnesses the transaction's exclusive file ownership while A's callback is held, replacing its timing window with an explicit lock assertion; all original preservation assertions remain.
+
+A further review control confirmed that valid negative enum values still load (`ValidNegativeEnumValues_ContinueToLoad`, 1 passed); the enum parser handles the sign separately. No additional parser change was needed for that concern.
+
+Repairs use the existing Binary property/backup format and existing CrossProcessFileLock. No backup schema migration or settings reset is needed. Malformed Protobuf is rejected at the parser boundary with ProtoSchemaException; existing desktop/MCP handlers retain the last loaded valid schema. Queue and routing callbacks revalidate the connected environment, management permission and current grant before recording or invoking a mutation. Source-scoped RabbitMQ operations require the newest x-death queue even when topology currently shows one source; browsing the physical DLQ as an active queue still shows its full contents.
+
+Final local Release validation passed 844 unit tests and 56 UI tests; all 62 integration tests remained skipped locally. The Lab locked restore and Release build passed with no warnings or errors. Windows self-contained single-file publication and ZIP/SHA-256 packaging passed. The packaged executable passed MCP initialization/read-only discovery and the Windows updater smoke test (delayed exit, paths with spaces, confirmed GUI startup, owned-file cleanup and user-file preservation). Evidence is in `full-release-final.log`, per-project TRX files, `lab-release.log`, `windows-publish.log`, `windows-package.log`, `windows-mcp-smoke.log` and `windows-update-smoke.log` on E:.
+
+Exact-commit cross-platform CI, isolated broker execution, all four packages and post-merge release results are reported on PR #53 after execution.

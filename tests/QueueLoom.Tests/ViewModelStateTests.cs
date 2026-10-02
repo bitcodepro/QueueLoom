@@ -1225,6 +1225,7 @@ public sealed partial class ViewModelStateTests
 
     private sealed class FakeDialogService : IUserDialogService
     {
+        public Action? BeforeConfirm { get; set; }
         public bool ConfirmResult { get; set; }
 
         public ProfileEditorResult? EditResult { get; set; }
@@ -1253,6 +1254,7 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             Confirmations.Add((title, message, isDangerous, requiredText));
+            BeforeConfirm?.Invoke();
             return Task.FromResult(ConfirmResult);
         }
 
