@@ -88,6 +88,29 @@ public sealed class StaticRoutingRegressionTests
     }
 
     [Theory]
+    [InlineData(RoutingService.PubSub, ApplicationPropertyType.Int32, "007", "attributes.code = \"007\"")]
+    [InlineData(RoutingService.Sns, ApplicationPropertyType.Boolean, "True", "{\"code\":[\"True\"]}")]
+    public async Task Dialog_DuplicateAttributeLinesUseTheLastOccurrence(RoutingService service, ApplicationPropertyType type, string text, string expression)
+    {
+        var draft = new MessageDraft(EditableMessageBody.Empty, applicationProperties: [new("code", type, text)]);
+        var rule = new SubscriptionRule("filter", service == RoutingService.Sns ? RuleFilterKind.SnsFilterPolicy : RuleFilterKind.PubSubFilter) { Expression = expression };
+        SubscriptionRules[] rules = [new("sub", [rule]) { Service = service }];
+        await using var vm = new TopicRoutingViewModel("events", "Fake", false, "", Services(
+            _ => Task.FromResult<IReadOnlyList<SubscriptionRules>>(rules)), draft, "Draft", service);
+        await vm.LoadAsync();
+        var originalLine = vm.TestProperties;
+        Assert.True(vm.Subscriptions[0].Receives);
+        vm.TestProperties += "\ncode = 'changed'";
+        vm.Check();
+        Assert.False(vm.HasError);
+        Assert.True(vm.Subscriptions[0].Skips, "The later explicit attribute edit must override the earlier original line.");
+        vm.TestProperties += "\n" + originalLine;
+        vm.Check();
+        Assert.False(vm.HasError);
+        Assert.True(vm.Subscriptions[0].Receives, "Restoring the original line last must retain its exact original text.");
+    }
+
+    [Theory]
     [InlineData(false, false, RoutingOutcome.Skips)]
     [InlineData(false, true, RoutingOutcome.Receives)]
     [InlineData(true, false, RoutingOutcome.Skips)]
