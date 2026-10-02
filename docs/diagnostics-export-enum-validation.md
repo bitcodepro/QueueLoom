@@ -1,0 +1,22 @@
+# Concurrent export and signed enum regression evidence
+
+Baseline: main `5ec5fdc8b0858490eeb6bf23c257c2a8613ebd0a` (v1.5.11), after merged #53. This is a separate change in [PR #54](https://github.com/bitcodepro/QueueLoom/pull/54). The retained source copy's complete tracked tree was verified against main's tree `50fdfa190f3ddd37395fede61b335138ac810f89`; unrelated retained checkouts were not edited.
+
+Tests-only commit `282a90a3e1e1f3ae12fc09ffc11c21d12666b326` has unchanged production code. Its [red CI run 37031302151](https://github.com/bitcodepro/QueueLoom/actions/runs/37031302151) failed on Windows, Linux and macOS without a rerun. The isolated emulator job passed.
+
+| Defect | Red evidence |
+| --- | --- |
+| Concurrent distinct diagnostics exports | Linux job `110918519782` failed both the ordinary task race and the deterministic independent-process race. The latter reported `Distinct exporters returned [saved, saved]; destination retained 'Report from first', so another successful frozen preview was overwritten.` The two workers supplied different report and JSON bytes. |
+| Signed enum minimum | `SignedInt32Boundaries_LoadWithExactValues` failed for `-0x80000000`, `-0X80000000` and `-2147483648` locally and in CI. The hexadecimal failures regress #53; the decimal failure predates #53. Maxima, ordinary negatives, malformed/overflow controls and field-number rejections passed locally (29 passed, 3 failed). |
+
+The Linux witness compiles a small `LD_PRELOAD` interposer using the runner's C compiler. It pauses the actual libc `rename()` call until both independent exporters have passed .NET's destination check, then releases both to perform the real rename. It does not mock file content or the rename result. It is loaded only into those two disposable fixture processes. The same production `DiagnosticsPreview.cs` is compiled into the fixture. Genuine task races, independent process races and separate-path saves also run without the interposer. All original assertions remain after the repair.
+
+The exporter now publishes complete staging bytes with a native no-replace move on Windows and POSIX `link()` on Linux/macOS. [POSIX specifies atomic link creation and rejection of an existing new path](https://pubs.opengroup.org/onlinepubs/9699919799/functions/link.html). No process-only lock, destination deletion or unsafe fallback is used. Filesystems without Unix hard-link support fail safely. The per-call internal publication seam additionally arranges cancellation, I/O failure, external creation, and replacement after publication while preserving the real staging and cleanup implementation.
+
+Coverage checks the winner's exact UTF-8 report/JSON bytes, valid ZIP entries, frozen previews, different destinations, existing files/directories, a dangling Unix symlink, Unicode filenames, pre-cancellation, publication cancellation/failure, unrelated temporary-file preservation, and replacement of the destination by another actor. Unix permission denial after publication verifies the documented cleanup-error case: saving throws but the complete ZIP remains. Cancellation after publication likewise retains the complete ZIP.
+
+Enum parsing now handles an unsigned magnitude separately from its sign and int32 range. Field-number parsing is unchanged. The [proto3 specification permits signed hexadecimal integer literals and enum values](https://protobuf.dev/reference/protobuf/proto3-spec/). Boundary tests retain both int32 extrema in decimal/hex, ordinary negatives, malformed hex and values outside the signed range as controlled `ProtoSchemaException` errors.
+
+Local locked restore passed with vulnerability checking enabled. Targeted regressions and existing diagnostics/Protobuf controls passed (66 tests). The full Release build passed with zero warnings/errors; the full UI suite passed all 56 tests. After extending the publication failure/cancellation matrix to preserve a foreign destination and a foreign staging filename, the final full unit run passed all 887 tests. The 62 broker integration tests compile but are skipped locally because no emulators are configured; the existing CI emulator job executes them in isolated containers.
+
+Local logs and per-project TRX evidence are retained outside the repository in `concurrent-export-20261002/evidence` on E:. Cross-platform final CI and package verification are reported on the PR at its exact final head. Merge and release remain with parent review.

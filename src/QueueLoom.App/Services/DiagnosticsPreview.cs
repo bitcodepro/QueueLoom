@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace QueueLoom.App.Services;
@@ -16,7 +18,12 @@ public sealed class DiagnosticsPreview
         Report = report; Json = json;
     }
 
-    public async Task SaveAsync(string destination, CancellationToken token = default)
+    public Task SaveAsync(string destination, CancellationToken token = default) =>
+        SaveAsync(destination, token, PublishCreateOnly);
+
+    // Per-call publication seam: tests can arrange external creation/replacement and I/O failures
+    // after a complete ZIP has been staged, without shared hooks or changing production publication.
+    internal async Task SaveAsync(string destination, CancellationToken token, Action<string, string> publish)
     {
         token.ThrowIfCancellationRequested();
         var full = Path.GetFullPath(destination);
@@ -40,14 +47,39 @@ public sealed class DiagnosticsPreview
                 await file.FlushAsync(token);
             }
             token.ThrowIfCancellationRequested();
-            // Atomic create only: even a save-picker overwrite confirmation must never replace an unrelated file.
-            File.Move(staging, full, overwrite: false);
+            publish(staging, full);
         }
         finally
         {
             if (ownsStaging && File.Exists(staging)) File.Delete(staging);
         }
     }
+
+    internal static void PublishCreateOnly(string staging, string destination)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // Windows' move is a native no-replace operation. Unix File.Move instead checks
+            // existence before rename(), which can overwrite a file created between those calls.
+            File.Move(staging, destination, overwrite: false);
+            return;
+        }
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            throw new PlatformNotSupportedException("Create-only diagnostics publication is unavailable on this platform.");
+
+        // POSIX link() creates the destination atomically and fails if any entry already exists.
+        // The same-directory staging file is complete and closed; unlinking only its temporary
+        // name afterward leaves the ZIP intact. Do not fall back to check-then-rename or copying.
+        if (Link(staging, destination) != 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            throw new IOException("Could not publish diagnostics without replacing a destination. " +
+                "Choose a new filename on a local filesystem that supports hard links.", new Win32Exception(error));
+        }
+    }
+
+    [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern int Link(string existing, string destination);
 
     private static async Task Write(ZipArchive archive, string name, string content, CancellationToken token)
     {

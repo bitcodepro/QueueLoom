@@ -516,8 +516,8 @@ internal sealed class ProtoTextParser(string text)
             {
                 Next();
             }
-            var number = ParseNumber();
-            values.TryAdd(negative ? -number : number, token);
+            var number = ParseEnumNumber(negative);
+            values.TryAdd(number, token);
             SkipFieldOptions();
         }
         return new ProtoEnumType(scope.Length == 0 ? name : $"{scope}.{name}", values);
@@ -532,6 +532,21 @@ internal sealed class ProtoTextParser(string text)
                 System.Globalization.CultureInfo.InvariantCulture, out var number) && number >= 0)
             return number;
         throw new ProtoSchemaException($"Expected a field number, not '{token}'.");
+    }
+
+    private int ParseEnumNumber(bool negative)
+    {
+        var token = Next();
+        var hexadecimal = token.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+        // The magnitude of int.MinValue is one greater than int.MaxValue. Parse it unsigned
+        // before applying the separately consumed sign; hex parsing must not reinterpret bits
+        // as a signed number. Field numbers retain their independent nonnegative validation.
+        if (ulong.TryParse(hexadecimal ? token[2..] : token,
+                hexadecimal ? System.Globalization.NumberStyles.AllowHexSpecifier : System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var magnitude) &&
+            magnitude <= (negative ? 2147483648UL : int.MaxValue))
+            return (int)(negative ? -(long)magnitude : (long)magnitude);
+        throw new ProtoSchemaException($"Expected an int32 enum value, not '{(negative ? "-" : string.Empty)}{token}'.");
     }
 
     /// <summary>Skips "[deprecated = true]" after a field, then its semicolon.</summary>
