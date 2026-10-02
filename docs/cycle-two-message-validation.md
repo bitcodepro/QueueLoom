@@ -30,8 +30,16 @@ KafkaWorkspace and failed. After the first sparse-paging correction, the single
 partition timestamp control passed while the multipart witness still failed (4 of 6
 records); the final partition-head merge makes both pass.
 
-All 44 focused unit assertions pass after the correction, together with the actual
-UI command witness. The complete local Release run passes 1,026 unit tests and 62 UI
+Independent review also identified the JSON writer's own primitive-array buffer:
+the bounded output stream alone checked too late, at final flush/disposal. Six small
+100,000-item null/boolean/int/long/float/double tests inspect `BytesPending` and a
+counting output stream before disposal. All six fail both on the first implementation
+and with BodyDecoder restored from main. Token budget checks and periodic draining
+now bound this processing buffer to a 64 KiB window plus token overhead; strings and
+property names retain their separate pre-materialization checks.
+
+All 50 focused unit assertions pass after the correction, together with the actual
+UI command witness. The complete local Release run passes 1,032 unit tests and 62 UI
 tests, with all 65 broker integration tests compiled and skipped without endpoints.
 Solution and Lab Release builds complete with zero warnings and errors.
 The remaining controls include durable/scheduled RabbitMQ copies

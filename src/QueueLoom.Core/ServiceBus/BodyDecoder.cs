@@ -753,6 +753,22 @@ public static class BodyDecoder
 
         public void Write(Utf8JsonWriter writer, JsonElement schema, AvroReader reader)
         {
+            CheckOutputBudget(writer);
+            WriteValue(writer, schema, reader);
+            CheckOutputBudget(writer);
+            // The Stream overload buffers JSON inside the writer. Drain after each bounded token
+            // window, including primitive arrays, rather than waiting for Flush/Dispose at the end.
+            if (writer.BytesPending >= 64 * 1024) writer.Flush();
+        }
+
+        private static void CheckOutputBudget(Utf8JsonWriter writer)
+        {
+            if (writer.BytesCommitted + writer.BytesPending > MaximumDecodedBytes)
+                throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+        }
+
+        private void WriteValue(Utf8JsonWriter writer, JsonElement schema, AvroReader reader)
+        {
             switch (schema.ValueKind)
             {
                 case JsonValueKind.String:
