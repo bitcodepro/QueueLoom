@@ -966,6 +966,10 @@ public sealed partial class ViewModelStateTests
 
         public Guid? ConnectedProfileId { get; private set; }
 
+        public string? ConnectedNamespace { get; private set; }
+        public string? ConnectedConfigurationIdentity { get; private set; }
+        public MessagingProvider? ConnectedProvider { get; private set; }
+
         public ProfileAccessMode? ConnectedAccessMode { get; private set; }
 
         public async Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
@@ -989,6 +993,9 @@ public sealed partial class ViewModelStateTests
 
             ConnectionState = WorkspaceConnectionState.Connected;
             ConnectedProfileId = profile.Id;
+            ConnectedNamespace = profile.EndpointDisplay;
+            ConnectedConfigurationIdentity = ScheduledResend.IdentityFor(profile);
+            ConnectedProvider = profile.Provider;
             ConnectedAccessMode = profile.AccessMode;
         }
 

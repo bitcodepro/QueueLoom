@@ -72,7 +72,8 @@ public sealed partial class MainWindowViewModel
         }
         if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token).ConfigureAwait(true)) return;
         if (!CanWrite || ConnectedProfileId != profile.Id) throw new InvalidOperationException("Environment or write access changed.");
-        var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay).ConfigureAwait(true);
+            var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay,
+                ScheduledResend.IdentityFor(profile)).ConfigureAwait(true);
         await ExecuteReplayPlanAsync(plan, token).ConfigureAwait(true);
     }
 

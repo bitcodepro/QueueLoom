@@ -83,6 +83,8 @@ QueueLoom never deletes anything without a local backup, and it asks for confirm
 
 SQS, Pub/Sub and RabbitMQ cannot peek. To show messages, QueueLoom receives them and hands them back unchanged a moment later. This counts as one more receive (SQS) or delivery attempt (Pub/Sub); in RabbitMQ the message is only marked as redelivered, and quorum queues do not count it towards their delivery limit. In SQS FIFO queues it shows up to 10 messages per message group.
 
+SQS source-scoped dead-letter reads and deletion require an exact `DeadLetterQueueSourceArn`. Missing or empty attributes do not establish an origin: those messages stay in the physical DLQ and are excluded from source-scoped backups and settlement, including with emulators that omit the attribute. Open the physical SQS queue as an active queue to review unassigned messages; shared-DLQ counts cover the whole queue and can exceed the attributed rows. SNS subscription-scoped DLQ operations are blocked because the originating subscription cannot be identified.
+
 Kafka keeps messages after they are read, so QueueLoom reads them by offset, without a consumer group. Above the list you choose where reading starts: the oldest messages, the newest, a time (*2026-09-30 14:00*, or *2h* ago) or an offset (*1500*, or *2:1500* for partition 2); **Load next 100** continues from there. Kafka cannot delete single messages: **Delete** and **move** are not offered there, but **Backup and purge** still backs up and deletes the messages of a dead-letter topic.
 
 For local testing, point an environment at [LocalStack](https://localstack.cloud) (`http://localhost:4566`), the Pub/Sub emulator (`localhost:8085`), a `rabbitmq:4-management` container or an `apache/kafka` container.

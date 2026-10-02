@@ -26,7 +26,7 @@ public sealed partial class GooglePubSubWorkspace
             await foreach (var subscription in Subscriber.ListSubscriptionsAsync(new ProjectName(_projectId)).WithCancellation(token)
                                .ConfigureAwait(false))
             {
-                if (GooglePubSubTopology.TopicIdOf(subscription.Topic) != topic)
+                if (subscription.Topic != TopicResource(topic).ToString())
                 {
                     continue;
                 }

@@ -130,6 +130,8 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException("The environment configuration changed or this is a legacy schedule. Cancel it and schedule again after reviewing the destination.");
         }
 
+        DeadLetterResender.EnsureSafeMessageIds(_connectedProfile.Provider,
+            resend.Items.Select(entry => entry.ToResendItem()).ToArray(), resend.Mode);
         // Taken off the list before sending, so a crash in the middle never sends the same messages twice.
         SaveScheduled(ScheduledResends.Where(pending => pending != item).Select(pending => pending.Resend).ToArray());
         ScheduledResends.Remove(item);

@@ -43,7 +43,7 @@ public sealed partial class GooglePubSubWorkspace
             var subscription = new Subscription
             {
                 SubscriptionName = SubscriptionName.FromProjectSubscription(_projectId, definition.Name),
-                TopicAsTopicName = TopicName.FromProjectTopic(_projectId, topic)
+                TopicAsTopicName = TopicResource(topic)
             };
             Apply(subscription, definition.Settings);
             if (definition.CreateDeadLetterQueue)

@@ -27,6 +27,8 @@ public interface ILeasedMessageChannel
     string PhysicalName { get; }
 
     int MaximumBatchSize { get; }
+    /// <summary>Why the channel cannot safely attribute deliveries to the requested source.</summary>
+    string? SourceAttributionError => null;
 
     /// <summary>Receives and holds up to <paramref name="maxMessages"/> messages. An empty result means none arrived in a short wait.</summary>
     Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken);

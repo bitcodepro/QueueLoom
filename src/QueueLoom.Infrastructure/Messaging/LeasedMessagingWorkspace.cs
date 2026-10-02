@@ -45,6 +45,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     public Guid? ConnectedProfileId => _profile?.Id;
 
     public string? ConnectedNamespace => _profile?.EndpointDisplay;
+    public string? ConnectedConfigurationIdentity => _profile is null ? null : ScheduledResend.IdentityFor(_profile);
+    public MessagingProvider? ConnectedProvider => _profile?.Provider;
 
     /// <summary>Creates the service clients and makes one cheap call that proves the credentials work.</summary>
     protected abstract Task OpenAsync(ServiceBusProfile profile, CancellationToken cancellationToken);
@@ -279,6 +281,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
             .Where(target => target.SubQueue == ServiceBusSubQueue.DeadLetter)
             .Select(target => (Target: target, Channel: OpenChannel(topology, target.Source, target.SubQueue)))
             .ToArray();
+        foreach (var target in targets)
+            if (target.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterPurgeSourceResult>(targets.Length);
@@ -326,6 +330,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         var groups = request.BySubQueue
             .Select(group => (Group: group, Channel: OpenChannel(topology, group.Key.Source, group.Key.SubQueue)))
             .ToArray();
+        foreach (var group in groups)
+            if (group.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterMessageDeletionResult>(request.Messages.Count);
@@ -509,6 +515,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         List<LeasedMessage> held,
         CancellationToken cancellationToken)
     {
+        if (channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
         var result = new List<LeasedMessage>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         // A shared dead-letter queue can hold many messages of other sources; stop scanning at some point.
@@ -643,13 +650,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
     {
         var outcomes = keys.ToDictionary(key => key, _ => (Outcome: DeadLetterMessageDeletionOutcome.NotFound, Detail: (string?)null));
         var pending = keys.ToList();
+        var attempted = new HashSet<DeadLetterMessageKey>();
         var held = new List<LeasedMessage>();
         var scanned = 0;
         var deleted = 0;
         var emptyReceives = 0;
         try
         {
-            while (pending.Count > 0 && scanned < maximumScanned && emptyReceives < EmptyReceiveConfirmations)
+            while (pending.Any(key => !attempted.Contains(key)) && scanned < maximumScanned && emptyReceives < EmptyReceiveConfirmations)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var batch = await channel.ReceiveAsync(channel.MaximumBatchSize, cancellationToken).ConfigureAwait(false);
@@ -660,24 +668,24 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 }
 
                 emptyReceives = 0;
+                // Track the complete received batch before backup, cancellation or settlement can interrupt it.
+                held.AddRange(batch);
                 foreach (var message in batch)
                 {
                     scanned++;
-                    var key = message.BelongsToSource ? pending.FirstOrDefault(candidate => Matches(candidate, message.Message)) : null;
+                    var key = message.BelongsToSource ? pending.FirstOrDefault(candidate => !attempted.Contains(candidate) && Matches(candidate, message.Message)) : null;
                     if (key is null)
                     {
-                        held.Add(message);
                         continue;
                     }
 
-                    pending.Remove(key);
+                    attempted.Add(key);
                     try
                     {
                         await backupSession.BackupAsync(message.Message, cancellationToken).ConfigureAwait(false);
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
                     {
-                        held.Add(message);
                         outcomes[key] = (DeadLetterMessageDeletionOutcome.Failed, $"Backup failed: {exception.GetBaseException().Message}");
                         continue;
                     }
@@ -686,11 +694,12 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                     if (failed.Count == 0)
                     {
                         deleted++;
+                        held.Remove(message);
+                        pending.Remove(key);
                         outcomes[key] = (DeadLetterMessageDeletionOutcome.Deleted, null);
                     }
                     else
                     {
-                        held.Add(message);
                         outcomes[key] = (DeadLetterMessageDeletionOutcome.Failed, "The message was backed up but could not be deleted.");
                     }
                 }
@@ -702,14 +711,16 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         {
             foreach (var key in pending)
             {
-                outcomes[key] = (DeadLetterMessageDeletionOutcome.Cancelled, null);
+                if (outcomes[key].Outcome != DeadLetterMessageDeletionOutcome.Failed)
+                    outcomes[key] = (DeadLetterMessageDeletionOutcome.Cancelled, null);
             }
         }
         catch (Exception exception)
         {
             foreach (var key in pending)
             {
-                outcomes[key] = (DeadLetterMessageDeletionOutcome.Failed, exception.GetBaseException().Message);
+                if (outcomes[key].Outcome != DeadLetterMessageDeletionOutcome.Failed)
+                    outcomes[key] = (DeadLetterMessageDeletionOutcome.Failed, exception.GetBaseException().Message);
             }
         }
         finally

@@ -21,7 +21,7 @@ namespace QueueLoom.UiTests;
 /// app uses. Runs only when QUEUELOOM_LOCALSTACK_URL and QUEUELOOM_PUBSUB_EMULATOR are set; writes screenshots
 /// when QUEUELOOM_SCREENSHOT_DIR is set too.
 /// </summary>
-public sealed class RealCloudsUiTests
+public sealed partial class RealCloudsUiTests
 {
     private const string AwsRegion = "eu-central-1";
     private const string GoogleProject = "shipping-dev-2231";
@@ -252,6 +252,7 @@ public sealed class RealCloudsUiTests
         {
             var message = new PubsubMessage { Data = ByteString.CopyFromUtf8(body) };
             message.Attributes["CloudPubSubDeadLetterSourceSubscription"] = source;
+            message.Attributes["CloudPubSubDeadLetterSourceSubscriptionProject"] = deadLetters.ProjectId;
             message.Attributes["CloudPubSubDeadLetterSourceDeliveryCount"] = "5";
             await publisher.PublishAsync(deadLetters, [message]);
         }

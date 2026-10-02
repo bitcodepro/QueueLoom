@@ -150,7 +150,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             var deadLetterQueue = index.FindQueueByArn(subscription.DeadLetterTargetArn)
                 ?? throw new InvalidOperationException(
                     $"Subscription '{source.DisplayName}' has no dead-letter queue. Add a redrive policy to it in AWS first.");
-            return new SqsChannel(this, source, subQueue, deadLetterQueue, belongsTo: null);
+            return new SqsChannel(this, source, subQueue, deadLetterQueue, belongsTo: subscription.Arn);
         }
 
         throw new ArgumentException("Only queues and subscriptions hold messages.", nameof(source));
@@ -394,10 +394,14 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             return failed;
         }
 
+        public string? SourceAttributionError => source.Kind == ServiceBusEntityKind.Subscription && subQueue == ServiceBusSubQueue.DeadLetter
+            ? "SNS dead letters do not identify their originating subscription. Source-scoped deletion is blocked. Browse the physical SQS dead-letter queue to review its contents."
+            : null;
+
         private bool BelongsToSource(Message message) =>
-            belongsTo is null ||
-            message.Attributes?.GetValueOrDefault("DeadLetterQueueSourceArn") is not { Length: > 0 } sourceArn ||
-            string.Equals(sourceArn, belongsTo, StringComparison.Ordinal);
+            SourceAttributionError is null && (belongsTo is null ||
+            (message.Attributes?.GetValueOrDefault("DeadLetterQueueSourceArn") is { Length: > 0 } sourceArn &&
+            string.Equals(sourceArn, belongsTo, StringComparison.Ordinal)));
     }
 }
 

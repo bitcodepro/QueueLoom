@@ -9,4 +9,5 @@ public sealed record ReplayPlan(
     int Count,
     int MessagesPerSecond,
     bool PreserveMessageIds,
-    string? Namespace = null);
+    string? Namespace = null,
+    string? ConfigurationIdentity = null);

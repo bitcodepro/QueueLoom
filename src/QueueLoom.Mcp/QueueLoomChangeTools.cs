@@ -216,7 +216,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
 
     [McpServerTool(Name = "resend_dead_letters", Title = "Resend dead-letter messages",
         Destructive = true, Idempotent = false, OpenWorld = false)]
-    [Description("Resends the listed dead-lettered messages (e.g. results of search_dead_letters) unchanged: back to the queue " +
+    [Description("Resends the listed dead-lettered messages (e.g. results of search_dead_letters) with new Message IDs by default: back to the queue " +
                  "or topic they came from, or to 'destination'. mode 'copy' leaves the originals in the dead-letter queue; " +
                  "mode 'move' sends first, then backs up and removes only the originals that were sent. " +
                  "Requires approval by the user in QueueLoom; at most 1,000 messages per call.")]
@@ -233,6 +233,8 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
         string? destination = null,
         [Description("Send at most this many messages per second, 1-100; 0 (default) sends as fast as possible.")]
         int messagesPerSecond = 0,
+        [Description("Preserve original Message IDs instead of assigning distinct new IDs. Duplicate detection may suppress delivery. Azure move requires new IDs.")]
+        bool preserveMessageIds = false,
         CancellationToken cancellationToken = default) =>
         McpGuard.RunAsync(async () =>
         {
@@ -313,7 +315,9 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
 
             var items = originals
                 .Select(message => new ResendItem(message, target ?? DeadLetterResender.OriginalDestination(message.Source), message.CreateDraft()))
+                .Select(item => preserveMessageIds ? item : item.WithNewMessageId())
                 .ToArray();
+            DeadLetterResender.EnsureSafeMessageIds(profile.Provider, items, resendMode);
             var action = resendMode == ResendMode.Move ? "Move dead-letter messages" : "Resend dead-letter messages";
             var perDestination = items
                 .GroupBy(item => McpMapping.EntityName(item.Destination), StringComparer.OrdinalIgnoreCase)
@@ -322,7 +326,8 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var examples = items.Take(10).Select(item =>
                 $"  {McpMapping.EntityName(item.Original.Source)} #{item.Original.SequenceNumber} {item.Original.Properties.MessageId ?? "(no Message ID)"}");
             var decision = await RequestApprovalAsync(server, profile, action,
-                $"{items.Length} dead-lettered message(s) will be sent again, unchanged" +
+                $"{items.Length} dead-lettered message(s) will be sent again with " +
+                (preserveMessageIds ? "preserved Message IDs (duplicate detection may suppress delivery)" : "distinct new Message IDs") +
                 (messagesPerSecond > 0 ? $", at most {messagesPerSecond} per second" : string.Empty) + ".\n" +
                 (resendMode == ResendMode.Move
                     ? "Move: after sending, each original that was sent is backed up locally and removed from its dead-letter queue."

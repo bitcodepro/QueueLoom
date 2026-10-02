@@ -74,6 +74,32 @@ public sealed class AzureServiceBusSessionTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.ServiceBus)]
+    public Task SessionQueuePagesInterleavedMessagesWithoutSkipping() => VerifyPagesAsync(SessionQueue, null);
+
+    [EmulatorFact(Emulators.ServiceBus)]
+    public Task SessionSubscriptionPagesInterleavedMessagesWithoutSkipping() => VerifyPagesAsync(Topic, SessionSubscription);
+
+    private async Task VerifyPagesAsync(string entity, string? subscription)
+    {
+        var source = subscription is null ? ServiceBusEntityReference.Queue(entity) : ServiceBusEntityReference.Subscription(entity, subscription);
+        await using var sender = _client.CreateSender(entity);
+        var messages = Enumerable.Range(1, 202).Select(i => new AzureMessage($"page-{i}")
+            { MessageId = Guid.NewGuid().ToString("N"), SessionId = i % 2 == 0 ? "audit-even" : "audit-odd" }).ToArray();
+        await sender.SendMessagesAsync(messages);
+        var result = new List<BrowsedMessage>();
+        long? cursor = null;
+        for (var page = 0; page < 3; page++)
+        {
+            var batch = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, maxMessages: 100, fromSequenceNumber: cursor));
+            Assert.Equal(page == 2 ? 2 : 100, batch.Count);
+            result.AddRange(batch);
+            cursor = batch.Max(m => m.SequenceNumber) + 1;
+        }
+        Assert.Equal(202, result.Select(m => m.SequenceNumber).Distinct().Count());
+        Assert.Equal(Enumerable.Range(1, 202).Select(i => $"page-{i}"), result.Select(m => m.CreateDraft().Body.Content));
+    }
+
+    [EmulatorFact(Emulators.ServiceBus)]
     public async Task Dead_letters_of_a_session_queue_can_be_searched_deleted_and_moved_back()
     {
         await DeadLetterAsync(SessionQueue, null, "cart-7", "order 1042 failed");
@@ -87,7 +113,7 @@ public sealed class AzureServiceBusSessionTests : IAsyncLifetime
         var match = Assert.Single(search.Matches);
 
         var move = await DeadLetterResender.ResendAsync(_workspace,
-            [new ResendItem(match, queue, match.CreateDraft())], ResendMode.Move);
+            [new ResendItem(match, queue, match.CreateDraft()).WithNewMessageId()], ResendMode.Move);
         Assert.Equal(ResendOutcome.Moved, Assert.Single(move.Items).Outcome);
 
         var remaining = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(queue, ServiceBusSubQueue.DeadLetter)));

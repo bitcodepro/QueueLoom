@@ -61,6 +61,8 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
 
     public Guid? ConnectedProfileId => _profile?.Id;
     public string? ConnectedNamespace => _profile?.FullyQualifiedNamespace;
+    public string? ConnectedConfigurationIdentity => _profile is null ? null : ScheduledResend.IdentityFor(_profile);
+    public MessagingProvider? ConnectedProvider => _profile?.Provider;
 
     public async Task ConnectAsync(
         ServiceBusProfile profile,

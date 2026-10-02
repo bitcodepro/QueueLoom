@@ -34,6 +34,8 @@
                  Classes="muted" FontSize="12" IsVisible="{Binding !CanMove}" />
     </StackPanel>
 
+    <CheckBox IsChecked="{Binding PreserveMessageIds}" Content="Preserve Message IDs (duplicate delivery may be suppressed)" />
+
     <StackPanel Orientation="Horizontal" Spacing="8">
       <NumericUpDown Value="{Binding MessagesPerSecond}" Minimum="1" Maximum="100" Width="120"
                      AutomationProperties.Name="Messages per second" />

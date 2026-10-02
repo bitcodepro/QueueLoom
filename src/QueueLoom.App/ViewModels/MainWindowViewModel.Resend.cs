@@ -66,7 +66,8 @@ public sealed partial class MainWindowViewModel
             profile.Name,
             requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production,
             canRemoveOriginals: CanDeleteSelectedMessages,
-            now: () => Clock.GetLocalNow());
+            now: () => Clock.GetLocalNow(),
+            requiresNewIdsForMove: profile.Provider == MessagingProvider.AzureServiceBus);
         var options = await _dialogs.ChooseResendOptionsAsync(dialog, cancellationToken).ConfigureAwait(true);
         if (options is null)
         {
@@ -83,7 +84,9 @@ public sealed partial class MainWindowViewModel
                 message.Message,
                 options.Destination ?? DeadLetterResender.OriginalDestination(message.Message.Source),
                 options.Rewrite is { } rewrite ? rewrite.Apply(message.Message.CreateDraft()) : message.Message.CreateDraft()))
+            .Select(item => options.PreserveMessageIds ? item : item.WithNewMessageId())
             .ToArray();
+        DeadLetterResender.EnsureSafeMessageIds(profile.Provider, items, options.Mode);
         if (options.SendAt is { } sendAt)
         {
             ScheduleResend(profile, items, options, sendAt);

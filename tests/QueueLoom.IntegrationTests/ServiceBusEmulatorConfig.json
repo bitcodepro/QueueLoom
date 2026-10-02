@@ -5,6 +5,8 @@
         "Name": "sbemulatorns",
         "Queues": [
           { "Name": "orders", "Properties": { "DeadLetteringOnMessageExpiration": false, "DefaultMessageTimeToLive": "PT1H", "DuplicateDetectionHistoryTimeWindow": "PT20S", "ForwardDeadLetteredMessagesTo": "", "ForwardTo": "", "LockDuration": "PT1M", "MaxDeliveryCount": 3, "RequiresDuplicateDetection": false, "RequiresSession": false } },
+          { "Name": "audit-dedup", "Properties": { "DeadLetteringOnMessageExpiration": false, "DefaultMessageTimeToLive": "PT1H", "DuplicateDetectionHistoryTimeWindow": "PT1M", "ForwardDeadLetteredMessagesTo": "", "ForwardTo": "", "LockDuration": "PT1M", "MaxDeliveryCount": 3, "RequiresDuplicateDetection": true, "RequiresSession": false } },
+          { "Name": "audit-composer-dedup", "Properties": { "DeadLetteringOnMessageExpiration": false, "DefaultMessageTimeToLive": "PT1H", "DuplicateDetectionHistoryTimeWindow": "PT1M", "ForwardDeadLetteredMessagesTo": "", "ForwardTo": "", "LockDuration": "PT1M", "MaxDeliveryCount": 3, "RequiresDuplicateDetection": true, "RequiresSession": false } },
           { "Name": "checkout-sessions", "Properties": { "DeadLetteringOnMessageExpiration": false, "DefaultMessageTimeToLive": "PT1H", "DuplicateDetectionHistoryTimeWindow": "PT20S", "ForwardDeadLetteredMessagesTo": "", "ForwardTo": "", "LockDuration": "PT1M", "MaxDeliveryCount": 3, "RequiresDuplicateDetection": false, "RequiresSession": true } }
         ],
         "Topics": [
