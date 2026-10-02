@@ -9,12 +9,15 @@ public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProp
     MessageApplicationProperty[] ApplicationProperties, string Origin)
 {
     public KafkaEnvelope? KafkaEnvelope { get; init; }
+    public ServiceBusEntityReference? Destination { get; init; }
+    public DeadLetterMessageKey? Original { get; init; }
 }
 
-/// <summary>Durable, resumable copy operation. Never settles original messages.</summary>
-public sealed class BatchReplayStore(string root) : IBatchReplayStore
+/// <summary>Durable replay and resend history. Unknown and confirmed sends are never retried.</summary>
+public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
 {
     public string RootDirectory => Path.GetFullPath(root);
+    internal Action<string, string>? BeforeStateWrite { get; set; }
     private string DirectoryFor(Guid id) => Path.Combine(RootDirectory, id.ToString("N"));
 
     public async Task<ReplayPlan> CreateAsync(Guid profileId, ServiceBusEntityReference destination,
@@ -47,6 +50,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
             if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
             var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin) { KafkaEnvelope = prepared.KafkaEnvelope };
             await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
+            await WriteItemMetadata(folder, count - 1, payload, destination, token);
         }
         if (count == 0) throw new InvalidOperationException("Select at least one readable message.");
         var plan = new ReplayPlan(id, profileId, destination, DateTimeOffset.UtcNow, count, rate, preserveIds, fullyQualifiedNamespace, configurationIdentity);
@@ -55,11 +59,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
         return plan;
     }
 
-    public ReplayPlan? Latest(Guid profileId) => !Directory.Exists(RootDirectory) ? null :
-        Directory.EnumerateFiles(RootDirectory, "plan.json", SearchOption.AllDirectories)
-            .Select(file => JsonSerializer.Deserialize<ReplayPlan>(File.ReadAllText(file)))
-            .Where(plan => plan?.ProfileId == profileId)
-            .OrderByDescending(plan => plan!.CreatedAt).FirstOrDefault();
+    public ReplayPlan? Latest(Guid profileId) => List().FirstOrDefault(plan => plan.ProfileId == profileId && plan.Kind == "Replay");
 
     public async Task<ReplayProgress> RunAsync(ReplayPlan plan, IServiceBusWorkspace workspace,
         Func<bool> canWrite, IProgress<ReplayProgress>? progress, CancellationToken token)
@@ -76,6 +76,7 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
         if (plan.ConfigurationIdentity is not null && plan.ConfigurationIdentity != workspace.ConnectedConfigurationIdentity)
             throw new InvalidOperationException("The environment configuration changed since this batch was prepared. Resume is blocked.");
         var sent = 0;
+        long validatedBytes = 0;
         // Validate every pending payload and stop on an uncertain previous send before any new writes.
         for (var i = 0; i < plan.Count; i++)
         {
@@ -84,6 +85,8 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
             if (state != "Pending")
                 throw new InvalidOperationException($"Batch {plan.Id:N}, item {i + 1}: previous delivery is uncertain. Inspect the destination before replaying; automatic retry is blocked.");
             var item = await ReadPayload(folder, i, token);
+            validatedBytes += item.Body.GetBytes().Length;
+            if (validatedBytes > 32 * 1024 * 1024) throw new InvalidDataException("Replay bodies exceed 32 MiB. Resume is blocked.");
             var validation = MessageDraftValidator.Validate(new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope });
             if (!validation.IsValid) throw new InvalidDataException($"Replay item {i + 1} is invalid.");
         }
@@ -128,7 +131,14 @@ public sealed class BatchReplayStore(string root) : IBatchReplayStore
     private static string ReadState(string folder, int index)
     {
         var path = Path.Combine(folder, $"{index:D6}.state");
+        if (Directory.Exists(path)) return "Corrupt";
         return File.Exists(path) ? File.ReadAllText(path) : "Pending";
+    }
+
+    private Task WriteStateAsync(string path, string state, CancellationToken token)
+    {
+        BeforeStateWrite?.Invoke(path, state);
+        return AtomicFile.WriteTextAsync(path, state, token);
     }
 
     private static async Task<ReplayPayload> ReadPayload(string folder, int index, CancellationToken token) =>

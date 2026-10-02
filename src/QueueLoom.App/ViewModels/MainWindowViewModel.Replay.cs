@@ -28,6 +28,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeReplayFeatures()
     {
+        InitializeOperationHistory();
         RestoreFilteredBackupsCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Restoring filtered backups", ct => PrepareReplayAsync(true, ct), token),
             () => CanPrepareReplay && FilteredBackupMessages.Count is > 0 and <= 1000);
@@ -101,10 +102,11 @@ public sealed partial class MainWindowViewModel
     {
         RecordOperationIntent("Batch replay started", $"Batch {plan.Id:N} · {plan.Count} copies to {plan.Destination.Path}", plan.Destination);
         ReplayStatus = $"Batch {plan.Id:N} · starting";
+        var progressFinished = false;
         try
         {
             var result = await _replayStore!.RunAsync(plan, _workspace, () => CanWrite,
-                new Progress<ReplayProgress>(p => ReplayStatus = $"{p.Sent}/{p.Total} acknowledged · {p.Status}"), token).ConfigureAwait(true);
+                new Progress<ReplayProgress>(p => { if (!progressFinished) ReplayStatus = $"{p.Sent}/{p.Total} acknowledged · {p.Status}"; }), token).ConfigureAwait(true);
             ReplayStatus = $"Batch {plan.Id:N}: {result.Sent}/{result.Total} acknowledged. Originals retained.";
             AddActivity("Success", "Batch replay completed", ReplayStatus, plan.Destination);
         }
@@ -114,5 +116,6 @@ public sealed partial class MainWindowViewModel
             AddActivity("Warning", "Batch replay stopped", ReplayStatus, plan.Destination);
             throw;
         }
+        finally { progressFinished = true; RefreshOperationHistory(); }
     }
 }

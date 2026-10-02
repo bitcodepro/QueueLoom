@@ -10,4 +10,20 @@ public sealed record ReplayPlan(
     int MessagesPerSecond,
     bool PreserveMessageIds,
     string? Namespace = null,
-    string? ConfigurationIdentity = null);
+    string? ConfigurationIdentity = null)
+{
+    public string Kind { get; init; } = "Replay";
+    public ResendMode Mode { get; init; } = ResendMode.Copy;
+}
+
+public sealed record OperationItem(int Index, string Origin, string? MessageId, string Destination, string State, string? Detail = null)
+{
+    public bool CanContinue => State == "Pending";
+    public bool CanRetry => State == "Rejected";
+}
+
+public sealed record OperationHistory(ReplayPlan Plan, IReadOnlyList<OperationItem> Items);
+
+/// <summary>Only throw when the provider explicitly proves that no delivery was accepted.
+/// Timeouts, connection loss and cancellation must never use this exception.</summary>
+public sealed class DeliveryRejectedException(string message) : Exception(message);

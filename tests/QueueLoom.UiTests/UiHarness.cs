@@ -133,12 +133,15 @@ internal sealed class WindowFixture : IAsyncDisposable
             History.Append(sample);
         }
         var accessor = new TopLevelAccessor();
+        OperationStore = new BatchReplayStore(Path.Combine(_dataDirectory, "operations"));
         ViewModel = new MainWindowViewModel(
             new InMemoryProfileRepository(profiles),
             secretVault,
             workspace,
             new WindowDialogService(accessor),
             new InMemoryBackupRepository(),
+            activityJournal: new FileActivityJournal(Path.Combine(_dataDirectory, "activity")),
+            replayStore: OperationStore,
             clipboard: Clipboard,
             launcher: new NoopLauncher(),
             notifications: Notifications,
@@ -160,6 +163,7 @@ internal sealed class WindowFixture : IAsyncDisposable
     }
 
     public MainWindowViewModel ViewModel { get; }
+    public BatchReplayStore OperationStore { get; }
 
     public JsonLinesDeadLetterHistoryStore History { get; }
 

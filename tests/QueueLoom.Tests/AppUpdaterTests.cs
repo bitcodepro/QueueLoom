@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using QueueLoom.App.Services;
 using QueueLoom.App.ViewModels;
 
@@ -10,6 +11,20 @@ namespace QueueLoom.Tests;
 
 public sealed class AppUpdaterTests : IDisposable
 {
+    [Fact]
+    public void MissingRollbackBackupNeverClaimsThatPreviousVersionWasRestored()
+    {
+        var target = Target(OperatingSystem.IsWindows() ? "win-x64" : "linux-x64");
+        File.WriteAllText(target.Executable, "previous executable");
+        AppUpdater.Install(target, Staging((Path.GetFileName(target.Executable), "updated executable")));
+        var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(UpdateRestart.ReceiptPath(target)))!;
+        File.Delete(receipt.Entries.Single().Backup!);
+        File.Delete(target.Executable);
+        var error = Assert.ThrowsAny<IOException>(() => AppUpdater.StartInstalled(target));
+        Assert.DoesNotContain("previous version was restored", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(UpdateRestart.ReceiptPath(target)));
+    }
+
     [Fact]
     public void Restart_WhenTheHelperIsMissing_RestoresThePreviousFiles()
     {
@@ -221,8 +236,10 @@ public sealed class AppUpdaterTests : IDisposable
         var package = Zip(("QueueLoom.exe", "tampered"));
         var updater = new AppUpdater(Serve(package, new string('0', 64)), Path.Combine(_root, "download"));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<UpdateStageException>(() =>
             updater.DownloadAsync(Update, Target("win-x64"), null, CancellationToken.None));
+        Assert.Equal(UpdatePhase.Verification, error.Phase);
+        Assert.True(error.SafeToRetry);
 
         Assert.Contains("checksum", error.Message, StringComparison.Ordinal);
         Assert.Empty(Directory.GetDirectories(Path.Combine(_root, "download")));

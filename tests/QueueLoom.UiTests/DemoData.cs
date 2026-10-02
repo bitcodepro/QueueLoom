@@ -181,11 +181,17 @@ internal sealed class DemoWorkspace : IServiceBusWorkspace
     public WorkspaceConnectionState ConnectionState { get; private set; }
 
     public Guid? ConnectedProfileId { get; private set; }
+    public string? ConnectedNamespace { get; private set; }
+    public string? ConnectedConfigurationIdentity { get; private set; }
+    public MessagingProvider? ConnectedProvider { get; private set; }
 
     public Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
     {
         ConnectionState = WorkspaceConnectionState.Connected;
         ConnectedProfileId = profile.Id;
+        ConnectedNamespace = profile.EndpointDisplay;
+        ConnectedConfigurationIdentity = ScheduledResend.IdentityFor(profile);
+        ConnectedProvider = profile.Provider;
         return Task.CompletedTask;
     }
 

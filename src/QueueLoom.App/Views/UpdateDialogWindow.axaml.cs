@@ -9,6 +9,7 @@ public sealed partial class UpdateDialogWindow : Window
 {
     private readonly UpdateDialogViewModel? _viewModel;
     private readonly IAppLauncher? _launcher;
+    private bool _installClickRunning;
 
     public UpdateDialogWindow()
     {
@@ -21,15 +22,23 @@ public sealed partial class UpdateDialogWindow : Window
         _launcher = launcher;
         DataContext = viewModel;
         InitializeComponent();
-        Closing += (_, _) => _viewModel.CancelDownload();
+        Closing += (_, args) =>
+        {
+            if (_viewModel.IsDownloading) { args.Cancel = true; _viewModel.CancelDownload(); }
+        };
     }
 
     private async void InstallClick(object? sender, RoutedEventArgs args)
     {
-        if (_viewModel is not null)
+        if (_viewModel is not null && !_installClickRunning)
         {
-            await _viewModel.InstallAsync();
-            if (_viewModel.IsReady) Close(UpdateDialogResult.Restart);
+            _installClickRunning = true;
+            try
+            {
+                await _viewModel.InstallAsync();
+                if (_viewModel.IsReady) Close(UpdateDialogResult.Restart);
+            }
+            finally { _installClickRunning = false; }
         }
     }
 

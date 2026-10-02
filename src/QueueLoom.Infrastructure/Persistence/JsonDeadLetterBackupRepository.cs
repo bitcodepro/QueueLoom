@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.ServiceBus;
 
@@ -21,6 +23,8 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     }
 
     public string RootDirectory { get; }
+    private string MetadataDirectory => Path.Combine(Path.GetDirectoryName(RootDirectory)!, "backup-metadata-cache");
+    private sealed record MetadataCache(long Length, long LastWriteTicks, DeadLetterBackupSummary Summary);
 
     public async Task<IReadOnlyList<DeadLetterBackupSummary>> ListAsync(
         CancellationToken cancellationToken = default)
@@ -43,16 +47,34 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await using var stream = new FileStream(
-                    file,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.Read,
-                    64 * 1024,
-                    FileOptions.Asynchronous | FileOptions.SequentialScan);
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-                summaries.Add(ParseSummary(file, document.RootElement));
+                var path = ValidateMessagePath(file);
+                var info = new FileInfo(path);
+                var cachePath = Path.Combine(MetadataDirectory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path))) + ".cache");
+                DeadLetterBackupSummary? summary = null;
+                try
+                {
+                    if (File.Exists(cachePath))
+                    {
+                        var cache = JsonSerializer.Deserialize<MetadataCache>(await File.ReadAllTextAsync(cachePath, cancellationToken));
+                        if (cache?.Length == info.Length && cache.LastWriteTicks == info.LastWriteTimeUtc.Ticks && cache.Summary.FilePath == path)
+                            summary = cache.Summary;
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException) { }
+                if (summary is null)
+                {
+                    summary = await Task.Run(() =>
+                    {
+                        using var document = BackupMetadataReader.Read(path, cancellationToken);
+                        return ParseSummary(path, document.RootElement);
+                    }, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await AtomicFile.WriteTextAsync(cachePath, JsonSerializer.Serialize(new MetadataCache(info.Length, info.LastWriteTimeUtc.Ticks, summary)), cancellationToken);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { /* A cache is never a durable backup. */ }
+                }
+                summaries.Add(summary);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -93,6 +115,8 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
         }
 
         var path = ValidateMessagePath(summary.FilePath);
+        if (new FileInfo(path).Length > 64L * 1024 * 1024)
+            throw new InvalidDataException("This backup is too large for the body viewer (64 MiB file limit). The durable backup is retained; inspect it externally.");
         await using var stream = new FileStream(
             path,
             FileMode.Open,
@@ -168,6 +192,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                 ReadRequiredString(value, "value"))).ToArray()
             : [];
         var body = root.GetProperty("bodyBase64").GetBytesFromBase64();
+        if (body.LongLength != ReadInt64(root, "bodySize")) throw new InvalidDataException("Backup body size does not match the actual data.");
 
         return new BrowsedMessage(
             source,
@@ -209,10 +234,12 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
             StringSplitOptions.RemoveEmptyEntries);
         var current = RootDirectory;
-        foreach (var segment in segments.SkipLast(1))
+        if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidOperationException("Linked backup roots cannot be opened or deleted.");
+        foreach (var segment in segments)
         {
             current = Path.Combine(current, segment);
-            if (Directory.Exists(current) &&
+            if ((Directory.Exists(current) || File.Exists(current)) &&
                 File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint))
             {
                 throw new InvalidOperationException("Backup files reached through links or junctions cannot be opened or deleted.");

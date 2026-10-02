@@ -180,9 +180,13 @@ public static class UpdateRestart
 
     public static void Restore(Receipt receipt)
     {
+        // Do not report recovery after silently skipping a missing previous file.
+        // Check every recorded backup before moving anything, retaining the receipt on failure.
+        foreach (var entry in receipt.Entries)
+            if (entry.Backup is not null && !File.Exists(entry.Backup) && !Directory.Exists(entry.Backup))
+                throw new IOException($"Recovery cannot verify the previous installation: backup is missing for {Path.GetFileName(entry.Current)}. Keep the update receipt and remaining files.");
         foreach (var entry in receipt.Entries.Reverse())
         {
-            if (entry.Backup is not null && !File.Exists(entry.Backup) && !Directory.Exists(entry.Backup)) continue;
             var failed = entry.Current + "." + receipt.Id + ".failed";
             if (Directory.Exists(entry.Current)) Directory.Move(entry.Current, failed);
             else if (File.Exists(entry.Current)) File.Move(entry.Current, failed);
@@ -192,6 +196,8 @@ public static class UpdateRestart
                 else File.Move(entry.Backup, entry.Current);
             }
         }
+        if (!File.Exists(receipt.Target.Executable))
+            throw new IOException("Recovery did not restore a runnable previous executable. Keep the update receipt and remaining files.");
     }
 
     public static async Task CleanAsync(Receipt receipt, string path, TimeSpan timeout)

@@ -121,7 +121,7 @@
           <ListBox Grid.Row="1" ItemsSource="{Binding FilteredBackupMessages}"
                    SelectedItem="{Binding SelectedBackup}"
                    SelectionChanged="OnBackupSelectionChanged"
-                   IsEnabled="{Binding !IsBusy}" IsVisible="{Binding HasVisibleBackups}" Margin="6"
+                   IsVisible="{Binding HasVisibleBackups}" Margin="6"
                    AutomationProperties.Name="Backed up messages">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="vm:BackupMessageItemViewModel">
@@ -166,8 +166,9 @@
         <Grid>
           <controls:EmptyState IsVisible="{Binding !HasLoadedBackupMessage}"
                                Icon="{x:Static controls:Icons.Backups}"
-                               Title="Select a backup message"
-                               Description="The body and properties are loaded from its local JSON file." />
+                               Title="Open a backup message"
+                               Description="Browsing reads metadata only. Select a row and press Open message to load its body and properties." />
+          <Button Content="Open message" Command="{Binding LoadSelectedBackupCommand}" HorizontalAlignment="Right" VerticalAlignment="Top" IsVisible="{Binding !HasLoadedBackupMessage}" />
           <Grid RowDefinitions="Auto,10,*" IsVisible="{Binding HasLoadedBackupMessage}">
             <StackPanel Spacing="10">
               <StackPanel Spacing="3">

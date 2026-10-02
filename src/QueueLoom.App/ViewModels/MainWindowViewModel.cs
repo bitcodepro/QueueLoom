@@ -600,8 +600,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         ServiceBusEntityReference? source = null)
     {
         LogActivity(level, action, details, source);
-        PersistActivity(level, action, details, source);
-        Activity.Insert(0, new ActivityItemViewModel(DateTimeOffset.UtcNow, level, action, details, source));
+        var timestamp = DateTimeOffset.UtcNow;
+        PersistActivity(level, action, details, source, timestamp);
+        if (_activityCutoff is null || timestamp > _activityCutoff)
+            Activity.Insert(0, new ActivityItemViewModel(timestamp, level, action, details, source));
         while (Activity.Count > 500)
         {
             Activity.RemoveAt(Activity.Count - 1);

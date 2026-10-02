@@ -10,3 +10,10 @@ public interface IActivityJournal
     void Append(ActivityRecord record);
     IReadOnlyList<ActivityRecord> ReadRecent(int maximum = 500);
 }
+
+/// <summary>A reversible display filter. Journal records are retained.</summary>
+public interface IActivityViewJournal : IActivityJournal
+{
+    DateTimeOffset? ClearViewCutoff { get; }
+    void SetClearViewCutoff(DateTimeOffset? cutoff);
+}

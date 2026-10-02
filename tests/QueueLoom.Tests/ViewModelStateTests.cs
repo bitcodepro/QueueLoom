@@ -663,6 +663,8 @@ public sealed partial class ViewModelStateTests
 
         Assert.Single(viewModel.BackupMessages);
         Assert.Equal("message-42", viewModel.SelectedBackup?.MessageId);
+        Assert.Null(viewModel.SelectedBackupMessage);
+        await viewModel.LoadSelectedBackupCommand.ExecuteAsync();
         Assert.Equal(42, viewModel.SelectedBackupMessage?.SequenceNumber);
 
         viewModel.BackupFilterText = "correlation-42";
@@ -753,15 +755,21 @@ public sealed partial class ViewModelStateTests
         IDeadLetterBackupRepository? backupRepository = null,
         ISecretVault? secretVault = null,
         QueueLoom.App.Services.IMonitorAlertService? alerts = null,
-        IDeadLetterHistoryStore? history = null) =>
+        IDeadLetterHistoryStore? history = null,
+        IBatchReplayStore? replayStore = null,
+        IActivityJournal? activityJournal = null,
+        IScheduledResendStore? scheduledResends = null) =>
         new(
             repository,
             secretVault ?? new FakeSecretVault(),
             workspace,
             dialogs ?? new FakeDialogService(),
             backupRepository,
+            activityJournal: activityJournal,
+            replayStore: replayStore,
             alerts: alerts,
-            history: history);
+            history: history,
+            scheduledResends: scheduledResends);
 
     internal static ServiceBusProfile CreateProfile(
         string name,
@@ -936,6 +944,7 @@ public sealed partial class ViewModelStateTests
         public List<SendMessageRequest> SentMessages { get; } = [];
         public Action? OnSend { get; set; }
         public Func<Task>? SendGate { get; set; }
+        public Action? OnDelete { get; set; }
 
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
@@ -1172,6 +1181,7 @@ public sealed partial class ViewModelStateTests
             IProgress<DeadLetterMessageDeletionProgress>? progress = null)
         {
             DeleteRequests.Add(request);
+            OnDelete?.Invoke();
             var now = DateTimeOffset.UtcNow;
             return Task.FromResult(new DeleteDeadLetterMessagesResult(
                 ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),
