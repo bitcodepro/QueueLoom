@@ -25,7 +25,7 @@ public static class MessageExport
     [
         "environment", "source", "subQueue", "messageId", "correlationId", "subject", "contentType", "sessionId",
         "enqueuedAtUtc", "deliveryCount", "deadLetterReason", "deadLetterDescription", "applicationProperties",
-        "partition", "offset", "bodyEncoding", "body"
+        "amqpType", "amqpAppId", "partition", "offset", "bodyEncoding", "body"
     ];
 
     public static MessageExportFormat FormatFor(string path) =>
@@ -40,15 +40,32 @@ public static class MessageExport
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(messages);
-        await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
-        if (FormatFor(path) == MessageExportFormat.Csv)
+        cancellationToken.ThrowIfCancellationRequested();
+        var destination = Path.GetFullPath(path);
+        var temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
+        var ownsTemporary = false;
+        try
         {
-            await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-            await WriteCsvAsync(writer, messages, cancellationToken).ConfigureAwait(false);
+            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
+            {
+                ownsTemporary = true;
+                if (FormatFor(path) == MessageExportFormat.Csv)
+                {
+                    await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), leaveOpen: true);
+                    await WriteCsvAsync(writer, messages, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteJsonAsync(stream, messages, cancellationToken).ConfigureAwait(false);
+                }
+                stream.Flush(flushToDisk: true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, destination, overwrite: true);
         }
-        else
+        finally
         {
-            await WriteJsonAsync(stream, messages, cancellationToken).ConfigureAwait(false);
+            if (ownsTemporary && File.Exists(temporary)) File.Delete(temporary);
         }
     }
 
@@ -82,6 +99,8 @@ public static class MessageExport
             WriteOptional(writer, "sessionId", properties.SessionId);
             WriteOptional(writer, "to", properties.To);
             WriteOptional(writer, "replyTo", properties.ReplyTo);
+            WriteOptional(writer, "amqpType", properties.AmqpType);
+            WriteOptional(writer, "amqpAppId", properties.AmqpAppId);
             if (message.EnqueuedAt is { } enqueuedAt)
             {
                 writer.WriteString("enqueuedAtUtc", enqueuedAt.ToUniversalTime());
@@ -132,6 +151,8 @@ public static class MessageExport
                 message.DeadLetterReason,
                 message.DeadLetterErrorDescription,
                 applicationProperties,
+                properties.AmqpType,
+                properties.AmqpAppId,
                 message.Position?.Partition.ToString(CultureInfo.InvariantCulture),
                 message.Position?.Offset.ToString(CultureInfo.InvariantCulture),
                 encoding,

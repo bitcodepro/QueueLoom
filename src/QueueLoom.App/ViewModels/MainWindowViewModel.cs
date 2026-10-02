@@ -141,7 +141,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _launcher = launcher;
         _notifications = notifications;
         _theme = theme;
-        _logger = logger ?? NullLogger<MainWindowViewModel>.Instance;
+        _logger = new BestEffortLogger(logger ?? NullLogger<MainWindowViewModel>.Instance);
         InitializeDiagnostics(diagnostics);
 
         Navigation =

@@ -188,7 +188,9 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadOptionalString(root, "partitionKey"),
             ReadOptionalString(root, "transactionPartitionKey"),
             ReadOptionalTimeSpan(root, "timeToLive"),
-            ReadOptionalDateTimeOffset(root, "scheduledEnqueueTimeUtc"));
+            ReadOptionalDateTimeOffset(root, "scheduledEnqueueTimeUtc"),
+            ReadOptionalString(root, "amqpType"),
+            ReadOptionalString(root, "amqpAppId"));
         var applicationProperties = root.TryGetProperty("applicationProperties", out var values) &&
                                     values.ValueKind == JsonValueKind.Array
             ? values.EnumerateArray().Select(value => new MessageApplicationProperty(
@@ -196,6 +198,20 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                 ReadEnum<ApplicationPropertyType>(value, "type"),
                 ReadRequiredString(value, "value"))).ToArray()
             : [];
+        if (root.GetProperty("schemaVersion").GetInt32() < 3 && ReadOptionalString(root, "provider") == "RabbitMq")
+        {
+            // Legacy files appended basic metadata after user headers. Preserve their old single-value
+            // interpretation; when both were saved, retain the earlier header independently.
+            string? Extract(string name)
+            {
+                var last = Array.FindLastIndex(applicationProperties, p => p.Name == name);
+                if (last < 0) return null;
+                var value = applicationProperties[last].Value;
+                applicationProperties = applicationProperties.Where((_, index) => index != last).ToArray();
+                return value;
+            }
+            properties = properties with { AmqpType = Extract("amqp-type"), AmqpAppId = Extract("amqp-app-id") };
+        }
         var body = root.GetProperty("bodyBase64").GetBytesFromBase64();
         if (body.LongLength != ReadInt64(root, "bodySize")) throw new InvalidDataException("Backup body size does not match the actual data.");
 
@@ -268,7 +284,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     {
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty("schemaVersion", out var schema) ||
-            schema.GetInt32() is not (1 or 2))
+            schema.GetInt32() is not (1 or 2 or 3))
         {
             throw new InvalidDataException("Unsupported backup JSON schema.");
         }

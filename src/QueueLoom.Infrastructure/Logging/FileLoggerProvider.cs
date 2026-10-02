@@ -153,7 +153,8 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 return;
             }
 
-            provider.Write(category, logLevel, eventId, formatter(state, exception), exception);
+            try { provider.Write(category, logLevel, eventId, formatter(state, exception), exception); }
+            catch { /* Formatting and exception rendering are best effort; never log raw fallback data. */ }
         }
     }
 }

@@ -12,7 +12,9 @@ public sealed record EditableMessageProperties(
     string? PartitionKey = null,
     string? TransactionPartitionKey = null,
     TimeSpan? TimeToLive = null,
-    DateTimeOffset? ScheduledEnqueueTime = null)
+    DateTimeOffset? ScheduledEnqueueTime = null,
+    string? AmqpType = null,
+    string? AmqpAppId = null)
 {
     public static EditableMessageProperties Empty { get; } = new();
 }

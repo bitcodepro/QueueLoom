@@ -10,8 +10,16 @@ public static class SensitiveDataRedactor
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking,
         TimeSpan.FromMilliseconds(100));
 
-    public static string Redact(string? text) =>
-        string.IsNullOrEmpty(text) ? string.Empty : SensitiveValuePattern.Replace(text, "$1=[REDACTED]");
+    public static string Redact(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        try { return SensitiveValuePattern.Replace(text, "$1=[REDACTED]"); }
+        catch (RegexMatchTimeoutException)
+        {
+            // Neither partial replacement nor raw input is safe to publish.
+            return "[Text omitted: credential redaction timed out]";
+        }
+    }
 
     /// <summary>A single-line, bounded, redacted summary of an exception for display.</summary>
     public static string SummarizeException(Exception exception)
