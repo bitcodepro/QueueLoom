@@ -226,14 +226,19 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.RabbitMq)]
-    public async Task ReturnedPublishCanBeSelectivelyRetriedAfterBindingRepairWithoutResendingConfirmedItem()
+    public async Task ActivatedScheduledPublishCanBeSelectivelyRetriedAfterBindingRepairWithoutResendingConfirmedItem()
     {
         var original = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.Active, 7,
             "retry body"u8.ToArray(), new EditableMessageProperties(MessageId: "stable-returned-id", Subject: "retry.repaired"));
         var store = new BatchReplayStore(Path.Combine(_directory.Path, "operations"));
         var plan = await store.CreateResendAsync(_workspace.ConnectedProfileId!.Value,
             [new ResendItem(original, ServiceBusEntityReference.Topic("events"), original.CreateDraft())],
-            ResendMode.Copy, 50, _workspace.ConnectedNamespace, _workspace.ConnectedConfigurationIdentity!, "Returned publish", default);
+            ResendMode.Copy, 50, _workspace.ConnectedNamespace, _workspace.ConnectedConfigurationIdentity!, "Scheduled resend", default,
+            deferActivation: true);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], false, _workspace, () => true, null, default));
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("orders")).MessageCount);
+        await store.ActivateScheduledAsync(plan, default);
 
         var rejected = await store.RunItemsAsync(plan, [0], false, _workspace, () => true, null, default);
         Assert.Equal(1, rejected.FailedCount);

@@ -33,6 +33,7 @@ public sealed partial class BatchReplayStore
         var folder = DirectoryFor(plan.Id);
         var items = new List<OperationItem>();
         if (plan.Count is < 1 or > 1000) throw new InvalidDataException("Invalid operation count.");
+        var activationBlocked = IsScheduleActivationBlocked(plan, folder);
         for (var index = 0; index < plan.Count; index++)
         {
             var metadata = Path.Combine(folder, $"{index:D6}.metadata.json");
@@ -40,9 +41,11 @@ public sealed partial class BatchReplayStore
                 ? JsonSerializer.Deserialize<OperationItem>(File.ReadAllText(metadata))
                 : new OperationItem(index, "Legacy replay snapshot", null, plan.Destination.Path, "Pending");
             var detail = Path.Combine(folder, $"{index:D6}.detail");
+            var state = ReadState(folder, index);
             items.Add((item ?? throw new InvalidDataException("Invalid operation metadata.")) with
             {
-                State = ReadState(folder, index), Detail = File.Exists(detail) ? File.ReadAllText(detail) : null
+                State = activationBlocked && state == "Pending" ? "AwaitingScheduleClaim" : state,
+                Detail = File.Exists(detail) ? File.ReadAllText(detail) : null
             });
         }
         return new OperationHistory(plan, items);
@@ -60,7 +63,8 @@ public sealed partial class BatchReplayStore
             items.Any(i => !i.Destination.CanSend || (mode == ResendMode.Move && !i.Key.IsValid)))
             throw new ArgumentException("Invalid resend selection, destination or rate.");
         var plan = new ReplayPlan(Guid.NewGuid(), profileId, items[0].Destination, DateTimeOffset.UtcNow,
-            items.Count, Math.Max(1, rate == 0 ? 50 : rate), true, ns, configurationIdentity) { Kind = kind, Mode = mode };
+            items.Count, Math.Max(1, rate == 0 ? 50 : rate), true, ns, configurationIdentity)
+        { Kind = kind, Mode = mode, RequiresScheduleActivation = deferActivation };
         var folder = DirectoryFor(plan.Id);
         Directory.CreateDirectory(folder);
         AtomicFile.RestrictDirectoryToCurrentUser(folder);
@@ -95,6 +99,22 @@ public sealed partial class BatchReplayStore
             throw new InvalidOperationException("Scheduled snapshot changed or was already activated.");
         for (var index = 0; index < plan.Count; index++)
             await WriteStateAsync(Path.Combine(folder, $"{index:D6}.state"), "Pending", CancellationToken.None);
+        // Publish completion last. A crash or write failure during activation must block the entire snapshot.
+        await WriteStateAsync(Path.Combine(folder, ".schedule-activated"), plan.Id.ToString("N"), CancellationToken.None);
+    }
+
+    private static bool IsScheduleActivationBlocked(ReplayPlan plan, string folder)
+    {
+        // Legacy scheduled snapshots have no completion proof and remain blocked for manual inspection.
+        if (!plan.RequiresScheduleActivation && plan.Kind != "Scheduled resend") return false;
+        var marker = Path.Combine(folder, ".schedule-activated");
+        return !File.Exists(marker) || File.ReadAllText(marker) != plan.Id.ToString("N");
+    }
+
+    private static void EnsureScheduleActivated(ReplayPlan plan, string folder)
+    {
+        if (IsScheduleActivationBlocked(plan, folder))
+            throw new InvalidOperationException("Scheduled snapshot claim/activation was not completed. Recovery is blocked; manual inspection is required.");
     }
 
     private static void ValidateConnection(ReplayPlan plan, IServiceBusWorkspace workspace, Func<bool> canWrite)
@@ -114,6 +134,7 @@ public sealed partial class BatchReplayStore
         await using var ownership = await CrossProcessFileLock.AcquireAsync(Path.Combine(folder, ".lock"), token);
         if (JsonSerializer.Deserialize<ReplayPlan>(await File.ReadAllTextAsync(Path.Combine(folder, "plan.json"), token)) != plan)
             throw new InvalidOperationException("The saved operation changed. Review again.");
+        EnsureScheduleActivated(plan, folder);
         if (plan.Count is < 1 or > 1000 || plan.MessagesPerSecond is < 1 or > 100 || indexes.Count == 0 ||
             indexes.Distinct().Count() != indexes.Count || indexes.Any(i => i < 0 || i >= plan.Count))
             throw new ArgumentException("Choose valid operation items.");

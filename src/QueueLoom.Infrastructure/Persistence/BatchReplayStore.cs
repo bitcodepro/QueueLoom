@@ -69,6 +69,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         await using var gate = await CrossProcessFileLock.AcquireAsync(Path.Combine(folder, ".lock"), token);
         var storedPlan = JsonSerializer.Deserialize<ReplayPlan>(await File.ReadAllTextAsync(Path.Combine(folder, "plan.json"), token));
         if (storedPlan != plan) throw new InvalidOperationException("Replay plan changed. Review it again.");
+        EnsureScheduleActivated(plan, folder);
         if (plan.Count is < 1 or > 1000 || plan.MessagesPerSecond is < 1 or > 50 || !plan.Destination.CanSend)
             throw new InvalidDataException("Replay plan has invalid limits or destination.");
         if (workspace.ConnectedProfileId != plan.ProfileId || !canWrite()) throw new InvalidOperationException("Reconnect and unlock the batch environment.");

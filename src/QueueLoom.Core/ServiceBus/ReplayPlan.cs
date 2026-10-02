@@ -14,6 +14,7 @@ public sealed record ReplayPlan(
 {
     public string Kind { get; init; } = "Replay";
     public ResendMode Mode { get; init; } = ResendMode.Copy;
+    public bool RequiresScheduleActivation { get; init; }
 }
 
 public sealed record OperationItem(int Index, string Origin, string? MessageId, string Destination, string State, string? Detail = null)
