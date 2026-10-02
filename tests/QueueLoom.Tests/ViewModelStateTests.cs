@@ -845,9 +845,13 @@ public sealed partial class ViewModelStateTests
         private Guid? _selectedProfileId = selectedProfileId;
 
         public bool FailNextSetSelected { get; set; }
+        public Func<CancellationToken, Task>? ListGate { get; set; }
 
-        public Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<ServiceBusProfile>>(_profiles.ToArray());
+        public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default)
+        {
+            if (ListGate is not null) await ListGate(cancellationToken);
+            return _profiles.ToArray();
+        }
 
         public Task<ServiceBusProfile?> GetAsync(Guid profileId, CancellationToken cancellationToken = default) =>
             Task.FromResult(_profiles.FirstOrDefault(profile => profile.Id == profileId));
@@ -945,6 +949,8 @@ public sealed partial class ViewModelStateTests
         public Action? OnSend { get; set; }
         public Func<Task>? SendGate { get; set; }
         public Action? OnDelete { get; set; }
+        public Func<CancellationToken, Task>? CleanupOperationGate { get; set; }
+        public int DisposeCalls { get; private set; }
 
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
@@ -1034,14 +1040,15 @@ public sealed partial class ViewModelStateTests
             return Task.FromResult(Topology);
         }
 
-        public Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
+        public async Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(
             BrowseMessagesRequest request,
             CancellationToken cancellationToken = default)
         {
             BrowseRequests.Add(request);
-            return Task.FromResult<IReadOnlyList<BrowsedMessage>>(BrowseMessages
+            if (CleanupOperationGate is not null) await CleanupOperationGate(cancellationToken);
+            return BrowseMessages
                 .Where(m => m.SequenceNumber >= (request.FromSequenceNumber ?? 0))
-                .Take(request.MaxMessages).ToArray());
+                .Take(request.MaxMessages).ToArray();
         }
 
         public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
@@ -1136,13 +1143,13 @@ public sealed partial class ViewModelStateTests
         public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
             Task.FromResult(CurrentQueueSettings);
 
-        public Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default)
+        public async Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default)
         {
+            if (CleanupOperationGate is not null) await CleanupOperationGate(cancellationToken);
             CreatedQueues.Add(definition);
             Topology = new ServiceBusTopology(DateTimeOffset.UtcNow,
                 Topology.Queues.Append(new ServiceBusQueue(definition.Name, ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active)),
                 Topology.Topics);
-            return Task.CompletedTask;
         }
 
         public Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default)
@@ -1220,7 +1227,7 @@ public sealed partial class ViewModelStateTests
                 : Snapshot(profileId);
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() { DisposeCalls++; return ValueTask.CompletedTask; }
     }
 
     private sealed class FakeDialogService : IUserDialogService
@@ -1298,6 +1305,7 @@ public sealed partial class ViewModelStateTests
         public List<TopicRoutingViewModel> RoutingDialogs { get; } = [];
 
         public Func<TopicRoutingViewModel, Task>? OnRouting { get; set; }
+        public Func<CancellationToken, Task>? RoutingGate { get; set; }
 
         public Func<RuleEditorViewModel, QueueLoom.Core.Routing.SubscriptionRule?>? RuleEdit { get; set; }
 
@@ -1305,6 +1313,7 @@ public sealed partial class ViewModelStateTests
         {
             RoutingDialogs.Add(viewModel);
             await viewModel.LoadAsync(cancellationToken);
+            if (RoutingGate is not null) await RoutingGate(cancellationToken);
             if (OnRouting is not null)
             {
                 await OnRouting(viewModel);
