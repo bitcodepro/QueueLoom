@@ -52,6 +52,7 @@ public sealed class DiagnosticsPreview
     private static async Task Write(ZipArchive archive, string name, string content, CancellationToken token)
     {
         var entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+        entry.ExternalAttributes = 0;
         entry.LastWriteTime = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
         await using var stream = entry.Open();
         await stream.WriteAsync(Encoding.UTF8.GetBytes(content), token);
