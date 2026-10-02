@@ -8,6 +8,39 @@ public sealed class SelectiveDeadLetterDeleterTests
 {
     private static readonly ServiceBusEntityReference Orders = ServiceBusEntityReference.Queue("orders");
 
+    [Fact]
+    public async Task CycleOne_SettlementTimeoutPreservesConfirmedSiblingAndDoesNotClaimUnknownDeletion()
+    {
+        var queue = new FakeLockQueue([Message(1), Message(2)]);
+        queue.OnComplete = message => { if (message.SequenceNumber == 2) throw new TaskCanceledException("settlement timeout"); };
+        var backups = new List<long>();
+        IReadOnlyList<DeadLetterMessageDeletionResult>? results = null;
+        var error = await Record.ExceptionAsync(async () => results = await DeleteAsync(queue, [Key(1), Key(2)], backups));
+        Assert.Equal([1L, 2L], backups.Order());
+        Assert.Equal([2L], queue.Remaining);
+        Assert.Null(error);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Deleted, results!.Single(r => r.Message.SequenceNumber == 1).Outcome);
+        var unknown = results!.Single(r => r.Message.SequenceNumber == 2);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Failed, unknown.Outcome);
+        Assert.Contains("may still be", unknown.Detail, StringComparison.Ordinal);
+        Assert.Contains("settlement timeout", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CycleOne_CleanupTimeoutPreservesConfirmedDeletionAndContinuesReleasingOtherLocks()
+    {
+        var queue = new FakeLockQueue([Message(1), Message(2), Message(3)]);
+        var releases = new List<long>();
+        queue.OnAbandon = message => { releases.Add(message.SequenceNumber); if (message.SequenceNumber == 2) throw new TaskCanceledException("cleanup timeout"); };
+        IReadOnlyList<DeadLetterMessageDeletionResult>? results = null;
+        var error = await Record.ExceptionAsync(async () => results = await DeleteAsync(queue, [Key(1)], []));
+        Assert.Equal([2L, 3L], queue.Remaining);
+        Assert.Null(error);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Deleted, Assert.Single(results!).Outcome);
+        Assert.Equal([2L, 3L], releases);
+        Assert.Equal([2L], queue.Locked);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -218,6 +251,10 @@ public sealed class SelectiveDeadLetterDeleterTests
 
         public Action<int>? OnReceive { get; set; }
 
+        public Action<ServiceBusReceivedMessage>? OnComplete { get; set; }
+
+        public Action<ServiceBusReceivedMessage>? OnAbandon { get; set; }
+
         public int ReceivedCount { get; private set; }
 
         public List<long> Remaining => _messages.Select(message => message.SequenceNumber).ToList();
@@ -249,6 +286,7 @@ public sealed class SelectiveDeadLetterDeleterTests
 
         public Task CompleteAsync(ServiceBusReceivedMessage message)
         {
+            OnComplete?.Invoke(message);
             if (FailComplete)
             {
                 throw new InvalidOperationException("lock lost");
@@ -263,6 +301,7 @@ public sealed class SelectiveDeadLetterDeleterTests
 
         public Task AbandonAsync(ServiceBusReceivedMessage message)
         {
+            OnAbandon?.Invoke(message);
             lock (_messages)
             {
                 _locked.Remove(message.SequenceNumber);

@@ -14,8 +14,10 @@ public sealed class CycleOneHistoryRegressionTests
     private static DeadLetterHistorySample Sample(DateTimeOffset at, long total) => new(at, Profile, "Test", total, new Dictionary<string, long> { ["q"] = total });
     private sealed class Clock : TimeProvider { public override DateTimeOffset GetUtcNow() => Now; }
 
-    [Fact]
-    public async Task IndependentProcessesCannotCompactAwayAnAcknowledgedSample()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IndependentProcessesCannotCompactAwayAnAcknowledgedSample(bool overlap)
     {
         using var directory = new TemporaryDirectory();
         var file = Path.Combine(directory.Path, "history.jsonl");
@@ -34,14 +36,35 @@ public sealed class CycleOneHistoryRegressionTests
                 Assert.True(deadline.Elapsed < TimeSpan.FromSeconds(15));
                 await Task.Delay(20);
             }
-            File.WriteAllText(second + ".go", "go");
+            if (overlap)
+            {
+                using (var ownership = new FileStream(file + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+                {
+                    File.WriteAllText(first + ".go", "go");
+                    File.WriteAllText(second + ".go", "go");
+                    deadline.Restart();
+                    while (!File.Exists(first + ".started") || !File.Exists(second + ".started"))
+                    {
+                        Assert.True(deadline.Elapsed < TimeSpan.FromSeconds(15));
+                        await Task.Delay(20);
+                    }
+                    await Task.Delay(200);
+                    Assert.False(File.Exists(first + ".done") || File.Exists(second + ".done"), "Writers must wait for the shared ownership lock.");
+                }
+            }
+            else
+            {
+                File.WriteAllText(second + ".go", "go");
+                await b.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+                Assert.Equal(0, b.ExitCode);
+                File.WriteAllText(first + ".go", "go");
+            }
             await b.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
             Assert.Equal(0, b.ExitCode);
-            File.WriteAllText(first + ".go", "go");
             await a.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
             Assert.Equal(0, a.ExitCode);
             Assert.True(File.Exists(first + ".done") && File.Exists(second + ".done"));
-            Assert.Equal([2L, 3L], new JsonLinesDeadLetterHistoryStore(file).Read(Profile, DateTimeOffset.MinValue).Select(s => s.Total));
+            Assert.Equal([2L, 3L], new JsonLinesDeadLetterHistoryStore(file).Read(Profile, DateTimeOffset.MinValue).Select(s => s.Total).Order());
         }
         finally
         {
@@ -53,6 +76,24 @@ public sealed class CycleOneHistoryRegressionTests
             foreach (var argument in new[] { "--append-history", file, Profile.ToString(), output, output + ".go", total }) start.ArgumentList.Add(argument);
             return Process.Start(start)!;
         }
+    }
+
+    [Fact]
+    public void FailedAppendDoesNotCacheAnUncommittedSample()
+    {
+        if (!OperatingSystem.IsWindows()) return; // Windows sharing rules deterministically reject the attempted write.
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "history.jsonl");
+        File.WriteAllText(file, JsonSerializer.Serialize(Sample(Now.AddMinutes(-2), 1)) + "\n");
+        var store = new JsonLinesDeadLetterHistoryStore(file, new Clock());
+        Assert.Single(store.Read(Profile, DateTimeOffset.MinValue));
+        using (var blocked = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            Assert.Throws<IOException>(() => store.Append(Sample(Now, 2)));
+        }
+        Assert.Equal([1L], store.Read(Profile, DateTimeOffset.MinValue).Select(s => s.Total));
+        store.Append(Sample(Now, 2));
+        Assert.Equal([1L, 2L], new JsonLinesDeadLetterHistoryStore(file, new Clock()).Read(Profile, DateTimeOffset.MinValue).Select(s => s.Total));
     }
 
     [Theory]

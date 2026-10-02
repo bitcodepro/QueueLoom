@@ -12,6 +12,7 @@ if (args.Length == 6 && args[0] == "--append-history")
         if (wait.Elapsed > TimeSpan.FromSeconds(20)) return 71;
         await Task.Delay(10);
     }
+    File.WriteAllText(args[3] + ".started", "started");
     store.Append(new QueueLoom.Core.Monitoring.DeadLetterHistorySample(DateTimeOffset.UtcNow, profile,
         "Test", long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), new Dictionary<string, long>()));
     File.WriteAllText(args[3] + ".done", "done");
