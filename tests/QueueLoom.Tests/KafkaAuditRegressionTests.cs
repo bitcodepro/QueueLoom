@@ -88,7 +88,8 @@ public sealed class KafkaAuditRegressionTests
         var original = new Message<byte[]?, byte[]?> { Key = [0xff], Value = tombstone ? null : [], Headers = headers };
         var store = new BatchReplayStore(directory.Path);
         var plan = await store.CreateAsync(profile.Id, ServiceBusEntityReference.Queue("isolated"),
-            [(Browse(original).CreateDraft(), "isolated fixture")], true, 50, CancellationToken.None);
+            [(Browse(original).CreateDraft(), "isolated fixture")], true, 50, CancellationToken.None,
+            profile.EndpointDisplay, ScheduledResend.IdentityFor(profile));
         await using var workspace = new ViewModelStateTests.FakeWorkspace();
         await workspace.ConnectAsync(profile);
         await new BatchReplayStore(directory.Path).RunAsync(plan, workspace, () => true, null, CancellationToken.None);

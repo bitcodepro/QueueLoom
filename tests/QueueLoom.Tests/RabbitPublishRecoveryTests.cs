@@ -3,6 +3,8 @@ using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.RabbitMq;
+using QueueLoom.Infrastructure.Persistence;
+using QueueLoom.Tests.Infrastructure;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 
@@ -54,6 +56,31 @@ public sealed class RabbitPublishRecoveryTests
         {
             Assert.Same(transport, error);
             Assert.IsNotType<DeliveryRejectedException>(error);
+        }
+        // Feed the actual adapter exception into the older durable replay executor.
+        using var directory = new TemporaryDirectory();
+        var store = new BatchReplayStore(directory.Path);
+        var profile = ViewModelStateTests.CreateProfile("Test", EnvironmentKind.Test) with { Provider = MessagingProvider.RabbitMq };
+        var workspace = new ViewModelStateTests.FakeWorkspace();
+        await workspace.ConnectAsync(profile);
+        var plan = await store.CreateAsync(profile.Id, ServiceBusEntityReference.Topic("events"),
+            [(MessageDraft.Empty, "adapter replay")], false, 50, default,
+            profile.EndpointDisplay, ScheduledResend.IdentityFor(profile));
+        workspace.OnSend = () => throw error!;
+        Assert.Same(error, await Record.ExceptionAsync(() => store.RunAsync(plan, workspace, () => true, null, default)));
+        var reopened = new BatchReplayStore(directory.Path);
+        Assert.Equal(failure == "return" ? "Rejected" : "Uncertain", Assert.Single(reopened.ReadHistory(plan).Items).State);
+        workspace.OnSend = null;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.RunAsync(plan, workspace, () => true, null, default));
+        if (failure == "return")
+        {
+            await reopened.RunItemsAsync(plan, [0], true, workspace, () => true, null, default);
+            Assert.Equal(workspace.SentMessages[0].Message.Properties.MessageId, workspace.SentMessages[1].Message.Properties.MessageId);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.RunItemsAsync(plan, [0], true, workspace, () => true, null, default));
+            Assert.Single(workspace.SentMessages);
         }
     }
 

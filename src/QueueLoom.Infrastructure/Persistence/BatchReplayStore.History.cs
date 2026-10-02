@@ -119,6 +119,8 @@ public sealed partial class BatchReplayStore
 
     private static void ValidateConnection(ReplayPlan plan, IServiceBusWorkspace workspace, Func<bool> canWrite)
     {
+        if (string.IsNullOrWhiteSpace(plan.ConfigurationIdentity))
+            throw new InvalidOperationException("Legacy operation has no configuration identity. Recovery is blocked; review and prepare a new operation.");
         if (workspace.ConnectedProfileId != plan.ProfileId || !canWrite())
             throw new InvalidOperationException("Reconnect and unlock the operation environment.");
         if (plan.Namespace is not null && plan.Namespace != workspace.ConnectedNamespace ||
@@ -139,8 +141,6 @@ public sealed partial class BatchReplayStore
             indexes.Distinct().Count() != indexes.Count || indexes.Any(i => i < 0 || i >= plan.Count))
             throw new ArgumentException("Choose valid operation items.");
         ValidateConnection(plan, workspace, canWrite);
-        if (plan.ConfigurationIdentity is null)
-            throw new InvalidOperationException("Legacy operation has no configuration identity. Selective recovery is unsupported; review and prepare a new operation.");
         if (plan.Mode == ResendMode.Move && workspace.ConnectedProvider == QueueLoom.Core.Profiles.MessagingProvider.Kafka)
             throw new InvalidOperationException("Kafka cannot move individual messages. Recovery is blocked.");
         var prepared = new Dictionary<int, ResendItem>();

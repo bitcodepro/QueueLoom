@@ -258,6 +258,35 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.RabbitMq)]
+    public async Task ReplayExecutorReturnIsRetainedAcrossReopenAndRouteRepairUsesSavedIdOnce()
+    {
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replay-operations"));
+        var draft = new MessageDraft(new EditableMessageBody("replay body", MessageBodyFormat.Text),
+            new EditableMessageProperties(MessageId: "source-id", Subject: "replay.repaired"));
+        var plan = await store.CreateAsync(_workspace.ConnectedProfileId!.Value, ServiceBusEntityReference.Topic("events"),
+            [(draft, "isolated replay")], false, 50, default, _workspace.ConnectedNamespace, _workspace.ConnectedConfigurationIdentity);
+        var savedId = Assert.Single(store.ReadHistory(plan).Items).MessageId;
+        Assert.NotEqual("source-id", savedId);
+        await Assert.ThrowsAsync<DeliveryRejectedException>(() => store.RunAsync(plan, _workspace, () => true, null, default));
+        var reopened = new BatchReplayStore(store.RootDirectory);
+        plan = Assert.Single(reopened.List());
+        Assert.Equal("Rejected", Assert.Single(reopened.ReadHistory(plan).Items).State);
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("orders")).MessageCount);
+        await _setup.QueueBindAsync("orders", "events", "replay.repaired");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.RunAsync(plan, _workspace, () => true, null, default));
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("orders")).MessageCount);
+        var retried = await reopened.RunItemsAsync(plan, [0], true, _workspace, () => true, null, default);
+        Assert.Equal(1, retried.SentCount);
+        var received = await _setup.BasicGetAsync("orders", autoAck: true);
+        Assert.NotNull(received);
+        Assert.Equal(savedId, received.BasicProperties.MessageId);
+        Assert.Equal("replay body", Encoding.UTF8.GetString(received.Body.Span));
+        Assert.Equal(1, (await reopened.RunAsync(plan, _workspace, () => true, null, default)).Sent);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.RunItemsAsync(plan, [0], true, _workspace, () => true, null, default));
+        Assert.Null(await _setup.BasicGetAsync("orders", autoAck: true));
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
     public async Task Snapshot_counts_dead_letters_per_queue()
     {
         await PublishAsync("orders", "o-1", "o-2");
