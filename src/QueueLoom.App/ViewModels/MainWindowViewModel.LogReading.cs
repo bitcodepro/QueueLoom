@@ -61,7 +61,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeLogReading()
     {
-        ReadLogCommand = new AsyncRelayCommand(
+        ReadLogCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Reading topic", ReadLogAgainAsync, token),
             () => !IsBusy && ShowLogReadBar);
     }

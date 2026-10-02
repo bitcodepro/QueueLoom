@@ -30,7 +30,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeRetention()
     {
-        DeleteOldBackupsCommand = new AsyncRelayCommand(
+        DeleteOldBackupsCommand = _commands.Create(
             token => RunOperationAsync("Deleting old backups", token2 => DeleteOldBackupsAsync(automatic: false, token2), token,
                 allowCancellation: false),
             () => !IsBusy && BackupRetentionDays > 0 && _backupRepository is not null);

@@ -11,7 +11,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeCompare()
     {
-        CompareMarkedMessagesCommand = new AsyncRelayCommand(CompareMarkedMessagesAsync, () => CanCompareMarkedMessages);
+        CompareMarkedMessagesCommand = _commands.Create(CompareMarkedMessagesAsync, () => CanCompareMarkedMessages);
     }
 
     private async Task CompareMarkedMessagesAsync(CancellationToken cancellationToken)

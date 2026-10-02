@@ -82,7 +82,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeMessageDeletion()
     {
-        DeleteMarkedMessagesCommand = new AsyncRelayCommand(
+        DeleteMarkedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Deleting selected messages", DeleteMarkedMessagesAsync, token, allowCancellation: true),
             () => !IsBusy && CanWrite && HasMarkedMessages && CanDeleteSelectedMessages);
         Messages.CollectionChanged += OnMessagesChangedForDeletion;

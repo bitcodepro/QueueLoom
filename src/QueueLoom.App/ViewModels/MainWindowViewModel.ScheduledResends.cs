@@ -45,7 +45,7 @@ public sealed partial class MainWindowViewModel
     /// <summary>Starts checking for due resends; called once the window is up.</summary>
     public void StartScheduledResends()
     {
-        if (_scheduleTask is not null)
+        if (_isDisposed || _scheduleTask is not null)
         {
             return;
         }

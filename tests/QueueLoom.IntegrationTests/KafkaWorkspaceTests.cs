@@ -102,7 +102,7 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
         Assert.Equal("ValidationException", message.DeadLetterReason);
         Assert.Equal($"Total must be positive · from {_orders}, partition 1, offset 17", message.DeadLetterErrorDescription);
         Assert.Equal("customer-7", message.Properties.PartitionKey);
-        Assert.Equal("0", message.ApplicationProperties.Single(property => property.Name == "kafka.offset").Value);
+        Assert.Equal(new LogPosition(0, 0), message.Position);
         var marks = await WatermarksAsync(DeadLetters);
         Assert.Equal((0L, 2L), marks);
     }

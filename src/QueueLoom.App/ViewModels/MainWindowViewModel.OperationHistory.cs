@@ -68,10 +68,10 @@ public sealed partial class MainWindowViewModel
     private void InitializeOperationHistory()
     {
         OperationHistory.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasOperationHistory));
-        RefreshOperationHistoryCommand = new AsyncRelayCommand(_ => { RefreshOperationHistory(); return Task.CompletedTask; }, () => !IsBusy && _replayStore is not null);
-        ContinueOperationCommand = new AsyncRelayCommand(token => RunWorkspaceOperationAsync("Continuing unattempted items", ct => RecoverOperationAsync(false, ct), token),
+        RefreshOperationHistoryCommand = _commands.Create(_ => { RefreshOperationHistory(); return Task.CompletedTask; }, () => !IsBusy && _replayStore is not null);
+        ContinueOperationCommand = _commands.Create(token => RunWorkspaceOperationAsync("Continuing unattempted items", ct => RecoverOperationAsync(false, ct), token),
             () => !IsBusy && CanWrite && SelectedOperation is not null);
-        RetryRejectedOperationCommand = new AsyncRelayCommand(token => RunWorkspaceOperationAsync("Retrying proven rejections", ct => RecoverOperationAsync(true, ct), token),
+        RetryRejectedOperationCommand = _commands.Create(token => RunWorkspaceOperationAsync("Retrying proven rejections", ct => RecoverOperationAsync(true, ct), token),
             () => !IsBusy && CanWrite && SelectedOperation is not null);
         PropertyChanged += (_, args) =>
         {

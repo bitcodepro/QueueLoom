@@ -27,6 +27,7 @@ public sealed partial class GooglePubSubWorkspace
 
     public override async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
+        using var operation = await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
         var subscription = await Subscriber.GetSubscriptionAsync(SubscriptionName.FromProjectSubscription(_projectId, queue), cancellationToken)
             .ConfigureAwait(false);
         return new QueueSettings(

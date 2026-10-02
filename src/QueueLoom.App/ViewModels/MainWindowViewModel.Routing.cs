@@ -36,15 +36,15 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeRouting()
     {
-        OpenTopicRoutingCommand = new AsyncRelayCommand(
+        OpenTopicRoutingCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening rules", ct => ShowRoutingAsync(SelectedEntityTopic!, null, null, ct), token),
             () => !IsBusy && SupportsRouting && SelectedEntityTopic is not null);
-        CheckMessageRoutingCommand = new AsyncRelayCommand(
+        CheckMessageRoutingCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Checking routing", ct => ShowRoutingAsync(SelectedMessageTopic!,
                 SelectedMessage!.Message.CreateDraft(),
                 $"{(SelectedMessage.IsDeadLetter ? "Dead letter" : "Message")} {SelectedMessage.MessageId} from {SelectedMessage.SourceDisplay}", ct), token),
             () => !IsBusy && SupportsRouting && SelectedMessageTopic is not null && SelectedMessage?.Message.IsBodyTruncated == false);
-        CheckDraftRoutingCommand = new AsyncRelayCommand(
+        CheckDraftRoutingCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Checking routing", ct => ShowRoutingAsync(DraftTopic!, BuildDraft(), "The draft in Composer", ct), token),
             () => !IsBusy && SupportsRouting && DraftTopic is not null);
         PropertyChanged += (_, args) =>
@@ -97,11 +97,12 @@ public sealed partial class MainWindowViewModel
                 await _workspace.DeleteSubscriptionRuleAsync(topic, subscription, rule, token).ConfigureAwait(true);
                 AddActivity("Warning", "Subscription rule deleted", $"{profile.Name} · {topic} / {subscription} · {rule.DisplayName}: {rule.FilterText}", reference);
             },
-            editor => _dialogs.EditRuleAsync(editor, CancellationToken.None),
+            editor => _dialogs.EditRuleAsync(editor, cancellationToken),
             (title, text, requiredText) => _dialogs.ConfirmAsync(title, text, isDangerous: true, requiredText: requiredText,
-                cancellationToken: CancellationToken.None));
+                cancellationToken: cancellationToken));
         var routing = new TopicRoutingViewModel(topic, profile.Name, canEdit, hint, services, message, origin, service);
-        await _dialogs.ShowTopicRoutingAsync(routing, cancellationToken).ConfigureAwait(true);
+        try { await _dialogs.ShowTopicRoutingAsync(routing, cancellationToken).ConfigureAwait(true); }
+        finally { await routing.DisposeAsync().ConfigureAwait(true); }
         StatusText = routing.HasHeadline ? routing.Headline : $"Rules of {topic} reviewed";
     }
 }

@@ -25,7 +25,7 @@ public static class MessageExport
     [
         "environment", "source", "subQueue", "messageId", "correlationId", "subject", "contentType", "sessionId",
         "enqueuedAtUtc", "deliveryCount", "deadLetterReason", "deadLetterDescription", "applicationProperties",
-        "bodyEncoding", "body"
+        "partition", "offset", "bodyEncoding", "body"
     ];
 
     public static MessageExportFormat FormatFor(string path) =>
@@ -69,6 +69,11 @@ public static class MessageExport
             if (message.HasSequenceNumber)
             {
                 writer.WriteNumber("sequenceNumber", message.SequenceNumber);
+            }
+            if (message.Position is { } position)
+            {
+                writer.WriteNumber("partition", position.Partition);
+                writer.WriteNumber("offset", position.Offset);
             }
             WriteOptional(writer, "messageId", properties.MessageId);
             WriteOptional(writer, "correlationId", properties.CorrelationId);
@@ -127,6 +132,8 @@ public static class MessageExport
                 message.DeadLetterReason,
                 message.DeadLetterErrorDescription,
                 applicationProperties,
+                message.Position?.Partition.ToString(CultureInfo.InvariantCulture),
+                message.Position?.Offset.ToString(CultureInfo.InvariantCulture),
                 encoding,
                 body
             ];

@@ -73,7 +73,7 @@ public sealed partial class MainWindowViewModel
     private void InitializeOperationsFeatures()
     {
         InitializeActivityView();
-        LoadMoreMessagesCommand = new AsyncRelayCommand(
+        LoadMoreMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Loading next page", LoadBrowsePageAsync, token), () => CanLoadMoreMessages);
         FormatJsonCommand = new RelayCommand(() =>
         {
@@ -109,7 +109,7 @@ public sealed partial class MainWindowViewModel
             catch (Exception exception) { ErrorText = SanitizeException(exception); }
         }, () => !IsBusy);
         CopyTextCommand = new RelayCommand<string>(text => _ = CopyTextAsync(text), text => !string.IsNullOrEmpty(text));
-        OpenBackupsFolderCommand = new AsyncRelayCommand(
+        OpenBackupsFolderCommand = _commands.Create(
             OpenBackupsFolderAsync,
             () => _backupRepository is not null && _launcher is not null);
         InitializeReplayFeatures();

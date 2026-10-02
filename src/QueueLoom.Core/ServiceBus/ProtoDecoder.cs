@@ -101,9 +101,16 @@ public static class ProtoDecoder
     /// <summary>A decoded message: field name to value, list or nested message, in field-number order.</summary>
     private sealed class Node : SortedDictionary<int, (string Name, List<object?> Values, bool Repeated)>
     {
+        // Keep the wire's order for embedded-message merging. A final dictionary loses
+        // a oneof transition (a -> b -> a), which must clear an earlier a even when the
+        // final later member is a again. Entries hold immutable decoded occurrences.
+        public List<Occurrence> Occurrences { get; } = [];
+        public Dictionary<string, int> Oneofs { get; } = new(StringComparer.Ordinal);
         /// <summary>An entry of a map field: written as "key": value of the map's object.</summary>
         public bool IsMapEntry { get; init; }
     }
+
+    private sealed record Occurrence(int Number, ProtoField? Field, object?[] Values, bool Matched);
 
     private static Node? ReadMessage(byte[] data, ProtoMessageType type, ProtoSchemaSet schemas, Stats stats, int depth)
     {
@@ -245,6 +252,20 @@ public static class ProtoDecoder
     /// </summary>
     private static void Add(Node node, int number, ProtoField? field, IEnumerable<object?> values, bool matched)
     {
+        var occurrence = new Occurrence(number, field, values.ToArray(), matched);
+        node.Occurrences.Add(occurrence);
+        Apply(node, occurrence);
+    }
+
+    private static void Apply(Node node, Occurrence occurrence)
+    {
+        var (number, field, values, matched) = occurrence;
+        if (matched && field?.Oneof is { } oneof)
+        {
+            if (node.Oneofs.TryGetValue(oneof, out var previous) && previous != number)
+                node.Remove(previous);
+            node.Oneofs[oneof] = number;
+        }
         var name = matched && field is not null ? field.Name : $"#{number}";
         var singular = matched && field is { IsRepeated: false };
         if (!node.TryGetValue(number, out var entry))
@@ -263,39 +284,28 @@ public static class ProtoDecoder
                 else
                 {
                     entry.Values.Clear();
-                    entry.Values.Add(value);
+                    entry.Values.Add(value is Node nested ? Copy(nested) : value);
                 }
             }
             node[number] = (entry.Name, entry.Values, false);
             return;
         }
-        entry.Values.AddRange(values);
+        entry.Values.AddRange(values.Select(value => value is Node nested ? Copy(nested) : value));
         node[number] = (entry.Name, entry.Values, entry.Repeated || entry.Values.Count > 1);
     }
 
     /// <summary>Merges a later occurrence of a singular embedded message into the earlier one.</summary>
     private static void Merge(Node target, Node source)
     {
-        foreach (var (number, (name, values, repeated)) in source)
-        {
-            if (!target.TryGetValue(number, out var existing))
-            {
-                target[number] = (name, [.. values], repeated);
-            }
-            else if (repeated || existing.Repeated)
-            {
-                existing.Values.AddRange(values);
-                target[number] = (existing.Name, existing.Values, true);
-            }
-            else if (existing.Values.Count == 1 && existing.Values[0] is Node earlier && values.Count == 1 && values[0] is Node later)
-            {
-                Merge(earlier, later);
-            }
-            else
-            {
-                target[number] = (name, [.. values], false);
-            }
-        }
+        foreach (var occurrence in source.Occurrences)
+            Add(target, occurrence.Number, occurrence.Field, occurrence.Values, occurrence.Matched);
+    }
+
+    private static Node Copy(Node source)
+    {
+        var copy = new Node { IsMapEntry = source.IsMapEntry };
+        Merge(copy, source);
+        return copy;
     }
 
     private static bool Fits(ProtoField field, int wireType) => (field.Type, wireType) switch

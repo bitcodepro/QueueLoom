@@ -17,6 +17,7 @@ public sealed partial class AwsSqsSnsWorkspace
 
     public override async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
+        using var operation = await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
         var url = await QueueUrlAsync(queue, cancellationToken).ConfigureAwait(false);
         var attributes = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["All"] },
             cancellationToken).ConfigureAwait(false)).Attributes;

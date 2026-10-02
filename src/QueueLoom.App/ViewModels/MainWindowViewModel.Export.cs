@@ -14,7 +14,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeExport()
     {
-        ExportMessagesCommand = new AsyncRelayCommand(
+        ExportMessagesCommand = _commands.Create(
             token => RunOperationAsync("Exporting messages", ExportMessagesAsync, token),
             () => !IsBusy && Messages.Count > 0);
     }

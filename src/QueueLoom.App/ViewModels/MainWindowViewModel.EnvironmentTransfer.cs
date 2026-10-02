@@ -12,10 +12,10 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeEnvironmentTransfer()
     {
-        ExportEnvironmentsCommand = new AsyncRelayCommand(
+        ExportEnvironmentsCommand = _commands.Create(
             token => RunOperationAsync("Exporting environments", ExportEnvironmentsAsync, token),
             () => !IsBusy && Profiles.Count > 0);
-        ImportEnvironmentsCommand = new AsyncRelayCommand(
+        ImportEnvironmentsCommand = _commands.Create(
             token => RunOperationAsync("Importing environments", ImportEnvironmentsAsync, token),
             () => !IsBusy);
         Profiles.CollectionChanged += (_, _) => ExportEnvironmentsCommand.NotifyCanExecuteChanged();

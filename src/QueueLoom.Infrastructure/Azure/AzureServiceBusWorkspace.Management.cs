@@ -15,6 +15,8 @@ public sealed partial class AzureServiceBusWorkspace
     public async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         var properties = (await GetAdministrationClient().GetQueueAsync(queue, cancellationToken).ConfigureAwait(false)).Value;
         return new QueueSettings(
             properties.DefaultMessageTimeToLive == TimeSpan.MaxValue ? null : properties.DefaultMessageTimeToLive,

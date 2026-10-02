@@ -9,6 +9,15 @@ namespace QueueLoom.Tests;
 public sealed class StaticSupplementRegressionTests
 {
     [Theory]
+    [InlineData("", true)]
+    [InlineData("created", false)]
+    public void RabbitEmptyTopicBinding_MatchesOnlyAnEmptyRoutingKey(string key, bool expected)
+    {
+        Assert.Equal(expected, RabbitBindings.TopicMatches("", key));
+        Assert.Equal(expected, RabbitMqTopologyIndex.TopicMatches("", key));
+    }
+
+    [Theory]
     [InlineData("#.#.created")]
     [InlineData("#.#.*")]
     public void RabbitTopology_UsesTheSameWordMatchingForDeadLetterQueues(string pattern)

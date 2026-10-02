@@ -139,9 +139,8 @@ public sealed class MessageItemViewModel : ObservableObject
     public string MessageId => Message.Properties.MessageId ?? KafkaPosition ?? "(no MessageId)";
 
     private string? KafkaPosition =>
-        Message.ApplicationProperties.FirstOrDefault(property => property.Name == "kafka.partition") is { } partition &&
-        Message.ApplicationProperties.FirstOrDefault(property => property.Name == "kafka.offset") is { } offset
-            ? $"partition {partition.Value} · offset {offset.Value}"
+        Message.Position is { } position
+            ? $"partition {position.Partition} · offset {position.Offset}"
             : null;
 
     public string Subject => Message.Properties.Subject ?? "—";
@@ -268,6 +267,7 @@ public sealed class MessageItemViewModel : ObservableObject
                 },
                 runtime = new
                 {
+                    position = Message.Position,
                     sequenceNumber = Message.SequenceNumber,
                     enqueuedSequenceNumber = Message.EnqueuedSequenceNumber,
                     state = Message.State.ToString(),

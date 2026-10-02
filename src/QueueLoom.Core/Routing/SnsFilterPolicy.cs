@@ -273,7 +273,7 @@ public static class SnsFilterPolicy
                 match = Match.No;
                 foreach (var condition in property.Value.EnumerateArray())
                 {
-                    var one = EvaluateCondition(condition, values, name, unknowns);
+                    var one = EvaluateCondition(condition, values, name, unknowns, scope.HasProperties);
                     match = one == Match.Yes || match == Match.Yes ? Match.Yes : one == Match.Unknown ? Match.Unknown : match;
                 }
                 if (match == Match.No)
@@ -308,13 +308,15 @@ public static class SnsFilterPolicy
         return Match.No;
     }
 
-    private static Match EvaluateCondition(JsonElement condition, IReadOnlyList<Scalar>? values, string name, List<string> unknowns)
+    private static Match EvaluateCondition(JsonElement condition, IReadOnlyList<Scalar>? values, string name, List<string> unknowns, bool hasProperties)
     {
         if (condition.ValueKind == JsonValueKind.Object &&
             condition.EnumerateObject().ToArray() is [{ Name: "exists" } exists] &&
             exists.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
-            return values is not null == exists.Value.GetBoolean() ? Match.Yes : Match.No;
+            return exists.Value.GetBoolean()
+                ? values is not null ? Match.Yes : Match.No
+                : values is null && hasProperties ? Match.Yes : Match.No;
         }
         if (values is null)
         {
@@ -474,6 +476,7 @@ public static class SnsFilterPolicy
     /// <summary>What a policy key refers to: a message attribute, or a field of the JSON body.</summary>
     private abstract class Scope
     {
+        public abstract bool HasProperties { get; }
         /// <summary>The value (an array gives each of its items); null when it is missing.</summary>
         public abstract IReadOnlyList<Scalar>? Get(string key);
 
@@ -482,6 +485,7 @@ public static class SnsFilterPolicy
 
     private sealed class AttributeScope(RoutingMessage message) : Scope
     {
+        public override bool HasProperties => message.Attributes.Count > 0;
         public override IReadOnlyList<Scalar>? Get(string key)
         {
             if (!message.Attributes.TryGetValue(key, out var value))
@@ -509,6 +513,8 @@ public static class SnsFilterPolicy
     /// </summary>
     private sealed class BodyScope(IReadOnlyList<JsonElement> elements) : Scope
     {
+        public override bool HasProperties => elements.SelectMany(Flatten)
+            .Any(element => element.ValueKind == JsonValueKind.Object && element.EnumerateObject().Any());
         public BodyScope(JsonElement element)
             : this([element])
         {
