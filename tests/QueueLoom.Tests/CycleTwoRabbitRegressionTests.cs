@@ -116,6 +116,7 @@ public sealed class CycleTwoRabbitRegressionTests
         MakeLegacy(scheduled.FilePath);
         var loaded = Assert.Single(Assert.Single(scheduled.Load()).Items).Message;
         AssertWire(loaded, true, false);
+        AssertWire(new ResendItem(message, message.Source, loaded).WithNewMessageId().Message, true, false);
         var store = new BatchReplayStore(Path.Combine(directory.Path, "operations"));
         var plan = await store.CreateAsync(profile.Id, message.Source, [(message.CreateDraft(), "isolated")], true, 50, default,
             profile.EndpointDisplay, ScheduledResend.IdentityFor(profile));
