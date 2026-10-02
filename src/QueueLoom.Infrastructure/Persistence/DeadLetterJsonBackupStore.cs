@@ -209,6 +209,8 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "replyToSessionId", properties.ReplyToSessionId);
             WriteString(writer, "partitionKey", properties.PartitionKey);
             WriteString(writer, "transactionPartitionKey", properties.TransactionPartitionKey);
+            WriteString(writer, "amqpType", properties.AmqpType);
+            WriteString(writer, "amqpAppId", properties.AmqpAppId);
             WriteDate(writer, "scheduledEnqueueTimeUtc", properties.ScheduledEnqueueTime);
             WriteDate(writer, "enqueuedTimeUtc", message.EnqueuedAt);
             WriteDate(writer, "expiresAtUtc", message.ExpiresAt);
@@ -267,7 +269,7 @@ public sealed class DeadLetterJsonBackupSession(
             {
                 using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
                 writer.WriteStartObject();
-                writer.WriteNumber("schemaVersion", profile.Provider == MessagingProvider.Kafka ? 2 : 1);
+                writer.WriteNumber("schemaVersion", profile.Provider == MessagingProvider.RabbitMq ? 3 : profile.Provider == MessagingProvider.Kafka ? 2 : 1);
                 writer.WriteString("backupId", backupId);
                 writer.WriteString("backedUpAtUtc", DateTimeOffset.UtcNow);
                 writer.WriteString("purgeStartedAtUtc", startedAt);

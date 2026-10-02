@@ -78,7 +78,7 @@ public sealed partial class BatchReplayStore
             if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
             var payload = new ReplayPayload(item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToArray(),
                 $"{item.Original.Source.Path} / {item.Original.SubQueue} / {item.Original.SequenceNumber} / {item.Original.Properties.MessageId}")
-            { KafkaEnvelope = item.Message.KafkaEnvelope, Destination = item.Destination,
+            { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata, Destination = item.Destination,
                 Original = item.Key };
             await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.message.json"), JsonSerializer.Serialize(payload), token);
             await WriteItemMetadata(folder, index, payload, item.Destination, token);
@@ -152,7 +152,7 @@ public sealed partial class BatchReplayStore
             if (state != (retryRejected ? "Rejected" : "Pending"))
                 throw new InvalidOperationException($"Item {index + 1} is {state}; it cannot be sent by this action.");
             var payload = await ReadPayload(folder, index, token);
-            var draft = new MessageDraft(payload.Body, payload.Properties, payload.ApplicationProperties) { KafkaEnvelope = payload.KafkaEnvelope };
+            var draft = ToDraft(payload);
             bytes += draft.Body.GetBytes().Length;
             if (bytes > 32 * 1024 * 1024 || !MessageDraftValidator.Validate(draft).IsValid)
                 throw new InvalidDataException("Operation payload exceeds limits or is invalid.");

@@ -332,6 +332,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         string? belongsTo) : ILeasedMessageChannel, IDisposable
     {
         private readonly Dictionary<int, long> _end = [];
+        private readonly Dictionary<int, long> _windowFrom = [];
+        private readonly Dictionary<int, long> _low = [];
         private readonly Dictionary<int, long> _deletableFrom = [];
         private readonly HashSet<int> _finished = [];
         private IConsumer<byte[]?, byte[]?>? _consumer;
@@ -377,14 +379,23 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 return ReceiveRange(Math.Clamp(maxMessages, 1, MaximumBatch), cancellationToken);
             }
 
-            // The newest messages: each partition's tail is read whole, then the latest ones by time are kept.
+            // Continuation is an offset frontier. Every selected partition must therefore be a suffix,
+            // even when a producer assigns nonmonotonic timestamps to its records.
             if (_newest is null)
             {
-                var tail = ReceiveRange(int.MaxValue, cancellationToken);
-                _newest = new Queue<LeasedMessage>(tail
-                    .OrderByDescending(message => message.Message.EnqueuedAt ?? DateTimeOffset.MinValue)
-                    .ThenByDescending(message => message.Message.Position?.Offset ?? 0)
-                    .Take(Math.Max(1, _newestCount)));
+                var tail = ReceiveNewest(cancellationToken);
+                var partitions = tail.GroupBy(message => Position(message).Partition)
+                    .Select(group => new Queue<LeasedMessage>(group.OrderByDescending(message => Position(message).Offset))).ToList();
+                _newest = new Queue<LeasedMessage>();
+                while (_newest.Count < Math.Max(1, _newestCount) && partitions.Count > 0)
+                {
+                    // Compare only the next eligible offset in each partition. Choosing an older offset
+                    // ahead of its newer neighbour would make that neighbour unreachable next page.
+                    var selected = partitions.OrderByDescending(queue => queue.Peek().Message.EnqueuedAt ?? DateTimeOffset.MinValue)
+                        .ThenByDescending(queue => Position(queue.Peek()).Offset).First();
+                    _newest.Enqueue(selected.Dequeue());
+                    if (selected.Count == 0) partitions.Remove(selected);
+                }
             }
             var batch = new List<LeasedMessage>();
             while (batch.Count < Math.Clamp(maxMessages, 1, MaximumBatch) && _newest.TryDequeue(out var next))
@@ -394,7 +405,48 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             return batch;
         }
 
-        private List<LeasedMessage> ReceiveRange(int limit, CancellationToken cancellationToken)
+        private List<LeasedMessage> ReceiveNewest(CancellationToken cancellationToken)
+        {
+            var consumer = Open();
+            var count = Math.Max(1, _newestCount);
+            var retained = topic.Partitions.ToDictionary(p => p, _ => new SortedDictionary<long, LeasedMessage>());
+            long width = count;
+            while (true)
+            {
+                ReceiveRange(int.MaxValue, cancellationToken, message =>
+                {
+                    var position = Position(message);
+                    var partition = retained[position.Partition];
+                    partition[position.Offset] = message;
+                    if (partition.Count > count) partition.Remove(partition.Keys.First());
+                });
+                if (_finished.Count < _end.Count)
+                    throw new TimeoutException("Kafka did not reach the requested page boundary. Retry reading the topic.");
+
+                // Offsets include compacted records, transaction markers and aborted records. Widen
+                // backwards only for partitions without enough surviving records, retaining a bounded tail.
+                var assignments = new List<TopicPartitionOffset>();
+                var ends = new Dictionary<int, long>();
+                width = width > long.MaxValue / 2 ? long.MaxValue : width * 2;
+                foreach (var partition in topic.Partitions)
+                {
+                    if (retained[partition].Count >= count || _windowFrom[partition] <= _low[partition]) continue;
+                    var to = _windowFrom[partition];
+                    var from = to - Math.Min(width, to - _low[partition]);
+                    _windowFrom[partition] = from;
+                    ends[partition] = to;
+                    assignments.Add(new(topic.Name, partition, from));
+                }
+                if (assignments.Count == 0) break;
+                _end.Clear();
+                foreach (var (partition, end) in ends) _end[partition] = end;
+                _finished.Clear();
+                consumer.Assign(assignments);
+            }
+            return retained.Values.SelectMany(p => p.Values).ToList();
+        }
+
+        private List<LeasedMessage> ReceiveRange(int limit, CancellationToken cancellationToken, Action<LeasedMessage>? visit = null)
         {
             var consumer = Open();
             var messages = new List<LeasedMessage>();
@@ -417,7 +469,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     _finished.Add(partition);
                     continue;
                 }
-                messages.Add(ToLeased(result));
+                if (visit is null) messages.Add(ToLeased(result));
+                else visit(ToLeased(result));
                 if (result.Offset.Value >= _end[partition] - 1)
                 {
                     _finished.Add(partition);
@@ -531,7 +584,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             {
                 from = to - Math.Max(1, _newestCount);
             }
-            return (Math.Clamp(from, low, high), to);
+            from = Math.Clamp(from, low, high);
+            _windowFrom[partition] = from;
+            _low[partition] = low;
+            return (from, to);
         }
 
         private LeasedMessage ToLeased(ConsumeResult<byte[]?, byte[]?> result)

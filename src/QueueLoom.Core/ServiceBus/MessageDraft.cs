@@ -20,6 +20,8 @@ public sealed record MessageDraft
 
     public IReadOnlyList<MessageApplicationProperty> ApplicationProperties { get; }
     public KafkaEnvelope? KafkaEnvelope { get; init; }
+    /// <summary>Only older persisted drafts used application-property names for AMQP basic metadata.</summary>
+    public bool LegacyAmqpMetadata { get; init; }
 
     public static MessageDraft Empty { get; } = new(EditableMessageBody.Empty);
 }

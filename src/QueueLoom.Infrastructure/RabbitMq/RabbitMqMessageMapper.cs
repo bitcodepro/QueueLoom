@@ -12,7 +12,7 @@ internal static class RabbitMqMessageMapper
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    /// <summary>AMQP "type" and "app-id" have no Service Bus equivalent; they travel as properties with these names.</summary>
+    /// <summary>Legacy backup projection names. Basic metadata now travels separately from user headers.</summary>
     internal const string TypeProperty = "amqp-type";
     internal const string AppIdProperty = "amqp-app-id";
 
@@ -32,14 +32,6 @@ internal static class RabbitMqMessageMapper
             .OrderBy(header => header.Key, StringComparer.Ordinal)
             .Select(header => ToProperty(header.Key, header.Value))
             .ToList();
-        if (properties.IsTypePresent())
-        {
-            applicationProperties.Add(new MessageApplicationProperty(TypeProperty, ApplicationPropertyType.String, properties.Type!));
-        }
-        if (properties.IsAppIdPresent())
-        {
-            applicationProperties.Add(new MessageApplicationProperty(AppIdProperty, ApplicationPropertyType.String, properties.AppId!));
-        }
 
         TimeSpan? timeToLive = long.TryParse(properties.Expiration, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds)
             ? TimeSpan.FromMilliseconds(milliseconds)
@@ -51,7 +43,9 @@ internal static class RabbitMqMessageMapper
             // The routing key the message was published with; for a dead letter, the one before it was dead-lettered.
             Subject: death?.RoutingKey ?? (routingKey.Length > 0 ? routingKey : null),
             ReplyTo: properties.IsReplyToPresent() ? properties.ReplyTo : null,
-            TimeToLive: timeToLive);
+            TimeToLive: timeToLive,
+            AmqpType: properties.IsTypePresent() ? properties.Type : null,
+            AmqpAppId: properties.IsAppIdPresent() ? properties.AppId : null);
 
         var deliveryCount = headers.TryGetValue("x-delivery-count", out var count) && ToLong(count) is { } deliveries
             ? (int)Math.Min(deliveries, int.MaxValue)
@@ -87,6 +81,8 @@ internal static class RabbitMqMessageMapper
             CorrelationId = draft.CorrelationId,
             ContentType = draft.ContentType,
             ReplyTo = draft.ReplyTo,
+            Type = draft.AmqpType,
+            AppId = draft.AmqpAppId,
             Persistent = true,
             Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
             Headers = new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -98,15 +94,10 @@ internal static class RabbitMqMessageMapper
 
         foreach (var property in message.ApplicationProperties)
         {
-            switch (property.Name)
-            {
-                case TypeProperty:
-                    properties.Type = property.Value;
-                    continue;
-                case AppIdProperty:
-                    properties.AppId = property.Value;
-                    continue;
-            }
+            // Historical persisted drafts have no separate envelope. Keep their prior interpretation,
+            // including the ambiguity of a single user header with one of these names.
+            if (message.LegacyAmqpMetadata && property.Name == TypeProperty) { properties.Type = property.Value; continue; }
+            if (message.LegacyAmqpMetadata && property.Name == AppIdProperty) { properties.AppId = property.Value; continue; }
             if (BrokerHeaderPrefixes.Any(prefix => property.Name.StartsWith(prefix, StringComparison.Ordinal)))
             {
                 continue;

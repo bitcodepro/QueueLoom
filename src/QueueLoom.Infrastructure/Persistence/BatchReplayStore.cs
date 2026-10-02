@@ -10,6 +10,7 @@ public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProp
     MessageApplicationProperty[] ApplicationProperties, string Origin)
 {
     public KafkaEnvelope? KafkaEnvelope { get; init; }
+    public bool HasSeparatedAmqpMetadata { get; init; }
     public ServiceBusEntityReference? Destination { get; init; }
     public DeadLetterMessageKey? Original { get; init; }
 }
@@ -50,7 +51,8 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
             var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope };
             var validation = MessageDraftValidator.Validate(prepared);
             if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
-            var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin) { KafkaEnvelope = prepared.KafkaEnvelope };
+            var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin)
+                { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata };
             await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
             await WriteItemMetadata(folder, count - 1, payload, destination, token);
         }
@@ -88,7 +90,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
             var item = await ReadPayload(folder, i, token);
             validatedBytes += item.Body.GetBytes().Length;
             if (validatedBytes > 32 * 1024 * 1024) throw new InvalidDataException("Replay bodies exceed 32 MiB. Resume is blocked.");
-            var validation = MessageDraftValidator.Validate(new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope });
+            var validation = MessageDraftValidator.Validate(ToDraft(item));
             if (!validation.IsValid) throw new InvalidDataException($"Replay item {i + 1} is invalid.");
         }
         try
@@ -105,7 +107,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
                 {
                     // Once sent, cancellation is handled between items to preserve the acknowledgement.
                     await workspace.SendMessageAsync(new SendMessageRequest(plan.Destination,
-                        new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope }), CancellationToken.None);
+                        ToDraft(item)), CancellationToken.None);
                 }
                 catch (Exception exception)
                 {
@@ -145,4 +147,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
     private static async Task<ReplayPayload> ReadPayload(string folder, int index, CancellationToken token) =>
         JsonSerializer.Deserialize<ReplayPayload>(await File.ReadAllTextAsync(Path.Combine(folder, $"{index:D6}.message.json"), token))
         ?? throw new InvalidDataException("Invalid replay payload");
+
+    private static MessageDraft ToDraft(ReplayPayload payload) => new(payload.Body, payload.Properties, payload.ApplicationProperties)
+        { KafkaEnvelope = payload.KafkaEnvelope, LegacyAmqpMetadata = !payload.HasSeparatedAmqpMetadata };
 }

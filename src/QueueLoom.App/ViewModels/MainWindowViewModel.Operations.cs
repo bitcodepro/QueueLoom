@@ -23,6 +23,7 @@ public sealed partial class MainWindowViewModel
     private long? _browseCursor;
     private bool _browseExhausted;
     private bool _browseDisplayLimit;
+    private bool _browseRequestLimit;
     private decimal? _purgeLimitPerSource = 1000;
     private bool _hasDlqScan;
     public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0", CultureInfo.CurrentCulture) : "—";
@@ -67,7 +68,8 @@ public sealed partial class MainWindowViewModel
     public string EmptyMessagesText => !IsConnected ? "Connect an environment to browse messages." : "Select a source and Peek, or search dead letters.";
     public string BrowsePageStatus => _browseSource is null ? DeadLetterSearchStatus :
         $"{Messages.Count:N0} loaded · {RetainedBrowseBytes / 1024d:N1} KiB retained · " +
-        (_browseDisplayLimit || Messages.Count >= BrowseDisplayLimit ? "Display limit reached (10,000 messages / 128 MiB)" :
+        (_browseRequestLimit ? "Browse request limit reached (1,000 messages); this provider has no continuation position" :
+            _browseDisplayLimit || Messages.Count >= BrowseDisplayLimit ? "Display limit reached (10,000 messages / 128 MiB)" :
             _browseExhausted ? "End of available messages" : "Use Load next 100 to continue");
 
     private void InitializeOperationsFeatures()
@@ -133,7 +135,7 @@ public sealed partial class MainWindowViewModel
 
     private void ResetBrowsePaging()
     {
-        _browseProfile = null; _browseSource = null; _browseCursor = null; _browseExhausted = false; _browseDisplayLimit = false;
+        _browseProfile = null; _browseSource = null; _browseCursor = null; _browseExhausted = false; _browseDisplayLimit = false; _browseRequestLimit = false;
         NotifyBrowseFeatures();
     }
 
@@ -176,6 +178,11 @@ public sealed partial class MainWindowViewModel
             if (message.SequenceNumber == long.MaxValue) _browseExhausted = true;
         }
         _browseExhausted |= page.Count < requested;
+        if (!positional && requested == BrowseMessagesRequest.MaximumMaxMessages && page.Count == requested)
+        {
+            _browseRequestLimit = true;
+            _browseExhausted = true;
+        }
         SelectedMessage ??= Messages.FirstOrDefault();
         NotifyBrowseFeatures();
     }

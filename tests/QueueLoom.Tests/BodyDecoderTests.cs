@@ -5,7 +5,7 @@ using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Tests;
 
-public sealed class BodyDecoderTests
+public sealed partial class BodyDecoderTests
 {
     [Fact]
     public void PlainJsonAndText_NeedNoDecodedView()
