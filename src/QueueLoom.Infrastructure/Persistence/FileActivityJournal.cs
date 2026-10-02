@@ -8,8 +8,9 @@ namespace QueueLoom.Infrastructure.Persistence;
 /// <summary>One durable file per action; a crash cannot corrupt previous records.</summary>
 public sealed class FileActivityJournal(string directory) : IActivityViewJournal
 {
-    public DateTimeOffset? ClearViewCutoff => File.Exists(Path.Combine(directory, ".view-cutoff"))
-        ? DateTimeOffset.Parse(File.ReadAllText(Path.Combine(directory, ".view-cutoff")), CultureInfo.InvariantCulture) : null;
+    public DateTimeOffset? ClearViewCutoff => File.Exists(Path.Combine(directory, ".view-cutoff")) &&
+        DateTimeOffset.TryParse(File.ReadAllText(Path.Combine(directory, ".view-cutoff")), CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind, out var cutoff) ? cutoff : null;
 
     public void SetClearViewCutoff(DateTimeOffset? cutoff)
     {
