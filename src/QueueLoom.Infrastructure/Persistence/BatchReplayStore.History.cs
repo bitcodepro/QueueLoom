@@ -150,6 +150,12 @@ public sealed partial class BatchReplayStore
         foreach (var index in indexes)
         {
             if (token.IsCancellationRequested) break;
+            // Space every attempted send, including a fast rejection or an unknown acknowledgement.
+            if (results.Count > 0)
+            {
+                try { await DelayAsync(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+            }
             ValidateConnection(plan, workspace, canWrite);
             var item = prepared[index];
             var stateFile = Path.Combine(folder, $"{index:D6}.state");
@@ -195,11 +201,6 @@ public sealed partial class BatchReplayStore
             }
             results.Add(result);
             progress?.Report(new ResendProgress(results.Count, indexes.Count, results.Count(r => r.Outcome == ResendOutcome.Failed)));
-            if (!token.IsCancellationRequested)
-            {
-                try { await Task.Delay(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token); }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            }
         }
         foreach (var index in indexes.Skip(results.Count)) results.Add(new ResendItemResult(prepared[index], ResendOutcome.Cancelled, "Unattempted; continue from history."));
         return new ResendResult(results, backup);

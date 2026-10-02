@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
@@ -60,6 +61,44 @@ public sealed class ImprovementBackupTests
         Assert.True(summary.IsReadable, summary.Error);
         Assert.Equal(40, (await repository.LoadAsync(summary)).Body.Length);
         Assert.True(File.Exists(path));
+    }
+
+    [Theory]
+    [InlineData("nullSummary")]
+    [InlineData("missingSummary")]
+    [InlineData("invalidSourceName")]
+    [InlineData("nullSource")]
+    [InlineData("missingProfileName")]
+    [InlineData("cachedError")]
+    public async Task MalformedMatchingCacheIsRebuiltFromIntactBackup(string corruption)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var path = await Backup(paths, 40);
+        var durableBytes = await File.ReadAllBytesAsync(path);
+        var repository = new JsonDeadLetterBackupRepository(paths);
+        var original = Assert.Single(await repository.ListAsync());
+        var cachePath = Assert.Single(Directory.GetFiles(Path.Combine(directory.Path, "backup-metadata-cache")));
+        var cache = JsonNode.Parse(await File.ReadAllTextAsync(cachePath))!.AsObject();
+        var summary = cache["Summary"]!.AsObject();
+        switch (corruption)
+        {
+            case "nullSummary": cache["Summary"] = null; break;
+            case "missingSummary": cache.Remove("Summary"); break;
+            case "invalidSourceName": summary["Source"]!["Name"] = " "; break;
+            case "nullSource": summary["Source"] = null; break;
+            case "missingProfileName": summary.Remove("ProfileName"); break;
+            case "cachedError": summary["Error"] = "An optional cache cannot make a durable backup unreadable."; break;
+        }
+        // Keep the real file's length, timestamp and path, so the cache fingerprint still matches.
+        await File.WriteAllTextAsync(cachePath, cache.ToJsonString());
+
+        var rebuilt = Assert.Single(await repository.ListAsync());
+        Assert.True(rebuilt.IsReadable, rebuilt.Error);
+        Assert.Equal(original, rebuilt);
+        Assert.Equal(40, (await repository.LoadAsync(rebuilt)).Body.Length);
+        Assert.Equal(durableBytes, await File.ReadAllBytesAsync(path));
+        Assert.Equal(original, Assert.Single(await new JsonDeadLetterBackupRepository(paths).ListAsync()));
     }
 
     [Fact]

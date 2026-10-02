@@ -7,6 +7,51 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task FailedAttemptStillThrottlesNextAttemptIncludingSelectiveRetry(bool retry, bool timeout)
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new BatchReplayStore(directory.Path);
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var workspace = new FakeWorkspace(); await workspace.ConnectAsync(profile);
+        var plan = await store.CreateResendAsync(profile.Id, [OperationItem(0), OperationItem(1)], ResendMode.Copy, 1,
+            profile.EndpointDisplay, ScheduledResend.IdentityFor(profile), "Throttle regression", default);
+        if (retry)
+        {
+            store.DelayAsync = (_, _) => Task.CompletedTask;
+            workspace.OnSend = () => throw new DeliveryRejectedException("Proven rejection before routing repair");
+            await store.RunItemsAsync(plan, [0, 1], false, workspace, () => true, null, default);
+            workspace.SentMessages.Clear();
+        }
+        var delayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        store.DelayAsync = (interval, _) =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(1), interval);
+            delayed.TrySetResult();
+            return release.Task;
+        };
+        workspace.OnSend = () =>
+        {
+            if (workspace.SentMessages.Count != 1) return;
+            if (timeout) throw new TimeoutException("Lost send acknowledgement");
+            throw new DeliveryRejectedException("Provider proved non-delivery");
+        };
+        var running = store.RunItemsAsync(plan, [0, 1], retry, workspace, () => true, null, default);
+        try
+        {
+            await Task.WhenAny(delayed.Task, running).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Single(workspace.SentMessages); // Second transport call cannot precede the rate barrier.
+            Assert.Equal(retry ? "Rejected" : "Pending", store.ReadHistory(plan).Items[1].State);
+        }
+        finally { release.TrySetResult(); await running; }
+        Assert.Equal(2, workspace.SentMessages.Count);
+    }
+
     private static ResendItem OperationItem(int index) => new(
         new BrowsedMessage(ServiceBusEntityReference.Queue("source"), ServiceBusSubQueue.DeadLetter, index,
             ReadOnlyMemory<byte>.Empty, new EditableMessageProperties(MessageId: $"original-{index}")),

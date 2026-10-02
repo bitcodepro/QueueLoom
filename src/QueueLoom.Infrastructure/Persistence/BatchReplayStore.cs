@@ -18,6 +18,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
 {
     public string RootDirectory => Path.GetFullPath(root);
     internal Action<string, string>? BeforeStateWrite { get; set; }
+    internal Func<TimeSpan, CancellationToken, Task> DelayAsync { get; set; } = Task.Delay;
     private string DirectoryFor(Guid id) => Path.Combine(RootDirectory, id.ToString("N"));
 
     public async Task<ReplayPlan> CreateAsync(Guid profileId, ServiceBusEntityReference destination,

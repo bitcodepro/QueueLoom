@@ -26,4 +26,4 @@ public sealed record OperationHistory(ReplayPlan Plan, IReadOnlyList<OperationIt
 
 /// <summary>Only throw when the provider explicitly proves that no delivery was accepted.
 /// Timeouts, connection loss and cancellation must never use this exception.</summary>
-public sealed class DeliveryRejectedException(string message) : Exception(message);
+public sealed class DeliveryRejectedException(string message, Exception? innerException = null) : Exception(message, innerException);

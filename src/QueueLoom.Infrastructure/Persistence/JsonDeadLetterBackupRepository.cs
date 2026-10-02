@@ -24,7 +24,8 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
 
     public string RootDirectory { get; }
     private string MetadataDirectory => Path.Combine(Path.GetDirectoryName(RootDirectory)!, "backup-metadata-cache");
-    private sealed record MetadataCache(long Length, long LastWriteTicks, DeadLetterBackupSummary Summary);
+    private sealed record MetadataCache(long Length, long LastWriteTicks, DeadLetterBackupSummary? Summary);
+    private static readonly JsonSerializerOptions CacheJsonOptions = new() { RespectRequiredConstructorParameters = true };
 
     public async Task<IReadOnlyList<DeadLetterBackupSummary>> ListAsync(
         CancellationToken cancellationToken = default)
@@ -53,14 +54,18 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                 DeadLetterBackupSummary? summary = null;
                 try
                 {
-                    if (File.Exists(cachePath))
+                    if (File.Exists(cachePath) && new FileInfo(cachePath).Length <= 256 * 1024)
                     {
-                        var cache = JsonSerializer.Deserialize<MetadataCache>(await File.ReadAllTextAsync(cachePath, cancellationToken));
-                        if (cache?.Length == info.Length && cache.LastWriteTicks == info.LastWriteTimeUtc.Ticks && cache.Summary.FilePath == path)
-                            summary = cache.Summary;
+                        var cache = JsonSerializer.Deserialize<MetadataCache>(await File.ReadAllTextAsync(cachePath, cancellationToken), CacheJsonOptions);
+                        if (cache?.Length == info.Length && cache.LastWriteTicks == info.LastWriteTimeUtc.Ticks &&
+                            cache.Summary is { IsReadable: true, Source.CanBrowse: true, ProfileName: not null, Environment: not null, BodySize: >= 0 } cached &&
+                            cached.FilePath == path && Enum.IsDefined(cached.SubQueue) &&
+                            (cached.Source.Kind != ServiceBusEntityKind.Subscription || !string.IsNullOrWhiteSpace(cached.Source.TopicName)))
+                            summary = cached;
                     }
                 }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException) { }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+                { /* Optional cache content is never evidence that the durable backup is unreadable. */ }
                 if (summary is null)
                 {
                     summary = await Task.Run(() =>

@@ -210,11 +210,6 @@ public sealed partial class MainWindowViewModel
         SelectedBackupMessage = null;
         RebuildBackupGroups();
         ApplyBackupFilter();
-        if (SelectedBackup?.IsReadable == true)
-        {
-            await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
-        }
-
         BackupStatus = failed == 0
             ? $"Deleted {deleted:N0} local backup(s). The queues were not changed."
             : $"Deleted {deleted:N0} local backup(s); {failed:N0} could not be deleted. Refresh to see what is left.";
@@ -266,10 +261,6 @@ public sealed partial class MainWindowViewModel
         SelectedBackupMessage = null;
         RebuildBackupGroups();
         ApplyBackupFilter();
-        if (SelectedBackup?.IsReadable == true)
-        {
-            await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
-        }
         BackupStatus = $"Deleted local backup {selected.FileName}. The queue was not changed.";
         OnPropertyChanged(nameof(VisibleBackupCount));
         AddActivity(
