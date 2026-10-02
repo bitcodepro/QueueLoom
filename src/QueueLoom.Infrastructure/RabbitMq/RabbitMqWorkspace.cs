@@ -198,7 +198,9 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         }
         catch (PublishException exception) when (exception.IsReturn)
         {
-            throw new InvalidOperationException(
+            // One mandatory publish on this channel was explicitly returned as unroutable.
+            // Connection loss, cancellation, timeout and a generic nack never enter this proof path.
+            throw new DeliveryRejectedException(
                 $"Exchange '{exchange}' has no queue bound for routing key '{routingKey}', so the message was not delivered. " +
                 "Set the routing key in Subject.", exception);
         }

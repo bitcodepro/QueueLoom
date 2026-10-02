@@ -40,8 +40,13 @@ public sealed class AzureDeduplicationAuditTests
         Assert.Single(await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, ServiceBusSubQueue.DeadLetter)));
 
         item = item.WithNewMessageId();
-        var result = await DeadLetterResender.ResendAsync(workspace, [item], ResendMode.Move);
+        var store = new BatchReplayStore(Path.Combine(directory.Path, "operations"));
+        var plan = await store.CreateResendAsync(profile.Id, [item], ResendMode.Move, 50, workspace.ConnectedNamespace,
+            ScheduledResend.IdentityFor(profile), "Emulator move", default);
+        var result = await store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default);
         Assert.Equal(1, result.MovedCount);
+        Assert.Equal("Moved", Assert.Single(store.ReadHistory(plan).Items).State);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default));
         await workspace.SendMessageAsync(new SendMessageRequest(source, item.Message));
         var replacement = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10));
         Assert.NotNull(replacement);

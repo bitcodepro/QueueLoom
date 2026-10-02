@@ -3,6 +3,7 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>Local purge backups.</summary>
 public sealed partial class MainWindowViewModel
 {
+    private CancellationTokenSource? _backupSelectionCancellation;
     public BackupMessageItemViewModel? SelectedBackup
     {
         get => _selectedBackup;
@@ -10,6 +11,7 @@ public sealed partial class MainWindowViewModel
         {
             if (SetProperty(ref _selectedBackup, value))
             {
+                _backupSelectionCancellation?.Cancel();
                 SelectedBackupMessage = null;
                 OnPropertyChanged(nameof(HasSelectedBackup));
                 NotifyCommandStates();
@@ -111,10 +113,7 @@ public sealed partial class MainWindowViewModel
             ? $"No backup messages found in {repository.RootDirectory}"
             : $"{BackupMessages.Count:N0} local backup message(s) · newest first";
 
-        if (SelectedBackup?.IsReadable == true)
-        {
-            await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
-        }
+        // Browsing metadata never loads a body. The operator opens one explicitly.
     }
 
     private void ApplyBackupFilter(string? preferredPath = null)
@@ -211,11 +210,6 @@ public sealed partial class MainWindowViewModel
         SelectedBackupMessage = null;
         RebuildBackupGroups();
         ApplyBackupFilter();
-        if (SelectedBackup?.IsReadable == true)
-        {
-            await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
-        }
-
         BackupStatus = failed == 0
             ? $"Deleted {deleted:N0} local backup(s). The queues were not changed."
             : $"Deleted {deleted:N0} local backup(s); {failed:N0} could not be deleted. Refresh to see what is left.";
@@ -229,7 +223,14 @@ public sealed partial class MainWindowViewModel
     {
         var repository = _backupRepository ?? throw new InvalidOperationException("Backup storage is unavailable.");
         var selected = SelectedBackup ?? throw new InvalidOperationException("Select a backup message first.");
-        var message = await repository.LoadAsync(selected.Summary, cancellationToken).ConfigureAwait(true);
+        using var selection = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _backupSelectionCancellation?.Cancel();
+        _backupSelectionCancellation = selection;
+        QueueLoom.Core.ServiceBus.BrowsedMessage message;
+        try { message = await repository.LoadAsync(selected.Summary, selection.Token).ConfigureAwait(true); }
+        catch (OperationCanceledException) when (selection.IsCancellationRequested && !cancellationToken.IsCancellationRequested) { return; }
+        finally { if (ReferenceEquals(_backupSelectionCancellation, selection)) _backupSelectionCancellation = null; }
+        if (selection.IsCancellationRequested || SelectedBackup != selected) return;
         SelectedBackupMessage = new MessageItemViewModel(
             message,
             selected.Summary.ProfileId,
@@ -260,10 +261,6 @@ public sealed partial class MainWindowViewModel
         SelectedBackupMessage = null;
         RebuildBackupGroups();
         ApplyBackupFilter();
-        if (SelectedBackup?.IsReadable == true)
-        {
-            await LoadSelectedBackupAsync(cancellationToken).ConfigureAwait(true);
-        }
         BackupStatus = $"Deleted local backup {selected.FileName}. The queue was not changed.";
         OnPropertyChanged(nameof(VisibleBackupCount));
         AddActivity(

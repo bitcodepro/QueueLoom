@@ -606,7 +606,7 @@ public sealed class RabbitMqBindingTests : IAsyncLifetime
             {
                 await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Topic(exchange), message));
             }
-            catch (InvalidOperationException)
+            catch (DeliveryRejectedException)
             {
                 // Unroutable: QueueLoom publishes with the mandatory flag and reports the message as not delivered.
             }

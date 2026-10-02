@@ -6,8 +6,20 @@ using QueueLoom.Core.Abstractions;
 namespace QueueLoom.Infrastructure.Persistence;
 
 /// <summary>One durable file per action; a crash cannot corrupt previous records.</summary>
-public sealed class FileActivityJournal(string directory) : IActivityJournal
+public sealed class FileActivityJournal(string directory) : IActivityViewJournal
 {
+    public DateTimeOffset? ClearViewCutoff => File.Exists(Path.Combine(directory, ".view-cutoff"))
+        ? DateTimeOffset.Parse(File.ReadAllText(Path.Combine(directory, ".view-cutoff")), CultureInfo.InvariantCulture) : null;
+
+    public void SetClearViewCutoff(DateTimeOffset? cutoff)
+    {
+        Directory.CreateDirectory(directory);
+        using var ownership = CrossProcessFileLock.AcquireAsync(Path.Combine(directory, ".view-lock"), CancellationToken.None).GetAwaiter().GetResult();
+        if (cutoff is null) { File.Delete(Path.Combine(directory, ".view-cutoff")); return; }
+        var existing = ClearViewCutoff;
+        if (existing > cutoff) cutoff = existing;
+        AtomicFile.WriteTextAsync(Path.Combine(directory, ".view-cutoff"), cutoff.Value.ToString("O", CultureInfo.InvariantCulture), CancellationToken.None).GetAwaiter().GetResult();
+    }
     public void Append(ActivityRecord record)
     {
         var day = Path.Combine(directory, record.Timestamp.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
@@ -32,6 +44,7 @@ public sealed class FileActivityJournal(string directory) : IActivityJournal
     public IReadOnlyList<ActivityRecord> ReadRecent(int maximum = 500)
     {
         if (!Directory.Exists(directory)) return [];
+        var cutoff = ClearViewCutoff;
         var records = new List<ActivityRecord>();
         foreach (var file in Directory.EnumerateFiles(directory, "*.json", SearchOption.AllDirectories)
                      .OrderDescending(StringComparer.Ordinal).Take(maximum))
@@ -39,7 +52,7 @@ public sealed class FileActivityJournal(string directory) : IActivityJournal
             try
             {
                 var record = JsonSerializer.Deserialize<ActivityRecord>(File.ReadAllText(file));
-                if (record is not null) records.Add(record);
+                if (record is not null && (cutoff is null || record.Timestamp > cutoff)) records.Add(record);
             }
             catch (JsonException) { /* A damaged record must not hide the remaining history. */ }
         }

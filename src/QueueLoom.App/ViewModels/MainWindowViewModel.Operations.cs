@@ -72,6 +72,7 @@ public sealed partial class MainWindowViewModel
 
     private void InitializeOperationsFeatures()
     {
+        InitializeActivityView();
         LoadMoreMessagesCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Loading next page", LoadBrowsePageAsync, token), () => CanLoadMoreMessages);
         FormatJsonCommand = new RelayCommand(() =>
@@ -189,8 +190,8 @@ public sealed partial class MainWindowViewModel
         NotifyReplayFeatures();
     }
 
-    private ActivityRecord MakeActivity(string level, string action, string details, ServiceBusEntityReference? source) =>
-        new(_operationId, DateTimeOffset.UtcNow, level, action, SensitiveDataRedactor.Redact(details),
+    private ActivityRecord MakeActivity(string level, string action, string details, ServiceBusEntityReference? source, DateTimeOffset? timestamp = null) =>
+        new(_operationId, timestamp ?? DateTimeOffset.UtcNow, level, action, SensitiveDataRedactor.Redact(details),
             ConnectedProfileId, _connectedProfile?.Name, source);
 
     private void RecordOperationIntent(string action, string details, ServiceBusEntityReference? source)
@@ -200,9 +201,9 @@ public sealed partial class MainWindowViewModel
         _activityJournal?.Append(MakeActivity("Warning", action, details, source));
     }
 
-    private void PersistActivity(string level, string action, string details, ServiceBusEntityReference? source)
+    private void PersistActivity(string level, string action, string details, ServiceBusEntityReference? source, DateTimeOffset timestamp)
     {
-        try { _activityJournal?.Append(MakeActivity(level, action, details, source)); }
+        try { _activityJournal?.Append(MakeActivity(level, action, details, source, timestamp)); }
         catch (Exception exception) { ErrorText = $"Activity journal could not be saved: {SanitizeException(exception)}"; }
     }
 

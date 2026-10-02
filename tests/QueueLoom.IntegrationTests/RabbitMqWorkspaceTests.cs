@@ -216,13 +216,40 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
             [new MessageApplicationProperty("tenant", ApplicationPropertyType.String, "acme")]);
 
         await _workspace.SendMessageAsync(new SendMessageRequest(events, Draft("order.created")));
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<DeliveryRejectedException>(() =>
             _workspace.SendMessageAsync(new SendMessageRequest(events, Draft("invoice.created"))));
 
         Assert.Contains("no queue bound for routing key 'invoice.created'", error.Message, StringComparison.Ordinal);
         var received = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"))));
         Assert.Equal("acme", received.ApplicationProperties.Single(property => property.Name == "tenant").Value);
         Assert.Equal("order.created", received.Properties.Subject);
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task ReturnedPublishCanBeSelectivelyRetriedAfterBindingRepairWithoutResendingConfirmedItem()
+    {
+        var original = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.Active, 7,
+            "retry body"u8.ToArray(), new EditableMessageProperties(MessageId: "stable-returned-id", Subject: "retry.repaired"));
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "operations"));
+        var plan = await store.CreateResendAsync(_workspace.ConnectedProfileId!.Value,
+            [new ResendItem(original, ServiceBusEntityReference.Topic("events"), original.CreateDraft())],
+            ResendMode.Copy, 50, _workspace.ConnectedNamespace, _workspace.ConnectedConfigurationIdentity!, "Returned publish", default);
+
+        var rejected = await store.RunItemsAsync(plan, [0], false, _workspace, () => true, null, default);
+        Assert.Equal(1, rejected.FailedCount);
+        Assert.Equal("Rejected", Assert.Single(store.ReadHistory(plan).Items).State);
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("orders")).MessageCount);
+
+        await _setup.QueueBindAsync("orders", "events", "retry.repaired");
+        var retried = await store.RunItemsAsync(plan, [0], true, _workspace, () => true, null, default);
+        Assert.Equal(1, retried.SentCount);
+        Assert.Equal("Sent", Assert.Single(store.ReadHistory(plan).Items).State);
+        var received = await _setup.BasicGetAsync("orders", autoAck: true);
+        Assert.NotNull(received);
+        Assert.Equal("stable-returned-id", received.BasicProperties.MessageId);
+        Assert.Equal("retry body", Encoding.UTF8.GetString(received.Body.Span));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], true, _workspace, () => true, null, default));
+        Assert.Null(await _setup.BasicGetAsync("orders", autoAck: true));
     }
 
     [EmulatorFact(Emulators.RabbitMq)]

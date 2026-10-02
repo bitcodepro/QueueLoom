@@ -208,7 +208,7 @@ public sealed partial class MainWindow : Window
                 ? async (progress, token) =>
                 {
                     var staging = await updater.DownloadAsync(update, target, progress, token);
-                    AppUpdater.Install(target, staging);
+                    await AppUpdater.InstallWithProgressAsync(target, staging, progress, token);
                     _logger?.LogInformation("Installed QueueLoom {Version}", update.Version);
                 }
                 : null;

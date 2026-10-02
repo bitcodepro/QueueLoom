@@ -16,6 +16,16 @@ public sealed record UpdateTarget(string Rid, string InstallDirectory, string Ex
 public sealed record UpdateProgress(long Downloaded, long? Total)
 {
     public double? Percent => Total is > 0 ? 100.0 * Downloaded / Total.Value : null;
+    public UpdatePhase Phase { get; init; } = UpdatePhase.Downloading;
+}
+
+public enum UpdatePhase { ChecksumFetch, Downloading, Verification, Extraction, Installation, Restart, Recovery }
+
+public sealed class UpdateStageException(UpdatePhase phase, string message, bool safeToRetry, Exception inner)
+    : IOException(message, inner)
+{
+    public UpdatePhase Phase { get; } = phase;
+    public bool SafeToRetry { get; } = safeToRetry;
 }
 
 /// <summary>
@@ -101,13 +111,17 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         var package = PackageUri(update.Tag, version, target.Rid);
         var id = Guid.NewGuid().ToString("N");
         var folder = Path.Combine(_downloadRoot, version + "-" + id);
-        Directory.CreateDirectory(folder);
-        File.WriteAllText(Path.Combine(folder, DownloadMarker), id);
+        var phase = UpdatePhase.ChecksumFetch;
         try
         {
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, DownloadMarker), id);
 
             var archive = Path.Combine(folder, PackageName(version, target.Rid));
+            progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             var expected = await DownloadChecksumAsync(new Uri(package + ".sha256"), cancellationToken).ConfigureAwait(false);
+            phase = UpdatePhase.Downloading;
+            progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             using (var response = await httpClient.GetAsync(package, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
             {
                 if (!response.IsSuccessStatusCode)
@@ -130,6 +144,8 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 }
             }
 
+            phase = UpdatePhase.Verification;
+            progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             await using (var stream = File.OpenRead(archive))
             {
                 var actual = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
@@ -139,6 +155,8 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 }
             }
 
+            phase = UpdatePhase.Extraction;
+            progress?.Report(new UpdateProgress(0, null) { Phase = phase });
             var staging = Path.Combine(folder, "files");
             Directory.CreateDirectory(staging);
             if (archive.EndsWith(".tar.gz", StringComparison.Ordinal))
@@ -153,10 +171,25 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             }
             return staging;
         }
-        catch
+        catch (Exception exception)
         {
             TryDelete(folder);
-            throw;
+            if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested) throw;
+            throw new UpdateStageException(phase, exception.Message, true, exception);
+        }
+    }
+
+    /// <summary>Retry after replacement is allowed only with no outstanding transaction receipt.</summary>
+    public static async Task InstallWithProgressAsync(UpdateTarget target, string staging, IProgress<UpdateProgress> progress, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        progress.Report(new UpdateProgress(0, null) { Phase = UpdatePhase.Installation });
+        try { await Task.Run(() => Install(target, staging), CancellationToken.None); }
+        catch (Exception exception)
+        {
+            var safe = !File.Exists(UpdateRestart.ReceiptPath(target));
+            throw new UpdateStageException(safe ? UpdatePhase.Installation : UpdatePhase.Recovery,
+                exception.Message, safe, exception);
         }
     }
 

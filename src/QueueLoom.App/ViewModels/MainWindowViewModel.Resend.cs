@@ -74,7 +74,9 @@ public sealed partial class MainWindowViewModel
             StatusText = "Resend cancelled before any message was sent";
             return;
         }
-        if (!CanWrite || ConnectedProfileId != connectedProfileId)
+        if (!CanWrite || ConnectedProfileId != connectedProfileId || _connectedProfile is null ||
+            ScheduledResend.IdentityFor(_connectedProfile) != ScheduledResend.IdentityFor(profile) ||
+            _workspace.ConnectedConfigurationIdentity != ScheduledResend.IdentityFor(profile))
         {
             throw new InvalidOperationException("Write access or environment changed. Review the resend again.");
         }
@@ -117,8 +119,8 @@ public sealed partial class MainWindowViewModel
         ResendResult result;
         try
         {
-            result = await DeadLetterResender.ResendAsync(
-                    _workspace, items, options.Mode, options.MessagesPerSecond, progress, cancellationToken)
+            result = await RunDurableResendAsync(
+                    items, options.Mode, options.MessagesPerSecond, "Immediate resend", progress, cancellationToken)
                 .ConfigureAwait(true);
         }
         finally
@@ -136,7 +138,7 @@ public sealed partial class MainWindowViewModel
         var summary = $"{result.SentCount:N0} of {items.Length:N0} sent" +
                       (options.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
                       (result.OriginalsKeptCount > 0 ? $" · {result.OriginalsKeptCount:N0} originals kept" : string.Empty) +
-                      (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed" : string.Empty) +
+                      (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain (review history)" : string.Empty) +
                       (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
         StatusText = $"Resend: {summary}";
         AddActivity(

@@ -132,26 +132,43 @@ public sealed partial class MainWindowViewModel
 
         DeadLetterResender.EnsureSafeMessageIds(_connectedProfile.Provider,
             resend.Items.Select(entry => entry.ToResendItem()).ToArray(), resend.Mode);
+        RecordOperationIntent(resend.Mode == ResendMode.Move ? "Scheduled move started" : "Scheduled resend started",
+            $"{resend.Items.Count:N0} messages · {resend.DestinationDisplay}", null);
+        var preparedPlan = _replayStore is null ? null : await _replayStore.CreateResendAsync(resend.ProfileId,
+            resend.Items.Select(entry => entry.ToResendItem()).ToArray(), resend.Mode, resend.MessagesPerSecond,
+            _connectedProfile.EndpointDisplay, resend.ConfigurationIdentity!, "Scheduled resend", cancellationToken, deferActivation: true);
         // Taken off the list before sending, so a crash in the middle never sends the same messages twice.
         if (_scheduledStore is not null && !RemoveScheduled(resend))
         {
             ScheduledResends.Remove(item);
+            RefreshOperationHistory();
             StatusText = "The scheduled resend was cancelled, started or changed in another window; nothing was sent.";
             return;
         }
         ScheduledResends.Remove(item);
-        RecordOperationIntent(resend.Mode == ResendMode.Move ? "Scheduled move started" : "Scheduled resend started",
-            $"{resend.Items.Count:N0} messages · {resend.DestinationDisplay}", null);
+        if (preparedPlan is not null)
+        {
+            try { await _replayStore!.ActivateScheduledAsync(preparedPlan, cancellationToken); }
+            finally { RefreshOperationHistory(); }
+        }
+        var progressFinished = false;
         var progress = new Progress<ResendProgress>(update =>
-            StatusText = $"Scheduled resend: sent {update.Processed:N0} of {update.Total:N0}" +
-                         (update.Failed > 0 ? $" · {update.Failed:N0} failed" : string.Empty));
-        var result = await DeadLetterResender.ResendAsync(_workspace, resend.Items.Select(entry => entry.ToResendItem()).ToArray(),
-            resend.Mode, resend.MessagesPerSecond, progress, cancellationToken).ConfigureAwait(true);
+        {
+            if (progressFinished) return;
+            StatusText = $"Scheduled resend: processed {update.Processed:N0} of {update.Total:N0}";
+        });
+        ResendResult result;
+        try
+        {
+            result = await RunDurableResendAsync(resend.Items.Select(entry => entry.ToResendItem()).ToArray(),
+                resend.Mode, resend.MessagesPerSecond, "Scheduled resend", progress, cancellationToken, preparedPlan).ConfigureAwait(true);
+        }
+        finally { progressFinished = true; }
         RemoveResentOriginals(result);
 
         var summary = $"{result.SentCount:N0} of {resend.Items.Count:N0} sent" +
                       (resend.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
-                      (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed" : string.Empty) +
+                      (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain (review history)" : string.Empty) +
                       (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
         StatusText = $"Scheduled resend: {summary}";
         AddActivity(result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0 ? "Success" : "Warning",

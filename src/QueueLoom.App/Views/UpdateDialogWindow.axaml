@@ -39,10 +39,11 @@
               ToolTip.Tip="Open the release page on GitHub" />
       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
         <Button Content="Not now" Click="LaterClick" IsVisible="{Binding IsAvailable}" />
-        <Button Content="Cancel" Click="CancelClick" IsVisible="{Binding IsDownloading}" />
+        <Button Content="Cancel" Click="CancelClick" IsVisible="{Binding CanCancel}" />
         <Button Content="Close" Click="LaterClick" IsVisible="{Binding IsFailed}" />
         <Button Content="Restart later" Click="LaterClick" IsVisible="{Binding IsReady}" />
         <Button Content="Update now" Classes="primary" Click="InstallClick" IsVisible="{Binding ShowInstallButton}" />
+        <Button Content="Retry update" Classes="primary" Click="InstallClick" IsVisible="{Binding CanRetry}" />
         <Button Content="Open releases page" Classes="primary" Click="ReleaseNotesClick" IsVisible="{Binding IsFailed}" />
         <Button Content="Open releases page" Classes="primary" Click="ReleaseNotesClick"
                 IsVisible="{Binding !CanInstall}" />

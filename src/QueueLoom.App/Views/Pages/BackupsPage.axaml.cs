@@ -12,9 +12,6 @@ public sealed partial class BackupsPage : UserControl
 
     private void OnBackupSelectionChanged(object? sender, SelectionChangedEventArgs args)
     {
-        if (DataContext is MainWindowViewModel { LoadSelectedBackupCommand: var load } && load.CanExecute(null))
-        {
-            load.Execute(null);
-        }
+        // Selection shows metadata; Open message explicitly loads its full body.
     }
 }

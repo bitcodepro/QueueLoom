@@ -4,11 +4,16 @@
              xmlns:controls="using:QueueLoom.App.Controls"
              x:Class="QueueLoom.App.Views.Pages.ActivityPage"
              x:DataType="vm:MainWindowViewModel">
-  <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
+  <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*,14,*">
     <StackPanel Spacing="14">
       <StackPanel Spacing="4">
         <TextBlock Text="Activity" Classes="pageTitle" />
         <TextBlock Text="Local history of connections, scans, sends and purges. Right-click a row to copy." Classes="muted" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="Clear Activity view…" Command="{Binding ClearActivityViewCommand}" />
+          <Button Content="Restore Activity view" Command="{Binding RestoreActivityViewCommand}" />
+        </StackPanel>
+        <TextBlock Text="{Binding ActivityViewNotice}" Classes="muted" TextWrapping="Wrap" FontSize="12" />
       </StackPanel>
       <!-- Resends waiting for their time -->
       <Border Classes="card" IsVisible="{Binding HasScheduledResends}">
@@ -39,7 +44,33 @@
         </StackPanel>
       </Border>
     </StackPanel>
-    <Border Grid.Row="2" Classes="card flush">
+    <Border Grid.Row="2" Classes="card" Padding="12">
+      <Grid RowDefinitions="Auto,Auto,Auto,*">
+        <DockPanel>
+          <Button DockPanel.Dock="Right" Content="Refresh operations" Command="{Binding RefreshOperationHistoryCommand}" />
+          <TextBlock Text="Operation history" Classes="sectionTitle" />
+        </DockPanel>
+        <ComboBox Grid.Row="1" ItemsSource="{Binding OperationHistory}" SelectedItem="{Binding SelectedOperation}" Margin="0,8">
+          <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:OperationHistoryViewModel"><TextBlock Text="{Binding Title}" /></DataTemplate></ComboBox.ItemTemplate>
+        </ComboBox>
+        <StackPanel Grid.Row="2" Spacing="4">
+          <TextBlock Text="Tick Pending items to continue, or Rejected items to retry proven failures. Unknown and confirmed sends cannot be resent. Move deletion recovery requires manual inspection." TextWrapping="Wrap" Classes="muted" FontSize="12" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="Continue unattempted" Command="{Binding ContinueOperationCommand}" />
+            <Button Content="Retry proven failures" Command="{Binding RetryRejectedOperationCommand}" />
+          </StackPanel>
+        </StackPanel>
+        <ListBox Grid.Row="3" ItemsSource="{Binding OperationItems}" MaxHeight="220" AutomationProperties.Name="Operation item outcomes">
+          <ListBox.ItemTemplate><DataTemplate x:DataType="vm:OperationItemViewModel">
+            <Grid ColumnDefinitions="Auto,*" Margin="0,3">
+              <CheckBox IsChecked="{Binding IsMarked}" IsEnabled="{Binding CanSelect}" Margin="0,0,8,0" />
+              <StackPanel Grid.Column="1"><TextBlock Text="{Binding Description}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Description}" /><TextBlock Text="{Binding Outcome}" Classes="muted" TextWrapping="Wrap" FontSize="12" /></StackPanel>
+            </Grid>
+          </DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </Border>
+    <Border Grid.Row="4" Classes="card flush">
       <Grid RowDefinitions="Auto,*">
         <Border Classes="tableHeader">
           <Grid ColumnDefinitions="90,100,220,*">
