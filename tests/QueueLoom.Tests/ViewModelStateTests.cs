@@ -1075,6 +1075,7 @@ public sealed partial class ViewModelStateTests
         {
             SentMessages.Add(request);
             OnSend?.Invoke();
+            if (CleanupOperationGate is not null) await CleanupOperationGate(cancellationToken);
             if (SendGate is not null) await SendGate();
         }
 

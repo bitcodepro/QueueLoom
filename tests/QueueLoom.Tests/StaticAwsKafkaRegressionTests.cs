@@ -58,6 +58,9 @@ public sealed class StaticAwsKafkaRegressionTests
         Assert.Equal(new LogPosition(3, 42), browsed.Position);
         var vm = new MessageItemViewModel(browsed);
         using var inspector = JsonDocument.Parse(vm.ApplicationPropertiesJson);
+        using var runtime = JsonDocument.Parse(vm.PropertiesJson);
+        Assert.Equal(3, runtime.RootElement.GetProperty("runtime").GetProperty("position").GetProperty("Partition").GetInt32());
+        Assert.Equal(42, runtime.RootElement.GetProperty("runtime").GetProperty("position").GetProperty("Offset").GetInt64());
         Assert.Contains("partition 3", vm.MessageId, StringComparison.Ordinal);
         Assert.Contains("offset 42", vm.MessageId, StringComparison.Ordinal);
         var draft = browsed.CreateDraft();
@@ -66,6 +69,12 @@ public sealed class StaticAwsKafkaRegressionTests
         using var csv = new StringWriter();
         await MessageExport.WriteCsvAsync(csv, [new("Fake", browsed)], default);
         Assert.Contains("kafka.offset", csv.ToString(), StringComparison.Ordinal);
+        Assert.Contains(",3,42,text,body", csv.ToString(), StringComparison.Ordinal);
+        using var json = new MemoryStream();
+        await MessageExport.WriteJsonAsync(json, [new("Fake", browsed)], default);
+        using var exported = JsonDocument.Parse(json.ToArray());
+        Assert.Equal(3, exported.RootElement[0].GetProperty("partition").GetInt32());
+        Assert.Equal(42, exported.RootElement[0].GetProperty("offset").GetInt64());
         var replay = KafkaMessageMapper.ToKafka(draft);
         Assert.Equal(record.Message.Key, replay.Key);
         Assert.Equal(record.Message.Value, replay.Value);
