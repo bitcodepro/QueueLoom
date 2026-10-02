@@ -112,5 +112,7 @@ public sealed partial class ViewModelStateTests
     {
         public IReadOnlyList<ScheduledResend> Load() => [];
         public void Save(IReadOnlyList<ScheduledResend> resends) => throw new IOException("isolated simulated storage failure");
+        public void Add(ScheduledResend resend) => Save([resend]);
+        public bool TryRemove(ScheduledResend expected) => throw new IOException("isolated simulated storage failure");
     }
 }

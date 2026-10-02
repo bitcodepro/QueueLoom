@@ -1,5 +1,20 @@
 using QueueLoom.App.Services;
 
+if (args.Length == 4 && args[0] == "--claim-schedule")
+{
+    var store = new QueueLoom.Infrastructure.Persistence.JsonScheduledResendStore(
+        QueueLoom.Infrastructure.Persistence.QueueLoomPaths.ForRoot(args[1]));
+    var job = store.Load().Single();
+    File.WriteAllText(args[2] + ".ready", "ready");
+    var wait = System.Diagnostics.Stopwatch.StartNew();
+    while (!File.Exists(args[3]))
+    {
+        if (wait.Elapsed > TimeSpan.FromSeconds(15)) return 71;
+        await Task.Delay(25);
+    }
+    File.WriteAllText(args[2] + ".result", store.TryRemove(job).ToString());
+    return 0;
+}
 if (args.Length > 0 && args[0] == "--hold-lock")
 {
     using var locked = new FileStream(args[1], FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);

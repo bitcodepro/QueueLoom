@@ -285,7 +285,7 @@ public sealed class ResendDialogViewModel : ObservableObject
                 : "Copies are sent; the originals stay where they are.";
             var rewrite = Rewrite is null ? string.Empty : $"\n\nFind and replace: {RewritePreview}";
             var ids = PreserveMessageIds
-                ? "\n\nMessage IDs are preserved. Duplicate detection may accept the send but suppress delivery. Azure moves require new IDs; use copy to preserve IDs."
+                ? "\n\nMessage IDs are preserved. Duplicate detection may accept the send but suppress delivery. Azure and SQS/SNS FIFO moves require new IDs; use copy to preserve IDs."
                 : "\n\nEvery copy receives a distinct new Message ID, assigned before sending and retained for retries and scheduled sends.";
             return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{ids}{fanOut}{rewrite}";
         }

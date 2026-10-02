@@ -283,10 +283,14 @@ public sealed class McpServerTests
         Assert.DoesNotContain(ProfileAccessMode.ReadWrite, server.Workspace.AccessModeChanges);
     }
 
-    [Fact]
-    public async Task AzureMcpMoveCannotPreserveIdsButCopyWarns()
+    [Theory]
+    [InlineData(MessagingProvider.AzureServiceBus)]
+    [InlineData(MessagingProvider.AmazonSqsSns)]
+    public async Task DeduplicatingProviderMcpMoveCannotPreserveIdsButCopyWarns(MessagingProvider provider)
     {
         await using var server = await McpTestServer.StartAsync(approve: true);
+        var profile = Assert.Single(await server.Profiles.ListAsync());
+        await server.Profiles.UpsertAsync(profile with { Provider = provider });
         var args = new Dictionary<string, object?>
         {
             ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 3L, messageId = (string?)null } },

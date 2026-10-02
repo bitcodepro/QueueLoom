@@ -61,6 +61,7 @@ public sealed class DeepAuditResendTests
         private readonly HashSet<string> _seen;
         public List<string> Delivered { get; } = [];
         public int Deleted { get; private set; }
+        public MessagingProvider Provider { get; set; } = MessagingProvider.AzureServiceBus;
         public IServiceBusWorkspace Workspace { get; }
         public DeduplicatingBroker(params string[] seen)
         {
@@ -70,7 +71,7 @@ public sealed class DeepAuditResendTests
             {
                 switch (method.Name)
                 {
-                    case "get_ConnectedProvider": return (MessagingProvider?)MessagingProvider.AzureServiceBus;
+                    case "get_ConnectedProvider": return (MessagingProvider?)Provider;
                     case "get_ConnectionState": return WorkspaceConnectionState.Connected;
                     case "SendMessageAsync":
                         var id = ((SendMessageRequest)args![0]!).Message.Properties.MessageId!;

@@ -106,7 +106,7 @@ public sealed partial class MainWindowViewModel
             options.Destination?.DisplayName ?? "their sources",
             items.Select(ScheduledResendItem.From).ToArray())
         { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
-        _scheduledStore?.Save(ScheduledResends.Select(item => item.Resend).Append(resend).ToArray());
+        _scheduledStore?.Add(resend);
         ScheduledResends.Add(CreateScheduledItem(resend));
         UpdateScheduledStatuses();
         StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {ScheduledResends[^1].Title}. It is listed on Activity.";
@@ -133,7 +133,12 @@ public sealed partial class MainWindowViewModel
         DeadLetterResender.EnsureSafeMessageIds(_connectedProfile.Provider,
             resend.Items.Select(entry => entry.ToResendItem()).ToArray(), resend.Mode);
         // Taken off the list before sending, so a crash in the middle never sends the same messages twice.
-        SaveScheduled(ScheduledResends.Where(pending => pending != item).Select(pending => pending.Resend).ToArray());
+        if (_scheduledStore is not null && !RemoveScheduled(resend))
+        {
+            ScheduledResends.Remove(item);
+            StatusText = "The scheduled resend was cancelled, started or changed in another window; nothing was sent.";
+            return;
+        }
         ScheduledResends.Remove(item);
         RecordOperationIntent(resend.Mode == ResendMode.Move ? "Scheduled move started" : "Scheduled resend started",
             $"{resend.Items.Count:N0} messages · {resend.DestinationDisplay}", null);
@@ -162,7 +167,12 @@ public sealed partial class MainWindowViewModel
         }
         try
         {
-            SaveScheduled(ScheduledResends.Where(pending => pending != item).Select(pending => pending.Resend).ToArray());
+            if (_scheduledStore is not null && !RemoveScheduled(item.Resend))
+            {
+                ScheduledResends.Remove(item);
+                StatusText = "The scheduled resend is no longer pending or changed in another window.";
+                return;
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -199,11 +209,11 @@ public sealed partial class MainWindowViewModel
     private ScheduledResendItemViewModel CreateScheduledItem(ScheduledResend resend) =>
         new(resend, RunScheduledResendCommand, CancelScheduledResendCommand);
 
-    private void SaveScheduled(IReadOnlyList<ScheduledResend> resends)
+    private bool RemoveScheduled(ScheduledResend resend)
     {
         try
         {
-            _scheduledStore?.Save(resends);
+            return _scheduledStore?.TryRemove(resend) ?? true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

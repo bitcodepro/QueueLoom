@@ -8,5 +8,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/QueueLoom.App/Services/UpdateRestart.cs" Link="UpdateRestart.cs" />
+    <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/AtomicFile.cs" Link="AtomicFile.cs" />
+    <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/CrossProcessFileLock.cs" Link="CrossProcessFileLock.cs" />
+    <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/JsonScheduledResendStore.cs" Link="JsonScheduledResendStore.cs" />
+    <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/QueueLoomPaths.cs" Link="QueueLoomPaths.cs" />
+    <ProjectReference Include="../../src/QueueLoom.Core/QueueLoom.Core.csproj" />
   </ItemGroup>
 </Project>

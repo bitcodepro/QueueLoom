@@ -61,4 +61,10 @@ public interface IScheduledResendStore
     IReadOnlyList<ScheduledResend> Load();
 
     void Save(IReadOnlyList<ScheduledResend> resends);
+
+    /// <summary>Add to the current persisted list without overwriting another window's changes.</summary>
+    void Add(ScheduledResend resend);
+
+    /// <summary>Atomically consume this exact pending job, before sending or cancelling it.</summary>
+    bool TryRemove(ScheduledResend expected);
 }
