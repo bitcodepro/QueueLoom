@@ -5,14 +5,13 @@ using QueueLoom.Core.Monitoring;
 namespace QueueLoom.Infrastructure.Persistence;
 
 /// <summary>
-/// Dead-letter history in one JSON Lines file, loaded once and appended to. Samples older than
+/// Dead-letter history in one JSON Lines file. Reads and updates share cross-process ownership. Samples older than
 /// <see cref="DeadLetterHistory.Retention"/> are dropped when the file is rewritten, at most once a day.
 /// </summary>
 public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? time = null) : IDeadLetterHistoryStore
 {
     private readonly object _gate = new();
     private readonly TimeProvider _time = time ?? TimeProvider.System;
-    private List<DeadLetterHistorySample>? _samples;
     private DateTimeOffset _lastCompaction;
 
     public void Append(DeadLetterHistorySample sample)
@@ -20,6 +19,7 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         ArgumentNullException.ThrowIfNull(sample);
         lock (_gate)
         {
+            using var ownership = OwnFile();
             var samples = Load();
             var previous = samples.LastOrDefault(item => item.ProfileId == sample.ProfileId);
             if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.Total == sample.Total)
@@ -38,7 +38,17 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-            File.AppendAllText(file, JsonSerializer.Serialize(sample) + "\n", Encoding.UTF8);
+            using var stream = new FileStream(file, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            AtomicFile.RestrictToCurrentUser(file);
+            // Preserve a crash tail as evidence, but isolate the next complete record from it.
+            if (stream.Length > 0)
+            {
+                stream.Seek(-1, SeekOrigin.End);
+                if (stream.ReadByte() != '\n') stream.WriteByte((byte)'\n');
+            }
+            stream.Seek(0, SeekOrigin.End);
+            stream.Write(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(sample) + "\n"));
+            stream.Flush(flushToDisk: true);
         }
     }
 
@@ -46,18 +56,15 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
     {
         lock (_gate)
         {
+            using var ownership = OwnFile();
             return Load().Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray();
         }
     }
 
     private List<DeadLetterHistorySample> Load()
     {
-        if (_samples is not null)
-        {
-            return _samples;
-        }
-
-        _samples = [];
+        // Reload under ownership: another window may have appended or compacted the shared file.
+        var samples = new List<DeadLetterHistorySample>();
         if (File.Exists(file))
         {
             foreach (var line in File.ReadLines(file))
@@ -70,7 +77,7 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
                 {
                     if (JsonSerializer.Deserialize<DeadLetterHistorySample>(line) is { Sources: not null } sample)
                     {
-                        _samples.Add(sample);
+                        samples.Add(sample);
                     }
                 }
                 catch (JsonException)
@@ -78,23 +85,17 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
                     // A line cut short by a crash must not hide the rest of the history.
                 }
             }
-            _samples.Sort((left, right) => left.At.CompareTo(right.At));
+            samples.Sort((left, right) => left.At.CompareTo(right.At));
         }
-        return _samples;
+        return samples;
     }
+
+    private CrossProcessFileLock OwnFile() =>
+        CrossProcessFileLock.AcquireAsync(file + ".lock", CancellationToken.None).GetAwaiter().GetResult();
 
     private void Rewrite(IReadOnlyList<DeadLetterHistorySample> samples)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-        var temporary = file + ".tmp";
-        using (var writer = new StreamWriter(temporary, append: false, new UTF8Encoding(false)))
-        {
-            foreach (var sample in samples)
-            {
-                writer.Write(JsonSerializer.Serialize(sample));
-                writer.Write('\n');
-            }
-        }
-        File.Move(temporary, file, overwrite: true);
+        AtomicFile.WriteTextAsync(file, string.Concat(samples.Select(sample => JsonSerializer.Serialize(sample) + "\n")),
+            CancellationToken.None).GetAwaiter().GetResult();
     }
 }

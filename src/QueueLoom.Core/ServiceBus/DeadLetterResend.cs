@@ -181,6 +181,8 @@ public static class DeadLetterResender
     public static void EnsureSafeMessageIds(QueueLoom.Core.Profiles.MessagingProvider? provider,
         IReadOnlyList<ResendItem> items, ResendMode mode)
     {
+        if (provider == QueueLoom.Core.Profiles.MessagingProvider.RabbitMq && mode == ResendMode.Move)
+            throw new NotSupportedException("RabbitMQ cannot safely identify a previously reviewed delivery for removal. Use Copy to retain the originals.");
         if (provider is not (QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus or QueueLoom.Core.Profiles.MessagingProvider.AmazonSqsSns) || mode != ResendMode.Move) return;
         var originalIds = items.Select(item => item.Original.Properties.MessageId).Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.Ordinal);
         var sentIds = new HashSet<string>(StringComparer.Ordinal);

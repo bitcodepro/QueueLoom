@@ -159,30 +159,56 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.RabbitMq)]
-    public async Task Deleting_and_moving_dead_letters_touch_only_the_chosen_ones()
+    public async Task Reviewed_dead_letters_require_copy_or_a_source_purge()
     {
         await PublishAsync("orders", "o-1", "o-2", "o-3");
         await RejectAsync("orders", 3);
         var orders = ServiceBusEntityReference.Queue("orders");
         var dead = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
 
-        var deletion = await _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
-            [new DeadLetterMessageKey(orders, ServiceBusSubQueue.DeadLetter, 0, "o-2")]));
-        Assert.Equal(1, deletion.DeletedCount);
+        Assert.False((await _workspace.GetTopologyAsync()).CanDeleteSelectedMessages);
+        await Assert.ThrowsAsync<NotSupportedException>(() => _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
+            [new DeadLetterMessageKey(orders, ServiceBusSubQueue.DeadLetter, 0, "o-2")])));
 
         var move = dead.Single(message => message.Properties.MessageId == "o-3");
-        var result = await DeadLetterResender.ResendAsync(_workspace,
-            [new ResendItem(move, DeadLetterResender.OriginalDestination(orders), move.CreateDraft())], ResendMode.Move);
-        Assert.Equal(1, result.MovedCount);
+        var items = new[] { new ResendItem(move, DeadLetterResender.OriginalDestination(orders), move.CreateDraft()) };
+        await Assert.ThrowsAsync<NotSupportedException>(() => DeadLetterResender.ResendAsync(_workspace, items, ResendMode.Move));
+        var result = await DeadLetterResender.ResendAsync(_workspace, items, ResendMode.Copy);
+        Assert.Equal(1, result.SentCount);
+        Assert.Equal(0, result.MovedCount);
 
         var left = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
-        Assert.Equal(["o-1"], left.Select(message => message.Properties.MessageId));
+        Assert.Equal(["o-1", "o-2", "o-3"], left.Select(message => message.Properties.MessageId).Order(StringComparer.Ordinal));
         var active = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders));
         var resent = Assert.Single(active);
         Assert.Equal("o-3", resent.Properties.MessageId);
         Assert.DoesNotContain(resent.ApplicationProperties, property => property.Name.StartsWith("x-death", StringComparison.Ordinal));
-        Assert.Contains(Directory.EnumerateFiles(deletion.BackupDirectory, "*.json", SearchOption.AllDirectories),
+        var purge = await _workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest([new DeadLetterPurgeTarget(orders, ServiceBusSubQueue.DeadLetter)]));
+        Assert.Equal(3, purge.DeletedCount);
+        Assert.Contains(Directory.EnumerateFiles(purge.BackupDirectory, "*.json", SearchOption.AllDirectories),
             file => File.ReadAllText(file).Contains("o-2", StringComparison.Ordinal));
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task Duplicate_application_ids_cannot_authorize_deletion_of_a_body_search_selection()
+    {
+        foreach (var body in new[] { "unreviewed-A", "review-only-B" })
+            await _setup.BasicPublishAsync(string.Empty, "orders", false, new BasicProperties { MessageId = "repeated-id" }, Encoding.UTF8.GetBytes(body));
+        await RejectAsync("orders", 2);
+        var orders = ServiceBusEntityReference.Queue("orders");
+        var found = await _workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("review-only-B", [new(orders, ServiceBusSubQueue.DeadLetter, 2)]));
+        var selected = Assert.Single(found.Matches);
+        Assert.Equal("review-only-B", Encoding.UTF8.GetString(selected.Body.Span));
+        await Assert.ThrowsAsync<NotSupportedException>(() => _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
+            [new(orders, selected.SubQueue, selected.SequenceNumber, selected.Properties.MessageId)])));
+        await Assert.ThrowsAsync<NotSupportedException>(() => DeadLetterResender.ResendAsync(_workspace,
+            [new(selected, orders, selected.CreateDraft())], ResendMode.Move));
+        Assert.Empty(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders)));
+        var left = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+        Assert.Equal(["review-only-B", "unreviewed-A"], left.Select(m => Encoding.UTF8.GetString(m.Body.Span)).Order(StringComparer.Ordinal));
+        await Assert.ThrowsAsync<NotSupportedException>(() => _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
+            left.Select(m => new DeadLetterMessageKey(orders, m.SubQueue, m.SequenceNumber, m.Properties.MessageId)))));
+        Assert.Empty(await new JsonDeadLetterBackupRepository(QueueLoomPaths.ForRoot(_directory.Path)).ListAsync());
     }
 
     [EmulatorFact(Emulators.RabbitMq)]
@@ -349,9 +375,8 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         var orders = ServiceBusEntityReference.Queue("orders");
         var browsed = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
         Assert.Equal(["own"], browsed.Select(message => message.Properties.MessageId));
-        var refused = await _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
-            [new(orders, ServiceBusSubQueue.DeadLetter, 0, "foreign"), new(orders, ServiceBusSubQueue.DeadLetter, 0, "unattributed")]));
-        Assert.Equal(0, refused.DeletedCount);
+        await Assert.ThrowsAsync<NotSupportedException>(() => _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
+            [new(orders, ServiceBusSubQueue.DeadLetter, 0, "foreign"), new(orders, ServiceBusSubQueue.DeadLetter, 0, "unattributed")])));
         var purged = await _workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
             [new(orders, ServiceBusSubQueue.DeadLetter)], batchSize: 1, maximumMessagesPerSubQueue: 10));
         Assert.False(purged.HasFailures);

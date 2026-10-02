@@ -83,6 +83,36 @@ public sealed partial class AppUpdaterTests : IDisposable
         Assert.False(File.Exists(UpdateRestart.ReceiptPath(target)));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task CycleOne_TerminalCleanupCrashRequiresItsExactProofAndAnEmptyDirectory(bool foreignProof, bool foreignFile)
+    {
+        var (target, _, receipt) = await DownloadAndInstall();
+        var path = UpdateRestart.ReceiptPath(target);
+        Directory.Delete(receipt.DownloadDirectory, true);
+        Directory.CreateDirectory(receipt.DownloadDirectory);
+        var proof = path + "." + receipt.Id + ".download-cleaned";
+        File.WriteAllText(proof, foreignProof ? Guid.NewGuid().ToString("N") : receipt.Id);
+        var extra = Path.Combine(receipt.DownloadDirectory, "unrelated");
+        if (foreignFile) File.WriteAllText(extra, "keep");
+        if (foreignProof || foreignFile)
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero));
+            Assert.True(File.Exists(path));
+            Assert.True(Directory.Exists(receipt.DownloadDirectory));
+            if (foreignFile) Assert.Equal("keep", File.ReadAllText(extra));
+        }
+        else
+        {
+            await UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero);
+            Assert.False(Directory.Exists(receipt.DownloadDirectory));
+            Assert.False(File.Exists(path));
+            Assert.False(File.Exists(proof));
+        }
+    }
+
     [Fact]
     public async Task Cleanup_WithALockedDownload_KeepsItsOwnershipMarkerUntilRetrySucceeds()
     {

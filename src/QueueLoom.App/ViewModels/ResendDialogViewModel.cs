@@ -107,7 +107,7 @@ public sealed class ResendDialogViewModel : ObservableObject
 
     public string MoveUnavailableReason => CanRemoveOriginals
         ? "Only dead-lettered messages can be moved; untick active messages to enable it."
-        : "Kafka keeps every message until its retention ends, so originals cannot be removed one by one.";
+        : "This service cannot safely remove reviewed messages one by one. Use Copy to retain the originals.";
 
     public bool Moves
     {

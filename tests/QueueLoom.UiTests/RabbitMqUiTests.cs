@@ -68,6 +68,10 @@ public sealed class RabbitMqUiTests
             await fixture.SettleAsync();
             Assert.Equal(3, fixture.ViewModel.Messages.Count);
             Assert.All(fixture.ViewModel.Messages, message => Assert.Equal("Rejected by a consumer", message.DeadLetterReason));
+            Assert.False(fixture.ViewModel.ShowDeleteMarkedMessages);
+            Assert.False(fixture.ViewModel.CanDeleteSelectedMessages);
+            Assert.False(new QueueLoom.App.ViewModels.ResendDialogViewModel(fixture.ViewModel.Messages.Select(message => message.Message).ToArray(),
+                [], rabbit.Name, false, canRemoveOriginals: fixture.ViewModel.CanDeleteSelectedMessages).CanMove);
             Save(fixture, "rabbitmq-dead-letters.png");
         }
         finally

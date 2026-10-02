@@ -186,7 +186,8 @@ internal sealed class RabbitMqTopologyIndex
                 ServiceBusEntityStatus.Active) { Note = note };
         });
 
-        return new ServiceBusTopology(fetchedAt, queues, topics) { SupportsTransferDeadLetter = false, TopicKindName = "exchange" };
+        return new ServiceBusTopology(fetchedAt, queues, topics)
+        { SupportsTransferDeadLetter = false, TopicKindName = "exchange", CanDeleteSelectedMessages = false };
     }
 
     /// <summary>

@@ -225,22 +225,37 @@ public static class UpdateRestart
                 if (!string.IsNullOrEmpty(receipt.DownloadDirectory))
                 {
                     var marker = Path.Combine(receipt.DownloadDirectory, DownloadMarker);
+                    var cleanupProof = path + "." + receipt.Id + ".download-cleaned";
                     if (!Path.GetFileName(receipt.DownloadDirectory).EndsWith("-" + receipt.Id, StringComparison.Ordinal) ||
                         File.Exists(receipt.DownloadDirectory))
                         throw new InvalidDataException("The update download is not owned by this transaction.");
                     // A previous cleanup or OS temp maintenance may already have removed this owned directory.
-                    // Existing directories still require the exact marker before any deletion.
+                    // Payload deletion requires the exact marker; terminal cleanup proof permits only empty-directory removal.
                     if (Directory.Exists(receipt.DownloadDirectory))
                     {
-                        if (!File.Exists(marker) || File.ReadAllText(marker) != receipt.Id)
-                            throw new InvalidDataException("The update download is not owned by this transaction.");
-                        TryDelete(receipt.DownloadDirectory);
+                        if (File.Exists(marker) && File.ReadAllText(marker) == receipt.Id)
+                        {
+                            // Keep the ownership marker throughout every payload deletion, including retries.
+                            foreach (var entry in Directory.EnumerateFileSystemEntries(receipt.DownloadDirectory)
+                                         .Where(entry => Path.GetFileName(entry) != DownloadMarker)) TryDelete(entry);
+                            if (!Directory.EnumerateFileSystemEntries(receipt.DownloadDirectory)
+                                    .Any(entry => Path.GetFileName(entry) != DownloadMarker))
+                            {
+                                PublishDownloadCleanupProof(cleanupProof, receipt.Id);
+                                TryDelete(marker);
+                                TryDeleteEmptyDirectory(receipt.DownloadDirectory);
+                            }
+                        }
+                        else if (File.Exists(cleanupProof) && File.ReadAllText(cleanupProof) == receipt.Id &&
+                                 !Directory.EnumerateFileSystemEntries(receipt.DownloadDirectory).Any())
+                        {
+                            // Crash after removing the final marker: durable proof permits only empty-directory removal.
+                            TryDeleteEmptyDirectory(receipt.DownloadDirectory);
+                        }
+                        else throw new InvalidDataException("The update download is not owned by this transaction.");
                     }
                     if (Directory.Exists(receipt.DownloadDirectory))
                     {
-                        // Recursive deletion can remove the marker before reaching a locked archive.
-                        // Keep ownership verifiable while this exact transaction retries the remainder.
-                        if (!File.Exists(marker)) File.WriteAllText(marker, receipt.Id);
                         if (deadline.Elapsed >= timeout) return;
                         await Task.Delay(200);
                         continue;
@@ -249,6 +264,7 @@ public static class UpdateRestart
                 TryDelete(path + "." + receipt.Id + ".ready");
                 TryDelete(path + ".helper");
                 TryDelete(path);
+                if (!File.Exists(path)) TryDelete(path + "." + receipt.Id + ".download-cleaned");
                 return;
             }
             if (deadline.Elapsed >= timeout) return; // Keep the receipt for the next successful startup.
@@ -258,6 +274,32 @@ public static class UpdateRestart
 
     public static FileStream OwnTransaction(string path) => new(path + ".handoff", FileMode.OpenOrCreate,
         FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+
+    private static void PublishDownloadCleanupProof(string path, string id)
+    {
+        if (File.Exists(path))
+        {
+            if (File.ReadAllText(path) != id) throw new InvalidDataException("The download cleanup proof belongs to another transaction.");
+            return;
+        }
+        var temporary = path + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(System.Text.Encoding.UTF8.GetBytes(id));
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path);
+        }
+        finally { TryDelete(temporary); }
+    }
+
+    private static void TryDeleteEmptyDirectory(string path)
+    {
+        try { Directory.Delete(path); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+    }
 
     public static bool InstallerIsAlive(Receipt receipt)
     {

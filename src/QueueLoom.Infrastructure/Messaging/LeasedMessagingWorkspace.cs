@@ -333,6 +333,11 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         ThrowIfDisposed();
         EnsureWriteAllowed();
 
+        // AMQP application IDs are optional and repeatable; delivery tags expire with their channel.
+        // A later receive cannot prove which previously reviewed delivery this selection meant.
+        if (Provider == MessagingProvider.RabbitMq)
+            throw new NotSupportedException("RabbitMQ cannot safely identify a previously reviewed delivery for selected deletion. Use a backed-up purge of the reviewed source instead.");
+
         var profile = GetConnectedProfile();
         var startedAt = TimeProvider.GetUtcNow();
         var topology = await GetTopologyCoreAsync(false, cancellationToken).ConfigureAwait(false);

@@ -54,6 +54,8 @@ The badge next to each environment (**AZURE**, **AWS**, **GCP**, **RABBITMQ**, *
 
 ## What you can do
 
+RabbitMQ permits browsing, Copy and backed-up source purges. Selected deletion and Move are unavailable because application Message IDs can repeat and delivery tags cannot identify a previously reviewed delivery after it is returned to the queue.
+
 - **Find dead letters.** On **Messages / DLQ**, search by Message ID, Correlation ID, subject, body text or a property, optionally only from the last hour, day or week. `/regex/` searches with a regular expression (`/…/i` ignores case), and `$.order.status == 'failed'` checks a field of the JSON body, also when it is gzip or base64 (`!=`, `>`, `<`, `=~ /regex/`, the path alone for "has the field", `[*]` for any list item, `and` / `or`). **Save search** keeps a search to run again with one click. For large dead-letter queues, tick **Deep**: it reads up to 20,000 messages per queue and can take a few minutes.
 - **See why they failed.** Above the list, **REASONS** counts the found messages by dead-letter reason, and **CAUSES** splits a reason by what the error says, with IDs and numbers left out (for example *Order {n} was not found · 412*). Click one to tick exactly those messages.
 - **Delete only the messages you need.** Tick the found messages and press **Delete N messages…**; the others stay in the queue.

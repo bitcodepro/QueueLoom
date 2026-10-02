@@ -49,7 +49,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             if (!topology.CanDeleteSelectedMessages)
             {
                 throw new McpException(
-                    $"{profile.Provider.DisplayName()} cannot delete single messages. Use purge_dead_letters to empty a dead-letter topic.");
+                    $"{profile.Provider.DisplayName()} cannot safely delete previously reviewed single messages. Use an approved source purge with purge_dead_letters instead.");
             }
             DeleteDeadLetterMessagesRequest request;
             try
