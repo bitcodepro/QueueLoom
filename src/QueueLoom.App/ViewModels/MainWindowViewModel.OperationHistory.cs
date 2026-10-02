@@ -30,6 +30,7 @@ public sealed class OperationHistoryViewModel(ReplayPlan plan, string? profileNa
 public sealed partial class MainWindowViewModel
 {
     private OperationHistoryViewModel? _selectedOperation;
+    private OperationItemViewModel? _selectedOperationItem;
     public ObservableCollection<OperationHistoryViewModel> OperationHistory { get; } = [];
     public ObservableCollection<OperationItemViewModel> OperationItems { get; } = [];
     public OperationHistoryViewModel? SelectedOperation
@@ -38,6 +39,7 @@ public sealed partial class MainWindowViewModel
         set
         {
             if (!SetProperty(ref _selectedOperation, value)) return;
+            SelectedOperationItem = null;
             OperationItems.Clear();
             try
             {
@@ -47,6 +49,17 @@ public sealed partial class MainWindowViewModel
             catch (Exception exception) { ErrorText = SanitizeException(exception); }
         }
     }
+    public OperationItemViewModel? SelectedOperationItem
+    {
+        get => _selectedOperationItem;
+        set
+        {
+            if (SetProperty(ref _selectedOperationItem, value))
+                OnPropertyChanged(nameof(SelectedOperationItemDetails));
+        }
+    }
+    public string SelectedOperationItemDetails => SelectedOperationItem is { } item
+        ? $"{item.Description}\n\n{item.Outcome}" : string.Empty;
     public AsyncRelayCommand RefreshOperationHistoryCommand { get; private set; } = null!;
     public AsyncRelayCommand ContinueOperationCommand { get; private set; } = null!;
     public AsyncRelayCommand RetryRejectedOperationCommand { get; private set; } = null!;
@@ -73,12 +86,15 @@ public sealed partial class MainWindowViewModel
     {
         if (_replayStore is null) return;
         var selected = SelectedOperation?.Plan.Id;
+        var selectedItem = SelectedOperationItem?.Item.Index;
         try
         {
             var plans = _replayStore.List();
             OperationHistory.Clear();
             foreach (var plan in plans) OperationHistory.Add(new(plan, Profiles.FirstOrDefault(p => p.Id == plan.ProfileId)?.Name));
             SelectedOperation = OperationHistory.FirstOrDefault(p => p.Plan.Id == selected) ?? OperationHistory.FirstOrDefault();
+            if (SelectedOperation?.Plan.Id == selected)
+                SelectedOperationItem = OperationItems.FirstOrDefault(item => item.Item.Index == selectedItem);
         }
         catch (Exception exception) { ErrorText = SanitizeException(exception); }
     }
