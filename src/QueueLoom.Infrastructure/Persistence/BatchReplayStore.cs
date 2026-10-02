@@ -1,5 +1,6 @@
 using System.Text.Json;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Core.Validation;
 
@@ -72,11 +73,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         EnsureScheduleActivated(plan, folder);
         if (plan.Count is < 1 or > 1000 || plan.MessagesPerSecond is < 1 or > 50 || !plan.Destination.CanSend)
             throw new InvalidDataException("Replay plan has invalid limits or destination.");
-        if (workspace.ConnectedProfileId != plan.ProfileId || !canWrite()) throw new InvalidOperationException("Reconnect and unlock the batch environment.");
-        if (plan.Namespace is not null && !string.Equals(plan.Namespace, workspace.ConnectedNamespace, StringComparison.Ordinal))
-            throw new InvalidOperationException("The profile namespace has changed since this batch was prepared. Resume is blocked.");
-        if (plan.ConfigurationIdentity is not null && plan.ConfigurationIdentity != workspace.ConnectedConfigurationIdentity)
-            throw new InvalidOperationException("The environment configuration changed since this batch was prepared. Resume is blocked.");
+        ValidateConnection(plan, workspace, canWrite);
         var sent = 0;
         long validatedBytes = 0;
         // Validate every pending payload and stop on an uncertain previous send before any new writes.
@@ -85,7 +82,9 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
             var state = ReadState(folder, i);
             if (state == "Sent") { sent++; continue; }
             if (state != "Pending")
-                throw new InvalidOperationException($"Batch {plan.Id:N}, item {i + 1}: previous delivery is uncertain. Inspect the destination before replaying; automatic retry is blocked.");
+                throw new InvalidOperationException(state == "Rejected"
+                    ? $"Batch {plan.Id:N}, item {i + 1}: provider proved delivery was rejected. Use Retry proven failures in operation history after repairing the route; automatic retry is blocked."
+                    : $"Batch {plan.Id:N}, item {i + 1}: previous delivery is uncertain. Inspect the destination before replaying; automatic retry is blocked.");
             var item = await ReadPayload(folder, i, token);
             validatedBytes += item.Body.GetBytes().Length;
             if (validatedBytes > 32 * 1024 * 1024) throw new InvalidDataException("Replay bodies exceed 32 MiB. Resume is blocked.");
@@ -98,26 +97,26 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
             {
                 token.ThrowIfCancellationRequested();
                 if (ReadState(folder, i) == "Sent") continue;
-                if (workspace.ConnectedProfileId != plan.ProfileId || !canWrite())
-                    throw new InvalidOperationException("Write access expired. Batch paused; completed sends are retained.");
-                if (plan.ConfigurationIdentity is not null && plan.ConfigurationIdentity != workspace.ConnectedConfigurationIdentity)
-                    throw new InvalidOperationException("The environment configuration changed. Batch paused.");
+                ValidateConnection(plan, workspace, canWrite);
                 var item = await ReadPayload(folder, i, token);
                 var stateFile = Path.Combine(folder, $"{i:D6}.state");
-                await AtomicFile.WriteTextAsync(stateFile, "Sending", token);
+                await WriteStateAsync(stateFile, "Sending", token);
                 try
                 {
                     // Once sent, cancellation is handled between items to preserve the acknowledgement.
                     await workspace.SendMessageAsync(new SendMessageRequest(plan.Destination,
                         new MessageDraft(item.Body, item.Properties, item.ApplicationProperties) { KafkaEnvelope = item.KafkaEnvelope }), CancellationToken.None);
-                    await AtomicFile.WriteTextAsync(stateFile, "Sent", CancellationToken.None);
-                    sent++;
                 }
-                catch
+                catch (Exception exception)
                 {
-                    await AtomicFile.WriteTextAsync(stateFile, "Uncertain", CancellationToken.None);
+                    await WriteStateAsync(stateFile, exception is DeliveryRejectedException ? "Rejected" : "Uncertain", CancellationToken.None);
+                    await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{i:D6}.detail"),
+                        SensitiveDataRedactor.SummarizeException(exception), CancellationToken.None);
                     throw;
                 }
+                // A persistence failure after acknowledgement leaves Sending, never a retriable rejection.
+                await WriteStateAsync(stateFile, "Sent", CancellationToken.None);
+                sent++;
                 progress?.Report(new ReplayProgress(plan.Id, sent, plan.Count, "Sending copies; originals retained"));
                 await Task.Delay(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token);
             }

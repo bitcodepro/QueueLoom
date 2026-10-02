@@ -77,7 +77,7 @@ public sealed partial class ViewModelStateTests
         await workspace.ConnectAsync(profile);
         var draft = new MessageDraft(new EditableMessageBody("{}", MessageBodyFormat.Json));
         var plan = await store.CreateAsync(profile.Id, ServiceBusEntityReference.Queue("target"),
-            new[] { (draft, "first"), (draft, "second") }, false, 50, default);
+            new[] { (draft, "first"), (draft, "second") }, false, 50, default, profile.EndpointDisplay, ScheduledResend.IdentityFor(profile));
         using var cancellation = new CancellationTokenSource();
         workspace.OnSend = () => cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.RunAsync(plan, workspace, () => true, null, cancellation.Token));
@@ -98,7 +98,8 @@ public sealed partial class ViewModelStateTests
         var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
         var workspace = new FakeWorkspace(); await workspace.ConnectAsync(profile);
         var draft = new MessageDraft(new EditableMessageBody("hello", MessageBodyFormat.Text));
-        var plan = await store.CreateAsync(profile.Id, ServiceBusEntityReference.Queue("target"), new[] { (draft, "test") }, false, 50, default);
+        var plan = await store.CreateAsync(profile.Id, ServiceBusEntityReference.Queue("target"), new[] { (draft, "test") }, false, 50, default,
+            profile.EndpointDisplay, ScheduledResend.IdentityFor(profile));
         workspace.OnSend = () => throw new IOException("Connection lost after write");
         await Assert.ThrowsAsync<IOException>(() => store.RunAsync(plan, workspace, () => true, null, default));
         workspace.OnSend = null;
