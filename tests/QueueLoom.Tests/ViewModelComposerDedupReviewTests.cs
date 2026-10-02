@@ -6,10 +6,12 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
-    [Fact]
-    public async Task ComposerCopyThenEditedMoveCannotDeleteAfterDuplicateSuppression()
+    [Theory]
+    [InlineData(MessagingProvider.AzureServiceBus)]
+    [InlineData(MessagingProvider.AmazonSqsSns)]
+    public async Task ComposerCopyThenEditedMoveCannotDeleteAfterDuplicateSuppression(MessagingProvider provider)
     {
-        var (vm, broker, dialogs) = await CreateAzureComposerAsync();
+        var (vm, broker, dialogs) = await CreateAzureComposerAsync(provider);
         await using var owner = vm;
         var delivered = new List<SendMessageRequest>();
         var seen = new HashSet<string>(StringComparer.Ordinal) { "original-A" };
@@ -37,10 +39,12 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("MessageId: move-C", dialogs.Confirmations.Last().Message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task ComposerUnchangedMoveRetryKeepsIdAfterAmbiguousSendFailure()
+    [Theory]
+    [InlineData(MessagingProvider.AzureServiceBus)]
+    [InlineData(MessagingProvider.AmazonSqsSns)]
+    public async Task ComposerUnchangedMoveRetryKeepsIdAfterAmbiguousSendFailure(MessagingProvider provider)
     {
-        var (vm, broker, _) = await CreateAzureComposerAsync();
+        var (vm, broker, _) = await CreateAzureComposerAsync(provider);
         await using var owner = vm;
         vm.DraftMessageId = "retry-B";
         vm.DraftMovesOriginal = true;
@@ -57,10 +61,12 @@ public sealed partial class ViewModelStateTests
         Assert.Single(broker.DeleteRequests);
     }
 
-    [Fact]
-    public async Task ComposerEditedMoveAfterAmbiguousSendFailureRequiresNewId()
+    [Theory]
+    [InlineData(MessagingProvider.AzureServiceBus)]
+    [InlineData(MessagingProvider.AmazonSqsSns)]
+    public async Task ComposerEditedMoveAfterAmbiguousSendFailureRequiresNewId(MessagingProvider provider)
     {
-        var (vm, broker, _) = await CreateAzureComposerAsync();
+        var (vm, broker, _) = await CreateAzureComposerAsync(provider);
         await using var owner = vm;
         vm.DraftMessageId = "move-B";
         vm.DraftMovesOriginal = true;
@@ -74,15 +80,15 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("already attempted", vm.ErrorText, StringComparison.Ordinal);
     }
 
-    private static async Task<(MainWindowViewModel Vm, FakeWorkspace Broker, FakeDialogService Dialogs)> CreateAzureComposerAsync()
+    private static async Task<(MainWindowViewModel Vm, FakeWorkspace Broker, FakeDialogService Dialogs)> CreateAzureComposerAsync(MessagingProvider provider)
     {
-        var profile = CreateProfile("Azure fake", EnvironmentKind.Development, ProfileAccessMode.ReadWrite) with { Provider = MessagingProvider.AzureServiceBus };
+        var profile = CreateProfile("Azure fake", EnvironmentKind.Development, ProfileAccessMode.ReadWrite) with { Provider = provider };
         var workspace = new FakeWorkspace();
         var dialogs = new FakeDialogService { ConfirmResult = true };
         var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
         await vm.InitializeAsync();
         await vm.ConnectCommand.ExecuteAsync();
-        var source = ServiceBusEntityReference.Queue("orders");
+        var source = ServiceBusEntityReference.Queue(provider == MessagingProvider.AmazonSqsSns ? "orders.fifo" : "orders");
         vm.Destinations.Add(new DestinationItemViewModel(source));
         vm.SelectedMessage = new MessageItemViewModel(new BrowsedMessage(source, ServiceBusSubQueue.DeadLetter, 1,
             "original body"u8.ToArray(), new EditableMessageProperties(MessageId: "original-A")), profile.Id, profile.Name);

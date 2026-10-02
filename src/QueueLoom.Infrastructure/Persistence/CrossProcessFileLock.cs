@@ -1,6 +1,6 @@
 namespace QueueLoom.Infrastructure.Persistence;
 
-internal sealed class CrossProcessFileLock : IAsyncDisposable
+internal sealed class CrossProcessFileLock : IAsyncDisposable, IDisposable
 {
     private readonly FileStream _stream;
 
@@ -48,4 +48,6 @@ internal sealed class CrossProcessFileLock : IAsyncDisposable
     }
 
     public ValueTask DisposeAsync() => _stream.DisposeAsync();
+
+    public void Dispose() => _stream.Dispose();
 }

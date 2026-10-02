@@ -24,22 +24,28 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
     {
         lock (_gate)
         {
-            // Move once, so older versions cannot execute schedules whose configuration or raw envelope
-            // they do not understand. Legacy jobs have no configuration identity and remain blocked.
-            var legacyPath = Path.Combine(paths.RootDirectory, "scheduled-resends.v1.json");
-            if (!File.Exists(FilePath) && File.Exists(legacyPath)) File.Move(legacyPath, FilePath);
-            try
-            {
-                return File.Exists(FilePath)
-                    ? (JsonSerializer.Deserialize<List<ResendDocument>>(File.ReadAllText(FilePath), Options) ?? []).Select(ToModel).ToArray()
-                    : [];
-            }
-            catch (JsonException)
-            {
-                // A damaged file is kept aside rather than overwritten, so nothing scheduled is silently lost.
-                File.Move(FilePath, FilePath + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
-                return [];
-            }
+            using var ownership = OwnFile();
+            return LoadCore();
+        }
+    }
+
+    private IReadOnlyList<ScheduledResend> LoadCore()
+    {
+        // Move once, so older versions cannot execute schedules whose configuration or raw envelope
+        // they do not understand. Legacy jobs have no configuration identity and remain blocked.
+        var legacyPath = Path.Combine(paths.RootDirectory, "scheduled-resends.v1.json");
+        if (!File.Exists(FilePath) && File.Exists(legacyPath)) File.Move(legacyPath, FilePath);
+        try
+        {
+            return File.Exists(FilePath)
+                ? (JsonSerializer.Deserialize<List<ResendDocument>>(File.ReadAllText(FilePath), Options) ?? []).Select(ToModel).ToArray()
+                : [];
+        }
+        catch (JsonException)
+        {
+            // A damaged file is kept aside rather than overwritten, so nothing scheduled is silently lost.
+            File.Move(FilePath, FilePath + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
+            return [];
         }
     }
 
@@ -48,15 +54,52 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         ArgumentNullException.ThrowIfNull(resends);
         lock (_gate)
         {
-            paths.EnsureCreated();
-            if (resends.Count == 0)
-            {
-                File.Delete(FilePath);
-                return;
-            }
-            var document = JsonSerializer.Serialize(resends.Select(ToDocument).ToList(), Options);
-            AtomicFile.WriteTextAsync(FilePath, document, CancellationToken.None).GetAwaiter().GetResult();
+            using var ownership = OwnFile();
+            SaveCore(resends);
         }
+    }
+
+    public void Add(ScheduledResend resend)
+    {
+        ArgumentNullException.ThrowIfNull(resend);
+        lock (_gate)
+        {
+            using var ownership = OwnFile();
+            var current = LoadCore();
+            if (current.Count >= ScheduledResend.MaximumPending || current.Any(item => item.Id == resend.Id))
+                throw new InvalidOperationException("The scheduled list is full or this job already exists. Refresh the pending jobs.");
+            SaveCore(current.Append(resend).ToArray());
+        }
+    }
+
+    public bool TryRemove(ScheduledResend expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        lock (_gate)
+        {
+            using var ownership = OwnFile();
+            var current = LoadCore();
+            var job = current.FirstOrDefault(item => item.Id == expected.Id);
+            if (job is null || JsonSerializer.Serialize(ToDocument(job), Options) != JsonSerializer.Serialize(ToDocument(expected), Options))
+                return false;
+            SaveCore(current.Where(item => item.Id != expected.Id).ToArray());
+            return true;
+        }
+    }
+
+    private CrossProcessFileLock OwnFile() =>
+        CrossProcessFileLock.AcquireAsync(FilePath + ".lock", CancellationToken.None).GetAwaiter().GetResult();
+
+    private void SaveCore(IReadOnlyList<ScheduledResend> resends)
+    {
+        paths.EnsureCreated();
+        if (resends.Count == 0)
+        {
+            File.Delete(FilePath);
+            return;
+        }
+        var document = JsonSerializer.Serialize(resends.Select(ToDocument).ToList(), Options);
+        AtomicFile.WriteTextAsync(FilePath, document, CancellationToken.None).GetAwaiter().GetResult();
     }
 
     private static ResendDocument ToDocument(ScheduledResend resend) => new(

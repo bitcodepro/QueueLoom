@@ -191,9 +191,9 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             if (target.Bundle is { } bundle)
             {
                 var newBundle = Path.Combine(staging, "QueueLoom.app");
-                if (!Directory.Exists(newBundle))
+                if (!Directory.Exists(newBundle) || !File.Exists(Path.Combine(newBundle, "Contents", "MacOS", "QueueLoom")))
                 {
-                    throw new InvalidOperationException("The package does not contain QueueLoom.app.");
+                    throw new InvalidOperationException("The package does not contain a complete QueueLoom.app with its executable.");
                 }
                 ReplaceDirectory(bundle, newBundle, moves, added, id);
                 MakeExecutable(Path.Combine(bundle, "Contents", "MacOS", "QueueLoom"));

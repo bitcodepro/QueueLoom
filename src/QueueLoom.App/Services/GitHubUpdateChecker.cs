@@ -8,8 +8,8 @@ public sealed record UpdateCheckResult(Version Version, string Tag, Uri ReleaseP
 
 public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDisposable
 {
-    private static readonly Uri TagsApi =
-        new("https://api.github.com/repos/bitcodepro/QueueLoom/tags?per_page=30");
+    private static readonly Uri ReleasesApi =
+        new("https://api.github.com/repos/bitcodepro/QueueLoom/releases?per_page=30");
     private readonly HttpClient _httpClient = httpClient ?? CreateClient();
     private readonly bool _ownsClient = httpClient is null;
 
@@ -17,7 +17,7 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, TagsApi);
+            using var request = new HttpRequestMessage(HttpMethod.Get, ReleasesApi);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
             using var response = await _httpClient.SendAsync(
@@ -42,7 +42,9 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
             Version? latestVersion = null;
             foreach (var item in document.RootElement.EnumerateArray())
             {
-                if (!item.TryGetProperty("name", out var nameElement))
+                if (!item.TryGetProperty("draft", out var draft) || draft.ValueKind != JsonValueKind.False ||
+                    !item.TryGetProperty("prerelease", out var prerelease) || prerelease.ValueKind != JsonValueKind.False ||
+                    !item.TryGetProperty("tag_name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
                 {
                     continue;
                 }

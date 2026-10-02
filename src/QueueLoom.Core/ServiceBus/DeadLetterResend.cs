@@ -181,12 +181,12 @@ public static class DeadLetterResender
     public static void EnsureSafeMessageIds(QueueLoom.Core.Profiles.MessagingProvider? provider,
         IReadOnlyList<ResendItem> items, ResendMode mode)
     {
-        if (provider != QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus || mode != ResendMode.Move) return;
+        if (provider is not (QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus or QueueLoom.Core.Profiles.MessagingProvider.AmazonSqsSns) || mode != ResendMode.Move) return;
         var originalIds = items.Select(item => item.Original.Properties.MessageId).Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.Ordinal);
         var sentIds = new HashSet<string>(StringComparer.Ordinal);
         if (items.Any(item => string.IsNullOrWhiteSpace(item.Message.Properties.MessageId) ||
             originalIds.Contains(item.Message.Properties.MessageId) || !sentIds.Add(item.Message.Properties.MessageId)))
-            throw new InvalidOperationException("Azure moves require distinct new Message IDs. Duplicate detection may accept a preserved ID but suppress the replacement. Choose new IDs, or copy while keeping the originals.");
+            throw new InvalidOperationException($"{(provider == QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus ? "Azure" : "SQS/SNS FIFO")} moves require distinct new Message IDs. Duplicate detection may accept a preserved ID but suppress the replacement. Choose new IDs, or copy while keeping the originals.");
     }
 
     private static string DescribeKept(DeadLetterMessageDeletionOutcome? outcome) => outcome switch

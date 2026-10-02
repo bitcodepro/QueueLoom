@@ -290,7 +290,7 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
         var retry = dead.Single(message => message.CreateDraft().Body.Content == "retry me");
 
         var result = await DeadLetterResender.ResendAsync(_workspace,
-            [new ResendItem(retry, DeadLetterResender.OriginalDestination(retry.Source), retry.CreateDraft())], ResendMode.Move);
+            [new ResendItem(retry, DeadLetterResender.OriginalDestination(retry.Source), retry.CreateDraft()).WithNewMessageId()], ResendMode.Move);
 
         Assert.Equal(ResendOutcome.Moved, Assert.Single(result.Items).Outcome);
         Assert.NotEmpty(Directory.GetFiles(result.BackupDirectory!, "0*.json", SearchOption.AllDirectories));

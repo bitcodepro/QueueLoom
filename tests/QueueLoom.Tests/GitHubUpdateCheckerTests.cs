@@ -6,12 +6,12 @@ namespace QueueLoom.Tests;
 public sealed class GitHubUpdateCheckerTests
 {
     [Fact]
-    public async Task NewerTag_ReturnsTrustedGitHubPage()
+    public async Task NewerPublishedRelease_ReturnsTrustedGitHubPage()
     {
         using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("""
-                [{"name":"v2.0.0"},{"name":"v99.1.0"},{"name":"not-a-version"}]
+                [{"tag_name":"v2.0.0","draft":false,"prerelease":false},{"tag_name":"v99.1.0","draft":false,"prerelease":false},{"tag_name":"not-a-version","draft":false,"prerelease":false}]
                 """)
         }));
         using var checker = new GitHubUpdateChecker(client);
