@@ -1,5 +1,23 @@
 using QueueLoom.App.Services;
 
+if (args.Length == 6 && args[0] == "--append-history")
+{
+    var store = new QueueLoom.Infrastructure.Persistence.JsonLinesDeadLetterHistoryStore(args[1]);
+    var profile = Guid.Parse(args[2]);
+    store.Read(profile, DateTimeOffset.MinValue);
+    File.WriteAllText(args[3] + ".ready", "ready");
+    var wait = System.Diagnostics.Stopwatch.StartNew();
+    while (!File.Exists(args[4]))
+    {
+        if (wait.Elapsed > TimeSpan.FromSeconds(20)) return 71;
+        await Task.Delay(10);
+    }
+    store.Append(new QueueLoom.Core.Monitoring.DeadLetterHistorySample(DateTimeOffset.UtcNow, profile,
+        "Test", long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), new Dictionary<string, long>()));
+    File.WriteAllText(args[3] + ".done", "done");
+    return 0;
+}
+
 if (args.Length == 5 && args[0] == "--export-diagnostics")
 {
     var preview = new DiagnosticsPreview($"Report from {args[3]}\n", $"{{\"export\":\"{args[3]}\"}}");

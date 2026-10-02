@@ -62,6 +62,28 @@ public sealed partial class AppUpdaterTests : IDisposable
     }
 
     [Fact]
+    public async Task CycleOne_CleanupWithLockedDownloadNeverDeletesAndRecreatesOwnershipProof()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var (target, _, receipt) = await DownloadAndInstall();
+        var marker = Path.Combine(receipt.DownloadDirectory, UpdateRestart.DownloadMarker);
+        var timestamp = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(marker, timestamp);
+        var archive = Directory.GetFiles(receipt.DownloadDirectory, "*.zip").Single();
+        using (var locked = new FileStream(archive, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.Zero);
+            Assert.True(File.Exists(UpdateRestart.ReceiptPath(target)));
+            Assert.True(File.Exists(archive));
+            Assert.Equal(receipt.Id, File.ReadAllText(marker));
+            Assert.Equal(timestamp, File.GetLastWriteTimeUtc(marker));
+        }
+        await UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.Zero);
+        Assert.False(Directory.Exists(receipt.DownloadDirectory));
+        Assert.False(File.Exists(UpdateRestart.ReceiptPath(target)));
+    }
+
+    [Fact]
     public async Task Cleanup_WithALockedDownload_KeepsItsOwnershipMarkerUntilRetrySucceeds()
     {
         if (!OperatingSystem.IsWindows()) return;

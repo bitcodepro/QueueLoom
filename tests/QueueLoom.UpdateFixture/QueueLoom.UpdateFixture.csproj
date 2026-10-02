@@ -14,6 +14,7 @@
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/JsonScheduledResendStore.cs" Link="JsonScheduledResendStore.cs" />
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/QueueLoomPaths.cs" Link="QueueLoomPaths.cs" />
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/JsonAppSettingsStore.cs" Link="JsonAppSettingsStore.cs" />
+    <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/JsonLinesDeadLetterHistoryStore.cs" Link="JsonLinesDeadLetterHistoryStore.cs" />
     <ProjectReference Include="../../src/QueueLoom.Core/QueueLoom.Core.csproj" />
   </ItemGroup>
 </Project>

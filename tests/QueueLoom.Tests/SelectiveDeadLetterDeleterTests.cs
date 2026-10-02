@@ -8,6 +8,26 @@ public sealed class SelectiveDeadLetterDeleterTests
 {
     private static readonly ServiceBusEntityReference Orders = ServiceBusEntityReference.Queue("orders");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CycleOne_ReceiveFailurePreservesAcknowledgedDeletionAndReleasesOtherLocks(bool timeout)
+    {
+        var queue = new FakeLockQueue([Message(1), Message(2), Message(3)]);
+        queue.OnReceive = count => { if (count == 2) { if (timeout) throw new TaskCanceledException("receive timeout"); throw new IOException("receive failed"); } };
+        var backups = new List<long>();
+        IReadOnlyList<DeadLetterMessageDeletionResult>? results = null;
+        var error = await Record.ExceptionAsync(async () => results = await DeleteAsync(queue, [Key(1), Key(3)], backups, batchSize: 2));
+        Assert.Equal([1L], backups);
+        Assert.Equal([2L, 3L], queue.Remaining);
+        Assert.Empty(queue.Locked);
+        Assert.Null(error);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Deleted, results!.Single(r => r.Message.SequenceNumber == 1).Outcome);
+        var unfinished = results!.Single(r => r.Message.SequenceNumber == 3);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Failed, unfinished.Outcome);
+        Assert.Contains(timeout ? "receive timeout" : "receive failed", unfinished.Detail, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task DeletesOnlyTheSelectedMessagesAndReleasesTheRest()
     {
