@@ -134,13 +134,14 @@ internal sealed class WindowFixture : IAsyncDisposable
         }
         var accessor = new TopLevelAccessor();
         OperationStore = new BatchReplayStore(Path.Combine(_dataDirectory, "operations"));
+        ActivityJournal = new FileActivityJournal(Path.Combine(_dataDirectory, "activity"));
         ViewModel = new MainWindowViewModel(
             new InMemoryProfileRepository(profiles),
             secretVault,
             workspace,
             new WindowDialogService(accessor),
             new InMemoryBackupRepository(),
-            activityJournal: new FileActivityJournal(Path.Combine(_dataDirectory, "activity")),
+            activityJournal: ActivityJournal,
             replayStore: OperationStore,
             clipboard: Clipboard,
             launcher: new NoopLauncher(),
@@ -164,6 +165,7 @@ internal sealed class WindowFixture : IAsyncDisposable
 
     public MainWindowViewModel ViewModel { get; }
     public BatchReplayStore OperationStore { get; }
+    public FileActivityJournal ActivityJournal { get; }
 
     public JsonLinesDeadLetterHistoryStore History { get; }
 
@@ -173,7 +175,7 @@ internal sealed class WindowFixture : IAsyncDisposable
 
     public RecordingNotifications Notifications { get; } = new();
 
-    public static async Task<WindowFixture> OpenAsync(bool connect = true, bool allClouds = false)
+    public static async Task<WindowFixture> OpenAsync(bool connect = true, bool allClouds = false, bool legacyActivity = false)
     {
         var fixture = !connect
             ? new WindowFixture()
@@ -181,6 +183,9 @@ internal sealed class WindowFixture : IAsyncDisposable
                 ? new WindowFixture(DemoData.Development, DemoData.Production, DemoData.AwsStaging, DemoData.GoogleDevelopment,
                     DemoData.RabbitStaging, DemoData.KafkaDevelopment)
                 : new WindowFixture(DemoData.Development, DemoData.Production);
+        if (legacyActivity)
+            fixture.ActivityJournal.Append(new QueueLoom.Core.Abstractions.ActivityRecord(Guid.NewGuid(), DateTimeOffset.UtcNow,
+                "Success", "Message send accepted", "Prior local Activity", null, null, null));
         fixture.Window.Show();
         await fixture.SettleAsync();
         if (connect)
