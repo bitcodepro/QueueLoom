@@ -44,6 +44,144 @@ public sealed class DiagnosticsExportRegressionTests
     }
 
     [Fact]
+    public async Task ExternalCreator_AtPublicationWinsWithoutBeingChangedOrDeleted()
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = Path.Combine(directory.Path, "created-by-another-actor.zip");
+        var preview = Capture("Connecting");
+        await Assert.ThrowsAnyAsync<IOException>(() => preview.SaveAsync(destination, default, (staging, full) =>
+        {
+            File.WriteAllText(full, "external creator's bytes");
+            DiagnosticsPreview.PublishCreateOnly(staging, full);
+        }));
+        Assert.Equal("external creator's bytes", await File.ReadAllTextAsync(destination));
+        Assert.Equal(new[] { destination }, Directory.GetFiles(directory.Path));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task PublicationFailureOrCancellation_RemovesOnlyItsStaging(bool cancel, bool foreignDestination)
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = Path.Combine(directory.Path, "failed.zip");
+        var unrelated = Path.Combine(directory.Path, ".queueloom-diagnostics-foreign.tmp");
+        await File.WriteAllTextAsync(unrelated, "keep this file");
+        using var cancellation = new CancellationTokenSource();
+        string? owned = null;
+        var error = await Record.ExceptionAsync(() => Capture("Connecting").SaveAsync(destination,
+            cancellation.Token, (staging, full) =>
+            {
+                owned = staging;
+                Assert.True(File.Exists(staging));
+                if (foreignDestination) File.WriteAllText(full, "foreign destination created during publication");
+                if (cancel)
+                {
+                    cancellation.Cancel();
+                    cancellation.Token.ThrowIfCancellationRequested();
+                }
+                throw new IOException("Injected publication failure.");
+            }));
+        if (cancel) Assert.IsAssignableFrom<OperationCanceledException>(error);
+        else Assert.IsAssignableFrom<IOException>(error);
+        Assert.NotNull(owned);
+        Assert.False(File.Exists(owned));
+        if (foreignDestination)
+            Assert.Equal("foreign destination created during publication", await File.ReadAllTextAsync(destination));
+        else Assert.False(File.Exists(destination));
+        Assert.Equal("keep this file", await File.ReadAllTextAsync(unrelated));
+        Assert.Equal((foreignDestination ? new[] { destination, unrelated } : new[] { unrelated }).Order(),
+            Directory.GetFiles(directory.Path).Order());
+    }
+
+    [Fact]
+    public async Task DestinationReplacedAfterPublication_IsNeverDeletedByFailureCleanup()
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = Path.Combine(directory.Path, "replaced.zip");
+        var replacement = Path.Combine(directory.Path, "external.zip");
+        var other = Capture("Disconnecting");
+        await other.SaveAsync(replacement);
+        await Assert.ThrowsAnyAsync<IOException>(() => Capture("Connecting").SaveAsync(destination, default, (staging, full) =>
+        {
+            DiagnosticsPreview.PublishCreateOnly(staging, full);
+            File.Move(replacement, full, overwrite: true); // Another actor takes ownership of the name.
+            throw new IOException("Injected failure after external replacement.");
+        }));
+        await AssertArchive(destination, other.Report, other.Json);
+        Assert.Equal(new[] { destination }, Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public async Task CancellationAfterPublication_DoesNotRetractACompletedZip()
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = Path.Combine(directory.Path, "committed.zip");
+        var preview = Capture("Connecting");
+        using var cancellation = new CancellationTokenSource();
+        await preview.SaveAsync(destination, cancellation.Token, (staging, full) =>
+        {
+            DiagnosticsPreview.PublishCreateOnly(staging, full);
+            cancellation.Cancel();
+        });
+        Assert.True(cancellation.IsCancellationRequested);
+        await AssertArchive(destination, preview.Report, preview.Json);
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task UnixExistingDanglingSymlink_IsNotFollowedReplacedOrDeleted()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var directory = new TemporaryDirectory();
+        var destination = Path.Combine(directory.Path, "symlink.zip");
+        var missing = Path.Combine(directory.Path, "missing.zip");
+        File.CreateSymbolicLink(destination, missing);
+        await Assert.ThrowsAnyAsync<IOException>(() => Capture("Connecting").SaveAsync(destination));
+        Assert.Equal(missing, new FileInfo(destination).LinkTarget);
+        Assert.False(File.Exists(missing));
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task UnicodeDestination_PreservesFrozenPreviewBytes()
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = Path.Combine(directory.Path, "diagnostics-\u00e9-\u961f\u5217.zip");
+        var preview = Capture("Connecting");
+        await preview.SaveAsync(destination);
+        await AssertArchive(destination, preview.Report, preview.Json);
+        Assert.Single(Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public async Task UnixStagingCleanupFailure_ReportsFailureButLeavesTheCompletePublishedZip()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
+        using var directory = new TemporaryDirectory();
+        var originalMode = File.GetUnixFileMode(directory.Path);
+        var destination = Path.Combine(directory.Path, "committed-before-cleanup-error.zip");
+        var preview = Capture("Connecting");
+        string? stagingPath = null;
+        try
+        {
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => preview.SaveAsync(destination, default, (staging, full) =>
+            {
+                stagingPath = staging;
+                DiagnosticsPreview.PublishCreateOnly(staging, full);
+                if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+                    File.SetUnixFileMode(directory.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            }));
+            await AssertArchive(destination, preview.Report, preview.Json);
+            Assert.NotNull(stagingPath);
+            Assert.True(File.Exists(stagingPath));
+        }
+        finally { File.SetUnixFileMode(directory.Path, originalMode); }
+    }
+
+    [Fact]
     public Task IndependentProcesses_RacingOnePath_PreserveTheSuccessfulPreview() => RaceProcesses(interposeRename: false);
 
     [Fact]
