@@ -19,6 +19,8 @@ public sealed class DiagnosticsJournal
     public static DiagnosticsJournal Session { get; } = new();
     private readonly object _sync = new();
     private readonly Queue<Event> _events = new();
+    // Context survives event eviction; independently bounded by recent operation starts.
+    private readonly Dictionary<long, Event> _operations = new();
     private long _sequence;
     private long _discarded;
     private sealed record Event(long Operation, DateTimeOffset Timestamp, string Kind, string Broker,
@@ -49,10 +51,13 @@ public sealed class DiagnosticsJournal
         lock (_sync)
         {
             var id = ++_sequence;
-            Add(new(id, DateTimeOffset.UtcNow, kind is not null && Kinds.Contains(kind) ? kind : "Other operation",
+            var first = new Event(id, DateTimeOffset.UtcNow, kind is not null && Kinds.Contains(kind) ? kind : "Other operation",
                 broker is { } provider && Enum.IsDefined(provider) ? provider.ToString() : "Unknown",
                 Key(address), Key(entity) is { } entityKey ? Key((Key(address) ?? "Unknown") + entityKey) : null, DiagnosticStage.Started, DiagnosticOutcome.Unknown, [], null,
-                DiagnosticCheck.Unknown, DiagnosticRecovery.Unknown, DiagnosticRecovery.Unknown));
+                DiagnosticCheck.Unknown, DiagnosticRecovery.Unknown, DiagnosticRecovery.Unknown);
+            if (_operations.Count == MaximumEvents) _operations.Remove(_operations.Keys.Min());
+            _operations[id] = first;
+            Add(first);
             return id;
         }
     }
@@ -65,11 +70,12 @@ public sealed class DiagnosticsJournal
         var errors = Summarize(error);
         lock (_sync)
         {
-            var prior = _events.LastOrDefault(e => e.Operation == operation);
-            if (prior is null) return;
-            Add(prior with { Timestamp = DateTimeOffset.UtcNow, Stage = Defined(stage), Outcome = Defined(outcome),
+            if (!_operations.TryGetValue(operation, out var prior)) return;
+            var next = prior with { Timestamp = DateTimeOffset.UtcNow, Stage = Defined(stage), Outcome = Defined(outcome),
                 Errors = errors, UpdateStage = updateStage is { } phase && Enum.IsDefined(phase) ? phase : null,
-                Checksum = Defined(checksum), Restart = Defined(restart), Rollback = Defined(rollback) });
+                Checksum = Defined(checksum), Restart = Defined(restart), Rollback = Defined(rollback) };
+            _operations[operation] = next;
+            Add(next);
         }
     }
 

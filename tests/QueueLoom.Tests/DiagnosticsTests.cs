@@ -10,6 +10,25 @@ namespace QueueLoom.Tests;
 
 public sealed class DiagnosticsTests
 {
+    [Fact]
+    public void Record_RetainsRecentOperationContextAfterAllItsEventsWereEvicted()
+    {
+        var journal = new DiagnosticsJournal();
+        var download = journal.Begin("Update");
+        var other = journal.Begin("Monitor");
+        for (var i = 0; i < DiagnosticsJournal.MaximumEvents * 2; i++)
+            journal.Record(other, DiagnosticStage.Executing);
+        journal.Record(download, DiagnosticStage.Failed, error: new InvalidOperationException("SECRET"),
+            updateStage: UpdatePhase.Verification, checksum: DiagnosticCheck.Mismatch);
+        using var json = JsonDocument.Parse(journal.Capture().Json);
+        var events = json.RootElement.GetProperty("Events").EnumerateArray().ToArray();
+        Assert.Equal(DiagnosticsJournal.MaximumEvents, events.Length);
+        Assert.Equal("Update", events[^1].GetProperty("Kind").GetString());
+        Assert.Equal("Mismatch", events[^1].GetProperty("Checksum").GetString());
+        Assert.NotEmpty(events[^1].GetProperty("Errors").EnumerateArray());
+        Assert.DoesNotContain("SECRET", journal.Capture().Json, StringComparison.Ordinal);
+    }
+
     private static readonly string[] Sentinels =
     [
         "SEED_TOKEN_xyz_123", "SharedAccessKey=SEED_CONNECTION_987", "BODY_SENTINEL_456", "HEADER_SENTINEL_567",

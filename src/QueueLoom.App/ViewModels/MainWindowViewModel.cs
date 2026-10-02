@@ -156,16 +156,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             token => RunOperationAsync("Saving environment", AddEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy);
         EditEnvironmentCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Updating environment", EditEnvironmentAsync, token, allowCancellation: false),
+            token => RunProfileOperationAsync("Updating environment", EditEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedProfile is not null);
         DeleteEnvironmentCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Deleting environment", DeleteEnvironmentAsync, token, allowCancellation: false),
+            token => RunProfileOperationAsync("Deleting environment", DeleteEnvironmentAsync, token, allowCancellation: false),
             () => !IsBusy && SelectedProfile is not null);
         ConnectCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Connecting", ConnectSelectedAsync, token),
+            token => RunProfileOperationAsync("Connecting", ConnectSelectedAsync, token),
             () => !IsBusy && SelectedProfile is not null);
         DisconnectCommand = new AsyncRelayCommand(
-            token => RunWorkspaceOperationAsync("Disconnecting", DisconnectSelectedAsync, token),
+            token => RunProfileOperationAsync("Disconnecting", DisconnectSelectedAsync, token),
             () => !IsBusy && IsSelectedProfileConnected);
         RefreshTopologyCommand = new AsyncRelayCommand(
             token => RunWorkspaceOperationAsync("Refreshing topology", RefreshTopologyAsync, token),
@@ -416,11 +416,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         }, cancellationToken).ConfigureAwait(true);
     }
 
+    private sealed record DiagnosticContext(ServiceBusProfile? Profile, string? Entity);
+
+    private Task RunProfileOperationAsync(string operation,
+        Func<ProfileItemViewModel?, CancellationToken, Task> action, CancellationToken cancellationToken,
+        bool allowCancellation = true)
+    {
+        var selected = SelectedProfile;
+        return RunWorkspaceOperationAsync(operation, token => action(selected, token), cancellationToken,
+            allowCancellation, new(selected?.Profile, null));
+    }
+
     private async Task RunWorkspaceOperationAsync(
         string operation,
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken,
-        bool allowCancellation = true)
+        bool allowCancellation = true,
+        DiagnosticContext? diagnosticContext = null)
     {
         // Interactive work wins over a background monitor traversal. Cancelling the
         // per-check token leaves the monitor itself running for its next interval.
@@ -440,7 +452,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
                     }
                 },
                 cancellationToken,
-                allowCancellation)
+                allowCancellation,
+                diagnosticContext ?? new(_connectedProfile, SelectedEntity?.Reference.DisplayName))
             .ConfigureAwait(true);
     }
 
@@ -448,10 +461,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         string operation,
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken,
-        bool allowCancellation = true)
+        bool allowCancellation = true,
+        DiagnosticContext? diagnosticContext = null)
     {
-        var diagnosticOperation = Diagnostics.Begin(operation, _connectedProfile?.Provider ?? SelectedProfile?.Provider,
-            _connectedProfile?.EndpointDisplay ?? SelectedProfile?.Namespace, SelectedEntity?.Reference.DisplayName);
+        var diagnosticOperation = Diagnostics.Begin(operation, diagnosticContext?.Profile?.Provider,
+            diagnosticContext?.Profile?.EndpointDisplay, diagnosticContext?.Entity);
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _operationId = Guid.NewGuid();
         _currentOperationCancellation = allowCancellation ? operationCancellation : null;

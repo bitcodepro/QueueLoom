@@ -1,10 +1,57 @@
 using System.Text.Json;
 using QueueLoom.App.Services;
+using QueueLoom.App.ViewModels;
+using System.IO.Compression;
 
 namespace QueueLoom.Tests;
 
 public sealed partial class AppUpdaterTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Diagnostics_SharedDialogJournalRetainsChecksumAfterLargeDownload(bool valid)
+    {
+        using var buffer = new MemoryStream();
+        using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        using (var entry = zip.CreateEntry("QueueLoom.exe", CompressionLevel.NoCompression).Open())
+            entry.Write(new byte[81_920 * (DiagnosticsJournal.MaximumEvents + 8)]);
+        var package = buffer.ToArray();
+        var journal = new DiagnosticsJournal();
+        var updater = new AppUpdater(Serve(package, valid ? Sha(package) : new string('0', 64)),
+            Path.Combine(_root, "download"), journal);
+        var callbacks = 0;
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new InlineDiagnosticContext());
+        try
+        {
+            var dialog = new UpdateDialogViewModel("1.5.7", Update, async (progress, token) =>
+            {
+                await updater.DownloadAsync(Update, Target("win-x64"), new DiagnosticProgress(progress, () => callbacks++), token);
+            }, diagnostics: journal);
+            await dialog.InstallAsync();
+            Assert.True(callbacks > DiagnosticsJournal.MaximumEvents);
+            Assert.Equal(valid ? UpdateDialogStage.Ready : UpdateDialogStage.Failed, dialog.Stage);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        using var json = JsonDocument.Parse(journal.Capture().Json);
+        var events = json.RootElement.GetProperty("Events").EnumerateArray().ToArray();
+        Assert.InRange(events.Length, 1, DiagnosticsJournal.MaximumEvents);
+        Assert.True(events.Length < 20, "Byte progress must not flood the technical journal.");
+        Assert.Contains(events, e => e.GetProperty("Checksum").GetString() == (valid ? "Verified" : "Mismatch"));
+        Assert.Contains(events, e => e.GetProperty("Stage").GetString() == (valid ? "Completed" : "Failed"));
+        if (!valid) Assert.Contains(events, e => e.GetProperty("Errors").GetArrayLength() > 0);
+    }
+
+    private sealed class InlineDiagnosticContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback callback, object? state) => callback(state);
+    }
+    private sealed class DiagnosticProgress(IProgress<UpdateProgress> target, Action count) : IProgress<UpdateProgress>
+    {
+        public void Report(UpdateProgress value) { count(); target.Report(value); }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

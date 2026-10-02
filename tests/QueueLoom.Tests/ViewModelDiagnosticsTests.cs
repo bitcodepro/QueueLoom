@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text.Json;
 using QueueLoom.App.Services;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Profiles;
@@ -10,6 +11,73 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
+    [Theory]
+    [InlineData("Connecting")]
+    [InlineData("Updating environment")]
+    [InlineData("Deleting environment")]
+    public async Task Diagnostics_ProfileOperationTargetsSelectedBrokerWithoutConnectedEntity(string operation)
+    {
+        var a = CreateProfile("PRIVATE_A", EnvironmentKind.Test);
+        var b = CreateProfile("PRIVATE_B", EnvironmentKind.Test) with { Provider = MessagingProvider.RabbitMq };
+        var workspace = new FakeWorkspace();
+        var dialogs = new DiagnosticDialogs { Confirm = false };
+        await using var vm = CreateViewModel(new FakeProfileRepository([a, b], a.Id), workspace, dialogs);
+        await vm.InitializeAsync(); await vm.ConnectCommand.ExecuteAsync();
+        vm.SelectedEntity = new EntityItemViewModel(ServiceBusEntityReference.Queue("PRIVATE_A_QUEUE"), ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active, false, 0);
+        vm.SelectedProfile = vm.Profiles.Single(p => p.Id == b.Id);
+        await vm.RefreshTopologyCommand.ExecuteAsync();
+        workspace.FailNextConnection = true;
+        if (operation == "Connecting") await vm.ConnectCommand.ExecuteAsync();
+        else if (operation == "Updating environment") await vm.EditEnvironmentCommand.ExecuteAsync();
+        else await vm.DeleteEnvironmentCommand.ExecuteAsync();
+        using var json = JsonDocument.Parse(vm.Diagnostics.Capture().Json);
+        var events = json.RootElement.GetProperty("Events").EnumerateArray().ToArray();
+        var latest = events.Last(e => e.GetProperty("Kind").GetString() == operation);
+        var refresh = events.Last(e => e.GetProperty("Kind").GetString() == "Refreshing topology");
+        Assert.Equal("AzureServiceBus", refresh.GetProperty("Broker").GetString());
+        Assert.Equal(events.First(e => e.GetProperty("Kind").GetString() == "Connecting").GetProperty("Address").GetString(),
+            refresh.GetProperty("Address").GetString());
+        Assert.Equal("RabbitMq", latest.GetProperty("Broker").GetString());
+        Assert.Equal(JsonValueKind.Null, latest.GetProperty("Entity").ValueKind);
+        Assert.NotEqual(events.First(e => e.GetProperty("Kind").GetString() == "Connecting").GetProperty("Address").GetString(),
+            latest.GetProperty("Address").GetString());
+        if (operation == "Connecting") Assert.Equal("Failed", latest.GetProperty("Stage").GetString());
+    }
+
+    [Fact]
+    public async Task Diagnostics_ProfileTargetRemainsStableWhileSelectionChangesDuringConnection()
+    {
+        var a = CreateProfile("PRIVATE_A", EnvironmentKind.Test);
+        var b = CreateProfile("PRIVATE_B", EnvironmentKind.Test) with { Provider = MessagingProvider.RabbitMq };
+        var workspace = new FakeWorkspace { ConnectionRelease = new(), FailNextConnection = true };
+        await using var vm = CreateViewModel(new FakeProfileRepository([a, b], b.Id), workspace, new DiagnosticDialogs());
+        await vm.InitializeAsync();
+        var connecting = vm.ConnectCommand.ExecuteAsync();
+        Assert.Equal(1, workspace.ConnectCalls);
+        vm.SelectedProfile = vm.Profiles.Single(p => p.Id == a.Id);
+        workspace.ConnectionRelease.SetResult(true); await connecting;
+        using var json = JsonDocument.Parse(vm.Diagnostics.Capture().Json);
+        var latest = json.RootElement.GetProperty("Events").EnumerateArray().Last(e => e.GetProperty("Kind").GetString() == "Connecting");
+        Assert.Equal("RabbitMq", latest.GetProperty("Broker").GetString());
+        Assert.Equal("Failed", latest.GetProperty("Stage").GetString());
+    }
+
+    [Fact]
+    public async Task Diagnostics_ProfilesWithoutEndpointDoNotHashPresentationFallback()
+    {
+        var a = CreateProfile("PRIVATE_A", EnvironmentKind.Test) with { FullyQualifiedNamespace = null };
+        var b = a with { Id = Guid.NewGuid(), Name = "PRIVATE_B" };
+        var workspace = new FakeWorkspace { FailNextConnection = true };
+        await using var vm = CreateViewModel(new FakeProfileRepository([a, b], a.Id), workspace, new DiagnosticDialogs());
+        await vm.InitializeAsync(); await vm.ConnectCommand.ExecuteAsync();
+        vm.SelectedProfile = vm.Profiles.Single(p => p.Id == b.Id);
+        workspace.FailNextConnection = true; await vm.ConnectCommand.ExecuteAsync();
+        using var json = JsonDocument.Parse(vm.Diagnostics.Capture().Json);
+        var events = json.RootElement.GetProperty("Events").EnumerateArray().Where(e => e.GetProperty("Kind").GetString() == "Connecting").ToArray();
+        Assert.Equal(2, events.Select(e => e.GetProperty("Operation").GetString()).Distinct().Count());
+        Assert.All(events, e => Assert.Equal(JsonValueKind.Null, e.GetProperty("Address").ValueKind));
+    }
+
     [Fact]
     public async Task Diagnostics_RepeatedClicksFreezeOnePreview_AndExportOnlyChosenNewFile()
     {

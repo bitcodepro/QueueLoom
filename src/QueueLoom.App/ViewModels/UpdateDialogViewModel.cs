@@ -183,8 +183,10 @@ public sealed class UpdateDialogViewModel : ObservableObject
         {
             if (Volatile.Read(ref _running) == 0 || attempt != Volatile.Read(ref _attempt) || !IsDownloading) return;
             if (update.Phase < _phase) return;
+            // Byte progress updates the UI, but diagnostics need only stage transitions.
+            if (update.Phase != _phase)
+                _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: update.Phase);
             _phase = update.Phase;
-            _diagnostics.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: update.Phase);
             OnPropertyChanged(nameof(Phase)); OnPropertyChanged(nameof(StageLabel)); OnPropertyChanged(nameof(Message)); OnPropertyChanged(nameof(CanCancel));
             IsProgressKnown = update.Percent.HasValue;
             Progress = update.Percent ?? 0;
