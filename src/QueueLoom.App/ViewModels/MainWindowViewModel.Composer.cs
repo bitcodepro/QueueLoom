@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using QueueLoom.App.Models;
@@ -11,6 +12,8 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>The message draft and sending.</summary>
 public sealed partial class MainWindowViewModel
 {
+    private readonly Dictionary<(Guid ProfileId, string MessageId), (string Fingerprint, bool IsMove)> _composerSendAttempts = [];
+
     public DestinationItemViewModel? SelectedDestination
     {
         get => _selectedDestination;
@@ -264,7 +267,24 @@ public sealed partial class MainWindowViewModel
         {
             warning += "\n\nThe original MessageId is currently preserved. With duplicate detection enabled, Azure may accept the send but suppress the duplicate; change MessageId when a distinct delivery is required.";
         }
-        if (_draftSourceMessage is { IsDeadLetter: true } originalForMove && DraftMovesOriginal && !_draftSourceIsLocalBackup)
+        var isMove = _draftSourceMessage is { IsDeadLetter: true } && DraftMovesOriginal && !_draftSourceIsLocalBackup;
+        // Keep the same identity for an unchanged retry, including an accepted send whose response was lost.
+        // A copy or an edited move is a different operation and must not reuse its attempted Azure ID.
+        var operationFingerprint = profile.Provider == MessagingProvider.AzureServiceBus ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        {
+            Configuration = ScheduledResend.IdentityFor(profile), Destination = destination.Reference,
+            Original = _draftSourceMessage is null ? null : new
+            {
+                _draftSourceMessage.Source, _draftSourceMessage.SubQueue,
+                _draftSourceMessage.SequenceNumber, _draftSourceMessage.Properties.MessageId
+            }, Draft = draft
+        })))) : string.Empty;
+        var attemptKey = (profile.Id, draft.Properties.MessageId!);
+        if (profile.Provider == MessagingProvider.AzureServiceBus && isMove &&
+            _composerSendAttempts.TryGetValue(attemptKey, out var previous) &&
+            (!previous.IsMove || previous.Fingerprint != operationFingerprint))
+            throw new InvalidOperationException("This MessageId was already attempted by another composer operation. Choose a new MessageId and review the move before removing the original.");
+        if (_draftSourceMessage is { IsDeadLetter: true } originalForMove && isMove)
             DeadLetterResender.EnsureSafeMessageIds(profile.Provider, [new ResendItem(originalForMove, destination.Reference, draft)], ResendMode.Move);
         var confirmed = await _dialogs.ConfirmAsync(
             $"Send to {destination.Name}",
@@ -283,6 +303,9 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException(
                 "Write access expired while the confirmation was open. Unlock writes again and review the send.");
         }
+
+        if (profile.Provider == MessagingProvider.AzureServiceBus)
+            _composerSendAttempts[attemptKey] = (operationFingerprint, isMove);
 
         if (_draftSourceMessage is not null && _draftSourceMessage.IsDeadLetter && !_draftSourceIsLocalBackup)
         {

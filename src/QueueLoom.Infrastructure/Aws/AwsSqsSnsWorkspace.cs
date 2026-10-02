@@ -400,8 +400,8 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         private bool BelongsToSource(Message message) =>
             SourceAttributionError is null && (belongsTo is null ||
-            message.Attributes?.GetValueOrDefault("DeadLetterQueueSourceArn") is not { Length: > 0 } sourceArn ||
-            string.Equals(sourceArn, belongsTo, StringComparison.Ordinal));
+            (message.Attributes?.GetValueOrDefault("DeadLetterQueueSourceArn") is { Length: > 0 } sourceArn &&
+            string.Equals(sourceArn, belongsTo, StringComparison.Ordinal)));
     }
 }
 
