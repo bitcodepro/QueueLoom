@@ -328,6 +328,70 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         }
     }
 
+    [EmulatorFact(Emulators.RabbitMq)]
+    public Task DeletedSource_RetainedForeignDeadLettersStayUntouched() => RetainedForeignDeadLettersAsync(reconfigure: false);
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public Task ReconfiguredSource_RetainedForeignDeadLettersStayUntouched() => RetainedForeignDeadLettersAsync(reconfigure: true);
+
+    private async Task RetainedForeignDeadLettersAsync(bool reconfigure)
+    {
+        await PublishAsync("orders", "own");
+        await PublishAsync("payments", "foreign");
+        await RejectAsync("orders", 1);
+        await RejectAsync("payments", 1);
+        await PublishAsync("dead-letters", "unattributed");
+        await WaitForAsync(topology => topology.Queues.Single(queue => queue.Name == "dead-letters").Runtime.MessageCounts.Active == 3);
+        await _setup.QueueDeleteAsync("payments");
+        if (reconfigure) await _setup.QueueDeclareAsync("payments", durable: true, exclusive: false, autoDelete: false);
+        await _workspace.GetTopologyAsync(forceRefresh: true);
+
+        var orders = ServiceBusEntityReference.Queue("orders");
+        var browsed = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter));
+        Assert.Equal(["own"], browsed.Select(message => message.Properties.MessageId));
+        var refused = await _workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest(
+            [new(orders, ServiceBusSubQueue.DeadLetter, 0, "foreign"), new(orders, ServiceBusSubQueue.DeadLetter, 0, "unattributed")]));
+        Assert.Equal(0, refused.DeletedCount);
+        var purged = await _workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
+            [new(orders, ServiceBusSubQueue.DeadLetter)], batchSize: 1, maximumMessagesPerSubQueue: 10));
+        Assert.False(purged.HasFailures);
+        Assert.Equal(1, purged.DeletedCount);
+        var remaining = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("dead-letters")));
+        Assert.Equal(["foreign", "unattributed"], remaining.Select(message => message.Properties.MessageId).Order(StringComparer.Ordinal));
+        Assert.Equal(2u, (await _setup.QueueDeclarePassiveAsync("dead-letters")).MessageCount);
+        Assert.Single(await new JsonDeadLetterBackupRepository(QueueLoomPaths.ForRoot(_directory.Path)).ListAsync());
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task BinaryAndTextHeaders_SurviveUnchangedResendAndBackupRestore()
+    {
+        var binary = new byte[] { 0xff, 0xc3, 0x28, 0 };
+        var text = Encoding.UTF8.GetBytes("Привет, RabbitMQ");
+        await _setup.BasicPublishAsync(string.Empty, "orders", true,
+            new BasicProperties { MessageId = "headers", Headers = new Dictionary<string, object?> { ["binary"] = binary, ["text"] = text } },
+            "fixture"u8.ToArray());
+        var original = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"))));
+        await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Queue("payments"), original.CreateDraft()));
+        AssertHeaders((await _setup.BasicGetAsync("payments", autoAck: true))!);
+
+        var paths = QueueLoomPaths.ForRoot(_directory.Path);
+        var profile = ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Development, new(AuthenticationKind.RabbitMqPassword))
+            with { Provider = MessagingProvider.RabbitMq };
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UtcNow, default);
+        await session.BackupAsync(original, default);
+        var repository = new JsonDeadLetterBackupRepository(paths);
+        var restored = await repository.LoadAsync(Assert.Single(await repository.ListAsync()));
+        await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Queue("payments"), restored.CreateDraft()));
+        AssertHeaders((await _setup.BasicGetAsync("payments", autoAck: true))!);
+
+        void AssertHeaders(BasicGetResult result)
+        {
+            Assert.NotNull(result);
+            Assert.Equal(binary, Assert.IsType<byte[]>(result.BasicProperties.Headers!["binary"]));
+            Assert.Equal(text, Assert.IsType<byte[]>(result.BasicProperties.Headers!["text"]));
+        }
+    }
+
     /// <summary>Rejects messages the way a failing consumer does, so RabbitMQ dead-letters them.</summary>
     private async Task RejectAsync(string queue, int count)
     {

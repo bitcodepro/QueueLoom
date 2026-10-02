@@ -1,5 +1,29 @@
 using QueueLoom.App.Services;
 
+if (args.Length == 5 && args[0] == "--update-settings")
+{
+    using var store = new QueueLoom.Infrastructure.Persistence.JsonAppSettingsStore(
+        QueueLoom.Infrastructure.Persistence.QueueLoomPaths.ForRoot(args[1]));
+    File.WriteAllText(args[3] + ".started", "started");
+    await store.UpdateAsync(settings =>
+    {
+        File.WriteAllText(args[3] + ".read", settings.Theme.ToString());
+        if (args[2] == "theme")
+        {
+            var wait = System.Diagnostics.Stopwatch.StartNew();
+            while (!File.Exists(args[4]))
+            {
+                if (wait.Elapsed > TimeSpan.FromSeconds(15)) throw new TimeoutException("Settings transaction barrier timed out.");
+                Thread.Sleep(10);
+            }
+            return settings with { Theme = QueueLoom.Core.Settings.AppThemePreference.Light };
+        }
+        return settings with { MonitorIntervalSeconds = 321 };
+    });
+    File.WriteAllText(args[3] + ".done", "done");
+    return 0;
+}
+
 if (args.Length == 4 && args[0] == "--claim-schedule")
 {
     var store = new QueueLoom.Infrastructure.Persistence.JsonScheduledResendStore(

@@ -10,6 +10,26 @@ namespace QueueLoom.Tests;
 /// <summary>Starts the real <c>QueueLoom --mcp</c> process and talks to it over stdio, like an LLM client does.</summary>
 public sealed class McpProcessTests
 {
+    [Theory]
+    [InlineData("descriptor")]
+    [InlineData("hex-format")]
+    [InlineData("hex-overflow")]
+    public async Task MalformedSchema_StartupStillServesMcp(string malformed)
+    {
+        using var data = new TemporaryDirectory();
+        var path = Path.Combine(data.Path, malformed == "descriptor" ? "broken.desc" : "broken.proto");
+        if (malformed == "descriptor") await File.WriteAllBytesAsync(path, [10, 2, 34, 0]);
+        else await File.WriteAllTextAsync(path, $"message Broken {{ string value = {(malformed == "hex-format" ? "0xGG" : "0x100000000")}; }}");
+        using (var store = new JsonAppSettingsStore(QueueLoomPaths.ForRoot(data.Path)))
+            await store.UpdateAsync(settings => settings with { ProtobufSchemaPath = path });
+
+        await using var client = await StartAsync(data.Path, "--mcp", "--read-only");
+        Assert.Equal("QueueLoom", client.ServerInfo.Name);
+        Assert.NotEmpty(await client.ListToolsAsync());
+        using var reopened = new JsonAppSettingsStore(QueueLoomPaths.ForRoot(data.Path));
+        Assert.Equal(path, (await reopened.LoadAsync()).ProtobufSchemaPath);
+    }
+
     [Fact]
     public async Task ReadOnlyServer_StartsOverStdioAndListsSavedEnvironments()
     {
