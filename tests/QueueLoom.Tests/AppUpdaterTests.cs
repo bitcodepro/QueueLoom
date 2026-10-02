@@ -9,7 +9,7 @@ using QueueLoom.App.ViewModels;
 
 namespace QueueLoom.Tests;
 
-public sealed class AppUpdaterTests : IDisposable
+public sealed partial class AppUpdaterTests : IDisposable
 {
     [Fact]
     public void MissingRollbackBackupNeverClaimsThatPreviousVersionWasRestored()

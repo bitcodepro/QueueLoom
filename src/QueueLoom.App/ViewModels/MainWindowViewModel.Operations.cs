@@ -86,6 +86,8 @@ public sealed partial class MainWindowViewModel
             }
             catch (JsonException exception)
             {
+                var diagnosticOperation = Diagnostics.Begin("Formatting JSON");
+                Diagnostics.Record(diagnosticOperation, DiagnosticStage.Failed, error: exception);
                 DraftBodyErrorLine = exception.LineNumber is { } line ? (int)line + 1 : null;
                 ErrorText = $"JSON: line {exception.LineNumber + 1}, column {exception.BytePositionInLine + 1}: {exception.Message}";
             }

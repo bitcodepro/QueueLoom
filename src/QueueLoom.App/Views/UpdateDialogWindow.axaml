@@ -31,7 +31,10 @@
     </StackPanel>
 
     <Border Classes="alert" IsVisible="{Binding IsFailed}">
-      <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" />
+      <StackPanel Spacing="10">
+        <TextBlock Text="{Binding Error}" Classes="danger" TextWrapping="Wrap" />
+        <Button Content="Export diagnostics" Classes="quiet" Command="{Binding ExportDiagnosticsCommand}" IsVisible="{Binding HasDiagnostics}" />
+      </StackPanel>
     </Border>
 
     <Grid ColumnDefinitions="Auto,*,Auto">

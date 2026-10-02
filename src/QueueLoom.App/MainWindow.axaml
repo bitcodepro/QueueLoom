@@ -65,6 +65,13 @@
 
         <StackPanel Grid.Row="2" Margin="14,10,14,16" Spacing="8">
           <Border Classes="divider" Margin="0,0,0,4" />
+          <Button Content="Settings" Classes="quiet" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+            <Button.Flyout>
+              <MenuFlyout>
+                <MenuItem Header="Export diagnostics" Command="{Binding ExportDiagnosticsCommand}" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
           <Button Classes="quiet" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
                   Command="{Binding CycleThemeCommand}"
                   ToolTip.Tip="Switch between dark, light and system themes"
@@ -139,11 +146,13 @@
                    CornerRadius="0" Foreground="{DynamicResource AccentBrush}" Background="Transparent" />
 
       <Border Grid.Row="2" Classes="alert" Margin="24,14,24,0" IsVisible="{Binding HasError}">
-        <Grid ColumnDefinitions="*,Auto">
+        <Grid ColumnDefinitions="*,Auto,Auto">
           <SelectableTextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
                                VerticalAlignment="Center" />
           <Button Grid.Column="1" Content="Copy" Classes="quiet statusAction" Margin="12,0,0,0" VerticalAlignment="Top"
                   Command="{Binding CopyTextCommand}" CommandParameter="{Binding ErrorText}" />
+          <Button Grid.Column="2" Content="Export diagnostics" Classes="quiet statusAction" Margin="12,0,0,0" VerticalAlignment="Top"
+                  Command="{Binding ExportDiagnosticsCommand}" />
         </Grid>
       </Border>
 

@@ -5,6 +5,10 @@ namespace QueueLoom.App.Services;
 
 public interface IUserDialogService
 {
+    /// <summary>Shows the exact frozen export; false means cancel. Implementations fail closed by default.</summary>
+    Task<bool> PreviewDiagnosticsAsync(DiagnosticsPreview preview, CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
     Task<ProfileEditorResult?> EditProfileAsync(
         ServiceBusProfile? profile,
         CancellationToken cancellationToken = default);

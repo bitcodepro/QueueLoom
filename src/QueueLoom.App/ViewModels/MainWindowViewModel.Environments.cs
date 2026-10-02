@@ -118,9 +118,9 @@ public sealed partial class MainWindowViewModel
         StatusText = $"Environment '{result.Profile.Name}' saved";
     }
 
-    private async Task EditEnvironmentAsync(CancellationToken cancellationToken)
+    private async Task EditEnvironmentAsync(ProfileItemViewModel? target, CancellationToken cancellationToken)
     {
-        var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
+        var selected = target ?? throw new InvalidOperationException("Select an environment first.");
         var result = await _dialogs.EditProfileAsync(selected.Profile, cancellationToken).ConfigureAwait(true);
         if (result is null)
         {
@@ -307,9 +307,9 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    private async Task DeleteEnvironmentAsync(CancellationToken cancellationToken)
+    private async Task DeleteEnvironmentAsync(ProfileItemViewModel? target, CancellationToken cancellationToken)
     {
-        var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
+        var selected = target ?? throw new InvalidOperationException("Select an environment first.");
         var confirmed = await _dialogs.ConfirmAsync(
             "Delete environment",
             $"Remove '{selected.Name}' and its locally encrypted credential? Azure resources are not changed.",
@@ -383,9 +383,9 @@ public sealed partial class MainWindowViewModel
         NotifyCommandStates();
     }
 
-    private async Task ConnectSelectedAsync(CancellationToken cancellationToken)
+    private async Task ConnectSelectedAsync(ProfileItemViewModel? target, CancellationToken cancellationToken)
     {
-        var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
+        var selected = target ?? throw new InvalidOperationException("Select an environment first.");
         await ConnectProfileAsync(selected, selected.Profile, loadTopology: true, cancellationToken).ConfigureAwait(true);
         SelectedDeadLetterEnvironmentFilter = DeadLetterEnvironmentFilters
             .FirstOrDefault(filter => filter.ProfileId == selected.Id);
@@ -394,9 +394,9 @@ public sealed partial class MainWindowViewModel
         AddActivity("Success", "Connected", $"{selected.Name} · {ConnectedNamespace}");
     }
 
-    private async Task DisconnectSelectedAsync(CancellationToken cancellationToken)
+    private async Task DisconnectSelectedAsync(ProfileItemViewModel? target, CancellationToken cancellationToken)
     {
-        var selected = SelectedProfile ?? throw new InvalidOperationException("Select an environment first.");
+        var selected = target ?? throw new InvalidOperationException("Select an environment first.");
         if (_workspace.ConnectedProfileId != selected.Id)
         {
             return;

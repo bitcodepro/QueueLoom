@@ -9,6 +9,9 @@ namespace QueueLoom.App.Services;
 
 public sealed class WindowDialogService(TopLevelAccessor owner) : IUserDialogService
 {
+    public Task<bool> PreviewDiagnosticsAsync(DiagnosticsPreview preview, CancellationToken cancellationToken = default) =>
+        ShowDialogAsync<bool>(new DiagnosticsPreviewWindow(preview), cancellationToken);
+
     public Task<ProfileEditorResult?> EditProfileAsync(
         ServiceBusProfile? profile,
         CancellationToken cancellationToken = default) =>
