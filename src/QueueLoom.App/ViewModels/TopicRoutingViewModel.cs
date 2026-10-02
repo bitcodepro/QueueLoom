@@ -402,18 +402,24 @@ public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
             return;
         }
         Error = string.Empty;
-        IReadOnlyList<KeyValuePair<string, object?>> properties;
+        IReadOnlyList<MessageApplicationProperty> properties;
         try
         {
-            properties = ParseProperties(TestProperties, _originalProperties);
+            // Match the original text against this occurrence, not another line with
+            // the same name. RoutingMessage applies later duplicate names last.
+            properties = TestProperties.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .SelectMany(line => ParseProperties(line, _originalProperties).Select(pair =>
+                    _originalProperties.TryGetValue(pair.Key, out var originalLine) && originalLine.Line == line &&
+                    _originalAttributes.TryGetValue(pair.Key, out var original)
+                        ? original
+                        : ApplicationPropertyValues.FromObject(pair.Key, pair.Value)))
+                .ToArray();
         }
         catch (FormatException exception)
         {
             Error = exception.Message;
             return;
         }
-        var lines = TestProperties.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToHashSet(StringComparer.Ordinal);
         var message = new RoutingMessage(_baseProperties with
         {
             MessageId = Blank(TestMessageId),
@@ -423,13 +429,7 @@ public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
             To = Blank(TestTo),
             ReplyTo = Blank(TestReplyTo),
             SessionId = Blank(TestSessionId)
-        }, properties.Select(pair =>
-        {
-            var unchanged = lines.Contains(_originalProperties.GetValueOrDefault(pair.Key).Line);
-            return unchanged && _originalAttributes.TryGetValue(pair.Key, out var original)
-                ? original
-                : ApplicationPropertyValues.FromObject(pair.Key, pair.Value);
-        })) { Body = TestBody };
+        }, properties) { Body = TestBody };
         var result = TopicRouting.Route(Topic, Subscriptions.Select(item => item.Source).ToArray(), message, Service);
         // Results come back in the order of the subscriptions given; names alone are not unique (in RabbitMQ a queue
         // and an exchange may share one).
