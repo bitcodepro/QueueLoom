@@ -32,6 +32,45 @@ public sealed class CycleTwoKafkaPagingRegressionTests
             Assert.Equal(0, next[0].Message.Position!.Value.Offset);
             Assert.Equal(offsets.Length, all.Length);
         }
+        else
+        {
+            var loaded = first.Concat(next).ToList();
+            for (var page = 0; page < 4; page++)
+            {
+                var before = loaded.GroupBy(m => m.Message.Position!.Value.Partition)
+                    .ToDictionary(g => g.Key, g => g.Min(m => m.Message.Position!.Value.Offset));
+                var more = await Read(broker, new BrowseStart(BrowseStartKind.Newest) { Positions = before }, 100);
+                if (more.Count == 0) break;
+                loaded.AddRange(more);
+            }
+            Assert.Equal(offsets.Length * partitions, loaded.Count);
+            Assert.Equal(loaded.Count, loaded.Select(m => m.LeaseHandle).Distinct().Count());
+        }
+        Assert.Empty(broker.Commits);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task CycleTwoKafka_OutOfOrderProducerTimesCannotSkipContinuationOffsets(int partitions)
+    {
+        var broker = new ConsumerFixture([0, 1, 100], partitions)
+        {
+            TimestampSeconds = new Dictionary<long, long> { [0] = 300, [1] = 100, [100] = 200 }
+        };
+        var first = await Read(broker, new(BrowseStartKind.Newest), 2);
+        Assert.Equal(2, first.Count);
+        var loaded = first.ToList();
+        for (var page = 0; page < 5; page++)
+        {
+            var positions = loaded.GroupBy(m => m.Message.Position!.Value.Partition)
+                .ToDictionary(g => g.Key, g => g.Min(m => m.Message.Position!.Value.Offset));
+            var next = await Read(broker, new BrowseStart(BrowseStartKind.Newest) { Positions = positions }, 2);
+            if (next.Count == 0) break;
+            loaded.AddRange(next);
+        }
+        Assert.Equal(3 * partitions, loaded.Count);
+        Assert.Equal(loaded.Count, loaded.Select(m => m.LeaseHandle).Distinct().Count());
         Assert.Empty(broker.Commits);
     }
 
@@ -43,6 +82,16 @@ public sealed class CycleTwoKafkaPagingRegressionTests
         Assert.Empty(await Read(new ConsumerFixture([], 1), new BrowseStart(BrowseStartKind.Newest), 100));
         using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Read(broker, new BrowseStart(BrowseStartKind.Newest), 100, cancellation.Token));
+    }
+
+    [Fact]
+    public async Task CycleTwoKafka_ConsumeTimeoutCannotPublishAnApparentlyExhaustedPage()
+    {
+        var broker = new ConsumerFixture([0, 1, 2], 1) { ReturnNullOnce = true };
+        await Assert.ThrowsAsync<TimeoutException>(() => Read(broker, new(BrowseStartKind.Newest), 100));
+        // The broker still has every record; an explicit retry reads them without commits or deletion.
+        Assert.Equal(3, (await Read(broker, new(BrowseStartKind.Newest), 100)).Count);
+        Assert.Empty(broker.Commits);
     }
 
     private static async Task<IReadOnlyList<LeasedMessage>> Read(ConsumerFixture fixture, BrowseStart start, int count, CancellationToken token = default)
@@ -89,6 +138,8 @@ public sealed class CycleTwoKafkaPagingRegressionTests
     {
         public int Partitions => partitions;
         public long High => offsets.Length == 0 ? 0 : offsets.Max() + 1;
+        public bool ReturnNullOnce { get; set; }
+        public IReadOnlyDictionary<long, long>? TimestampSeconds { get; init; }
         private readonly Dictionary<int, long> _positions = [];
         public List<string> Commits { get; } = [];
         public object? Invoke(string method, object?[] args)
@@ -105,13 +156,14 @@ public sealed class CycleTwoKafkaPagingRegressionTests
             else if (method == "QueryWatermarkOffsets") return new WatermarkOffsets(0, High);
             else if (method == "Consume")
             {
+                if (ReturnNullOnce) { ReturnNullOnce = false; return null; }
                 foreach (var (partition, position) in _positions.ToArray())
                 {
                     var remaining = offsets.Where(offset => offset >= position).ToArray();
                     if (remaining.Length == 0) { _positions.Remove(partition); return new ConsumeResult<byte[]?, byte[]?> { Topic = "isolated", Partition = partition, Offset = High, IsPartitionEOF = true }; }
                     var offset = remaining[0]; _positions[partition] = offset + 1;
                     return new ConsumeResult<byte[]?, byte[]?> { Topic = "isolated", Partition = partition, Offset = offset,
-                        Message = new() { Value = "body"u8.ToArray(), Timestamp = new Timestamp(DateTime.UnixEpoch.AddSeconds(offset)), Headers = new Headers() } };
+                        Message = new() { Value = "body"u8.ToArray(), Timestamp = new Timestamp(DateTime.UnixEpoch.AddSeconds(TimestampSeconds?.GetValueOrDefault(offset) ?? offset)), Headers = new Headers() } };
                 }
                 return null;
             }

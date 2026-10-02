@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.RegularExpressions;
 using Avalonia.Threading;
 using Microsoft.Extensions.Logging;
@@ -11,9 +10,8 @@ public sealed class CycleTwoErrorBoundaryUiTests
     [Fact]
     public Task CycleTwoLogging_ActualAsyncCommandContainsLoggerFailureAndShowsOriginalError() => UiSession.RunAsync(async () =>
     {
-        await using var fixture = await WindowFixture.OpenAsync();
+        await using var fixture = await WindowFixture.OpenWithLoggerAsync(new ThrowingLogger());
         var vm = fixture.ViewModel;
-        typeof(MainWindowViewModel).GetField("_logger", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(vm, new ThrowingLogger());
         vm.DeadLetterSearchQuery = "$.missing ==";
         var errors = new List<Exception>();
         void Handle(object? sender, DispatcherUnhandledExceptionEventArgs e) { errors.Add(e.Exception); e.Handled = true; }
@@ -27,7 +25,7 @@ public sealed class CycleTwoErrorBoundaryUiTests
             Assert.Empty(errors);
             Assert.False(vm.IsBusy);
             Assert.True(vm.HasError);
-            Assert.Contains("search", vm.ErrorText, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("A value is missing", vm.ErrorText, StringComparison.Ordinal);
         }
         finally { Dispatcher.UIThread.UnhandledException -= Handle; }
     });
@@ -36,6 +34,6 @@ public sealed class CycleTwoErrorBoundaryUiTests
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel level) => true;
-        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception, Func<TState, Exception?, string> formatter) => throw new RegexMatchTimeoutException();
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception, Func<TState, Exception?, string> formatter) { if (level == LogLevel.Error) throw new RegexMatchTimeoutException(); }
     }
 }

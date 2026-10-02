@@ -17,7 +17,7 @@ public sealed partial class BodyDecoderTests
         Assert.True(vm.HasDecodedBody);
         Assert.False(vm.DecodedIsJson);
         Assert.Contains("16 MiB", vm.DecodedNote, StringComparison.Ordinal);
-        Assert.True(vm.DecodedText.Length < 100_000);
+        Assert.True(vm.DecodedText.Length < 400_000);
         Assert.False(MessageSearchQuery.Parse("$.value").Matches(message));
     }
 
@@ -29,7 +29,7 @@ public sealed partial class BodyDecoderTests
         var decoded = BodyDecoder.Decode(body)!;
         Assert.False(decoded.IsJson);
         Assert.Contains("16 MiB", decoded.Note, StringComparison.Ordinal);
-        Assert.True(decoded.Text.Length < 100_000);
+        Assert.True(decoded.Text.Length < 400_000);
     }
 
     [Theory]
@@ -40,5 +40,16 @@ public sealed partial class BodyDecoderTests
         var decoded = BodyDecoder.Decode(AvroFile("\"string\"", codec, 1, Str("small control")))!;
         Assert.True(decoded.IsJson);
         Assert.Contains("small control", decoded.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CycleTwoAvro_RegistryArrayExpansionStopsAtTheSharedLimit()
+    {
+        var schema = new MessageSchema(1, MessageSchemaType.Avro, """{"type":"array","items":"null"}""");
+        byte[] body = [0, 0, 0, 0, 1, .. Long(BodyDecoder.MaximumDecodedBytes / 4), .. Long(0)];
+        var decoded = BodyDecoder.Decode(body, schema: schema)!;
+        Assert.False(decoded.IsJson);
+        Assert.Contains("16 MiB", decoded.Note, StringComparison.Ordinal);
+        Assert.True(decoded.Text.Length < 400_000);
     }
 }

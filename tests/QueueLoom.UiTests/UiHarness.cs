@@ -4,6 +4,7 @@ using Avalonia.Headless;
 using Avalonia.Logging;
 using Avalonia.Threading;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using QueueLoom.App;
 using QueueLoom.App.Services;
 using QueueLoom.App.ViewModels;
@@ -117,13 +118,14 @@ internal sealed class WindowFixture : IAsyncDisposable
     private readonly HttpClient _offlineHttp = new(new OfflineHandler());
 
     private WindowFixture(params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
-        : this(new DemoWorkspace(), new InMemorySecretVault(), profiles)
+        : this(new DemoWorkspace(), new InMemorySecretVault(), null, profiles)
     {
     }
 
     private WindowFixture(
         QueueLoom.Core.Abstractions.IServiceBusWorkspace workspace,
         QueueLoom.Core.Abstractions.ISecretVault secretVault,
+        ILogger<MainWindowViewModel>? logger,
         params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
     {
         _settings = new JsonAppSettingsStore(QueueLoomPaths.ForRoot(_dataDirectory));
@@ -147,7 +149,8 @@ internal sealed class WindowFixture : IAsyncDisposable
             launcher: new NoopLauncher(),
             notifications: Notifications,
             theme: new AvaloniaThemeService(),
-            history: History);
+            history: History,
+            logger: logger);
         Window = new MainWindow(
             ViewModel,
             _settings,
@@ -203,9 +206,18 @@ internal sealed class WindowFixture : IAsyncDisposable
         QueueLoom.Core.Abstractions.ISecretVault secretVault,
         params QueueLoom.Core.Profiles.ServiceBusProfile[] profiles)
     {
-        var fixture = new WindowFixture(workspace, secretVault, profiles);
+        var fixture = new WindowFixture(workspace, secretVault, null, profiles);
         fixture.Window.Show();
         await fixture.SettleAsync();
+        return fixture;
+    }
+
+    public static async Task<WindowFixture> OpenWithLoggerAsync(ILogger<MainWindowViewModel> logger)
+    {
+        var fixture = new WindowFixture(new DemoWorkspace(), new InMemorySecretVault(), logger, DemoData.Development);
+        fixture.Window.Show();
+        await fixture.SettleAsync();
+        await fixture.ViewModel.ConnectCommand.ExecuteAsync();
         return fixture;
     }
 

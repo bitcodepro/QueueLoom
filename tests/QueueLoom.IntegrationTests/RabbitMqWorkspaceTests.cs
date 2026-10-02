@@ -118,6 +118,37 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
     public Task Purge_with_batch_size_one_deletes_both_messages_without_application_ids() => PurgeRepeatedIdsAsync(null);
 
     [EmulatorFact(Emulators.RabbitMq)]
+    public async Task CycleTwoRabbit_CollidingHeadersSurviveBrokerCopyAndBackedUpPurge()
+    {
+        await _setup.BasicPublishAsync(string.Empty, "orders", mandatory: false,
+            new BasicProperties { MessageId = "metadata-fixture", Type = "basic-type", AppId = "basic-app",
+                Headers = new Dictionary<string, object?> { ["amqp-type"] = "header-type"u8.ToArray(), ["amqp-app-id"] = "header-app"u8.ToArray() } }, "body"u8.ToArray());
+        await RejectAsync("orders", 1);
+        await WaitForAsync(t => t.Queues.Single(q => q.Name == "orders").Runtime.MessageCounts.DeadLetter == 1);
+        var source = ServiceBusEntityReference.Queue("orders");
+        var message = Assert.Single(await _workspace.BrowseMessagesAsync(new(source, ServiceBusSubQueue.DeadLetter)));
+        await CopyAndInspect(message);
+        Assert.Equal(1u, (await _setup.QueueDeclarePassiveAsync("dead-letters")).MessageCount);
+        var purge = await _workspace.PurgeDeadLettersAsync(new([new DeadLetterPurgeTarget(source, ServiceBusSubQueue.DeadLetter)], maximumMessagesPerSubQueue: 10));
+        Assert.Equal(1, purge.DeletedCount);
+        var repository = new JsonDeadLetterBackupRepository(QueueLoomPaths.ForRoot(_directory.Path));
+        await CopyAndInspect(await repository.LoadAsync(Assert.Single(await repository.ListAsync())));
+        Assert.False((await _workspace.GetTopologyAsync(true)).CanDeleteSelectedMessages);
+
+        async Task CopyAndInspect(BrowsedMessage original)
+        {
+            await _workspace.SendMessageAsync(new(ServiceBusEntityReference.Queue("payments"), original.CreateDraft()));
+            var delivered = await _setup.BasicGetAsync("payments", autoAck: true);
+            Assert.NotNull(delivered);
+            Assert.Equal("basic-type", delivered.BasicProperties.Type);
+            Assert.Equal("basic-app", delivered.BasicProperties.AppId);
+            Assert.Equal("header-type"u8.ToArray(), Assert.IsType<byte[]>(delivered.BasicProperties.Headers!["amqp-type"]));
+            Assert.Equal("header-app"u8.ToArray(), Assert.IsType<byte[]>(delivered.BasicProperties.Headers!["amqp-app-id"]));
+            Assert.Equal("body"u8.ToArray(), delivered.Body.ToArray());
+        }
+    }
+
+    [EmulatorFact(Emulators.RabbitMq)]
     public Task Purge_with_batch_size_one_deletes_both_messages_with_the_same_application_id() => PurgeRepeatedIdsAsync("repeated-fixture-id");
 
     private async Task PurgeRepeatedIdsAsync(string? id)

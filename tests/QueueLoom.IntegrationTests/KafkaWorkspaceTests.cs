@@ -88,6 +88,30 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.Kafka)]
+    public async Task CycleTwoKafka_NewestPagesIncludeRecordsSeparatedByTransactionMarkers()
+    {
+        using var producer = new ProducerBuilder<string?, string>(new ProducerConfig
+        { BootstrapServers = Emulators.KafkaServers, TransactionalId = Emulators.Unique("paging"), EnableIdempotence = true }).Build();
+        producer.InitTransactions(TimeSpan.FromSeconds(30));
+        for (var index = 0; index < 101; index++)
+        {
+            producer.BeginTransaction();
+            await producer.ProduceAsync(new TopicPartition(_payments, 0), new Message<string?, string> { Value = "record-" + index });
+            producer.CommitTransaction(TimeSpan.FromSeconds(30));
+        }
+        Assert.True((await WatermarksAsync(_payments)).High > 101);
+        var source = ServiceBusEntityReference.Queue(_payments);
+        var first = await _workspace.BrowseMessagesAsync(new(source, maxMessages: 100) { Start = new(BrowseStartKind.Newest) });
+        Assert.Equal(100, first.Count);
+        var nextOffset = first.Min(m => m.Position!.Value.Offset);
+        var second = await _workspace.BrowseMessagesAsync(new(source, maxMessages: 100)
+        { Start = new(BrowseStartKind.Newest) { Positions = new Dictionary<int, long> { [0] = nextOffset } } });
+        Assert.Single(second);
+        Assert.Equal("record-0", Encoding.UTF8.GetString(second[0].Body.Span));
+        Assert.Equal(101, first.Concat(second).Select(m => m.Position).Distinct().Count());
+    }
+
+    [EmulatorFact(Emulators.Kafka)]
     public async Task Dead_letters_are_read_by_offset_with_their_reason_and_nothing_changes()
     {
         await DeadLetterAsync("o-3", "o-4");

@@ -68,4 +68,25 @@ public sealed class CycleTwoExportRegressionTests
         public IEnumerator<ExportedMessage> GetEnumerator() { yield return Message; throw new IOException("serialization source failed"); }
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("csv")]
+    public async Task CycleTwoExport_CancellationBetweenRowsPreservesThePreviousExport(string extension)
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "messages." + extension);
+        await File.WriteAllTextAsync(path, "previous complete export");
+        using var cancellation = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => MessageExport.WriteAsync(path, new CancellingRows(cancellation), cancellation.Token));
+        Assert.Equal("previous complete export", await File.ReadAllTextAsync(path));
+        Assert.Single(Directory.GetFiles(directory.Path));
+    }
+    private sealed class CancellingRows(CancellationTokenSource cancellation) : IReadOnlyList<ExportedMessage>
+    {
+        public int Count => 2;
+        public ExportedMessage this[int index] => Message;
+        public IEnumerator<ExportedMessage> GetEnumerator() { yield return Message; cancellation.Cancel(); yield return Message; }
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 }
