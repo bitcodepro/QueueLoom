@@ -8,6 +8,19 @@ namespace QueueLoom.UiTests;
 public sealed class SavedSearchAuditUiTests
 {
     [Fact]
+    public Task SavedSearchPickerRendersOneBookmarkWithoutBindingWarnings() => UiSession.RunAsync(async () =>
+    {
+        BindingErrors.Instance.Clear();
+        await using var fixture = await WindowFixture.OpenAsync();
+        await fixture.NavigateAsync("DeadLetters");
+        fixture.ViewModel.DeadLetterSearchQuery = "$.region == 'EU'";
+        fixture.ViewModel.SaveSearchCommand.Execute(null);
+        await fixture.SettleAsync();
+
+        Assert.True(BindingErrors.Instance.Messages.Count == 0, string.Join(Environment.NewLine, BindingErrors.Instance.Messages));
+    });
+
+    [Fact]
     public Task SaveButtonKeepsBothLongQueriesInTheSavedSearchPicker() => UiSession.RunAsync(async () =>
     {
         BindingErrors.Instance.Clear();
@@ -33,7 +46,7 @@ public sealed class SavedSearchAuditUiTests
         Assert.Equal(2, picker.ItemCount);
         Assert.Equal([second, first], picker.Items.OfType<SavedSearch>().Select(search => search.Query));
         Assert.Equal(2, picker.Items.OfType<SavedSearch>().Select(search => search.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count());
-        Assert.Empty(BindingErrors.Instance.Messages);
+        Assert.True(BindingErrors.Instance.Messages.Count == 0, string.Join(Environment.NewLine, BindingErrors.Instance.Messages));
     });
 
     [Fact]
@@ -58,6 +71,6 @@ public sealed class SavedSearchAuditUiTests
         Assert.Null(scope.SelectedItem);
         Assert.Empty(fixture.ViewModel.Messages);
         Assert.Contains("no longer available", fixture.ViewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(BindingErrors.Instance.Messages);
+        Assert.True(BindingErrors.Instance.Messages.Count == 0, string.Join(Environment.NewLine, BindingErrors.Instance.Messages));
     });
 }
