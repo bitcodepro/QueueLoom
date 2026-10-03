@@ -137,7 +137,9 @@ public sealed partial class RabbitMqUiTests
                     item => item.Subscription == "orders" && item.IsExchange == toExchange).Rules);
                 var zeroBits = negative ? long.MinValue : 0L;
                 Assert.Equal(zeroBits, BitConverter.DoubleToInt64Bits(Assert.IsType<double>(existing.Arguments["amount"])));
-                if (previous.Arguments["amount"] is double old && BitConverter.DoubleToInt64Bits(old) == zeroBits)
+                // RabbitMQ's management hash collides for opposite zero signs; typed identity/delivery must
+                // change while the hash stays the same. An unchanged save must also preserve the hash.
+                if (previous.Arguments["amount"] is double old && old == 0d)
                     Assert.Equal(previous.Name, existing.Name);
                 else Assert.NotEqual(previous.Name, existing.Name);
                 await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = 0d }, !negative);

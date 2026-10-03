@@ -182,11 +182,51 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
         Assert.DoesNotContain(broker.Events, item => item.StartsWith("BIND", StringComparison.Ordinal) || item.StartsWith("DELETE", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Presence_CollidingZeroKeyUnbindsExactOldTerms(bool negative, bool toExchange)
+    {
+        using var broker = new BindingBoundary(toExchange, true) { CollidingKey = true };
+        broker.Bindings[0] = broker.Bindings[0] with
+        { Arguments = new Dictionary<string, object?> { ["x-match"] = "all", ["trace"] = null, ["amount"] = EditNumber(negative, true) } };
+        await using var workspace = broker.Workspace();
+        var original = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        var editor = new RuleEditorViewModel("headers", "orders", original, RoutingService.RabbitMq)
+        { Headers = "trace = null\namount = " + RoutingValue.Format(EditNumber(!negative, true)) };
+        await workspace.SaveSubscriptionRuleAsync("headers", "orders", Assert.IsType<SubscriptionRule>(editor.TryBuild()) with { ToExchange = toExchange }, true);
+        var saved = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        Assert.Equal(original.Name, saved.Name);
+        AssertNumber(EditNumber(!negative, true), saved.Arguments["amount"]);
+        Assert.Contains(broker.Events, item => item.StartsWith("UNBIND", StringComparison.Ordinal));
+        Assert.DoesNotContain(broker.Events, item => item.StartsWith("DELETE", StringComparison.Ordinal));
+        Assert.True(broker.Events.FindIndex(item => item.StartsWith("BIND", StringComparison.Ordinal)) <
+            broker.Events.FindIndex(item => item.StartsWith("UNBIND", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task Presence_AmbiguousOldKeyIsRejectedBeforeMutation()
+    {
+        using var broker = new BindingBoundary(false, true);
+        broker.Bindings.Add(broker.Bindings[0] with { Arguments = new Dictionary<string, object?>
+            { ["x-match"] = "all", ["trace"] = null, ["amount"] = 0d } });
+        await using var workspace = broker.Workspace();
+        var edited = broker.Bindings[0] with { ToExchange = false, Arguments = new Dictionary<string, object?>
+            { ["x-match"] = "any", ["trace"] = null } };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.SaveSubscriptionRuleAsync("headers", "orders", edited, true));
+        Assert.DoesNotContain(broker.Events, item => item.StartsWith("BIND", StringComparison.Ordinal) ||
+            item.StartsWith("UNBIND", StringComparison.Ordinal) || item.StartsWith("DELETE", StringComparison.Ordinal));
+        Assert.Equal(2, broker.Bindings.Count);
+    }
+
     private sealed class BindingBoundary(bool toExchange, bool existing) : HttpMessageHandler
     {
         public List<string> Events { get; } = [];
         public List<SubscriptionRule> Bindings { get; } = existing ? [Rule("old/key", "all")] : [];
         public string? Failure { get; init; }
+        public bool CollidingKey { get; init; }
         private static SubscriptionRule Rule(string name, string mode) => new(name, RuleFilterKind.HeadersBinding)
         {
             Expression = "", Arguments = new Dictionary<string, object?> { ["x-match"] = mode, ["trace"] = null, ["region"] = "EU" }
@@ -206,8 +246,18 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
                     Assert.Null(arguments["trace"]);
                     Events.Add($"BIND {method.Name} {JsonSerializer.Serialize(arguments)}");
                     if (Failure == "bind") return Task.FromException(new InvalidOperationException("AMQP bind failed"));
-                    if (Failure != "lookup") Bindings.Add(new("new/key", RuleFilterKind.HeadersBinding)
+                    if (Failure != "lookup") Bindings.Add(new(CollidingKey ? "old/key" : "new/key", RuleFilterKind.HeadersBinding)
                     { Expression = (string)args[2]!, Arguments = new Dictionary<string, object?>(arguments) });
+                }
+                if (method.Name is "QueueUnbindAsync" or "ExchangeUnbindAsync")
+                {
+                    Assert.Equal(toExchange ? "ExchangeUnbindAsync" : "QueueUnbindAsync", method.Name);
+                    var arguments = Assert.IsType<Dictionary<string, object?>>(args![3]);
+                    Events.Add($"UNBIND {method.Name}");
+                    var old = Assert.Single(Bindings, binding =>
+                        RabbitMqBindingJson.Equal(JsonSerializer.SerializeToElement(binding.Arguments, RabbitMqBindingJson.Options),
+                            JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options)));
+                    Bindings.Remove(old);
                 }
                 return Done(method.ReturnType);
             });
