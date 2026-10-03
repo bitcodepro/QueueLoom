@@ -111,21 +111,40 @@ public sealed partial class MainWindowViewModel
                 var relative = Regex.Match(text, @"^(\d+)\s*(m|min|h|d)$", RegexOptions.IgnoreCase);
                 if (relative.Success)
                 {
-                    var amount = int.Parse(relative.Groups[1].Value, CultureInfo.InvariantCulture);
-                    var span = relative.Groups[2].Value.ToLowerInvariant() switch
+                    // A number that does not fit in an int or a TimeSpan is bad input, not an overflow crash.
+                    if (!int.TryParse(relative.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var amount))
                     {
-                        "h" => TimeSpan.FromHours(amount),
-                        "d" => TimeSpan.FromDays(amount),
-                        _ => TimeSpan.FromMinutes(amount)
-                    };
-                    return new BrowseStart(kind, Time: now - span);
+                        throw LogTimeError();
+                    }
+                    TimeSpan span;
+                    try
+                    {
+                        span = relative.Groups[2].Value.ToLowerInvariant() switch
+                        {
+                            "h" => TimeSpan.FromHours(amount),
+                            "d" => TimeSpan.FromDays(amount),
+                            _ => TimeSpan.FromMinutes(amount)
+                        };
+                    }
+                    catch (Exception exception) when (exception is OverflowException or ArgumentOutOfRangeException)
+                    {
+                        throw LogTimeError();
+                    }
+                    try
+                    {
+                        return new BrowseStart(kind, Time: now - span);
+                    }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        throw LogTimeError();
+                    }
                 }
                 if (DateTimeOffset.TryParse(text, CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out var time) ||
                     DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out time))
                 {
                     return new BrowseStart(kind, Time: time);
                 }
-                throw new InvalidOperationException("Enter a time such as 2026-09-30 14:00, or how long ago: 30m, 2h or 1d.");
+                throw LogTimeError();
             case BrowseStartKind.FromOffset:
                 var parts = text.Split(':', StringSplitOptions.TrimEntries);
                 if (parts.Length == 1 && long.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var offset))
@@ -142,5 +161,8 @@ public sealed partial class MainWindowViewModel
             default:
                 return new BrowseStart(kind);
         }
+
+        static InvalidOperationException LogTimeError() =>
+            new("Enter a time such as 2026-09-30 14:00, or how long ago: 30m, 2h or 1d.");
     }
 }

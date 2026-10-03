@@ -462,11 +462,10 @@ public sealed partial class MessageSearchQuery
             {
                 throw Error("=~ takes a regular expression between slashes, such as /^ORD-\\d+$/.");
             }
-            var end = text.IndexOf('/', _position);
-            while (end > 0 && text[end - 1] == '\\')
-            {
-                end = text.IndexOf('/', end + 1);
-            }
+            // A slash ends the pattern only when it is not escaped. An even number of
+            // backslashes (including zero) leaves the slash literal, so /C:\\orders\\/
+            // is the pattern C:\\orders\\ (the text C:\orders\) and not a missing closer.
+            var end = IndexOfUnescapedSlash(_position);
             if (end < 0)
             {
                 throw Error("The closing '/' of the regular expression is missing.");
@@ -479,6 +478,29 @@ public sealed partial class MessageSearchQuery
                 _position++;
             }
             return CreateRegex(pattern, text[flagsStart.._position]);
+        }
+
+
+        /// <summary>Index of the next '/' not escaped by an odd number of backslashes, or -1.</summary>
+        private int IndexOfUnescapedSlash(int start)
+        {
+            for (var index = start; index < text.Length; index++)
+            {
+                if (text[index] != '/')
+                {
+                    continue;
+                }
+                var backslashes = 0;
+                for (var look = index - 1; look >= start && text[look] == '\\'; look--)
+                {
+                    backslashes++;
+                }
+                if (backslashes % 2 == 0)
+                {
+                    return index;
+                }
+            }
+            return -1;
         }
 
         private string ParseString()

@@ -294,27 +294,31 @@ public sealed class ResendDialogViewModel : ObservableObject
     public ResendOptions ToOptions() =>
         new(Destination.Reference, Moves ? ResendMode.Move : ResendMode.Copy, MessagesPerSecond, Rewrite, SendAt, PreserveMessageIds);
 
-    /// <summary>Parses "30m", "2h", "1d", "03:00" (the next time the clock shows it) or a date and time.</summary>
-    public static DateTimeOffset? ParseWhen(string? text, DateTimeOffset now)
+    /// <summary>Parses "30m", "2h", "1d", "03:00" (the next time the local clock shows it) or a date and time.</summary>
+    public static DateTimeOffset? ParseWhen(string? text, DateTimeOffset now) =>
+        ParseWhen(text, now, TimeZoneInfo.Local);
+
+    /// <summary>
+    /// Parses a delay or a clock time in <paramref name="timeZone"/>. "03:00" is the next instant at which that
+    /// zone's clock shows 03:00, including across a daylight-saving transition. A time that falls in a
+    /// spring-forward gap does not exist; the next valid local time after the gap is used instead of keeping
+    /// today's offset (for example 02:30 on the US spring-forward morning becomes 03:00 on the new offset).
+    /// A relative delay that does not fit in a TimeSpan, or that is longer than 30 days, is invalid and returns null.
+    /// </summary>
+    public static DateTimeOffset? ParseWhen(string? text, DateTimeOffset now, TimeZoneInfo timeZone)
     {
+        ArgumentNullException.ThrowIfNull(timeZone);
         var value = text?.Trim() ?? string.Empty;
         var relative = Regex.Match(value, @"^(\d+)\s*(m|min|h|d)$", RegexOptions.IgnoreCase);
         if (relative.Success)
         {
-            var amount = int.Parse(relative.Groups[1].Value, CultureInfo.InvariantCulture);
-            var span = relative.Groups[2].Value.ToLowerInvariant() switch
-            {
-                "h" => TimeSpan.FromHours(amount),
-                "d" => TimeSpan.FromDays(amount),
-                _ => TimeSpan.FromMinutes(amount)
-            };
-            return amount > 0 && span <= TimeSpan.FromDays(30) ? now + span : null;
+            return TryRelativeSpan(relative.Groups[1].Value, relative.Groups[2].Value, out var span)
+                ? AddWithinRange(now, span)
+                : null;
         }
         if (TimeOnly.TryParseExact(value, ["H:mm", "HH:mm"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var clock))
         {
-            var local = now.ToLocalTime();
-            var today = new DateTimeOffset(local.Date + clock.ToTimeSpan(), local.Offset);
-            return today > local ? today : today.AddDays(1);
+            return NextLocalClock(clock, now, timeZone);
         }
         if (DateTimeOffset.TryParse(value, CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out var at) ||
             DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out at))
@@ -322,6 +326,109 @@ public sealed class ResendDialogViewModel : ObservableObject
             return at > now && at - now <= TimeSpan.FromDays(30) ? at : null;
         }
         return null;
+    }
+
+    /// <summary>False when the amount does not fit, is not positive, or is longer than 30 days. Never throws.</summary>
+    private static bool TryRelativeSpan(string amountText, string unit, out TimeSpan span)
+    {
+        span = default;
+        if (!int.TryParse(amountText, NumberStyles.None, CultureInfo.InvariantCulture, out var amount) || amount <= 0)
+        {
+            return false;
+        }
+        try
+        {
+            span = unit.ToLowerInvariant() switch
+            {
+                "h" => TimeSpan.FromHours(amount),
+                "d" => TimeSpan.FromDays(amount),
+                _ => TimeSpan.FromMinutes(amount)
+            };
+        }
+        catch (Exception exception) when (exception is OverflowException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+        return span > TimeSpan.Zero && span <= TimeSpan.FromDays(30);
+    }
+
+    private static DateTimeOffset? AddWithinRange(DateTimeOffset now, TimeSpan span)
+    {
+        try
+        {
+            return now + span;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The next instant at which <paramref name="zone"/>'s wall clock shows <paramref name="clock"/>.</summary>
+    private static DateTimeOffset? NextLocalClock(TimeOnly clock, DateTimeOffset now, TimeZoneInfo zone)
+    {
+        var localNow = TimeZoneInfo.ConvertTime(now, zone);
+        var date = DateOnly.FromDateTime(localNow.DateTime);
+        for (var day = 0; day < 3; day++)
+        {
+            foreach (var candidate in LocalClockInstants(zone, date.AddDays(day), clock))
+            {
+                if (candidate > localNow)
+                {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Instants when the clock shows <paramref name="clock"/> on <paramref name="date"/>, earlier first.
+    /// A fall-back fold yields both occurrences. A spring-forward gap yields the first valid local time after the gap.
+    /// </summary>
+    private static IEnumerable<DateTimeOffset> LocalClockInstants(TimeZoneInfo zone, DateOnly date, TimeOnly clock)
+    {
+        var wall = date.ToDateTime(clock);
+        if (zone.IsInvalidTime(wall))
+        {
+            // Scan forward up to 24 hours so a gap that spans midnight (for example
+            // America/Nuuk spring-forward) still resolves to the first valid local time.
+            var probe = wall;
+            for (var minute = 0; minute < 24 * 60; minute++)
+            {
+                probe = probe.AddMinutes(1);
+                if (!zone.IsInvalidTime(probe))
+                {
+                    foreach (var instant in InstantsAt(zone, probe))
+                    {
+                        yield return instant;
+                    }
+                    yield break;
+                }
+            }
+            yield break;
+        }
+
+        foreach (var instant in InstantsAt(zone, wall))
+        {
+            yield return instant;
+        }
+    }
+
+    private static IEnumerable<DateTimeOffset> InstantsAt(TimeZoneInfo zone, DateTime wall)
+    {
+        // Unspecified is a wall time in this zone, not the machine's zone.
+        wall = DateTime.SpecifyKind(wall, DateTimeKind.Unspecified);
+        if (zone.IsAmbiguousTime(wall))
+        {
+            foreach (var offset in zone.GetAmbiguousTimeOffsets(wall).OrderByDescending(offset => offset))
+            {
+                yield return new DateTimeOffset(wall, offset);
+            }
+            yield break;
+        }
+
+        yield return new DateTimeOffset(wall, zone.GetUtcOffset(wall));
     }
 
     private static string Until(TimeSpan span) => span.TotalMinutes < 60
