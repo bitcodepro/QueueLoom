@@ -159,4 +159,53 @@ public sealed partial class ViewModelStateTests
         public ValueTask<byte[]> GetOrCreateAsync(string installationId, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
     }
+
+    [Theory]
+    [InlineData(ProfileSecretKind.ConnectionString)]
+    [InlineData(ProfileSecretKind.SchemaRegistryPassword)]
+    public async Task CycleThreeProfiles_GuardedReaderAcceptsCommittedLegacySlotsAndRejectsIncompleteUpdates(ProfileSecretKind kind)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        using var repository = new JsonProfileRepository(paths);
+        var profile = CreateConnectionStringProfile("Legacy");
+        await repository.UpsertAndSelectAsync(profile);
+        using var vault = new EncryptedFileSecretVault(paths, new SyntheticMasterKeyStore());
+        var key = new ProfileSecretKey(profile.Id, kind);
+        await vault.StoreAsync(key, "synthetic-legacy");
+        // Existing slot names and encryption are unchanged; temporary write grants are local.
+        Assert.Equal("synthetic-legacy", await vault.RetrieveForProfileAsync(profile with { AccessMode = ProfileAccessMode.ReadWrite }, kind));
+        await using (await repository.AcquireProfileMutationAsync())
+            await repository.MarkCredentialUpdatePendingAsync(profile.Id);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await vault.RetrieveForProfileAsync(profile, kind));
+        Assert.Contains("incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("synthetic-legacy", await vault.RetrieveAsync(key));
+        var stale = profile with { ConfigurationRevision = Guid.NewGuid() };
+        repository.CompleteCredentialUpdate(profile.Id);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await vault.RetrieveForProfileAsync(stale, kind));
+        Assert.Equal("synthetic-legacy", await vault.RetrieveForProfileAsync(profile, kind));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CycleThreeProfiles_InterruptedUpdateRequiresExplicitCredentialsAndPreservesMarkerOnFailure(bool replacement)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        using var repository = new JsonProfileRepository(paths);
+        var profile = CreateConnectionStringProfile("Interrupted");
+        await repository.UpsertAndSelectAsync(profile);
+        var vault = new FakeSecretVault();
+        await vault.StoreAsync(ProfileSecretKey.ConnectionString(profile.Id), "synthetic-uncommitted");
+        await using (await repository.AcquireProfileMutationAsync())
+            await repository.MarkCredentialUpdatePendingAsync(profile.Id);
+        await using var vm = CreateViewModel(repository, new FakeWorkspace(), new FakeDialogService
+            { EditResult = new(profile with { Name = "Recovered" }, replacement ? "synthetic-reviewed" : null, replacement) }, secretVault: vault);
+        await vm.InitializeAsync(); await vm.EditEnvironmentCommand.ExecuteAsync();
+        Assert.Equal(!replacement, vm.HasError);
+        Assert.Equal(!replacement, repository.IsCredentialUpdatePending(profile.Id));
+        Assert.Equal(replacement ? "Recovered" : "Interrupted", (await repository.GetAsync(profile.Id))!.Name);
+        Assert.Equal(replacement ? "synthetic-reviewed" : "synthetic-uncommitted", await vault.RetrieveAsync(ProfileSecretKey.ConnectionString(profile.Id)));
+    }
 }

@@ -25,6 +25,9 @@ public sealed record ServiceBusEntityRuntime
     /// <summary>The service does not report counts for this entity, so every counter is unknown rather than zero.</summary>
     public bool CountsUnavailable { get; init; }
 
+    /// <summary>A failed reported DLQ count; this must not become zero or trigger receive-based sampling.</summary>
+    public string? DeadLetterCountError { get; init; }
+
     /// <summary>Only Azure Service Bus reports transfer dead-letter counts.</summary>
     public bool HasTransferDeadLetterCount { get; init; } = true;
 

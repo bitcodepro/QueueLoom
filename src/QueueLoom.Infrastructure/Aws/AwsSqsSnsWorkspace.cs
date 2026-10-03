@@ -236,7 +236,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             return null;
         }
 
-        var secret = await _secretVault.RetrieveAsync(ProfileSecretKey.ConnectionString(profile.Id), cancellationToken)
+        var secret = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
             .ConfigureAwait(false);
         var accessKey = AwsAccessKey.Parse(secret);
         return string.IsNullOrEmpty(accessKey.SessionToken)

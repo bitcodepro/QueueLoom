@@ -52,7 +52,11 @@ internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, 
             }
             return new ServiceBusQueue(topic.Name,
                 new ServiceBusEntityRuntime(new ServiceBusMessageCounts(active: topic.Retained, deadLetter: deadLetter?.Retained ?? 0))
-                { HasTransferDeadLetterCount = false },
+                {
+                    HasTransferDeadLetterCount = false,
+                    CountsUnavailable = deadLetter?.CountError is not null,
+                    DeadLetterCountError = deadLetter?.CountError
+                },
                 ServiceBusEntityStatus.Active)
             {
                 HasDeadLetterQueue = deadLetter is not null,

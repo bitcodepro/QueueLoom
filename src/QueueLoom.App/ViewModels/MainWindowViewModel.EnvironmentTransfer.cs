@@ -1,5 +1,6 @@
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Profiles;
+using QueueLoom.Core.Abstractions;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -56,9 +57,10 @@ public sealed partial class MainWindowViewModel
         {
             throw new InvalidOperationException("The file is too large to be an environments file.");
         }
-        var import = EnvironmentTransfer.Import(
-            await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(true),
-            Profiles.Select(profile => profile.Profile).ToArray());
+        var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(true);
+        var coordinator = _profileRepository as IProfileMutationCoordinator;
+        await using var mutation = coordinator is null ? null : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
+        var import = EnvironmentTransfer.Import(json, await _profileRepository.ListAsync(cancellationToken).ConfigureAwait(true));
         foreach (var profile in import.Profiles)
         {
             await _profileRepository.UpsertAsync(profile, cancellationToken).ConfigureAwait(true);

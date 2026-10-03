@@ -6,7 +6,7 @@ using QueueLoom.Core.Validation;
 
 namespace QueueLoom.Infrastructure.Persistence;
 
-public sealed class JsonProfileRepository : IAtomicProfileRepository, IDisposable
+public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMutationCoordinator, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -23,6 +23,16 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IDisposabl
         _paths = paths;
         _paths.EnsureCreated();
     }
+
+    public async ValueTask<IAsyncDisposable> AcquireProfileMutationAsync(CancellationToken cancellationToken = default) =>
+        await CrossProcessFileLock.AcquireAsync(ProfileMutationFiles.LockPath(_paths), cancellationToken).ConfigureAwait(false);
+
+    public Task MarkCredentialUpdatePendingAsync(Guid profileId, CancellationToken cancellationToken = default) =>
+        AtomicFile.WriteTextAsync(ProfileMutationFiles.PendingPath(_paths, profileId), "Credential update incomplete", cancellationToken);
+
+    public void CompleteCredentialUpdate(Guid profileId) => File.Delete(ProfileMutationFiles.PendingPath(_paths, profileId));
+
+    public bool IsCredentialUpdatePending(Guid profileId) => File.Exists(ProfileMutationFiles.PendingPath(_paths, profileId));
 
     public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(
         CancellationToken cancellationToken = default)

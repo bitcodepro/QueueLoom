@@ -128,34 +128,7 @@ public sealed partial class MainWindowViewModel
         }
 
         result = result with { Profile = result.Profile with { ConfigurationRevision = Guid.NewGuid() } };
-        var secretKey = ProfileSecretKey.ConnectionString(result.Profile.Id);
-        string? removedConnectionString = null;
-        // Switching to a method without a stored secret (for example to Entra ID) removes the old secret.
-        var removesConnectionString = selected.Profile.Authentication.Kind.UsesStoredSecret() &&
-                                      !result.Profile.Authentication.Kind.UsesStoredSecret();
-        if (removesConnectionString)
-        {
-            removedConnectionString = await _secretVault.RetrieveAsync(secretKey, cancellationToken)
-                .ConfigureAwait(true);
-            if (removedConnectionString is not null)
-            {
-                await _secretVault.RemoveAsync(secretKey, cancellationToken).ConfigureAwait(true);
-            }
-        }
-
-        try
-        {
-            await SaveProfileAsync(result, cancellationToken).ConfigureAwait(true);
-        }
-        catch
-        {
-            if (removedConnectionString is not null)
-            {
-                await _secretVault.StoreAsync(secretKey, removedConnectionString, CancellationToken.None)
-                    .ConfigureAwait(true);
-            }
-            throw;
-        }
+        await SaveProfileAsync(result, cancellationToken, selected.Profile).ConfigureAwait(true);
 
         await StopMonitorForConfigurationChangeAsync().ConfigureAwait(true);
         InvalidateProfileArtifacts(result.Profile.Id, "Environment configuration changed; the previous draft is no longer sendable.");
@@ -175,22 +148,33 @@ public sealed partial class MainWindowViewModel
         AddActivity("Success", "Environment updated", result.Profile.Name);
     }
 
-    private async Task SaveProfileAsync(ProfileEditorResult result, CancellationToken cancellationToken)
+    private async Task SaveProfileAsync(ProfileEditorResult result, CancellationToken cancellationToken, ServiceBusProfile? expectedProfile = null)
     {
+        var coordinator = _profileRepository as IProfileMutationCoordinator;
+        await using var mutation = coordinator is null ? null : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
         var secretKey = ProfileSecretKey.ConnectionString(result.Profile.Id);
         var previousProfile = await _profileRepository.GetAsync(result.Profile.Id, cancellationToken)
             .ConfigureAwait(true);
+        EnsureProfileUnchanged(expectedProfile, previousProfile);
         var previousSelectedProfileId = await _profileRepository.GetSelectedProfileIdAsync(cancellationToken)
             .ConfigureAwait(true);
         var replacesConnectionString = result.ReplacesConnectionString && result.ConnectionString is not null;
+        var removesConnectionString = previousProfile?.Authentication.Kind.UsesStoredSecret() == true &&
+                                      !result.Profile.Authentication.Kind.UsesStoredSecret();
+        var changesConnectionString = replacesConnectionString || removesConnectionString;
         string? previousConnectionString = null;
-        if (replacesConnectionString)
+        if (changesConnectionString)
         {
             previousConnectionString = await _secretVault.RetrieveAsync(secretKey, cancellationToken)
                 .ConfigureAwait(true);
         }
         var registryKey = ProfileSecretKey.SchemaRegistryPassword(result.Profile.Id);
         var changesRegistryPassword = result.SchemaRegistryPassword is not null || result.RemovesSchemaRegistryPassword;
+        var alreadyPending = coordinator?.IsCredentialUpdatePending(result.Profile.Id) == true;
+        if (alreadyPending &&
+            (result.Profile.Authentication.Kind.UsesStoredSecret() && !replacesConnectionString ||
+             result.Profile.Kafka?.SchemaRegistryUserName is not null && result.SchemaRegistryPassword is null))
+            throw new InvalidOperationException("The previous credential update is incomplete. Re-enter all credentials used by this environment before saving.");
         string? previousRegistryPassword = null;
         if (changesRegistryPassword)
         {
@@ -201,13 +185,18 @@ public sealed partial class MainWindowViewModel
         var secretReplacementAttempted = false;
         var registryPasswordAttempted = false;
         var metadataRollbackNeeded = false;
+        var pendingMarked = coordinator is not null && (changesConnectionString || changesRegistryPassword || alreadyPending);
+        if (pendingMarked)
+            await coordinator!.MarkCredentialUpdatePendingAsync(result.Profile.Id, cancellationToken).ConfigureAwait(true);
         try
         {
-            if (replacesConnectionString)
+            if (changesConnectionString)
             {
                 secretReplacementAttempted = true;
-                await _secretVault.StoreAsync(
-                    secretKey, result.ConnectionString!, cancellationToken).ConfigureAwait(true);
+                if (replacesConnectionString)
+                    await _secretVault.StoreAsync(secretKey, result.ConnectionString!, cancellationToken).ConfigureAwait(true);
+                else
+                    await _secretVault.RemoveAsync(secretKey, cancellationToken).ConfigureAwait(true);
             }
             if (changesRegistryPassword)
             {
@@ -215,8 +204,8 @@ public sealed partial class MainWindowViewModel
                 await SaveSchemaRegistryPasswordAsync(result, cancellationToken).ConfigureAwait(true);
             }
 
-            // Complete credential operations before committing metadata. The real vault and
-            // repository share a storage lock, so these operations must not be nested.
+            // The outer profile lock owns the entire save/rollback. Individual vault and
+            // repository calls take the separate storage lock sequentially.
             if (_profileRepository is IAtomicProfileRepository atomicRepository)
             {
                 await atomicRepository.UpsertAndSelectAsync(result.Profile, cancellationToken).ConfigureAwait(true);
@@ -284,6 +273,11 @@ public sealed partial class MainWindowViewModel
                     rollbackFailures.Add(rollbackException);
                 }
             }
+            if (rollbackFailures.Count == 0 && pendingMarked && !alreadyPending)
+            {
+                try { coordinator!.CompleteCredentialUpdate(result.Profile.Id); }
+                catch (Exception exception) { rollbackFailures.Add(exception); }
+            }
             if (rollbackFailures.Count > 0)
             {
                 throw new AggregateException(
@@ -292,6 +286,15 @@ public sealed partial class MainWindowViewModel
             }
             throw;
         }
+        // If marker cleanup fails, retain the committed profile and credentials together.
+        // Readers remain blocked; do not roll credentials back after metadata committed.
+        if (pendingMarked) coordinator!.CompleteCredentialUpdate(result.Profile.Id);
+    }
+
+    private static void EnsureProfileUnchanged(ServiceBusProfile? expected, ServiceBusProfile? current)
+    {
+        if (expected is not null && System.Text.Json.JsonSerializer.Serialize(expected) != System.Text.Json.JsonSerializer.Serialize(current))
+            throw new InvalidOperationException("The environment changed or was removed in another window. Refresh environments and edit it again.");
     }
 
     private async Task SaveSchemaRegistryPasswordAsync(ProfileEditorResult result, CancellationToken cancellationToken)
@@ -320,6 +323,10 @@ public sealed partial class MainWindowViewModel
         {
             return;
         }
+
+        var coordinator = _profileRepository as IProfileMutationCoordinator;
+        await using var mutation = coordinator is null ? null : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
+        EnsureProfileUnchanged(selected.Profile, await _profileRepository.GetAsync(selected.Id, cancellationToken).ConfigureAwait(true));
 
         if (_workspace.ConnectedProfileId == selected.Id)
         {
@@ -353,6 +360,7 @@ public sealed partial class MainWindowViewModel
         }
         await _secretVault.RemoveAsync(ProfileSecretKey.SchemaRegistryPassword(selected.Id), CancellationToken.None)
             .ConfigureAwait(true);
+        coordinator?.CompleteCredentialUpdate(selected.Id);
         if (_writeUnlockProfileId == selected.Id)
         {
             await StopWriteUnlockTimerAsync().ConfigureAwait(true);

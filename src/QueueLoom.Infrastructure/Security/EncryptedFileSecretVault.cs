@@ -3,11 +3,13 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Profiles;
+using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Security;
 
-public sealed class EncryptedFileSecretVault : ISecretVault, IDisposable
+public sealed class EncryptedFileSecretVault : ISecretVault, IProfileSecretReader, IDisposable
 {
     private const int NonceSize = 12;
     private const int TagSize = 16;
@@ -38,6 +40,20 @@ public sealed class EncryptedFileSecretVault : ISecretVault, IDisposable
     }
 
     public string BackendName => _masterKeyStore.BackendName;
+
+    public async ValueTask<string?> RetrieveForProfileAsync(ServiceBusProfile profile, ProfileSecretKind kind,
+        CancellationToken cancellationToken = default)
+    {
+        await using var mutation = await CrossProcessFileLock.AcquireAsync(
+            ProfileMutationFiles.LockPath(_paths), cancellationToken).ConfigureAwait(false);
+        if (File.Exists(ProfileMutationFiles.PendingPath(_paths, profile.Id)))
+            throw new InvalidOperationException("The environment credential update is incomplete. Edit it and re-enter its credentials before connecting.");
+        using var repository = new JsonProfileRepository(_paths);
+        var committed = await repository.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false);
+        if (committed is null || ScheduledResend.IdentityFor(committed) != ScheduledResend.IdentityFor(profile))
+            throw new InvalidOperationException("The environment configuration changed or was removed in another window. Refresh environments before connecting.");
+        return await RetrieveAsync(new ProfileSecretKey(profile.Id, kind), cancellationToken).ConfigureAwait(false);
+    }
 
     public ValueTask StoreAsync(
         ProfileSecretKey key,

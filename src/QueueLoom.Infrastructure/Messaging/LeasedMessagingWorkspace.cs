@@ -457,6 +457,11 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         // One source at a time: sampling holds messages, and sources can share a dead-letter destination.
         foreach (var source in sources)
         {
+            if (source.Runtime.DeadLetterCountError is { } countError)
+            {
+                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError));
+                continue;
+            }
             long count;
             if (source.Runtime.CountsUnavailable)
             {
