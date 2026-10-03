@@ -59,12 +59,15 @@ public sealed partial class MainWindowViewModel
             {
                 OnPropertyChanged(nameof(HasSelectedMessage));
                 OnPropertyChanged(nameof(CanOpenSelectedMessageAsDraft));
+                OnPropertyChanged(nameof(SelectedMessageNeedsReadOnlyPreview));
                 NotifyCommandStates();
             }
         }
     }
 
     public bool HasSelectedMessage => SelectedMessage is not null;
+
+    public bool SelectedMessageNeedsReadOnlyPreview => SelectedMessage is { CanOpenAsDraft: false };
 
     public bool CanOpenSelectedMessageAsDraft =>
         IsConnected &&

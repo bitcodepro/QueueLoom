@@ -49,9 +49,16 @@ public sealed partial class MainWindowViewModel
 
             DeadLetterSearchQuery = value.Query;
             SearchWindow = SearchWindows.FirstOrDefault(option => option.Minutes == value.WithinMinutes) ?? SearchWindows[0];
-            if (value.EnvironmentId is { } environmentId &&
-                DeadLetterEnvironmentFilters.FirstOrDefault(filter => filter.ProfileId == environmentId) is { } filter)
+            if (value.EnvironmentId is { } environmentId)
             {
+                var filter = DeadLetterEnvironmentFilters.FirstOrDefault(item => item.ProfileId == environmentId);
+                if (filter is null)
+                {
+                    SelectedDeadLetterEnvironmentFilter = null;
+                    ErrorText = "The saved search environment is no longer available. Choose an environment before searching again.";
+                    DeleteSavedSearchCommand?.NotifyCanExecuteChanged();
+                    return;
+                }
                 SelectedDeadLetterEnvironmentFilter = filter;
             }
             DeleteSavedSearchCommand?.NotifyCanExecuteChanged();
@@ -123,12 +130,20 @@ public sealed partial class MainWindowViewModel
             name += $" · {SearchWindow.Label.ToLowerInvariant()}";
         }
 
-        var search = new SavedSearch(name, query, environment?.ProfileId, SearchWindow.Minutes);
-        var existing = SavedSearches.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+        // The display label is shortened and case-insensitive; the actual query can distinguish both.
+        var existing = SavedSearches.FirstOrDefault(item =>
+            string.Equals(item.Query, query, StringComparison.Ordinal) &&
+            item.EnvironmentId == environment?.ProfileId && item.WithinMinutes == SearchWindow.Minutes);
         if (existing is not null)
         {
             SavedSearches.Remove(existing);
         }
+        var baseName = name;
+        for (var suffix = 2; SavedSearches.Any(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)); suffix++)
+        {
+            name = $"{baseName} ({suffix})";
+        }
+        var search = new SavedSearch(name, query, environment?.ProfileId, SearchWindow.Minutes);
         if (SavedSearches.Count >= AppSettings.MaximumSavedSearches)
         {
             SavedSearches.RemoveAt(SavedSearches.Count - 1);
