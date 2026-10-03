@@ -68,7 +68,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         }
         else if (profile.Authentication.Kind == AuthenticationKind.GoogleServiceAccountKey)
         {
-            var json = await _secretVault.RetrieveAsync(ProfileSecretKey.ConnectionString(profile.Id), cancellationToken)
+            var json = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
                 .ConfigureAwait(false);
             var credential = ParseServiceAccountKey(json);
             publisherBuilder.GoogleCredential = subscriberBuilder.GoogleCredential = credential;

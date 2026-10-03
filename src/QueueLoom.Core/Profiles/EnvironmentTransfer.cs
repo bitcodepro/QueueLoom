@@ -104,7 +104,16 @@ public static class EnvironmentTransfer
                 continue;
             }
 
-            profile = profile with { Name = UniqueName(profile.Name, names) };
+            // JsonObject member names are case-sensitive but Web deserialization is not.
+            // Normalize after deserialization so an alternate casing cannot reuse a local
+            // vault identity or override the read-only import boundary.
+            profile = profile with
+            {
+                Id = Guid.NewGuid(),
+                AccessMode = ProfileAccessMode.ReadOnly,
+                ConfigurationRevision = Guid.Empty,
+                Name = UniqueName(profile.Name, names)
+            };
             var validation = ProfileValidator.Validate(profile);
             if (!validation.IsValid)
             {

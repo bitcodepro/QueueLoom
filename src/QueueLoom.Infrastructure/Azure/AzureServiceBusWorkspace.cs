@@ -87,8 +87,8 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
 
                 if (profile.Authentication.Kind == AuthenticationKind.ConnectionString)
                 {
-                    var connectionString = await _secretVault.RetrieveAsync(
-                        ProfileSecretKey.ConnectionString(profile.Id),
+                    var connectionString = await _secretVault.RetrieveForProfileAsync(
+                        profile, ProfileSecretKind.ConnectionString,
                         cancellationToken).ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(connectionString))
                     {

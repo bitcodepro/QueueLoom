@@ -47,7 +47,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     protected override async Task OpenAsync(ServiceBusProfile profile, CancellationToken cancellationToken)
     {
         var settings = profile.RabbitMq ?? throw new InvalidOperationException("The RabbitMQ settings are missing.");
-        var password = await _secretVault.RetrieveAsync(ProfileSecretKey.ConnectionString(profile.Id), cancellationToken)
+        var password = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
                            .ConfigureAwait(false)
                        ?? throw new InvalidOperationException("The RabbitMQ password is missing. Edit the environment and enter it again.");
         _virtualHost = settings.VirtualHost;

@@ -68,7 +68,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 _ => SaslMechanism.ScramSha512
             };
             config.SaslUsername = settings.UserName;
-            config.SaslPassword = await _secretVault.RetrieveAsync(ProfileSecretKey.ConnectionString(profile.Id), cancellationToken)
+            config.SaslPassword = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
                                       .ConfigureAwait(false)
                                   ?? throw new InvalidOperationException("The Kafka password is missing. Edit the environment and enter it again.");
         }
@@ -77,7 +77,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             var registryPassword = settings.SchemaRegistryUserName is null
                 ? null
-                : await _secretVault.RetrieveAsync(ProfileSecretKey.SchemaRegistryPassword(profile.Id), cancellationToken).ConfigureAwait(false);
+                : await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.SchemaRegistryPassword, cancellationToken).ConfigureAwait(false);
             _schemaRegistry = new SchemaRegistryClient(registryUrl, settings.SchemaRegistryUserName, registryPassword);
         }
 
