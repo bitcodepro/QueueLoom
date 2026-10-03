@@ -22,11 +22,15 @@ public sealed record PropertyDifference(string Name, string? Left, string? Right
 
 public sealed record MessageComparisonResult(IReadOnlyList<DiffLine> BodyLines, IReadOnlyList<PropertyDifference> Properties, bool BodyTruncated)
 {
+    public bool SourceBodyTruncated { get; init; }
+
+    public bool BodyLineLimitReached { get; init; }
+
     public int ChangedLines => BodyLines.Count(line => line.Kind != DiffKind.Same);
 
     public int ChangedProperties => Properties.Count(property => property.Differs);
 
-    public bool AreEqual => ChangedLines == 0 && ChangedProperties == 0;
+    public bool AreEqual => !BodyTruncated && ChangedLines == 0 && ChangedProperties == 0;
 }
 
 /// <summary>
@@ -43,9 +47,14 @@ public static class MessageComparison
         ArgumentNullException.ThrowIfNull(right);
         var leftLines = Lines(left.Body);
         var rightLines = Lines(right.Body);
-        var truncated = leftLines.Length > MaximumLines || rightLines.Length > MaximumLines;
+        var sourceTruncated = left.IsBodyTruncated || right.IsBodyTruncated;
+        var lineLimitReached = leftLines.Length > MaximumLines || rightLines.Length > MaximumLines;
         var lines = Diff(leftLines.Take(MaximumLines).ToArray(), rightLines.Take(MaximumLines).ToArray());
-        return new MessageComparisonResult(lines, CompareProperties(left, right), truncated);
+        return new MessageComparisonResult(lines, CompareProperties(left, right), sourceTruncated || lineLimitReached)
+        {
+            SourceBodyTruncated = sourceTruncated,
+            BodyLineLimitReached = lineLimitReached
+        };
     }
 
     /// <summary>A longest-common-subsequence diff; lines only in the first come before lines only in the second.</summary>
@@ -166,9 +175,14 @@ public static class MessageComparison
             ["To"] = properties.To,
             ["Reply to"] = properties.ReplyTo,
             ["Session ID"] = properties.SessionId,
+            ["Reply to session ID"] = properties.ReplyToSessionId,
             ["Partition key"] = properties.PartitionKey,
+            ["Transaction partition key"] = properties.TransactionPartitionKey,
             ["Time to live"] = properties.TimeToLive?.ToString("c", CultureInfo.InvariantCulture),
-            ["Enqueued"] = message.EnqueuedAt?.ToString("u", CultureInfo.InvariantCulture),
+            ["Scheduled enqueue"] = properties.ScheduledEnqueueTime?.ToString("O", CultureInfo.InvariantCulture),
+            ["AMQP type"] = properties.AmqpType,
+            ["AMQP app ID"] = properties.AmqpAppId,
+            ["Enqueued"] = message.EnqueuedAt?.ToString("O", CultureInfo.InvariantCulture),
             ["Delivery count"] = message.DeliveryCount.ToString(CultureInfo.InvariantCulture),
             ["Dead-letter reason"] = message.DeadLetterReason,
             ["Dead-letter description"] = message.DeadLetterErrorDescription,
@@ -176,7 +190,14 @@ public static class MessageComparison
         };
         foreach (var property in message.ApplicationProperties)
         {
-            values[property.Name] = property.Value;
+            values["Application: " + property.Name] = $"[{property.Type}] {property.Value}";
+        }
+        if (message.KafkaEnvelope is { } kafka)
+        {
+            // The editable text projection cannot distinguish every Kafka wire value.
+            values["Kafka key (base64)"] = kafka.Key is null ? null : Convert.ToBase64String(kafka.Key);
+            values["Kafka tombstone"] = kafka.IsTombstone.ToString(CultureInfo.InvariantCulture);
+            values["Kafka headers (base64)"] = JsonSerializer.Serialize(kafka.Headers);
         }
         return values.Where(pair => pair.Value is not null).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
     }
