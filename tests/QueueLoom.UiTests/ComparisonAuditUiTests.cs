@@ -10,6 +10,34 @@ namespace QueueLoom.UiTests;
 
 public sealed class ComparisonAuditUiTests
 {
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public Task ComparisonAudit_SourcePreviewWarningDoesNotClaimALineLimit(bool truncateLeft, bool truncateRight) => UiSession.RunAsync(async () =>
+    {
+        BindingErrors.Instance.Clear();
+        var prefix = "{\"value\":\"same\"}";
+        var complete = prefix + "  ";
+        BrowsedMessage Preview(bool truncated) => new(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter,
+            1, Encoding.UTF8.GetBytes(truncated ? prefix : complete), EditableMessageProperties.Empty,
+            originalBodySize: Encoding.UTF8.GetByteCount(complete));
+        var window = new CompareDialogWindow(new CompareDialogViewModel(new MessageItemViewModel(Preview(truncateLeft)),
+            new MessageItemViewModel(Preview(truncateRight))));
+        window.Show();
+        try
+        {
+            await SettleAsync();
+            var texts = VisibleTexts(window).ToArray();
+            Assert.Contains(texts, text => text.Contains("incomplete", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(texts, text => text.Contains("retained", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(texts, text => text.Contains("are the same", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(texts, text => text.Contains(MessageComparison.MaximumLines.ToString("N0"), StringComparison.Ordinal));
+            Assert.True(BindingErrors.Instance.Messages.Count == 0, string.Join(Environment.NewLine, BindingErrors.Instance.Messages));
+        }
+        finally { window.Close(); }
+    });
+
     [Fact]
     public Task ComparisonAudit_WindowDisclosesAnIncompleteBodyComparison() => UiSession.RunAsync(async () =>
     {

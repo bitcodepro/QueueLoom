@@ -89,6 +89,22 @@ public sealed class MessageComparisonAuditRegressionTests
         Assert.True(result.AreEqual);
     }
 
+    [Fact]
+    public void ComparisonAudit_EnqueuedTimestampRetainsFractionalSeconds()
+    {
+        BrowsedMessage At(int milliseconds) => new(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter,
+            1, Encoding.UTF8.GetBytes("same"), EditableMessageProperties.Empty,
+            enqueuedAt: new DateTimeOffset(2026, 10, 3, 12, 0, 0, milliseconds, TimeSpan.Zero));
+
+        var result = MessageComparison.Compare(At(100), At(200));
+
+        Assert.False(result.AreEqual);
+        var change = Assert.Single(result.Properties, property => property.Differs);
+        Assert.Equal("Enqueued", change.Name);
+        Assert.Contains(".100", change.Left);
+        Assert.Contains(".200", change.Right);
+    }
+
     private static (BrowsedMessage Left, BrowsedMessage Right) BeyondPreview(bool binary)
     {
         if (!binary)
