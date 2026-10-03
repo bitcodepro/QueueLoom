@@ -146,6 +146,25 @@ public sealed partial class RabbitMqUiTests
                 await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = BitConverter.Int64BitsToDouble(long.MinValue) }, negative);
             }
 
+            // HTTP binding creation has the same signed-zero properties-key collision as native presence.
+            foreach (var negative in new[] { true, false, false, true })
+            {
+                var editor = new RuleEditorViewModel("headers", "orders", existing, RoutingService.RabbitMq);
+                var rule = await SaveFromModalAsync(editor, false,
+                    headers: negative ? "amount = -0.0" : "amount = 0.0", matchIndex: 0, presence: false);
+                var previous = existing!;
+                await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule with { ToExchange = toExchange }, true);
+                existing = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers"),
+                    item => item.Subscription == "orders" && item.IsExchange == toExchange).Rules);
+                Assert.DoesNotContain("trace", existing.Arguments.Keys);
+                Assert.Equal(negative ? long.MinValue : 0L,
+                    BitConverter.DoubleToInt64Bits(Assert.IsType<double>(existing.Arguments["amount"])));
+                if (previous.Arguments.Count == existing.Arguments.Count) Assert.Equal(previous.Name, existing.Name);
+                else Assert.NotEqual(previous.Name, existing.Name);
+                await AssertDeliveryAsync(new() { ["amount"] = 0d }, !negative);
+                await AssertDeliveryAsync(new() { ["amount"] = BitConverter.Int64BitsToDouble(long.MinValue) }, negative);
+            }
+
             // Broker-close the isolated workspace connection, wait for actual recovery, then inspect persisted
             // topology. Replacing/deleting a durable binding must not leave autorecovery records that recreate it.
             await RecoverWorkspaceConnectionAsync();
@@ -216,7 +235,7 @@ public sealed partial class RabbitMqUiTests
     });
 
     private static async Task<SubscriptionRule> SaveFromModalAsync(RuleEditorViewModel editor, bool changeMatch,
-        string headers = "trace = null\nregion = 'EU'", int? matchIndex = null)
+        string headers = "trace = null\nregion = 'EU'", int? matchIndex = null, bool presence = true)
     {
         BindingErrors.Instance.Clear();
         var owner = new Window();
@@ -239,7 +258,8 @@ public sealed partial class RabbitMqUiTests
             var confirm = window.GetVisualDescendants().OfType<Button>().Single(control => Equals(control.Content, editor.ConfirmLabel));
             confirm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var saved = Assert.IsType<SubscriptionRule>(await result.WaitAsync(TimeSpan.FromSeconds(5)));
-            Assert.Null(saved.Arguments["trace"]);
+            if (presence) Assert.Null(saved.Arguments["trace"]);
+            else Assert.DoesNotContain("trace", saved.Arguments.Keys);
             Assert.True(BindingErrors.Instance.Messages.Count == 0, string.Join(Environment.NewLine, BindingErrors.Instance.Messages));
             return saved;
         }

@@ -221,6 +221,31 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
         Assert.Equal(2, broker.Bindings.Count);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Http_CollidingZeroKeyUnbindsExactOldTerms(bool negative, bool toExchange)
+    {
+        using var broker = new BindingBoundary(toExchange, true) { CollidingKey = true };
+        broker.Bindings[0] = broker.Bindings[0] with
+        { Arguments = new Dictionary<string, object?> { ["x-match"] = "all", ["amount"] = EditNumber(negative, true) } };
+        await using var workspace = broker.Workspace();
+        var original = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        var editor = new RuleEditorViewModel("headers", "orders", original, RoutingService.RabbitMq)
+        { Headers = "amount = " + RoutingValue.Format(EditNumber(!negative, true)) };
+        await workspace.SaveSubscriptionRuleAsync("headers", "orders", Assert.IsType<SubscriptionRule>(editor.TryBuild()) with { ToExchange = toExchange }, true);
+        var saved = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        Assert.Equal(original.Name, saved.Name);
+        AssertNumber(EditNumber(!negative, true), saved.Arguments["amount"]);
+        Assert.Contains(broker.Events, item => item.StartsWith("POST", StringComparison.Ordinal));
+        Assert.Contains(broker.Events, item => item.StartsWith("UNBIND", StringComparison.Ordinal));
+        Assert.DoesNotContain(broker.Events, item => item.StartsWith("DELETE", StringComparison.Ordinal));
+        Assert.True(broker.Events.FindIndex(item => item.StartsWith("POST", StringComparison.Ordinal)) <
+            broker.Events.FindIndex(item => item.StartsWith("UNBIND", StringComparison.Ordinal)));
+    }
+
     private sealed class BindingBoundary(bool toExchange, bool existing) : HttpMessageHandler
     {
         public List<string> Events { get; } = [];
@@ -296,10 +321,10 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
                 if (json.RootElement.GetProperty("arguments").EnumerateObject().Any(item => item.Value.ValueKind == JsonValueKind.Null))
                     return Reply(HttpStatusCode.BadRequest, """{"error":"bad_request","reason":"null_not_allowed"}""");
                 var rule = RabbitMqWorkspace.ToRule("headers", JsonSerializer.SerializeToElement(new
-                { properties_key = "http/key", routing_key = "", arguments = json.RootElement.GetProperty("arguments") }), 0, 1);
+                { properties_key = CollidingKey ? "old/key" : "http/key", routing_key = "", arguments = json.RootElement.GetProperty("arguments") }), 0, 1);
                 Bindings.Add(rule);
                 var response = Reply(HttpStatusCode.Created, "{}");
-                response.Headers.Location = new Uri("http://broker.invalid" + path + "/http%2Fkey");
+                response.Headers.Location = new Uri("http://broker.invalid" + path + (CollidingKey ? "/old%2Fkey" : "/http%2Fkey"));
                 return response;
             }
             if (request.Method == HttpMethod.Delete)
