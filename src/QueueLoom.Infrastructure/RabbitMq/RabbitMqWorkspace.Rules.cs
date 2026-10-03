@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Globalization;
 using System.Numerics;
 using QueueLoom.Core.Routing;
+using RabbitMQ.Client;
 
 namespace QueueLoom.Infrastructure.RabbitMq;
 
@@ -65,6 +66,18 @@ public sealed partial class RabbitMqWorkspace
                 await SavePresenceBindingAsync(topic, subscription, path, rule, arguments, replace, token).ConfigureAwait(false);
                 return;
             }
+            JsonElement? previous = null;
+            if (replace)
+            {
+                var before = await GetBindingsAsync(path, token).ConfigureAwait(false);
+                var originals = before.Where(binding => binding.GetProperty("properties_key").GetString() == rule.Name).ToArray();
+                if (originals.Length != 1)
+                    throw new InvalidOperationException("The previous binding identity is missing or ambiguous. Refresh the bindings before trying again.");
+                previous = originals[0];
+                if (originals[0].GetProperty("routing_key").GetString() == (rule.Expression ?? string.Empty) &&
+                    RabbitMqBindingJson.Equal(originals[0].GetProperty("arguments"),
+                        JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options))) return;
+            }
             var body = JsonSerializer.Serialize(new { routing_key = rule.Expression ?? string.Empty, arguments }, RabbitMqBindingJson.Options);
             using var response = await Management.PostAsync(path, new StringContent(body, Encoding.UTF8, "application/json"), token)
                 .ConfigureAwait(false);
@@ -77,6 +90,18 @@ public sealed partial class RabbitMqWorkspace
             {
                 await DeleteBindingAsync(path, rule.Name, token).ConfigureAwait(false);
             }
+            else if (previous is { } original)
+            {
+                var after = await GetBindingsAsync(path, token).ConfigureAwait(false);
+                var expected = JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options);
+                if (after.Count(binding => binding.GetProperty("properties_key").GetString() == created &&
+                        binding.GetProperty("routing_key").GetString() == (rule.Expression ?? string.Empty) &&
+                        RabbitMqBindingJson.Equal(binding.GetProperty("arguments"), expected)) != 1)
+                    throw new InvalidOperationException("The new binding identity could not be confirmed. The previous binding was retained.");
+                await using var mutation = await OpenBindingConnectionAsync(token).ConfigureAwait(false);
+                await using var channel = await mutation.CreateChannelAsync(cancellationToken: token).ConfigureAwait(false);
+                await UnbindCapturedAsync(channel, topic, subscription, rule.ToExchange, original, token).ConfigureAwait(false);
+            }
         }, cancellationToken);
 
     private async Task SavePresenceBindingAsync(string topic, string destination, string path, SubscriptionRule rule,
@@ -86,13 +111,18 @@ public sealed partial class RabbitMqWorkspace
         var expected = JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options);
         bool Matches(JsonElement binding) => binding.GetProperty("routing_key").GetString() == key &&
             RabbitMqBindingJson.Equal(binding.GetProperty("arguments"), expected);
+        JsonElement? previous = null;
 
         // An unchanged save must keep the broker's identity and original AMQP field types, which HTTP JSON
         // cannot fully describe. This also avoids unnecessary native binds for existing presence conditions.
         if (replace)
         {
             var before = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
-            if (before.Any(binding => binding.GetProperty("properties_key").GetString() == rule.Name && Matches(binding))) return;
+            var originals = before.Where(binding => binding.GetProperty("properties_key").GetString() == rule.Name).ToArray();
+            if (originals.Length != 1)
+                throw new InvalidOperationException("The previous binding identity is missing or ambiguous. Refresh the bindings before trying again.");
+            previous = originals[0];
+            if (Matches(originals[0])) return;
         }
 
         // RabbitMQ.Client encodes null as AMQP void; the management API's JSON conversion throws
@@ -114,6 +144,25 @@ public sealed partial class RabbitMqWorkspace
                 "The previous binding was retained; refresh the bindings before trying again.");
         if (replace && !string.Equals(created, rule.Name, StringComparison.Ordinal))
             await DeleteBindingAsync(path, rule.Name, cancellationToken).ConfigureAwait(false);
+        else if (previous is { } original)
+        {
+            // Management properties keys are hashes: +0.0/-0.0 collide even though OTP 27+ bindings differ.
+            // HTTP DELETE resolves that hash to an arbitrary binding. Unbind the captured original terms.
+            await UnbindCapturedAsync(channel, topic, destination, rule.ToExchange, original, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task UnbindCapturedAsync(IChannel channel, string topic, string destination, bool? toExchange,
+        JsonElement original, CancellationToken cancellationToken)
+    {
+        var old = ToRule("headers", original, 0, 1);
+        var arguments = old.Arguments.ToDictionary(pair => pair.Key, pair => pair.Value);
+        if (BindingDestinationIsExchange(destination, toExchange))
+            await channel.ExchangeUnbindAsync(destination, topic, old.Expression ?? string.Empty, arguments,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        else
+            await channel.QueueUnbindAsync(destination, topic, old.Expression ?? string.Empty, arguments,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public override Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
