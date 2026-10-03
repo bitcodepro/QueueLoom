@@ -973,6 +973,8 @@ public sealed partial class ViewModelStateTests
 
         public int ConnectCalls { get; private set; }
 
+        public Action? OnConnect { get; set; }
+
         public int TopologyCalls { get; private set; }
 
         public int DisconnectCalls { get; private set; }
@@ -992,6 +994,7 @@ public sealed partial class ViewModelStateTests
         public async Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
             ConnectCalls++;
+            OnConnect?.Invoke();
             if (ConnectionRelease is not null)
             {
                 await ConnectionRelease.Task.WaitAsync(cancellationToken);

@@ -1,5 +1,7 @@
 using QueueLoom.App.ViewModels;
+using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
+using QueueLoom.Core.ServiceBus;
 using QueueLoom.Core.Settings;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Tests.Infrastructure;
@@ -8,6 +10,108 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
+    [Theory]
+    [InlineData("next-page", false)]
+    [InlineData("next-page", true)]
+    [InlineData("first-page", false)]
+    [InlineData("first-page", true)]
+    [InlineData("connection", false)]
+    [InlineData("connection", true)]
+    public async Task SavedSearchAudit_MissingBookmarkDiscardsDelayedBrowseAndPreservesFreshPaging(string phase, bool restoreScope)
+    {
+        var development = CreateProfile("Development", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var other = CreateProfile("Other", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var queue = new ServiceBusQueue("orders", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 200)));
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [queue]),
+            BrowseMessages = Enumerable.Range(1, 200)
+                .Select(sequence => SearchMessage(queue.Reference, sequence, "2026-08-12T10:00:00Z")).ToArray()
+        };
+        foreach (var profile in new[] { development, other })
+        {
+            workspace.Snapshots[profile.Id] = new DeadLetterSnapshot(profile.Id, DateTimeOffset.UtcNow,
+                [new DeadLetterEntitySnapshot(queue.Reference, 200)]);
+        }
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([development, other], development.Id), workspace);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        await viewModel.ScanAllEnvironmentsCommand.ExecuteAsync();
+        var profileId = phase == "connection" ? other.Id : development.Id;
+        var scope = viewModel.DeadLetterEnvironmentFilters.Single(filter => filter.ProfileId == profileId);
+        viewModel.SelectedDeadLetterEnvironmentFilter = scope;
+        var source = Assert.Single(viewModel.FilteredDeadLetterSources);
+        viewModel.SelectedDlqSource = source;
+        if (phase == "next-page")
+        {
+            await viewModel.BrowseDlqSourceCommand.ExecuteAsync();
+            Assert.Equal(100, viewModel.Messages.Count);
+            Assert.True(viewModel.CanLoadMoreMessages);
+        }
+
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (phase == "connection")
+        {
+            workspace.OnConnect = () => started.TrySetResult();
+            workspace.ConnectionRelease = release;
+        }
+        else
+        {
+            workspace.CleanupOperationGate = _ =>
+            {
+                started.TrySetResult();
+                // A provider may return late without observing cancellation.
+                return release.Task;
+            };
+        }
+        var pending = phase == "next-page"
+            ? viewModel.LoadMoreMessagesCommand.ExecuteAsync()
+            : viewModel.BrowseDlqSourceCommand.ExecuteAsync();
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(viewModel.IsBusy);
+            var browseCalls = workspace.BrowseRequests.Count;
+            var connectCalls = workspace.ConnectCalls;
+            viewModel.SelectedSavedSearch = new SavedSearch("Deleted A", "missing-a", Guid.NewGuid());
+            viewModel.SelectedSavedSearch = new SavedSearch("Deleted B", "missing-b", Guid.NewGuid());
+            Assert.Empty(viewModel.Messages);
+            Assert.Null(viewModel.SelectedMessage);
+            Assert.Null(viewModel.SelectedDeadLetterEnvironmentFilter);
+            Assert.Equal(browseCalls, workspace.BrowseRequests.Count);
+            Assert.Equal(connectCalls, workspace.ConnectCalls);
+            if (restoreScope) viewModel.SelectedDeadLetterEnvironmentFilter = scope;
+        }
+        finally
+        {
+            release.TrySetResult(true);
+            await pending.WaitAsync(TimeSpan.FromSeconds(10));
+            workspace.OnConnect = null;
+            workspace.ConnectionRelease = null;
+            workspace.CleanupOperationGate = null;
+        }
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Empty(viewModel.Messages);
+        Assert.Null(viewModel.SelectedMessage);
+        Assert.False(viewModel.CanLoadMoreMessages);
+        Assert.Contains("no longer available", viewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Saved search unavailable", viewModel.MessageListTitle);
+
+        // The workspace gate must be released and a new browse must retain ordinary continuation.
+        viewModel.SelectedDeadLetterEnvironmentFilter = scope;
+        viewModel.SelectedDlqSource = source;
+        await viewModel.BrowseDlqSourceCommand.ExecuteAsync();
+        Assert.Equal(100, viewModel.Messages.Count);
+        Assert.True(viewModel.CanLoadMoreMessages);
+        await viewModel.LoadMoreMessagesCommand.ExecuteAsync();
+        Assert.Equal(200, viewModel.Messages.Count);
+        Assert.Equal(101, workspace.BrowseRequests[^1].FromSequenceNumber);
+        Assert.Equal(200, viewModel.Messages.Select(message => message.Message.SequenceNumber).Distinct().Count());
+        Assert.NotNull(viewModel.SelectedMessage);
+    }
+
     [Theory]
     [InlineData("$.order.customer.account.identifier == 'customer-1001'", "$.order.customer.account.identifier == 'customer-1002'")]
     [InlineData("$.region == 'EU'", "$.region == 'eu'")]
