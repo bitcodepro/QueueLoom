@@ -19,6 +19,8 @@ namespace QueueLoom.UiTests;
 
 public sealed partial class RabbitMqUiTests
 {
+    private readonly ITestOutputHelper _bindingOutput;
+    public RabbitMqUiTests(ITestOutputHelper output) => _bindingOutput = output;
     // Emulator CI includes RabbitMqUiTests. Missing broker configuration is an explicit skip, not a pass.
     [RabbitBrokerTheory]
     [InlineData(false)]
@@ -63,7 +65,15 @@ public sealed partial class RabbitMqUiTests
                 var editor = new RuleEditorViewModel("headers", "orders", existing, RoutingService.RabbitMq,
                     bindingKind: RuleFilterKind.HeadersBinding);
                 var rule = await SaveFromModalAsync(editor, changeMatch: stage == 2);
-                await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule with { ToExchange = toExchange }, replace: existing is not null);
+                try
+                {
+                    await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule with { ToExchange = toExchange }, replace: existing is not null);
+                }
+                finally
+                {
+                    var rawBindings = await management.GetStringAsync($"api/exchanges/{vhost}/headers/bindings/source");
+                    _bindingOutput.WriteLine($"Raw management GET after stage {stage}, exchange={toExchange}: {rawBindings}");
+                }
                 var destination = Assert.Single(await workspace.GetTopicRulesAsync("headers"),
                     item => item.Subscription == "orders" && item.IsExchange == toExchange);
                 var reloaded = Assert.Single(destination.Rules);
