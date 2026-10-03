@@ -53,7 +53,7 @@
       <TextBox Text="{Binding Headers}" AcceptsReturn="True" MinHeight="80" FontFamily="{StaticResource MonoFontFamily}"
                PlaceholderText="region = 'EU'&#10;tier = 'gold'" AutomationProperties.Name="Binding headers" />
       <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
-                 Text="'Quoted' values are text, 250 a whole number, 1.5 a decimal, true and false booleans. RabbitMQ compares the type too: 250 does not match '250' or 250.0. Names are case-sensitive." />
+                 Text="'Quoted' values are text, 250 a whole number, 1.5 a decimal, true and false booleans. null checks that the header exists; 'null' matches the literal text. RabbitMQ compares the type too: 250 does not match '250' or 250.0. Names are case-sensitive." />
     </StackPanel>
     <TextBlock IsVisible="{Binding IsFanoutBinding}" Classes="muted" TextWrapping="Wrap"
                Text="A fanout exchange copies every message to every binding; the binding has nothing to set." />
