@@ -142,7 +142,9 @@ public static class RabbitBindings
         {
             (string text, byte[] bytes) => Encoding.UTF8.GetBytes(text).AsSpan().SequenceEqual(bytes),
             (long or int, long number) => Convert.ToInt64(expected, CultureInfo.InvariantCulture) == number,
-            (double x, double y) => x.Equals(y),
+            // OTP 27+ term equivalence distinguishes +0.0 from -0.0, as the broker's headers matcher does.
+            (double x, double y) => double.IsFinite(x) && double.IsFinite(y) &&
+                BitConverter.DoubleToInt64Bits(x) == BitConverter.DoubleToInt64Bits(y),
             (bool x, bool y) => x == y,
             _ => false
         };

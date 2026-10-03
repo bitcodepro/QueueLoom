@@ -27,7 +27,8 @@ internal static class RabbitMqBindingJson
                 var floating = a.IndexOfAny(['.', 'e', 'E']) >= 0;
                 if (floating != (b.IndexOfAny(['.', 'e', 'E']) >= 0)) return false;
                 return floating
-                    ? left.TryGetDouble(out var x) && right.TryGetDouble(out var y) && double.IsFinite(x) && double.IsFinite(y) && x == y
+                    ? left.TryGetDouble(out var x) && right.TryGetDouble(out var y) && double.IsFinite(x) && double.IsFinite(y) &&
+                        BitConverter.DoubleToInt64Bits(x) == BitConverter.DoubleToInt64Bits(y)
                     : BigInteger.Parse(a, CultureInfo.InvariantCulture) == BigInteger.Parse(b, CultureInfo.InvariantCulture);
             case JsonValueKind.Array:
                 return left.GetArrayLength() == right.GetArrayLength() &&
