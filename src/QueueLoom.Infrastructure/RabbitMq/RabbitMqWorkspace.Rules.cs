@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
+using System.Numerics;
 using QueueLoom.Core.Routing;
 
 namespace QueueLoom.Infrastructure.RabbitMq;
@@ -22,7 +24,7 @@ public sealed partial class RabbitMqWorkspace
             var exchangePath = $"api/exchanges/{vhost}/{Uri.EscapeDataString(topic)}";
             var exchange = await GetObjectAsync(exchangePath, token).ConfigureAwait(false);
             var type = exchange.TryGetProperty("type", out var typeValue) ? typeValue.GetString() ?? "direct" : "direct";
-            var bindings = await GetArrayAsync($"{exchangePath}/bindings/source", token).ConfigureAwait(false);
+            var bindings = await GetBindingsAsync($"{exchangePath}/bindings/source", token).ConfigureAwait(false);
             var result = bindings
                 .GroupBy(binding => (Destination: binding.GetProperty("destination").GetString() ?? string.Empty,
                     IsExchange: binding.GetProperty("destination_type").GetString() == "exchange"))
@@ -63,7 +65,7 @@ public sealed partial class RabbitMqWorkspace
                 await SavePresenceBindingAsync(topic, subscription, path, rule, arguments, replace, token).ConfigureAwait(false);
                 return;
             }
-            var body = JsonSerializer.Serialize(new { routing_key = rule.Expression ?? string.Empty, arguments });
+            var body = JsonSerializer.Serialize(new { routing_key = rule.Expression ?? string.Empty, arguments }, RabbitMqBindingJson.Options);
             using var response = await Management.PostAsync(path, new StringContent(body, Encoding.UTF8, "application/json"), token)
                 .ConfigureAwait(false);
             await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
@@ -81,21 +83,22 @@ public sealed partial class RabbitMqWorkspace
         Dictionary<string, object?> arguments, bool replace, CancellationToken cancellationToken)
     {
         var key = rule.Expression ?? string.Empty;
-        var expected = JsonSerializer.SerializeToElement(arguments);
+        var expected = JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options);
         bool Matches(JsonElement binding) => binding.GetProperty("routing_key").GetString() == key &&
-            JsonElement.DeepEquals(binding.GetProperty("arguments"), expected);
+            RabbitMqBindingJson.Equal(binding.GetProperty("arguments"), expected);
 
         // An unchanged save must keep the broker's identity and original AMQP field types, which HTTP JSON
         // cannot fully describe. This also avoids unnecessary native binds for existing presence conditions.
         if (replace)
         {
-            var before = await GetArrayAsync(path, cancellationToken).ConfigureAwait(false);
+            var before = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
             if (before.Any(binding => binding.GetProperty("properties_key").GetString() == rule.Name && Matches(binding))) return;
         }
 
         // RabbitMQ.Client encodes null as AMQP void; the management API's JSON conversion throws
         // null_not_allowed. Native binds wait for bind-ok and happen before any deletion of the old binding.
-        await using var channel = await Connection.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await using var mutation = await OpenBindingConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var channel = await mutation.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         if (BindingDestinationIsExchange(destination, rule.ToExchange))
             await channel.ExchangeBindAsync(destination, topic, key, arguments, cancellationToken: cancellationToken).ConfigureAwait(false);
         else
@@ -103,7 +106,7 @@ public sealed partial class RabbitMqWorkspace
 
         // Native bind-ok does not carry a properties_key. Read the destination-specific binding collection;
         // if identity cannot be confirmed uniquely, retain the old binding rather than risk losing its route.
-        var after = await GetArrayAsync(path, cancellationToken).ConfigureAwait(false);
+        var after = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
         var matches = after.Where(Matches).ToArray();
         if (matches.Length != 1 || !matches[0].TryGetProperty("properties_key", out var property) ||
             property.GetString() is not { Length: > 0 } created)
@@ -121,6 +124,18 @@ public sealed partial class RabbitMqWorkspace
         ManageAsync(token => DeleteBindingAsync(BindingPath(topic, subscription, rule.ToExchange), rule.Name, token), cancellationToken);
 
     private HttpClient Management => _management ?? throw new InvalidOperationException("Connect to the environment first.");
+
+    private async Task<IReadOnlyList<JsonElement>> GetBindingsAsync(string path, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Accept.ParseAdd("application/bert");
+        using var response = await Management.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
+        if (!string.Equals(response.Content.Headers.ContentType?.MediaType, "application/bert", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("RabbitMQ must return application/bert for type-safe binding edits. " +
+                "Check that the management proxy preserves the Accept header. The binding was not replaced.");
+        return RabbitMqBindingTerms.Decode(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>
     /// api/bindings/vhost/e/exchange/q/queue, or …/e/exchange when the destination is an exchange. A queue and an
@@ -190,9 +205,13 @@ public sealed partial class RabbitMqWorkspace
     private static object? ToValue(JsonElement value) => value.ValueKind switch
     {
         JsonValueKind.String => value.GetString(),
-        JsonValueKind.Number => value.TryGetInt64(out var whole) ? (object)whole : value.GetDouble(),
+        JsonValueKind.Number => value.TryGetInt64(out var whole) ? (object)whole :
+            value.GetRawText().IndexOfAny(['.', 'e', 'E']) >= 0 ? (object)value.GetDouble() :
+            BigInteger.Parse(value.GetRawText(), CultureInfo.InvariantCulture),
         JsonValueKind.True or JsonValueKind.False => value.GetBoolean(),
         JsonValueKind.Null => null,
-        _ => value.GetRawText()
+        JsonValueKind.Array => value.EnumerateArray().Select(ToValue).ToArray(),
+        JsonValueKind.Object => value.EnumerateObject().ToDictionary(field => field.Name, field => ToValue(field.Value), StringComparer.Ordinal),
+        _ => throw new InvalidOperationException("RabbitMQ returned an unsupported binding argument.")
     };
 }

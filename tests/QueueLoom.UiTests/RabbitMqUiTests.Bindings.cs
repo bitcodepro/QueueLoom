@@ -1,6 +1,8 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Runtime.CompilerServices;
+using System.Reflection;
+using System.Text.Json;
 using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -45,6 +47,7 @@ public sealed partial class RabbitMqUiTests
             await channel.ExchangeDeclareAsync("orders", ExchangeType.Direct, durable: true);
             await channel.QueueDeclareAsync("orders", durable: true, exclusive: false, autoDelete: false);
             await channel.QueueDeclareAsync("forwarded", durable: true, exclusive: false, autoDelete: false);
+            await channel.QueueDeclareAsync("literal-values", durable: true, exclusive: false, autoDelete: false);
             await channel.QueueBindAsync("forwarded", "orders", "probe");
             var target = toExchange ? "forwarded" : "orders";
             var vault = new InMemorySecretVault();
@@ -58,6 +61,8 @@ public sealed partial class RabbitMqUiTests
             await using var workspace = new RabbitMqWorkspace(vault, httpHandler: new HttpClientHandler { UseProxy = false });
             await workspace.ConnectAsync(profile);
             await workspace.GetTopologyAsync(forceRefresh: true);
+            await workspace.SaveSubscriptionRuleAsync("headers", "literal-values", new("", RuleFilterKind.HeadersBinding)
+            { ToExchange = false, Arguments = new Dictionary<string, object?> { ["x-match"] = "all", ["trace"] = "undefined", ["region"] = "LITERAL" } }, false);
 
             SubscriptionRule? existing = null;
             for (var stage = 0; stage < 3; stage++)
@@ -73,6 +78,11 @@ public sealed partial class RabbitMqUiTests
                 {
                     var rawBindings = await management.GetStringAsync($"api/exchanges/{vhost}/headers/bindings/source");
                     _bindingOutput.WriteLine($"Raw management GET after stage {stage}, exchange={toExchange}: {rawBindings}");
+                    using var typedRequest = new HttpRequestMessage(HttpMethod.Get, $"api/exchanges/{vhost}/headers/bindings/source");
+                    typedRequest.Headers.Accept.ParseAdd("application/bert");
+                    using var typedResponse = await management.SendAsync(typedRequest);
+                    _bindingOutput.WriteLine($"Typed management response {typedResponse.Content.Headers.ContentType}: " +
+                        Convert.ToBase64String(await typedResponse.Content.ReadAsByteArrayAsync()));
                 }
                 var destination = Assert.Single(await workspace.GetTopicRulesAsync("headers"),
                     item => item.Subscription == "orders" && item.IsExchange == toExchange);
@@ -83,12 +93,63 @@ public sealed partial class RabbitMqUiTests
                 if (stage == 1) Assert.Equal(existing!.Name, reloaded.Name);
                 if (stage == 2) Assert.NotEqual(existing!.Name, reloaded.Name);
                 existing = reloaded;
+                var literal = Assert.Single(await workspace.GetTopicRulesAsync("headers"), item => item.Subscription == "literal-values");
+                Assert.Equal("undefined", Assert.IsType<string>(Assert.Single(literal.Rules).Arguments["trace"]));
 
                 await AssertDeliveryAsync(new() { ["trace"] = "present", ["region"] = "EU" }, true);
                 await AssertDeliveryAsync(new() { ["trace"] = "present", ["region"] = "US" }, stage == 2);
                 await AssertDeliveryAsync(new() { ["region"] = "US" }, false);
                 // No header binding was accidentally added to the other destination sharing this name.
                 Assert.Null(await channel.BasicGetAsync(toExchange ? "orders" : "forwarded", autoAck: true));
+            }
+
+            // Whole-valued floating numbers must keep their AMQP type across both transports and identity lookup.
+            foreach (var floating in new[] { false, true, true, false })
+            {
+                var editor = new RuleEditorViewModel("headers", "orders", existing, RoutingService.RabbitMq);
+                var rule = await SaveFromModalAsync(editor, changeMatch: false,
+                    headers: floating ? "trace = null\namount = 250.0" : "trace = null\namount = 250", matchIndex: 0);
+                var previous = existing!;
+                await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule with { ToExchange = toExchange }, true);
+                existing = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers"),
+                    item => item.Subscription == "orders" && item.IsExchange == toExchange).Rules);
+                Assert.Equal(floating ? typeof(double) : typeof(long), existing.Arguments["amount"]!.GetType());
+                if (previous.Arguments.TryGetValue("amount", out var amount) && amount?.GetType() == existing.Arguments["amount"]!.GetType())
+                    Assert.Equal(previous.Name, existing.Name);
+                else Assert.NotEqual(previous.Name, existing.Name);
+                await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = 250L }, !floating);
+                await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = 250d }, floating);
+            }
+
+            // Broker-close the isolated workspace connection, wait for actual recovery, then inspect persisted
+            // topology. Replacing/deleting a durable binding must not leave autorecovery records that recreate it.
+            await RecoverWorkspaceConnectionAsync();
+            var retained = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers"),
+                item => item.Subscription == "orders" && item.IsExchange == toExchange).Rules);
+            Assert.Equal(existing!.Name, retained.Name);
+            await workspace.DeleteSubscriptionRuleAsync("headers", "orders", retained);
+            await RecoverWorkspaceConnectionAsync();
+            Assert.DoesNotContain(await workspace.GetTopicRulesAsync("headers"), item => item.Subscription == "orders");
+            Assert.Single(await workspace.GetTopicRulesAsync("headers"), item => item.Subscription == "literal-values");
+
+            async Task RecoverWorkspaceConnectionAsync()
+            {
+                var main = (IConnection)typeof(RabbitMqWorkspace).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(workspace)!;
+                var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                Task OnRecovery(object sender, RabbitMQ.Client.Events.AsyncEventArgs args) { recovered.TrySetResult(); return Task.CompletedTask; }
+                main.RecoverySucceededAsync += OnRecovery;
+                try
+                {
+                    using var json = JsonDocument.Parse(await management.GetStringAsync("api/connections"));
+                    var connectionInfo = Assert.Single(json.RootElement.EnumerateArray(), item =>
+                        item.GetProperty("vhost").GetString() == vhost &&
+                        item.GetProperty("client_properties").TryGetProperty("connection_name", out var name) && name.GetString() == "QueueLoom");
+                    using var closed = await management.DeleteAsync($"api/connections/{Uri.EscapeDataString(connectionInfo.GetProperty("name").GetString()!)}");
+                    closed.EnsureSuccessStatusCode();
+                    await recovered.Task.WaitAsync(TimeSpan.FromSeconds(45));
+                    _bindingOutput.WriteLine("Isolated workspace recovered after HTTP connection close; binding state verified.");
+                }
+                finally { main.RecoverySucceededAsync -= OnRecovery; }
             }
 
             async Task AssertDeliveryAsync(Dictionary<string, object?> headers, bool expected)
@@ -106,7 +167,8 @@ public sealed partial class RabbitMqUiTests
         finally { await management.DeleteAsync($"api/vhosts/{vhost}"); }
     });
 
-    private static async Task<SubscriptionRule> SaveFromModalAsync(RuleEditorViewModel editor, bool changeMatch)
+    private static async Task<SubscriptionRule> SaveFromModalAsync(RuleEditorViewModel editor, bool changeMatch,
+        string headers = "trace = null\nregion = 'EU'", int? matchIndex = null)
     {
         BindingErrors.Instance.Clear();
         var owner = new Window();
@@ -118,12 +180,12 @@ public sealed partial class RabbitMqUiTests
             await SettleBindingDialogAsync();
             var input = window.GetVisualDescendants().OfType<TextBox>()
                 .Single(control => AutomationProperties.GetName(control) == "Binding headers");
-            input.Text = "trace = null\nregion = 'EU'";
-            if (changeMatch)
+            input.Text = headers;
+            if (changeMatch || matchIndex is not null)
             {
                 var match = window.GetVisualDescendants().OfType<ComboBox>()
                     .Single(control => AutomationProperties.GetName(control) == "Header match");
-                match.SelectedIndex = 1;
+                match.SelectedIndex = matchIndex ?? 1;
             }
             await SettleBindingDialogAsync();
             var confirm = window.GetVisualDescendants().OfType<Button>().Single(control => Equals(control.Content, editor.ConfirmLabel));

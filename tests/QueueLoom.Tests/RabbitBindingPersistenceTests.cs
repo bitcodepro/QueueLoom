@@ -181,15 +181,26 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
                 return Done(method.ReturnType);
             });
             var connection = Proxy<IConnection>((method, _) => method.Name == "CreateChannelAsync" ? Task.FromResult(channel) : Done(method.ReturnType));
-            var workspace = new RabbitMqWorkspace(new EmptyVault());
-            Set(workspace, "_connection", connection);
+            var workspace = new RabbitMqWorkspace(new EmptyVault(), (factory, _) =>
+            {
+                Assert.False(factory.AutomaticRecoveryEnabled);
+                Assert.False(factory.TopologyRecoveryEnabled);
+                Assert.Equal("broker.invalid", factory.HostName);
+                return Task.FromResult(connection);
+            });
+            Set(workspace, "_connection", Proxy<IConnection>((method, _) =>
+            {
+                Assert.NotEqual("CreateChannelAsync", method.Name); // binding mutations cannot record topology here
+                return Done(method.ReturnType);
+            }));
             Set(workspace, "_management", new HttpClient(this) { BaseAddress = new Uri("http://broker.invalid/") });
             // Both kinds deliberately share a name: metadata must choose the correct native binding operation.
             Set(workspace, "_index", new RabbitMqTopologyIndex([new("orders", "classic", 0, 0, null, null, null, "running")],
                 [new("headers", "headers"), new("orders", "direct")], []));
             typeof(LeasedMessagingWorkspace).GetField("_profile", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace,
                 ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Test, new(AuthenticationKind.RabbitMqPassword),
-                    accessMode: ProfileAccessMode.ReadWrite) with { Provider = MessagingProvider.RabbitMq, AllowQueueManagement = true });
+                    accessMode: ProfileAccessMode.ReadWrite) with
+                { Provider = MessagingProvider.RabbitMq, AllowQueueManagement = true, RabbitMq = new("broker.invalid", "guest") });
             return workspace;
         }
 
@@ -217,6 +228,17 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
                 return Reply(HttpStatusCode.NoContent, "");
             }
             if (path.EndsWith("/headers", StringComparison.Ordinal)) return Reply(HttpStatusCode.OK, """{"type":"headers"}""");
+            if (request.Headers.Accept.Any(value => value.MediaType == "application/bert"))
+            {
+                var terms = Bindings.Select(item => (object?)new Dictionary<string, object?>
+                {
+                    ["source"] = "headers", ["destination"] = "orders", ["destination_type"] = toExchange ? "exchange" : "queue",
+                    ["routing_key"] = item.Expression, ["properties_key"] = item.Name, ["arguments"] = item.Arguments.ToDictionary()
+                }).ToArray();
+                var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(RabbitBindingEtfFixture.Encode(terms)) };
+                response.Content.Headers.ContentType = new("application/bert");
+                return response;
+            }
             return Reply(HttpStatusCode.OK, JsonSerializer.Serialize(Bindings.Select(item => new
             {
                 source = "headers", destination = "orders", destination_type = toExchange ? "exchange" : "queue",
@@ -244,7 +266,7 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
     private sealed class EmptyVault : ISecretVault
     {
         public ValueTask StoreAsync(ProfileSecretKey key, string secret, CancellationToken token = default) => ValueTask.CompletedTask;
-        public ValueTask<string?> RetrieveAsync(ProfileSecretKey key, CancellationToken token = default) => ValueTask.FromResult<string?>(null);
+        public ValueTask<string?> RetrieveAsync(ProfileSecretKey key, CancellationToken token = default) => ValueTask.FromResult<string?>("fixture");
         public ValueTask<bool> ExistsAsync(ProfileSecretKey key, CancellationToken token = default) => ValueTask.FromResult(false);
         public ValueTask<bool> RemoveAsync(ProfileSecretKey key, CancellationToken token = default) => ValueTask.FromResult(false);
     }
