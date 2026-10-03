@@ -131,6 +131,36 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
+    public void ResendDialog_ClockTimeAcrossMidnightSpringForwardGapUsesNextValidLocalTime()
+    {
+        // America/Nuuk (IANA alias America/Godthab) springs forward across midnight:
+        // 2026-03-28 23:00 -02:00 jumps to 2026-03-29 00:00 -01:00, so 23:30 that evening is skipped.
+        TimeZoneInfo? zone = null;
+        foreach (var id in new[] { "America/Nuuk", "America/Godthab" })
+        {
+            try
+            {
+                zone = TimeZoneInfo.FindSystemTimeZoneById(id);
+                break;
+            }
+            catch (TimeZoneNotFoundException)
+            {
+            }
+            catch (InvalidTimeZoneException)
+            {
+            }
+        }
+        if (zone is null)
+        {
+            Assert.Skip("Neither America/Nuuk nor America/Godthab is available on this system.");
+        }
+
+        var now = new DateTimeOffset(2026, 3, 28, 22, 30, 0, TimeSpan.FromHours(-2));
+        var when = ResendDialogViewModel.ParseWhen("23:30", now, zone);
+        Assert.Equal(new DateTimeOffset(2026, 3, 29, 0, 0, 0, TimeSpan.FromHours(-1)), when);
+    }
+
+    [Fact]
     public void ResendDialog_HugeRelativeTimesAreInvalidInsteadOfThrowing()
     {
         var now = new DateTimeOffset(2026, 10, 3, 12, 0, 0, TimeSpan.FromHours(3));

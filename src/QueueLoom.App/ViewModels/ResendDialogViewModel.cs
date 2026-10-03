@@ -391,14 +391,12 @@ public sealed class ResendDialogViewModel : ObservableObject
         var wall = date.ToDateTime(clock);
         if (zone.IsInvalidTime(wall))
         {
+            // Scan forward up to 24 hours so a gap that spans midnight (for example
+            // America/Nuuk spring-forward) still resolves to the first valid local time.
             var probe = wall;
             for (var minute = 0; minute < 24 * 60; minute++)
             {
                 probe = probe.AddMinutes(1);
-                if (probe.Date != wall.Date)
-                {
-                    yield break;
-                }
                 if (!zone.IsInvalidTime(probe))
                 {
                     foreach (var instant in InstantsAt(zone, probe))
