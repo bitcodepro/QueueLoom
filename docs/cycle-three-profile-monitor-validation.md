@@ -17,6 +17,9 @@ Profile coordination uses `.profile-mutations.lock` before any individual
 `.storage.lock` operation. The storage lock is never held recursively. Selection
 and metadata retain their existing atomic repository commit. Imports hold the
 profile lock while obtaining current names and adding new identities.
+The lock is released before reloading the view or awaiting the import report.
+An open report cannot prevent another window from editing profiles or reading
+stored credentials through the coordinator.
 
 Credential changes first persist a per-profile incomplete-update marker. If the
 process dies, rollback fails, or marker cleanup fails, guarded readers remain
@@ -54,6 +57,17 @@ Release builds. The first concurrent full run hit the existing 100 ms redactor
 timeout in two logging/redaction assertions; its failure log is retained. Neither
 the fail-closed timeout behavior nor those assertions was weakened. Final counts
 and exact-head CI/package evidence are recorded in the handoff JSON.
+
+Independent review reproduced an overly broad import lock on PR head
+`b3f8634af917cc684a2fa45f82cfa7356ba02530`. The tests-only local commit
+`10ff207db20f249b41be0fee6433b2111f750c57` retains production unchanged at
+that head: mixed-validity and invalid-only imports both prevent a second real
+repository instance from acquiring the coordinator while the report stays open;
+the valid-only control passes (two red, one green). The same three tests pass
+when lock ownership ends immediately after the commits. Each witness uses an
+explicit dialog gate, bounded cancellation and isolated synthetic files; it
+actually saves another profile before dismissing the report. The retained
+`review-modal-red-final` and `review-modal-green` TRX record this follow-up.
 
 ## Audited coverage and limits
 
