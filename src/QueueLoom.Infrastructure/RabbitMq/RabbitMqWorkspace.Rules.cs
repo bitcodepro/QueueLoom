@@ -1,13 +1,16 @@
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
+using System.Numerics;
 using QueueLoom.Core.Routing;
+using RabbitMQ.Client;
 
 namespace QueueLoom.Infrastructure.RabbitMq;
 
 /// <summary>
 /// An exchange's bindings as rules: each queue or exchange bound to it is a destination, each binding a rule named
-/// by RabbitMQ's properties key. Bindings are added and removed through the management API; a binding cannot be
-/// changed in place, so a change adds the new binding and then removes the old one.
+/// by RabbitMQ's properties key. Presence bindings are created over AMQP because HTTP rejects null arguments;
+/// a binding cannot be changed in place, so a change adds the new binding and then removes the old one.
 /// </summary>
 public sealed partial class RabbitMqWorkspace
 {
@@ -22,7 +25,7 @@ public sealed partial class RabbitMqWorkspace
             var exchangePath = $"api/exchanges/{vhost}/{Uri.EscapeDataString(topic)}";
             var exchange = await GetObjectAsync(exchangePath, token).ConfigureAwait(false);
             var type = exchange.TryGetProperty("type", out var typeValue) ? typeValue.GetString() ?? "direct" : "direct";
-            var bindings = await GetArrayAsync($"{exchangePath}/bindings/source", token).ConfigureAwait(false);
+            var bindings = await GetBindingsAsync($"{exchangePath}/bindings/source", token).ConfigureAwait(false);
             var result = bindings
                 .GroupBy(binding => (Destination: binding.GetProperty("destination").GetString() ?? string.Empty,
                     IsExchange: binding.GetProperty("destination_type").GetString() == "exchange"))
@@ -58,7 +61,24 @@ public sealed partial class RabbitMqWorkspace
             var arguments = rule.Kind is RuleFilterKind.HeadersBinding or RuleFilterKind.OtherBinding
                 ? rule.Arguments.ToDictionary(pair => pair.Key, pair => pair.Value)
                 : new Dictionary<string, object?>();
-            var body = JsonSerializer.Serialize(new { routing_key = rule.Expression ?? string.Empty, arguments });
+            if (arguments.Values.Any(value => value is null))
+            {
+                await SavePresenceBindingAsync(topic, subscription, path, rule, arguments, replace, token).ConfigureAwait(false);
+                return;
+            }
+            JsonElement? previous = null;
+            if (replace)
+            {
+                var before = await GetBindingsAsync(path, token).ConfigureAwait(false);
+                var originals = before.Where(binding => binding.GetProperty("properties_key").GetString() == rule.Name).ToArray();
+                if (originals.Length != 1)
+                    throw new InvalidOperationException("The previous binding identity is missing or ambiguous. Refresh the bindings before trying again.");
+                previous = originals[0];
+                if (originals[0].GetProperty("routing_key").GetString() == (rule.Expression ?? string.Empty) &&
+                    RabbitMqBindingJson.Equal(originals[0].GetProperty("arguments"),
+                        JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options))) return;
+            }
+            var body = JsonSerializer.Serialize(new { routing_key = rule.Expression ?? string.Empty, arguments }, RabbitMqBindingJson.Options);
             using var response = await Management.PostAsync(path, new StringContent(body, Encoding.UTF8, "application/json"), token)
                 .ConfigureAwait(false);
             await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
@@ -70,7 +90,80 @@ public sealed partial class RabbitMqWorkspace
             {
                 await DeleteBindingAsync(path, rule.Name, token).ConfigureAwait(false);
             }
+            else if (previous is { } original)
+            {
+                var after = await GetBindingsAsync(path, token).ConfigureAwait(false);
+                var expected = JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options);
+                if (after.Count(binding => binding.GetProperty("properties_key").GetString() == created &&
+                        binding.GetProperty("routing_key").GetString() == (rule.Expression ?? string.Empty) &&
+                        RabbitMqBindingJson.Equal(binding.GetProperty("arguments"), expected)) != 1)
+                    throw new InvalidOperationException("The new binding identity could not be confirmed. The previous binding was retained.");
+                await using var mutation = await OpenBindingConnectionAsync(token).ConfigureAwait(false);
+                await using var channel = await mutation.CreateChannelAsync(cancellationToken: token).ConfigureAwait(false);
+                await UnbindCapturedAsync(channel, topic, subscription, rule.ToExchange, original, token).ConfigureAwait(false);
+            }
         }, cancellationToken);
+
+    private async Task SavePresenceBindingAsync(string topic, string destination, string path, SubscriptionRule rule,
+        Dictionary<string, object?> arguments, bool replace, CancellationToken cancellationToken)
+    {
+        var key = rule.Expression ?? string.Empty;
+        var expected = JsonSerializer.SerializeToElement(arguments, RabbitMqBindingJson.Options);
+        bool Matches(JsonElement binding) => binding.GetProperty("routing_key").GetString() == key &&
+            RabbitMqBindingJson.Equal(binding.GetProperty("arguments"), expected);
+        JsonElement? previous = null;
+
+        // An unchanged save must keep the broker's identity and original AMQP field types, which HTTP JSON
+        // cannot fully describe. This also avoids unnecessary native binds for existing presence conditions.
+        if (replace)
+        {
+            var before = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
+            var originals = before.Where(binding => binding.GetProperty("properties_key").GetString() == rule.Name).ToArray();
+            if (originals.Length != 1)
+                throw new InvalidOperationException("The previous binding identity is missing or ambiguous. Refresh the bindings before trying again.");
+            previous = originals[0];
+            if (Matches(originals[0])) return;
+        }
+
+        // RabbitMQ.Client encodes null as AMQP void; the management API's JSON conversion throws
+        // null_not_allowed. Native binds wait for bind-ok and happen before any deletion of the old binding.
+        await using var mutation = await OpenBindingConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var channel = await mutation.CreateChannelAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (BindingDestinationIsExchange(destination, rule.ToExchange))
+            await channel.ExchangeBindAsync(destination, topic, key, arguments, cancellationToken: cancellationToken).ConfigureAwait(false);
+        else
+            await channel.QueueBindAsync(destination, topic, key, arguments, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        // Native bind-ok does not carry a properties_key. Read the destination-specific binding collection;
+        // if identity cannot be confirmed uniquely, retain the old binding rather than risk losing its route.
+        var after = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
+        var matches = after.Where(Matches).ToArray();
+        if (matches.Length != 1 || !matches[0].TryGetProperty("properties_key", out var property) ||
+            property.GetString() is not { Length: > 0 } created)
+            throw new InvalidOperationException("The presence binding was added, but its identity could not be confirmed. " +
+                "The previous binding was retained; refresh the bindings before trying again.");
+        if (replace && !string.Equals(created, rule.Name, StringComparison.Ordinal))
+            await DeleteBindingAsync(path, rule.Name, cancellationToken).ConfigureAwait(false);
+        else if (previous is { } original)
+        {
+            // Management properties keys are hashes: +0.0/-0.0 collide even though OTP 27+ bindings differ.
+            // HTTP DELETE resolves that hash to an arbitrary binding. Unbind the captured original terms.
+            await UnbindCapturedAsync(channel, topic, destination, rule.ToExchange, original, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task UnbindCapturedAsync(IChannel channel, string topic, string destination, bool? toExchange,
+        JsonElement original, CancellationToken cancellationToken)
+    {
+        var old = ToRule("headers", original, 0, 1);
+        var arguments = old.Arguments.ToDictionary(pair => pair.Key, pair => pair.Value);
+        if (BindingDestinationIsExchange(destination, toExchange))
+            await channel.ExchangeUnbindAsync(destination, topic, old.Expression ?? string.Empty, arguments,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        else
+            await channel.QueueUnbindAsync(destination, topic, old.Expression ?? string.Empty, arguments,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
 
     public override Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default) =>
         ManageAsync(token => DeleteBindingAsync(BindingPath(topic, subscription, null), rule, token), cancellationToken);
@@ -81,12 +174,27 @@ public sealed partial class RabbitMqWorkspace
 
     private HttpClient Management => _management ?? throw new InvalidOperationException("Connect to the environment first.");
 
+    private async Task<IReadOnlyList<JsonElement>> GetBindingsAsync(string path, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Accept.ParseAdd("application/bert");
+        using var response = await Management.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
+        if (!string.Equals(response.Content.Headers.ContentType?.MediaType, "application/bert", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("RabbitMQ must return application/bert for type-safe binding edits. " +
+                "Check that the management proxy preserves the Accept header. The binding was not replaced.");
+        return RabbitMqBindingTerms.Decode(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
+    }
+
     /// <summary>
     /// api/bindings/vhost/e/exchange/q/queue, or …/e/exchange when the destination is an exchange. A queue and an
     /// exchange can share a name, so the caller says which one it means; without that, a shared name is refused
     /// rather than guessed, since a guess could change another destination's binding.
     /// </summary>
-    private string BindingPath(string exchange, string destination, bool? toExchange)
+    private string BindingPath(string exchange, string destination, bool? toExchange) =>
+        $"api/bindings/{Escape(_virtualHost)}/e/{Uri.EscapeDataString(exchange)}/{(BindingDestinationIsExchange(destination, toExchange) ? "e" : "q")}/{Uri.EscapeDataString(destination)}";
+
+    private bool BindingDestinationIsExchange(string destination, bool? toExchange)
     {
         var isQueue = _index.FindQueue(destination) is not null;
         var isExchange = _index.IsExchange(destination);
@@ -103,11 +211,15 @@ public sealed partial class RabbitMqWorkspace
         return kind is null
             ? throw new InvalidOperationException(
                 $"{(toExchange == true ? "Exchange" : toExchange == false ? "Queue" : "Destination")} '{destination}' was not found. Refresh and try again.")
-            : $"api/bindings/{Escape(_virtualHost)}/e/{Uri.EscapeDataString(exchange)}/{kind}/{Uri.EscapeDataString(destination)}";
+            : kind == "e";
     }
 
     private async Task DeleteBindingAsync(string path, string propertiesKey, CancellationToken cancellationToken)
     {
+        // Management DELETE selects the first matching arguments hash. Distinct bindings can share it.
+        var bindings = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
+        if (bindings.Count(binding => binding.GetProperty("properties_key").GetString() == propertiesKey) != 1)
+            throw new InvalidOperationException("The binding identity is missing or ambiguous. No binding was deleted; refresh the bindings before trying again.");
         using var response = await Management.DeleteAsync($"{path}/{Uri.EscapeDataString(propertiesKey)}", cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
     }
@@ -146,9 +258,13 @@ public sealed partial class RabbitMqWorkspace
     private static object? ToValue(JsonElement value) => value.ValueKind switch
     {
         JsonValueKind.String => value.GetString(),
-        JsonValueKind.Number => value.TryGetInt64(out var whole) ? (object)whole : value.GetDouble(),
+        JsonValueKind.Number => value.TryGetInt64(out var whole) ? (object)whole :
+            value.GetRawText().IndexOfAny(['.', 'e', 'E']) >= 0 ? (object)value.GetDouble() :
+            BigInteger.Parse(value.GetRawText(), CultureInfo.InvariantCulture),
         JsonValueKind.True or JsonValueKind.False => value.GetBoolean(),
         JsonValueKind.Null => null,
-        _ => value.GetRawText()
+        JsonValueKind.Array => value.EnumerateArray().Select(ToValue).ToArray(),
+        JsonValueKind.Object => value.EnumerateObject().ToDictionary(field => field.Name, field => ToValue(field.Value), StringComparer.Ordinal),
+        _ => throw new InvalidOperationException("RabbitMQ returned an unsupported binding argument.")
     };
 }

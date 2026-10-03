@@ -480,10 +480,22 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                     return null;
                 }
                 var header = line[..separator].Trim();
-                object value;
+                if (header == "x-match")
+                {
+                    Error = "Use the MATCH selector for x-match; do not list it as a header.";
+                    return null;
+                }
+                if (arguments.ContainsKey(header))
+                {
+                    Error = $"Header '{header}' is duplicated. List each header once.";
+                    return null;
+                }
+                object? value;
                 try
                 {
-                    value = RoutingValue.Parse(line[(separator + 1)..])!;
+                    var text = line[(separator + 1)..].Trim();
+                    // RabbitMQ's null binding argument checks presence, rather than the text "null".
+                    value = text.Equals("null", StringComparison.OrdinalIgnoreCase) ? null : RoutingValue.Parse(text);
                 }
                 catch (FormatException exception)
                 {
@@ -495,7 +507,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                     int number => (long)number,
                     _ => value
                 };
-                if (value is not (string or long or double or bool))
+                if (value is not (null or string or long or double or bool))
                 {
                     Error = $"{header}: a binding compares text, whole numbers, decimals and true/false, not a {value.GetType().Name}.";
                     return null;

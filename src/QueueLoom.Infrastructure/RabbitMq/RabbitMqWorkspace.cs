@@ -27,6 +27,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     private IConnection? _connection;
     private string _virtualHost = "/";
     private RabbitMqTopologyIndex _index = RabbitMqTopologyIndex.Empty;
+    private readonly Func<ConnectionFactory, CancellationToken, Task<IConnection>>? _openBindingConnection;
 
     public RabbitMqWorkspace(
         ISecretVault secretVault,
@@ -41,6 +42,34 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     }
 
     public override MessagingProvider Provider => MessagingProvider.RabbitMq;
+
+    internal RabbitMqWorkspace(ISecretVault secretVault, Func<ConnectionFactory, CancellationToken, Task<IConnection>> openBindingConnection)
+        : this(secretVault) => _openBindingConnection = openBindingConnection;
+
+    private async Task<IConnection> OpenBindingConnectionAsync(CancellationToken cancellationToken)
+    {
+        var profile = GetConnectedProfile();
+        var settings = profile.RabbitMq ?? throw new InvalidOperationException("The RabbitMQ settings are missing.");
+        var password = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
+            .ConfigureAwait(false) ?? throw new InvalidOperationException("The RabbitMQ password is missing. Edit the environment and enter it again.");
+        var factory = CreateAmqpFactory(settings, password);
+        // These mutations are durable broker topology, not resources owned by the long-lived client.
+        // HTTP deletion cannot remove autorecovery records. Keep mutation records off the main connection.
+        factory.AutomaticRecoveryEnabled = false;
+        factory.TopologyRecoveryEnabled = false;
+        factory.ClientProvidedName = "QueueLoom binding mutation";
+        return _openBindingConnection is { } open
+            ? await open(factory, cancellationToken).ConfigureAwait(false)
+            : await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static ConnectionFactory CreateAmqpFactory(RabbitMqSettings settings, string password) => new()
+    {
+        HostName = settings.Host, Port = settings.AmqpPort, UserName = settings.UserName, Password = password,
+        VirtualHost = settings.VirtualHost, ClientProvidedName = "QueueLoom",
+        Ssl = new SslOption { Enabled = settings.UseTls, ServerName = settings.Host },
+        RequestedConnectionTimeout = TimeSpan.FromSeconds(15)
+    };
 
     private IConnection Connection => _connection ?? throw new InvalidOperationException("Connect to the environment first.");
 
@@ -64,17 +93,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             using var response = await management.GetAsync($"api/vhosts/{Escape(_virtualHost)}", cancellationToken).ConfigureAwait(false);
             await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
 
-            var factory = new ConnectionFactory
-            {
-                HostName = settings.Host,
-                Port = settings.AmqpPort,
-                UserName = settings.UserName,
-                Password = password,
-                VirtualHost = settings.VirtualHost,
-                ClientProvidedName = "QueueLoom",
-                Ssl = new SslOption { Enabled = settings.UseTls, ServerName = settings.Host },
-                RequestedConnectionTimeout = TimeSpan.FromSeconds(15)
-            };
+            var factory = CreateAmqpFactory(settings, password);
             _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (BrokerUnreachableException exception)

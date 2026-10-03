@@ -14,7 +14,7 @@ namespace QueueLoom.UiTests;
 /// Drives the real window against a RabbitMQ broker. Runs only when QUEUELOOM_RABBITMQ is host:port (management
 /// on port + 10000, user guest); writes screenshots when QUEUELOOM_SCREENSHOT_DIR is set too.
 /// </summary>
-public sealed class RabbitMqUiTests
+public sealed partial class RabbitMqUiTests
 {
     private static readonly string? Broker = Environment.GetEnvironmentVariable("QUEUELOOM_RABBITMQ");
     private static readonly string? ScreenshotDirectory = Environment.GetEnvironmentVariable("QUEUELOOM_SCREENSHOT_DIR");
