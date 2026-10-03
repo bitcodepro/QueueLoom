@@ -176,6 +176,66 @@ public sealed partial class RabbitMqUiTests
             Assert.DoesNotContain(await workspace.GetTopicRulesAsync("headers"), item => item.Subscription == "orders");
             Assert.Single(await workspace.GetTopicRulesAsync("headers"), item => item.Subscription == "literal-values");
 
+            // Coexisting opposite zero signs have the same management hash. Both public delete overloads
+            // must reject the ambiguity and leave both actual broker bindings and delivery routes intact.
+            const string collisionSource = "collision-headers";
+            const string collisionDestination = "collision-target";
+            var collisionQueue = toExchange ? "collision-delivery" : collisionDestination;
+            await channel.ExchangeDeclareAsync(collisionSource, ExchangeType.Headers, durable: true);
+            await channel.QueueDeclareAsync(collisionQueue, durable: true, exclusive: false, autoDelete: false);
+            if (toExchange)
+            {
+                await channel.ExchangeDeclareAsync(collisionDestination, ExchangeType.Direct, durable: true);
+                await channel.QueueBindAsync(collisionQueue, collisionDestination, "probe");
+            }
+            var positive = new Dictionary<string, object?> { ["x-match"] = "all", ["amount"] = 0d };
+            var negativeZero = new Dictionary<string, object?> { ["x-match"] = "all", ["amount"] = BitConverter.Int64BitsToDouble(long.MinValue) };
+            await BindCollisionAsync(positive);
+            await BindCollisionAsync(negativeZero);
+            await workspace.GetTopologyAsync(forceRefresh: true);
+            var colliding = Assert.Single(await workspace.GetTopicRulesAsync(collisionSource)).Rules;
+            Assert.Equal(2, colliding.Count);
+            Assert.Equal(colliding[0].Name, colliding[1].Name);
+            foreach (var selected in colliding)
+            {
+                var typedError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    workspace.DeleteSubscriptionRuleAsync(collisionSource, collisionDestination, selected));
+                Assert.Contains("ambiguous", typedError.Message, StringComparison.OrdinalIgnoreCase);
+                var keyedError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    workspace.DeleteSubscriptionRuleAsync(collisionSource, collisionDestination, selected.Name));
+                Assert.Contains("ambiguous", keyedError.Message, StringComparison.OrdinalIgnoreCase);
+                var kept = Assert.Single(await workspace.GetTopicRulesAsync(collisionSource)).Rules;
+                Assert.Equal(2, kept.Count);
+                Assert.Contains(kept, rule => BitConverter.DoubleToInt64Bits(Assert.IsType<double>(rule.Arguments["amount"])) == 0L);
+                Assert.Contains(kept, rule => BitConverter.DoubleToInt64Bits(Assert.IsType<double>(rule.Arguments["amount"])) == long.MinValue);
+                foreach (var amount in new[] { 0d, BitConverter.Int64BitsToDouble(long.MinValue) })
+                {
+                    await channel.BasicPublishAsync(collisionSource, "probe", false,
+                        new BasicProperties { Headers = new Dictionary<string, object?> { ["amount"] = amount } }, "collision"u8.ToArray());
+                    await channel.QueueDeclarePassiveAsync(collisionQueue);
+                    var delivered = Assert.IsType<BasicGetResult>(await channel.BasicGetAsync(collisionQueue, autoAck: true));
+                    Assert.Equal("collision"u8.ToArray(), delivered.Body.ToArray());
+                    Assert.Null(await channel.BasicGetAsync(collisionQueue, autoAck: true));
+                }
+            }
+            // Make the key unique using exact AMQP terms, then prove normal deletion still works through each overload.
+            if (toExchange) await channel.ExchangeUnbindAsync(collisionDestination, collisionSource, "probe", negativeZero);
+            else await channel.QueueUnbindAsync(collisionDestination, collisionSource, "probe", negativeZero);
+            var unique = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync(collisionSource)).Rules);
+            await workspace.DeleteSubscriptionRuleAsync(collisionSource, collisionDestination, unique);
+            Assert.Empty(await workspace.GetTopicRulesAsync(collisionSource));
+            await BindCollisionAsync(positive);
+            unique = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync(collisionSource)).Rules);
+            await workspace.DeleteSubscriptionRuleAsync(collisionSource, collisionDestination, unique.Name);
+            Assert.Empty(await workspace.GetTopicRulesAsync(collisionSource));
+            _bindingOutput.WriteLine("Both delete overloads preserved colliding signed-zero bindings/delivery and deleted unique bindings.");
+
+            async Task BindCollisionAsync(Dictionary<string, object?> arguments)
+            {
+                if (toExchange) await channel.ExchangeBindAsync(collisionDestination, collisionSource, "probe", arguments);
+                else await channel.QueueBindAsync(collisionDestination, collisionSource, "probe", arguments);
+            }
+
             async Task RecoverWorkspaceConnectionAsync()
             {
                 var main = (IConnection)typeof(RabbitMqWorkspace).GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(workspace)!;

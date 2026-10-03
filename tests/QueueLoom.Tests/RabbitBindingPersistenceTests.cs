@@ -246,12 +246,61 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
             broker.Events.FindIndex(item => item.StartsWith("UNBIND", StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public async Task Delete_CollidingZeroKeyRejectsBothOverloadsAndPreservesBothTerms(bool typed, bool toExchange, bool negative)
+    {
+        using var broker = new BindingBoundary(toExchange, true) { SharedDestination = false };
+        broker.Bindings[0] = broker.Bindings[0] with
+        { Arguments = new Dictionary<string, object?> { ["x-match"] = "all", ["amount"] = EditNumber(!negative, true) } };
+        broker.Bindings.Add(broker.Bindings[0] with
+        { Arguments = new Dictionary<string, object?> { ["x-match"] = "all", ["amount"] = EditNumber(negative, true) } });
+        await using var workspace = broker.Workspace();
+        var selected = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules,
+            rule => BitConverter.DoubleToInt64Bits((double)rule.Arguments["amount"]!) == (negative ? long.MinValue : 0L));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => typed
+            ? workspace.DeleteSubscriptionRuleAsync("headers", "orders", selected)
+            : workspace.DeleteSubscriptionRuleAsync("headers", "orders", selected.Name));
+        Assert.Contains("ambiguous", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(broker.Events, item => item.StartsWith("DELETE", StringComparison.Ordinal) ||
+            item.StartsWith("UNBIND", StringComparison.Ordinal));
+        var retained = Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules;
+        Assert.Equal(2, retained.Count);
+        Assert.Contains(retained, rule => BitConverter.DoubleToInt64Bits((double)rule.Arguments["amount"]!) == 0L);
+        Assert.Contains(retained, rule => BitConverter.DoubleToInt64Bits((double)rule.Arguments["amount"]!) == long.MinValue);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Delete_UniqueKeyStillDeletesThroughBothOverloads(bool typed, bool toExchange)
+    {
+        using var broker = new BindingBoundary(toExchange, true) { SharedDestination = false };
+        await using var workspace = broker.Workspace();
+        var selected = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        if (typed) await workspace.DeleteSubscriptionRuleAsync("headers", "orders", selected);
+        else await workspace.DeleteSubscriptionRuleAsync("headers", "orders", selected.Name);
+        Assert.Empty(broker.Bindings);
+        Assert.Single(broker.Events, item => item.StartsWith("DELETE", StringComparison.Ordinal));
+        Assert.DoesNotContain(broker.Events, item => item.StartsWith("UNBIND", StringComparison.Ordinal));
+    }
+
     private sealed class BindingBoundary(bool toExchange, bool existing) : HttpMessageHandler
     {
         public List<string> Events { get; } = [];
         public List<SubscriptionRule> Bindings { get; } = existing ? [Rule("old/key", "all")] : [];
         public string? Failure { get; init; }
         public bool CollidingKey { get; init; }
+        public bool SharedDestination { get; init; } = true;
         private static SubscriptionRule Rule(string name, string mode) => new(name, RuleFilterKind.HeadersBinding)
         {
             Expression = "", Arguments = new Dictionary<string, object?> { ["x-match"] = mode, ["trace"] = null, ["region"] = "EU" }
@@ -301,8 +350,9 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
             }));
             Set(workspace, "_management", new HttpClient(this) { BaseAddress = new Uri("http://broker.invalid/") });
             // Both kinds deliberately share a name: metadata must choose the correct native binding operation.
-            Set(workspace, "_index", new RabbitMqTopologyIndex([new("orders", "classic", 0, 0, null, null, null, "running")],
-                [new("headers", "headers"), new("orders", "direct")], []));
+            Set(workspace, "_index", new RabbitMqTopologyIndex(
+                SharedDestination || !toExchange ? [new("orders", "classic", 0, 0, null, null, null, "running")] : [],
+                SharedDestination || toExchange ? [new("headers", "headers"), new("orders", "direct")] : [new("headers", "headers")], []));
             typeof(LeasedMessagingWorkspace).GetField("_profile", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace,
                 ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Test, new(AuthenticationKind.RabbitMqPassword),
                     accessMode: ProfileAccessMode.ReadWrite) with
@@ -330,7 +380,9 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
             if (request.Method == HttpMethod.Delete)
             {
                 Assert.EndsWith("/old%2Fkey", path, StringComparison.OrdinalIgnoreCase);
-                Bindings.RemoveAll(item => item.Name == "old/key");
+                // Management HTTP deletion chooses the first hash match, even when distinct terms collide.
+                var first = Bindings.FirstOrDefault(item => item.Name == "old/key");
+                if (first is not null) Bindings.Remove(first);
                 return Reply(HttpStatusCode.NoContent, "");
             }
             if (path.EndsWith("/headers", StringComparison.Ordinal)) return Reply(HttpStatusCode.OK, """{"type":"headers"}""");
