@@ -650,7 +650,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     }
 
     private static string SanitizeException(Exception exception) =>
-        SensitiveDataRedactor.SummarizeException(exception);
+        SensitiveDataRedactor.SummarizeException(
+            exception is AggregateException && exception.Data["SessionCleanupWarning"] is string warning
+                ? new InvalidOperationException(warning)
+                : exception);
 
     private static string FormatSubQueue(ServiceBusSubQueue subQueue) => subQueue switch
     {
