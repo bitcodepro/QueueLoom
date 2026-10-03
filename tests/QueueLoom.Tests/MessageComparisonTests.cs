@@ -35,7 +35,7 @@ public sealed class MessageComparisonTests
         Assert.Equal(["  \"total\": 5", "  \"total\": 7"], result.BodyLines.Where(line => line.Kind != DiffKind.Same).Select(line => line.Text));
         Assert.Equal(["Body size", "Message ID"], result.Properties.Take(2).Select(property => property.Name));
         Assert.All(result.Properties.Take(2), property => Assert.True(property.Differs));
-        Assert.False(result.Properties.Single(property => property.Name == "tenant").Differs);
+        Assert.False(result.Properties.Single(property => property.Name == "Application: tenant").Differs);
         Assert.Equal(2, result.ChangedProperties);
     }
 }

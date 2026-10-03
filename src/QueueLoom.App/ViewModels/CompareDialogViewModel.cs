@@ -45,7 +45,9 @@ public sealed class CompareDialogViewModel
 
     public string Summary => Result.AreEqual
         ? "The two messages are the same: body and properties."
-        : $"{Count(Result.ChangedLines, "body line")} and {Count(Result.ChangedProperties, "property", "properties")} differ." +
+        : (Result.BodyTruncated && Result.ChangedLines == 0 && Result.ChangedProperties == 0
+            ? "Comparison is incomplete: the displayed body lines and properties match."
+            : $"{Count(Result.ChangedLines, "body line")} and {Count(Result.ChangedProperties, "property", "properties")} differ.") +
           (Result.BodyTruncated ? $" Only the first {MessageComparison.MaximumLines:N0} lines of each body are compared." : string.Empty);
 
     private static string Describe(MessageItemViewModel message) =>

@@ -26,7 +26,7 @@ public sealed record MessageComparisonResult(IReadOnlyList<DiffLine> BodyLines, 
 
     public int ChangedProperties => Properties.Count(property => property.Differs);
 
-    public bool AreEqual => ChangedLines == 0 && ChangedProperties == 0;
+    public bool AreEqual => !BodyTruncated && ChangedLines == 0 && ChangedProperties == 0;
 }
 
 /// <summary>
@@ -166,8 +166,13 @@ public static class MessageComparison
             ["To"] = properties.To,
             ["Reply to"] = properties.ReplyTo,
             ["Session ID"] = properties.SessionId,
+            ["Reply to session ID"] = properties.ReplyToSessionId,
             ["Partition key"] = properties.PartitionKey,
+            ["Transaction partition key"] = properties.TransactionPartitionKey,
             ["Time to live"] = properties.TimeToLive?.ToString("c", CultureInfo.InvariantCulture),
+            ["Scheduled enqueue"] = properties.ScheduledEnqueueTime?.ToString("O", CultureInfo.InvariantCulture),
+            ["AMQP type"] = properties.AmqpType,
+            ["AMQP app ID"] = properties.AmqpAppId,
             ["Enqueued"] = message.EnqueuedAt?.ToString("u", CultureInfo.InvariantCulture),
             ["Delivery count"] = message.DeliveryCount.ToString(CultureInfo.InvariantCulture),
             ["Dead-letter reason"] = message.DeadLetterReason,
@@ -176,7 +181,7 @@ public static class MessageComparison
         };
         foreach (var property in message.ApplicationProperties)
         {
-            values[property.Name] = property.Value;
+            values["Application: " + property.Name] = $"[{property.Type}] {property.Value}";
         }
         return values.Where(pair => pair.Value is not null).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
     }
