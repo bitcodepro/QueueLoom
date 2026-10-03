@@ -176,10 +176,16 @@ public sealed partial class MainWindowViewModel
         ServiceBusSubQueue subQueue,
         CancellationToken cancellationToken)
     {
+        var resultsGeneration = _messageResultsGeneration;
         if (_workspace.ConnectedProfileId != profile.Id)
         {
             await ConnectProfileAsync(profile, profile.Profile, loadTopology: true, cancellationToken)
                 .ConfigureAwait(true);
+        }
+
+        if (resultsGeneration != _messageResultsGeneration)
+        {
+            return;
         }
 
         ResetBrowsePaging();
@@ -190,6 +196,10 @@ public sealed partial class MainWindowViewModel
         Messages.Clear();
         SelectedMessage = null;
         await LoadBrowsePageAsync(cancellationToken).ConfigureAwait(true);
+        if (resultsGeneration != _messageResultsGeneration)
+        {
+            return;
+        }
         MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
         NavigateTo(NavigationPage.DeadLetters);
         StatusText = profile.Provider == MessagingProvider.AzureServiceBus

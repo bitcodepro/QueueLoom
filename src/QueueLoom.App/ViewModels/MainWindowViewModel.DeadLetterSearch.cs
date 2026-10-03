@@ -10,7 +10,6 @@ namespace QueueLoom.App.ViewModels;
 public sealed partial class MainWindowViewModel
 {
     private bool _deepSearch;
-    private long _deadLetterSearchGeneration;
 
     /// <summary>
     /// Deep search reads up to 20,000 dead letters per queue and keeps up to 20,000 matches, for large dead-letter
@@ -24,7 +23,7 @@ public sealed partial class MainWindowViewModel
 
     private async Task SearchDeadLettersAsync(CancellationToken cancellationToken)
     {
-        var searchGeneration = _deadLetterSearchGeneration;
+        var searchGeneration = _messageResultsGeneration;
         ResetBrowsePaging();
         var query = DeadLetterSearchQuery.Trim();
         if (query.Length == 0)
@@ -216,7 +215,7 @@ public sealed partial class MainWindowViewModel
 
         // Connection restoration still runs, but a rejected bookmark makes these results obsolete,
         // even if the operator has since restored the original scope.
-        if (searchGeneration != _deadLetterSearchGeneration)
+        if (searchGeneration != _messageResultsGeneration)
         {
             return;
         }
@@ -249,7 +248,7 @@ public sealed partial class MainWindowViewModel
 
     private void InvalidateDeadLetterSearchResults()
     {
-        _deadLetterSearchGeneration++;
+        _messageResultsGeneration++;
         ResetBrowsePaging();
         Messages.Clear();
         SelectedMessage = null;
