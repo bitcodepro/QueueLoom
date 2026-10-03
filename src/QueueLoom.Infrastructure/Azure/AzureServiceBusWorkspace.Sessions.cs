@@ -96,11 +96,18 @@ public sealed partial class AzureServiceBusWorkspace
             }
             if (cleanupErrors.Count > 0)
             {
-                var cleanupError = new AggregateException("Could not close all browsed sessions. Some session locks may remain until they expire.", cleanupErrors);
+                const string warning = "Could not close all browsed sessions. Some session locks may remain until they expire.";
+                var cleanupError = new AggregateException(warning, cleanupErrors);
                 // Cleanup must attempt every accepted session, even after cancellation. Keep
                 // the primary failure (and its cancellation token) intact for the caller.
                 if (browseError is not null) browseError.Data["SessionCleanupErrors"] = cleanupError;
-                else throw cleanupError;
+                else
+                {
+                    // A single-inner aggregate is unwrapped by general exception summaries.
+                    // Keep the operator warning separate from potentially sensitive SDK details.
+                    cleanupError.Data["SessionCleanupWarning"] = warning;
+                    throw cleanupError;
+                }
             }
         }
 

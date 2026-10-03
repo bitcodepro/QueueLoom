@@ -20,6 +20,12 @@ If browsing succeeded but cleanup failed, it throws an aggregate containing all
 close errors and warns that some session locks may remain until expiry. A failed
 close is not reported as a proven release. No messages are settled or changed.
 
+The UI displays the separate operator warning for successful browsing with failed
+cleanup. General exception summaries unwrap a single-inner aggregate, which would
+otherwise discard this warning. The display still uses the existing bounded,
+fail-closed redactor; it does not include SDK close details. Global exception
+summarization and redaction semantics are unchanged.
+
 ## Reproduction and regression evidence
 
 Tests-only local commit `ce5724e372e4da2705693ba473dbfd4d0dff4f8a` leaves all
@@ -54,6 +60,16 @@ Logs and TRX are retained under `cycle-four-20261003/evidence` on E:, including
 The initial test compile failed on nullable-reference diagnostics; its setup log
 is retained separately and is not counted as a red runtime witness.
 Full local and exact-head CI counts are recorded in the PR and handoff evidence.
+
+Independent review of initial PR head `e414eb73edfdb3580da72eedaf3763592c31926e`
+found the single-close display gap. Tests-only local commit
+`cc7764c92e95576a7cd0eb56375db7cb707a0862` retains production identical to that
+head. Both actual-window cases fail: one close loses the lock-expiry warning;
+two closes retain it but also show SDK detail text. The correction retains the
+original aggregate and all close errors for diagnosis while showing only the
+separate warning through the UI's existing sanitizer. The same assertions pass
+after the fix, including omission of a synthetic password. Review red/green logs
+and TRX are retained separately in the evidence directory.
 
 ## Bounded coverage and limits
 
