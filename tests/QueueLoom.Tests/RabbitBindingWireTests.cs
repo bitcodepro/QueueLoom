@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Numerics;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Routing;
+using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.RabbitMq;
 
 namespace QueueLoom.Tests;
@@ -14,7 +15,8 @@ public sealed class RabbitBindingWireTests
     [InlineData("250.0", "2.5e2", true)]
     [InlineData("250.00", "250.0", true)]
     [InlineData("0", "-0.0", false)]
-    [InlineData("-0.0", "0.0", true)]
+    [InlineData("-0.0", "0.0", false)]
+    [InlineData("0.0", "-0.0", false)]
     [InlineData("9007199254740993", "9007199254740992", false)]
     [InlineData("9007199254740993", "9007199254740993.0", false)]
     [InlineData("9223372036854775808", "9223372036854775809", false)]
@@ -47,7 +49,8 @@ public sealed class RabbitBindingWireTests
             ["arguments"] = new Dictionary<string, object?>
             {
                 ["trace"] = null, ["literal"] = "undefined", ["integer"] = 250L, ["floating"] = 250d,
-                ["flag"] = false, ["unicode"] = "\u041f\u0440\u0438\u0432\u0435\u0442", ["pairs"] = new object?[] { new object?[] { "key", 1L } }
+                ["flag"] = false, ["unicode"] = "\u041f\u0440\u0438\u0432\u0435\u0442", ["pairs"] = new object?[] { new object?[] { "key", 1L } },
+                ["positiveZero"] = 0d, ["negativeZero"] = BitConverter.Int64BitsToDouble(long.MinValue)
             }
         } });
         var arguments = Assert.Single(RabbitMqBindingTerms.Decode(encoded)).GetProperty("arguments");
@@ -58,6 +61,8 @@ public sealed class RabbitBindingWireTests
         Assert.False(arguments.GetProperty("flag").GetBoolean());
         Assert.Equal("\u041f\u0440\u0438\u0432\u0435\u0442", arguments.GetProperty("unicode").GetString());
         Assert.Equal(JsonValueKind.Array, arguments.GetProperty("pairs")[0].ValueKind);
+        Assert.Equal(0L, BitConverter.DoubleToInt64Bits(arguments.GetProperty("positiveZero").GetDouble()));
+        Assert.Equal(long.MinValue, BitConverter.DoubleToInt64Bits(arguments.GetProperty("negativeZero").GetDouble()));
     }
 
     [Fact]
@@ -119,5 +124,20 @@ public sealed class RabbitBindingWireTests
         Assert.Equal((double)1.2f, projected.GetProperty("single").GetDouble());
         Assert.Equal(long.MaxValue, projected.GetProperty("integer").GetInt64());
         Assert.Throws<JsonException>(() => JsonSerializer.Serialize(double.NaN, RabbitMqBindingJson.Options));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void RabbitHeaderPredictionRespectsZeroSign(bool expectedNegative, bool actualNegative)
+    {
+        var expected = expectedNegative ? BitConverter.Int64BitsToDouble(long.MinValue) : 0d;
+        var actual = actualNegative ? BitConverter.Int64BitsToDouble(long.MinValue) : 0d;
+        var rule = new Dictionary<string, object?> { ["x-match"] = "all", ["amount"] = expected };
+        var message = new RoutingMessage(EditableMessageProperties.Empty, new Dictionary<string, object?> { ["amount"] = actual });
+        Assert.Equal(expectedNegative == actualNegative ? RoutingOutcome.Receives : RoutingOutcome.Skips,
+            RabbitBindings.MatchHeaders(rule, message).Outcome);
     }
 }

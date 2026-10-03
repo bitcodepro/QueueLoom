@@ -40,6 +40,11 @@ public sealed partial class RabbitMqUiTests
             new StringContent("""{"configure":".*","write":".*","read":".*"}""", Encoding.UTF8, "application/json"))).EnsureSuccessStatusCode();
         try
         {
+            using var overview = JsonDocument.Parse(await management.GetStringAsync("api/overview"));
+            var erlang = overview.RootElement.GetProperty("erlang_version").GetString()!;
+            _bindingOutput.WriteLine($"RabbitMQ {overview.RootElement.GetProperty("rabbitmq_version").GetString()}, Erlang/OTP {erlang}");
+            Assert.True(int.Parse(erlang.Split('.')[0], System.Globalization.CultureInfo.InvariantCulture) >= 27,
+                "The signed-zero fixture requires OTP 27+ (supported by RabbitMQ 4.1+).");
             await using var connection = await new ConnectionFactory { HostName = host, Port = port, VirtualHost = vhost }.CreateConnectionAsync();
             await using var channel = await connection.CreateChannelAsync();
             await channel.ExchangeDeclareAsync("headers", ExchangeType.Headers, durable: true);
@@ -121,6 +126,24 @@ public sealed partial class RabbitMqUiTests
                 await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = 250d }, floating);
             }
 
+            foreach (var negative in new[] { false, true, true, false })
+            {
+                var editor = new RuleEditorViewModel("headers", "orders", existing, RoutingService.RabbitMq);
+                var rule = await SaveFromModalAsync(editor, false,
+                    headers: negative ? "trace = null\namount = -0.0" : "trace = null\namount = 0.0", matchIndex: 0);
+                var previous = existing!;
+                await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule with { ToExchange = toExchange }, true);
+                existing = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers"),
+                    item => item.Subscription == "orders" && item.IsExchange == toExchange).Rules);
+                var zeroBits = negative ? long.MinValue : 0L;
+                Assert.Equal(zeroBits, BitConverter.DoubleToInt64Bits(Assert.IsType<double>(existing.Arguments["amount"])));
+                if (previous.Arguments["amount"] is double old && BitConverter.DoubleToInt64Bits(old) == zeroBits)
+                    Assert.Equal(previous.Name, existing.Name);
+                else Assert.NotEqual(previous.Name, existing.Name);
+                await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = 0d }, !negative);
+                await AssertDeliveryAsync(new() { ["trace"] = "present", ["amount"] = BitConverter.Int64BitsToDouble(long.MinValue) }, negative);
+            }
+
             // Broker-close the isolated workspace connection, wait for actual recovery, then inspect persisted
             // topology. Replacing/deleting a durable binding must not leave autorecovery records that recreate it.
             await RecoverWorkspaceConnectionAsync();
@@ -140,16 +163,39 @@ public sealed partial class RabbitMqUiTests
                 main.RecoverySucceededAsync += OnRecovery;
                 try
                 {
-                    using var json = JsonDocument.Parse(await management.GetStringAsync("api/connections"));
-                    var connectionInfo = Assert.Single(json.RootElement.EnumerateArray(), item =>
-                        item.GetProperty("vhost").GetString() == vhost &&
-                        item.GetProperty("client_properties").TryGetProperty("connection_name", out var name) && name.GetString() == "QueueLoom");
-                    using var closed = await management.DeleteAsync($"api/connections/{Uri.EscapeDataString(connectionInfo.GetProperty("name").GetString()!)}");
+                    var connectionName = await FindWorkspaceConnectionAsync(main);
+                    using var closed = await management.DeleteAsync($"api/connections/{Uri.EscapeDataString(connectionName)}");
                     closed.EnsureSuccessStatusCode();
                     await recovered.Task.WaitAsync(TimeSpan.FromSeconds(45));
                     _bindingOutput.WriteLine("Isolated workspace recovered after HTTP connection close; binding state verified.");
                 }
                 finally { main.RecoverySucceededAsync -= OnRecovery; }
+            }
+
+            async Task<string> FindWorkspaceConnectionAsync(IConnection main)
+            {
+                Assert.Equal("QueueLoom", main.ClientProvidedName);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                try
+                {
+                    while (true)
+                    {
+                        using var json = JsonDocument.Parse(await management.GetStringAsync("api/connections", deadline.Token));
+                        var candidates = json.RootElement.EnumerateArray().Where(item =>
+                            item.TryGetProperty("vhost", out var hostValue) && hostValue.GetString() == vhost &&
+                            item.TryGetProperty("client_properties", out var properties) &&
+                            properties.TryGetProperty("connection_name", out var name) && name.GetString() == main.ClientProvidedName).ToArray();
+                        if (candidates.Length > 0)
+                            return Assert.Single(candidates).GetProperty("name").GetString()!;
+                        // The management statistics registry is eventually consistent. Recheck the exact
+                        // vhost/client identity until the deadline; never select a different connection.
+                        await Task.Delay(200, deadline.Token);
+                    }
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"Management did not list the exact '{main.ClientProvidedName}' connection in isolated vhost '{vhost}' within 20 seconds.");
+                }
             }
 
             async Task AssertDeliveryAsync(Dictionary<string, object?> headers, bool expected)

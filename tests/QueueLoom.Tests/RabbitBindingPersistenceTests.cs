@@ -79,15 +79,19 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task Presence_NumberTypeEditPersistsAndSelectsItsOwnBinding(bool startsWithDouble, bool decoy)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public async Task Presence_NumberTypeEditPersistsAndSelectsItsOwnBinding(bool startsWithDouble, bool decoy, bool signedZero)
     {
         using var broker = new BindingBoundary(false, existing: true);
         var originalArguments = new Dictionary<string, object?>
-        { ["x-match"] = "all", ["trace"] = null, ["amount"] = Number(startsWithDouble) };
+        { ["x-match"] = "all", ["trace"] = null, ["amount"] = EditNumber(startsWithDouble, signedZero) };
         broker.Bindings[0] = broker.Bindings[0] with { Arguments = originalArguments };
         if (decoy)
             broker.Bindings.Add(new("decoy/key", RuleFilterKind.HeadersBinding)
@@ -95,24 +99,24 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
         await using var workspace = broker.Workspace();
         var existing = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules, item => item.Name == "old/key");
         var editor = new RuleEditorViewModel("headers", "orders", existing, RoutingService.RabbitMq)
-        { Headers = startsWithDouble ? "trace = null\namount = 250" : "trace = null\namount = 250.0" };
+        { Headers = "trace = null\namount = " + RoutingValue.Format(EditNumber(!startsWithDouble, signedZero)) };
         if (decoy) editor.HeadersMatch = RuleEditorViewModel.HeaderModes[1];
         var rule = Assert.IsType<SubscriptionRule>(editor.TryBuild()) with { ToExchange = false };
-        Assert.Equal(Number(!startsWithDouble).GetType(), rule.Arguments["amount"]!.GetType());
+        AssertNumber(EditNumber(!startsWithDouble, signedZero), rule.Arguments["amount"]);
         try { await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule, true); }
         finally { output.WriteLine(string.Join("\n", broker.Events)); }
 
         var rules = Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules;
         var saved = Assert.Single(rules, item => item.Name != "decoy/key");
         Assert.Equal("new/key", saved.Name);
-        Assert.Equal(Number(!startsWithDouble).GetType(), saved.Arguments["amount"]!.GetType());
+        AssertNumber(EditNumber(!startsWithDouble, signedZero), saved.Arguments["amount"]);
         Assert.Null(saved.Arguments["trace"]);
         Assert.Contains(broker.Events, item => item.StartsWith("BIND", StringComparison.Ordinal));
         Assert.DoesNotContain(rules, item => item.Name == existing.Name);
         if (decoy)
         {
             var retained = Assert.Single(rules, item => item.Name == "decoy/key");
-            Assert.Equal(Number(startsWithDouble).GetType(), retained.Arguments["amount"]!.GetType());
+            AssertNumber(EditNumber(startsWithDouble, signedZero), retained.Arguments["amount"]);
         }
     }
 
@@ -150,6 +154,33 @@ public sealed class RabbitBindingPersistenceTests(ITestOutputHelper output)
 
     // Keep the boxing explicit: a conditional expression mixing long/double would itself promote to double.
     private static object Number(bool floating) => floating ? (object)250d : 250L;
+    private static object EditNumber(bool variant, bool signedZero) => signedZero
+        ? variant ? BitConverter.Int64BitsToDouble(long.MinValue) : 0d : Number(variant);
+    private static void AssertNumber(object expected, object? actual)
+    {
+        Assert.Equal(expected.GetType(), actual!.GetType());
+        if (expected is double floating)
+            Assert.Equal(BitConverter.DoubleToInt64Bits(floating), BitConverter.DoubleToInt64Bits((double)actual));
+        else Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Presence_UnchangedSignedZeroKeepsIdentityAndSign(bool negative)
+    {
+        using var broker = new BindingBoundary(false, existing: true);
+        broker.Bindings[0] = broker.Bindings[0] with
+        { Arguments = new Dictionary<string, object?> { ["x-match"] = "all", ["trace"] = null, ["amount"] = EditNumber(negative, true) } };
+        await using var workspace = broker.Workspace();
+        var original = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        var editor = new RuleEditorViewModel("headers", "orders", original, RoutingService.RabbitMq);
+        await workspace.SaveSubscriptionRuleAsync("headers", "orders", Assert.IsType<SubscriptionRule>(editor.TryBuild()) with { ToExchange = false }, true);
+        var saved = Assert.Single(Assert.Single(await workspace.GetTopicRulesAsync("headers")).Rules);
+        Assert.Equal("old/key", saved.Name);
+        AssertNumber(EditNumber(negative, true), saved.Arguments["amount"]);
+        Assert.DoesNotContain(broker.Events, item => item.StartsWith("BIND", StringComparison.Ordinal) || item.StartsWith("DELETE", StringComparison.Ordinal));
+    }
 
     private sealed class BindingBoundary(bool toExchange, bool existing) : HttpMessageHandler
     {
