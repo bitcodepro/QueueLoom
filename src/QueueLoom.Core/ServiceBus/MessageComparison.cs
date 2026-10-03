@@ -192,6 +192,13 @@ public static class MessageComparison
         {
             values["Application: " + property.Name] = $"[{property.Type}] {property.Value}";
         }
+        if (message.KafkaEnvelope is { } kafka)
+        {
+            // The editable text projection cannot distinguish every Kafka wire value.
+            values["Kafka key (base64)"] = kafka.Key is null ? null : Convert.ToBase64String(kafka.Key);
+            values["Kafka tombstone"] = kafka.IsTombstone.ToString(CultureInfo.InvariantCulture);
+            values["Kafka headers (base64)"] = JsonSerializer.Serialize(kafka.Headers);
+        }
         return values.Where(pair => pair.Value is not null).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
     }
 }
