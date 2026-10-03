@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Runtime.CompilerServices;
 using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -18,14 +19,13 @@ namespace QueueLoom.UiTests;
 
 public sealed partial class RabbitMqUiTests
 {
-    // Emulator CI includes RabbitMqUiTests. Like the existing live-window fixture, this runs only with a broker.
-    [Theory]
+    // Emulator CI includes RabbitMqUiTests. Missing broker configuration is an explicit skip, not a pass.
+    [RabbitBrokerTheory]
     [InlineData(false)]
     [InlineData(true)]
     public Task PresenceBindings_ModalEditorSavesReloadsAndDelivers(bool toExchange) => UiSession.RunAsync(async () =>
     {
-        if (string.IsNullOrWhiteSpace(Broker)) return;
-        var host = Broker.Split(':')[0];
+        var host = Broker!.Split(':')[0];
         var port = int.Parse(Broker.Split(':')[1], System.Globalization.CultureInfo.InvariantCulture);
         var vhost = $"bindings-{Guid.NewGuid():N}";
         using var management = new HttpClient(new HttpClientHandler { UseProxy = false })
@@ -105,17 +105,17 @@ public sealed partial class RabbitMqUiTests
         var result = window.ShowDialog<SubscriptionRule?>(owner);
         try
         {
-            Dispatcher.UIThread.RunJobs();
+            await SettleBindingDialogAsync();
             var input = window.GetVisualDescendants().OfType<TextBox>()
                 .Single(control => AutomationProperties.GetName(control) == "Binding headers");
             input.Text = "trace = null\nregion = 'EU'";
             if (changeMatch)
             {
                 var match = window.GetVisualDescendants().OfType<ComboBox>()
-                    .Single(control => ReferenceEquals(control.ItemsSource, RuleEditorViewModel.HeaderModes));
+                    .Single(control => AutomationProperties.GetName(control) == "Header match");
                 match.SelectedIndex = 1;
             }
-            Dispatcher.UIThread.RunJobs();
+            await SettleBindingDialogAsync();
             var confirm = window.GetVisualDescendants().OfType<Button>().Single(control => Equals(control.Content, editor.ConfirmLabel));
             confirm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var saved = Assert.IsType<SubscriptionRule>(await result.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -124,5 +124,20 @@ public sealed partial class RabbitMqUiTests
             return saved;
         }
         finally { window.Close(); owner.Close(); }
+    }
+
+    private static async Task SettleBindingDialogAsync()
+    {
+        for (var attempt = 0; attempt < 3; attempt++) { Dispatcher.UIThread.RunJobs(); await Task.Delay(10); }
+        Dispatcher.UIThread.RunJobs();
+    }
+
+    private sealed class RabbitBrokerTheoryAttribute : TheoryAttribute
+    {
+        public RabbitBrokerTheoryAttribute([CallerFilePath] string? sourceFilePath = null, [CallerLineNumber] int sourceLineNumber = 0)
+            : base(sourceFilePath, sourceLineNumber)
+        {
+            if (string.IsNullOrWhiteSpace(Broker)) Skip = "QUEUELOOM_RABBITMQ is not configured; live binding persistence requires emulator CI.";
+        }
     }
 }
