@@ -17,6 +17,7 @@ public sealed partial class MainWindowViewModel
     private readonly IActivityJournal? _activityJournal;
     private Guid _operationId = Guid.NewGuid();
     private bool _activityLoaded;
+    private long _messageResultsGeneration;
     private ProfileItemViewModel? _browseProfile;
     private ServiceBusEntityReference? _browseSource;
     private ServiceBusSubQueue _browseSubQueue;
@@ -141,6 +142,7 @@ public sealed partial class MainWindowViewModel
 
     private async Task LoadBrowsePageAsync(CancellationToken token)
     {
+        var resultsGeneration = _messageResultsGeneration;
         var profile = _browseProfile ?? throw new InvalidOperationException("Select a source again.");
         var source = _browseSource ?? throw new InvalidOperationException("Select a source again.");
         if (ConnectedProfileId != profile.Id) throw new InvalidOperationException("Reconnect the source environment first.");
@@ -155,6 +157,11 @@ public sealed partial class MainWindowViewModel
         {
             Start = log ? NextLogStart() : BrowseStart.Oldest
         }, token).ConfigureAwait(true);
+        // A rejected bookmark can clear both the message list and continuation state while this page is pending.
+        if (resultsGeneration != _messageResultsGeneration)
+        {
+            return;
+        }
         if (log)
         {
             AdvanceLogPositions(page);

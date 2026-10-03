@@ -942,6 +942,8 @@ public sealed partial class ViewModelStateTests
 
         public List<DeadLetterSearchRequest> SearchRequests { get; } = [];
 
+        public Func<CancellationToken, Task>? SearchGate { get; set; }
+
         public List<BrowseMessagesRequest> BrowseRequests { get; } = [];
 
         public IReadOnlyList<BrowsedMessage> BrowseMessages { get; set; } = [];
@@ -971,6 +973,8 @@ public sealed partial class ViewModelStateTests
 
         public int ConnectCalls { get; private set; }
 
+        public Action? OnConnect { get; set; }
+
         public int TopologyCalls { get; private set; }
 
         public int DisconnectCalls { get; private set; }
@@ -990,6 +994,7 @@ public sealed partial class ViewModelStateTests
         public async Task ConnectAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
             ConnectCalls++;
+            OnConnect?.Invoke();
             if (ConnectionRelease is not null)
             {
                 await ConnectionRelease.Task.WaitAsync(cancellationToken);
@@ -1051,16 +1056,17 @@ public sealed partial class ViewModelStateTests
                 .Take(request.MaxMessages).ToArray();
         }
 
-        public Task<DeadLetterSearchResult> SearchDeadLettersAsync(
+        public async Task<DeadLetterSearchResult> SearchDeadLettersAsync(
             DeadLetterSearchRequest request,
             CancellationToken cancellationToken = default)
         {
             SearchRequests.Add(request);
+            if (SearchGate is not null) await SearchGate(cancellationToken);
             var now = DateTimeOffset.UtcNow;
             var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
             var matches = SearchMatches.TryGetValue(profileId, out var configured) ? configured : [];
             var target = request.Targets[0];
-            return Task.FromResult(new DeadLetterSearchResult(
+            return new DeadLetterSearchResult(
                 profileId,
                 now,
                 now,
@@ -1068,7 +1074,7 @@ public sealed partial class ViewModelStateTests
                     target.Source,
                     target.SubQueue,
                     matches.Count,
-                    matches)]));
+                    matches)]);
         }
 
         public async Task SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default)

@@ -390,7 +390,7 @@
                   <TextBlock Text="{Binding SelectedMessage?.CorrelationId, StringFormat='Correlation ID: {0}'}"
                              Classes="muted" TextWrapping="Wrap" />
                   <TextBlock Text="{Binding SelectedMessage?.EditLimitText}" Classes="warning"
-                             FontSize="11" IsVisible="{Binding !SelectedMessage?.CanOpenAsDraft}" />
+                             FontSize="11" IsVisible="{Binding SelectedMessageNeedsReadOnlyPreview}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
                   <Button Content="Copy body" Classes="quiet copyAction"

@@ -23,6 +23,7 @@ public sealed partial class MainWindowViewModel
 
     private async Task SearchDeadLettersAsync(CancellationToken cancellationToken)
     {
+        var searchGeneration = _messageResultsGeneration;
         ResetBrowsePaging();
         var query = DeadLetterSearchQuery.Trim();
         if (query.Length == 0)
@@ -212,6 +213,13 @@ public sealed partial class MainWindowViewModel
             }
         }
 
+        // Connection restoration still runs, but a rejected bookmark makes these results obsolete,
+        // even if the operator has since restored the original scope.
+        if (searchGeneration != _messageResultsGeneration)
+        {
+            return;
+        }
+
         var windowed = ApplySearchWindow(results, out var outsideWindow);
         ReplaceMessages(windowed
             .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
@@ -235,6 +243,18 @@ public sealed partial class MainWindowViewModel
             $"{scopeName} | {Messages.Count:N0} matches | {scannedMessages:N0} inspected | " +
             $"{sourceFailures:N0} source errors | {environmentFailures:N0} environment errors | " +
             $"{timedOutEnvironments:N0} timeouts");
+        ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+    }
+
+    private void InvalidateDeadLetterSearchResults()
+    {
+        _messageResultsGeneration++;
+        ResetBrowsePaging();
+        Messages.Clear();
+        SelectedMessage = null;
+        MessageListTitle = "Saved search unavailable";
+        DeadLetterSearchStatus = "Choose an environment before searching again.";
+        StatusText = "Saved search environment unavailable";
         ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
     }
 
