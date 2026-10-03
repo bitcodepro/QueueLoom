@@ -11,6 +11,33 @@ namespace QueueLoom.UiTests;
 
 public sealed class CycleFourSessionCleanupUiTests
 {
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public Task SuccessfulBrowseWithCloseFailureShowsLockExpiryWarningWithoutSdkDetails(int closeFailures) => UiSession.RunAsync(async () =>
+    {
+        var workspace = new SessionWorkspace();
+        await using var fixture = await WindowFixture.OpenWithAsync(workspace, new InMemorySecretVault(), DemoData.Development);
+        var vm = fixture.ViewModel;
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.SelectedEntity = vm.Entities.Single(entity => entity.IsQueue);
+        const string detail = "INTERNAL_RECEIVER_FAILURE; Password=cycle-four-synthetic-secret";
+        var first = new Receiver(1, failsClose: true, closeDetail: detail);
+        var second = new Receiver(2, failsClose: closeFailures == 2, closeDetail: detail);
+        workspace.Client.Reset([first, second]);
+
+        await vm.BrowseSelectedActiveCommand.ExecuteAsync();
+        await fixture.SettleAsync();
+
+        Assert.Equal(1, first.CloseAttempts);
+        Assert.Equal(1, second.CloseAttempts);
+        Assert.True(vm.HasError);
+        Assert.False(vm.IsBusy);
+        Assert.Contains("Some session locks may remain until they expire", vm.ErrorText, StringComparison.Ordinal);
+        Assert.DoesNotContain("INTERNAL_RECEIVER_FAILURE", vm.ErrorText, StringComparison.Ordinal);
+        Assert.DoesNotContain("cycle-four-synthetic-secret", vm.ErrorText, StringComparison.Ordinal);
+    });
+
     [Fact]
     public Task CancelledSessionBrowseReleasesOtherSessionsAndCanBeRepeatedInTheWindow() => UiSession.RunAsync(async () =>
     {
@@ -109,7 +136,8 @@ public sealed class CycleFourSessionCleanupUiTests
         }
     }
 
-    private sealed class Receiver(long sequence, bool failsClose = false, TaskCompletionSource? peekStarted = null) : ServiceBusSessionReceiver
+    private sealed class Receiver(long sequence, bool failsClose = false, TaskCompletionSource? peekStarted = null,
+        string closeDetail = "session close failed") : ServiceBusSessionReceiver
     {
         public int CloseAttempts { get; private set; }
         public override async Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(int maxMessages, long? fromSequenceNumber = null,
@@ -126,7 +154,7 @@ public sealed class CycleFourSessionCleanupUiTests
         public override ValueTask DisposeAsync()
         {
             CloseAttempts++;
-            return failsClose ? ValueTask.FromException(new IOException("session close failed")) : ValueTask.CompletedTask;
+            return failsClose ? ValueTask.FromException(new IOException(closeDetail)) : ValueTask.CompletedTask;
         }
     }
 }
