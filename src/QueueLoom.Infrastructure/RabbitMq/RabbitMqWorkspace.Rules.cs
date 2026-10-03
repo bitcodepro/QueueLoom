@@ -216,6 +216,10 @@ public sealed partial class RabbitMqWorkspace
 
     private async Task DeleteBindingAsync(string path, string propertiesKey, CancellationToken cancellationToken)
     {
+        // Management DELETE selects the first matching arguments hash. Distinct bindings can share it.
+        var bindings = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
+        if (bindings.Count(binding => binding.GetProperty("properties_key").GetString() == propertiesKey) != 1)
+            throw new InvalidOperationException("The binding identity is missing or ambiguous. No binding was deleted; refresh the bindings before trying again.");
         using var response = await Management.DeleteAsync($"{path}/{Uri.EscapeDataString(propertiesKey)}", cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
     }
