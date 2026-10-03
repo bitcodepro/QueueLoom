@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using QueueLoom.App.ViewModels;
 using QueueLoom.App.Views;
+using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.Routing;
 using QueueLoom.Infrastructure.Persistence;
@@ -63,8 +64,8 @@ public sealed partial class RabbitMqUiTests
                     bindingKind: RuleFilterKind.HeadersBinding);
                 var rule = await SaveFromModalAsync(editor, changeMatch: stage == 2);
                 await workspace.SaveSubscriptionRuleAsync("headers", "orders", rule with { ToExchange = toExchange }, replace: existing is not null);
-                var destination = Assert.Single((await workspace.GetTopicRulesAsync("headers"))
-                    .Where(item => item.Subscription == "orders" && item.IsExchange == toExchange));
+                var destination = Assert.Single(await workspace.GetTopicRulesAsync("headers"),
+                    item => item.Subscription == "orders" && item.IsExchange == toExchange);
                 var reloaded = Assert.Single(destination.Rules);
                 Assert.Null(reloaded.Arguments["trace"]);
                 Assert.Equal(stage == 2 ? "any" : "all", reloaded.Arguments["x-match"]);
