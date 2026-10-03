@@ -41,20 +41,29 @@ public sealed partial class MainWindowViewModel
         get => _selectedSavedSearch;
         set
         {
-            if (!SetProperty(ref _selectedSavedSearch, value) || value is null)
+            var selectionChanged = SetProperty(ref _selectedSavedSearch, value);
+            if (value is null)
             {
                 DeleteSavedSearchCommand?.NotifyCanExecuteChanged();
                 return;
             }
 
+            var filter = value.EnvironmentId is { } environmentId
+                ? DeadLetterEnvironmentFilters.FirstOrDefault(item => item.ProfileId == environmentId)
+                : null;
+            if (!selectionChanged && (value.EnvironmentId is null || filter is not null))
+            {
+                return;
+            }
+
             DeadLetterSearchQuery = value.Query;
             SearchWindow = SearchWindows.FirstOrDefault(option => option.Minutes == value.WithinMinutes) ?? SearchWindows[0];
-            if (value.EnvironmentId is { } environmentId)
+            if (value.EnvironmentId is not null)
             {
-                var filter = DeadLetterEnvironmentFilters.FirstOrDefault(item => item.ProfileId == environmentId);
                 if (filter is null)
                 {
                     SelectedDeadLetterEnvironmentFilter = null;
+                    InvalidateDeadLetterSearchResults();
                     ErrorText = "The saved search environment is no longer available. Choose an environment before searching again.";
                     DeleteSavedSearchCommand?.NotifyCanExecuteChanged();
                     return;
