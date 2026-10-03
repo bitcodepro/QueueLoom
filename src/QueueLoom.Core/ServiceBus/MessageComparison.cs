@@ -22,6 +22,10 @@ public sealed record PropertyDifference(string Name, string? Left, string? Right
 
 public sealed record MessageComparisonResult(IReadOnlyList<DiffLine> BodyLines, IReadOnlyList<PropertyDifference> Properties, bool BodyTruncated)
 {
+    public bool SourceBodyTruncated { get; init; }
+
+    public bool BodyLineLimitReached { get; init; }
+
     public int ChangedLines => BodyLines.Count(line => line.Kind != DiffKind.Same);
 
     public int ChangedProperties => Properties.Count(property => property.Differs);
@@ -43,9 +47,14 @@ public static class MessageComparison
         ArgumentNullException.ThrowIfNull(right);
         var leftLines = Lines(left.Body);
         var rightLines = Lines(right.Body);
-        var truncated = leftLines.Length > MaximumLines || rightLines.Length > MaximumLines;
+        var sourceTruncated = left.IsBodyTruncated || right.IsBodyTruncated;
+        var lineLimitReached = leftLines.Length > MaximumLines || rightLines.Length > MaximumLines;
         var lines = Diff(leftLines.Take(MaximumLines).ToArray(), rightLines.Take(MaximumLines).ToArray());
-        return new MessageComparisonResult(lines, CompareProperties(left, right), truncated);
+        return new MessageComparisonResult(lines, CompareProperties(left, right), sourceTruncated || lineLimitReached)
+        {
+            SourceBodyTruncated = sourceTruncated,
+            BodyLineLimitReached = lineLimitReached
+        };
     }
 
     /// <summary>A longest-common-subsequence diff; lines only in the first come before lines only in the second.</summary>
@@ -173,7 +182,7 @@ public static class MessageComparison
             ["Scheduled enqueue"] = properties.ScheduledEnqueueTime?.ToString("O", CultureInfo.InvariantCulture),
             ["AMQP type"] = properties.AmqpType,
             ["AMQP app ID"] = properties.AmqpAppId,
-            ["Enqueued"] = message.EnqueuedAt?.ToString("u", CultureInfo.InvariantCulture),
+            ["Enqueued"] = message.EnqueuedAt?.ToString("O", CultureInfo.InvariantCulture),
             ["Delivery count"] = message.DeliveryCount.ToString(CultureInfo.InvariantCulture),
             ["Dead-letter reason"] = message.DeadLetterReason,
             ["Dead-letter description"] = message.DeadLetterErrorDescription,

@@ -48,7 +48,8 @@ public sealed class CompareDialogViewModel
         : (Result.BodyTruncated && Result.ChangedLines == 0 && Result.ChangedProperties == 0
             ? "Comparison is incomplete: the displayed body lines and properties match."
             : $"{Count(Result.ChangedLines, "body line")} and {Count(Result.ChangedProperties, "property", "properties")} differ.") +
-          (Result.BodyTruncated ? $" Only the first {MessageComparison.MaximumLines:N0} lines of each body are compared." : string.Empty);
+          (Result.SourceBodyTruncated ? " One or both message bodies were only partially retained; omitted bytes were not compared." : string.Empty) +
+          (Result.BodyLineLimitReached ? $" Only the first {MessageComparison.MaximumLines:N0} lines of each body are compared." : string.Empty);
 
     private static string Describe(MessageItemViewModel message) =>
         $"{message.MessageId} · {message.SourceDisplay}" + (string.IsNullOrEmpty(message.EnqueuedAt) ? string.Empty : $" · {message.EnqueuedAt}");
