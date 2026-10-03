@@ -89,6 +89,52 @@ public sealed class MessageSearchQueryTests
         Assert.Contains(reason, exception.Message, StringComparison.Ordinal);
     }
 
+
+    [Fact]
+    public void Json_regex_ends_at_a_slash_after_an_even_number_of_backslashes()
+    {
+        // Query text has two backslash characters before the closer, so the slash is not escaped.
+        // The pattern source is C:\\orders\\, which matches the text C:\orders\ (trailing backslash).
+        var query = MessageSearchQuery.Parse("$.path =~ /C:\\\\orders\\\\/");
+        Assert.True(query.Matches(Message("""{"path":"C:\\orders\\"}""")));
+        Assert.False(query.Matches(Message("""{"path":"C:\\orders"}""")));
+
+        var trailing = MessageSearchQuery.Parse("$.path =~ /pre\\\\/");
+        Assert.True(trailing.Matches(Message("""{"path":"pre\\"}""")));
+        Assert.False(trailing.Matches(Message("""{"path":"pre/post"}""")));
+
+        // An even run closes the pattern. "post" is then read as flags, not as more pattern text.
+        var leftover = Assert.Throws<MessageSearchQueryException>(() =>
+            MessageSearchQuery.Parse("$.path =~ /pre\\\\/post/"));
+        Assert.Contains("not a flag", leftover.Message, StringComparison.Ordinal);
+
+        var closed = MessageSearchQuery.Parse("$.path =~ /pre\\\\/ and $.other");
+        Assert.True(closed.Matches(Message("""{"path":"pre\\","other":1}""")));
+        Assert.False(closed.Matches(Message("""{"path":"pre/post","other":1}""")));
+    }
+
+    [Fact]
+    public void Json_regex_still_lets_one_backslash_escape_a_slash()
+    {
+        var query = MessageSearchQuery.Parse("$.path =~ /pre\\/post/");
+        Assert.True(query.Matches(Message("""{"path":"pre/post"}""")));
+        Assert.False(query.Matches(Message("""{"path":"pre\\post"}""")));
+    }
+
+    [Fact]
+    public void Top_level_regex_still_closes_at_the_last_slash()
+    {
+        // The last slash closes a top-level regex. /pre\\/post/ therefore matches a backslash
+        // followed by /post, not the text pre/post (that would be a single escaped slash).
+        var embedded = MessageSearchQuery.Parse("/pre\\\\/post/");
+        Assert.True(embedded.IsRegex);
+        Assert.True(embedded.Matches(Message("pre\\/post")));
+        Assert.False(embedded.Matches(Message("pre/post")));
+
+        var trailing = MessageSearchQuery.Parse("/C:\\\\orders\\\\/");
+        Assert.True(trailing.Matches(Message("C:\\orders\\")));
+    }
+
     [Fact]
     public void A_search_request_reads_its_query_once_and_rejects_a_broken_one()
     {

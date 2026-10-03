@@ -110,6 +110,50 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
+    public void ResendDialog_ClockTimeUsesTheOffsetInForceAtThatLocalTime()
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
+        // Fall back: 01:30 EDT, typed 09:00. 09:00 that morning is EST, not a repeat of -04:00.
+        var fallNow = new DateTimeOffset(2026, 11, 1, 1, 30, 0, TimeSpan.FromHours(-4));
+        var fall = ResendDialogViewModel.ParseWhen("09:00", fallNow, zone);
+        Assert.Equal(new DateTimeOffset(2026, 11, 1, 9, 0, 0, TimeSpan.FromHours(-5)), fall);
+
+        // Spring forward: 01:30 EST, typed 03:00. 03:00 is the first time the clock shows after the jump, at -04:00.
+        var springNow = new DateTimeOffset(2026, 3, 8, 1, 30, 0, TimeSpan.FromHours(-5));
+        var spring = ResendDialogViewModel.ParseWhen("03:00", springNow, zone);
+        Assert.Equal(new DateTimeOffset(2026, 3, 8, 3, 0, 0, TimeSpan.FromHours(-4)), spring);
+
+        // 02:30 does not exist on that morning (clocks jump from 02:00 to 03:00).
+        // The next valid local time is 03:00 EDT, not 02:30 kept on the -05:00 offset.
+        var skipped = ResendDialogViewModel.ParseWhen("02:30", springNow, zone);
+        Assert.Equal(new DateTimeOffset(2026, 3, 8, 3, 0, 0, TimeSpan.FromHours(-4)), skipped);
+    }
+
+    [Fact]
+    public void ResendDialog_HugeRelativeTimesAreInvalidInsteadOfThrowing()
+    {
+        var now = new DateTimeOffset(2026, 10, 3, 12, 0, 0, TimeSpan.FromHours(3));
+        Assert.Null(ResendDialogViewModel.ParseWhen("40d", now));
+        Assert.Null(ResendDialogViewModel.ParseWhen("9999999999h", now));
+        Assert.Null(ResendDialogViewModel.ParseWhen("256204779h", now));
+
+        var message = new BrowsedMessage(
+            ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1,
+            "body"u8.ToArray(), new EditableMessageProperties(MessageId: "m-1"));
+        var dialog = new ResendDialogViewModel([message], [], "Staging", requiresTypedConfirmation: false, now: () => now)
+        {
+            SendLater = true,
+            SendAtText = "9999999999h"
+        };
+        Assert.Null(dialog.SendAt);
+        dialog.SendAtText = "256204779h";
+        Assert.Null(dialog.SendAt);
+        dialog.SendAtText = "2h";
+        Assert.Equal(now.AddHours(2), dialog.SendAt);
+    }
+
+    [Fact]
     public void ScheduledResendStore_KeepsJobsAcrossRestarts()
     {
         using var directory = new TemporaryTestDirectory();

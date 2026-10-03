@@ -135,4 +135,16 @@ public sealed class LogReadStartTests
         Assert.Throws<InvalidOperationException>(() =>
             QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromTime, "yesterday-ish", Now));
     }
+
+    [Theory]
+    [InlineData("9999999999h")]
+    [InlineData("256204779h")]
+    public void HugeRelativeTimes_UseTheDocumentedError(string text)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            QueueLoom.App.ViewModels.MainWindowViewModel.ParseLogStart(BrowseStartKind.FromTime, text, Now));
+        Assert.Contains("Enter a time such as", exception.Message, StringComparison.Ordinal);
+        Assert.IsNotType<OverflowException>(exception);
+        Assert.IsNotType<ArgumentOutOfRangeException>(exception);
+    }
 }
