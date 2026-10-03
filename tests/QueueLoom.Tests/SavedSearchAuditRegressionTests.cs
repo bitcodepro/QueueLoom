@@ -91,4 +91,85 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(2, viewModel.SavedSearches.Count);
         Assert.Equal(new int?[] { 60, null }, viewModel.SavedSearches.Select(search => search.WithinMinutes));
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SavedSearchAudit_MissingBookmarkDiscardsLateSearchEvenAfterScopeIsRestored(bool restoreScope)
+    {
+        var (viewModel, workspace, _) = await CreateSearchedViewModelAsync(ProfileAccessMode.ReadWrite);
+        await using var lifetime = viewModel;
+        var originalScope = viewModel.SelectedDeadLetterEnvironmentFilter;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        workspace.SearchGate = _ =>
+        {
+            started.SetResult();
+            // Simulate a provider returning late, even if the caller tries to cancel.
+            return release.Task;
+        };
+        var pending = viewModel.SearchDeadLettersCommand.ExecuteAsync();
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(viewModel.IsBusy);
+            var searches = workspace.SearchRequests.Count;
+            var connections = workspace.ConnectCalls;
+            viewModel.SelectedSavedSearch = new SavedSearch("Deleted A", "missing-a", Guid.NewGuid());
+            viewModel.SelectedSavedSearch = new SavedSearch("Deleted B", "missing-b", Guid.NewGuid());
+            Assert.Empty(viewModel.Messages);
+            Assert.Null(viewModel.SelectedMessage);
+            Assert.Null(viewModel.SelectedDeadLetterEnvironmentFilter);
+            Assert.Equal(searches, workspace.SearchRequests.Count);
+            Assert.Equal(connections, workspace.ConnectCalls);
+            if (restoreScope) viewModel.SelectedDeadLetterEnvironmentFilter = originalScope;
+        }
+        finally
+        {
+            release.TrySetResult();
+            await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Empty(viewModel.Messages);
+        Assert.Null(viewModel.SelectedMessage);
+        Assert.Contains("no longer available", viewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Found", viewModel.StatusText, StringComparison.Ordinal);
+
+        // A fresh valid legacy selection must still search successfully after the stale call finishes.
+        workspace.SearchGate = null;
+        viewModel.SelectedDeadLetterEnvironmentFilter = originalScope;
+        viewModel.SelectedSavedSearch = new SavedSearch("Legacy", "correlation-42");
+        await viewModel.SearchDeadLettersCommand.Completion;
+        Assert.Equal(3, viewModel.Messages.Count);
+        Assert.NotNull(viewModel.SelectedMessage);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SavedSearchAudit_MissingBookmarkClearsExplorerResultsWhenScopeAlreadyNull(bool sameBookmark)
+    {
+        var (viewModel, workspace, _) = await CreateSearchedViewModelAsync(ProfileAccessMode.ReadWrite);
+        await using var lifetime = viewModel;
+        workspace.BrowseMessages = viewModel.Messages.Select(item => item.Message).ToArray();
+        var missing = new SavedSearch("Deleted", "missing", Guid.NewGuid());
+        viewModel.SelectedSavedSearch = missing;
+        Assert.Null(viewModel.SelectedDeadLetterEnvironmentFilter);
+        Assert.True(viewModel.BrowseSelectedActiveCommand.CanExecute(null));
+        await viewModel.BrowseSelectedActiveCommand.ExecuteAsync();
+        Assert.NotEmpty(viewModel.Messages);
+        Assert.NotNull(viewModel.SelectedMessage);
+        Assert.Null(viewModel.SelectedDeadLetterEnvironmentFilter);
+        var searches = workspace.SearchRequests.Count;
+        var connections = workspace.ConnectCalls;
+
+        viewModel.SelectedSavedSearch = sameBookmark ? missing : new SavedSearch("Deleted again", "missing-again", Guid.NewGuid());
+
+        Assert.Empty(viewModel.Messages);
+        Assert.Null(viewModel.SelectedMessage);
+        Assert.Contains("no longer available", viewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(searches, workspace.SearchRequests.Count);
+        Assert.Equal(connections, workspace.ConnectCalls);
+    }
 }
