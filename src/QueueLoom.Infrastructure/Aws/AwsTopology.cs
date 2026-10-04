@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Messaging;
 
 namespace QueueLoom.Infrastructure.Aws;
 
@@ -64,7 +65,7 @@ internal sealed record AwsQueueInfo(
 
     private static DateTimeOffset? ReadEpochSeconds(IReadOnlyDictionary<string, string> attributes, string name) =>
         long.TryParse(attributes.GetValueOrDefault(name), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-            ? DateTimeOffset.FromUnixTimeSeconds(value)
+            ? BrokerClock.FromUnixSeconds(value)
             : null;
 }
 

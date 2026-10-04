@@ -10,16 +10,33 @@ namespace QueueLoom.Core.Routing;
 /// </summary>
 public static class RoutingValue
 {
-    /// <summary>Whole numbers become long and fractional ones double, for the SQL filter evaluator.</summary>
+    /// <summary>
+    /// Whole numbers that fit in a long become long, so 9007199254740993 does not compare equal to its neighbour.
+    /// A fractional number becomes double only when that double is exactly the same value (0.1, 1.5). A whole number
+    /// outside Int64, or any number double cannot hold exactly, is left unchanged so the SQL filter reports it as
+    /// unknown instead of matching a different number.
+    /// </summary>
     public static object? Normalize(object? value) => value switch
     {
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
         ulong number when number <= long.MaxValue => (long)number,
+        // Casting an out-of-range double back to ulong saturates at ulong.MaxValue, so that is not an exactness test.
+        ulong number when ExactDouble(number) is { } exact => exact,
         // A float is widened through its shortest text, so 0.1f becomes 0.1 and not 0.10000000149011612.
         float number => double.Parse(number.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture),
-        double or decimal or ulong => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        double number => number,
+        decimal number when decimal.Truncate(number) == number && number >= long.MinValue && number <= long.MaxValue => (long)number,
+        decimal number when (decimal)(double)number == number => (double)number,
         _ => value
     };
+
+    /// <summary>The double of <paramref name="number"/> when every bit survives the conversion; otherwise null.</summary>
+    private static double? ExactDouble(ulong number)
+    {
+        var asDouble = (double)number;
+        // 2^64 is the first value double rounds ulong.MaxValue to, and it does not fit back into ulong.
+        return asDouble < 18446744073709551616d && (ulong)asDouble == number ? asDouble : null;
+    }
 
     /// <summary>Whether QueueLoom can compare this value faithfully (the types Service Bus accepts in correlation filters).</summary>
     public static bool IsComparable(object? value) => value is null or string or bool or char or Guid or DateTime or DateTimeOffset or TimeSpan

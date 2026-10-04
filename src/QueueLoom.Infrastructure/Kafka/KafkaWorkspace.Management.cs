@@ -2,6 +2,7 @@ using System.Globalization;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Messaging;
 
 namespace QueueLoom.Infrastructure.Kafka;
 
@@ -19,7 +20,7 @@ public sealed partial class KafkaWorkspace
         var configs = await Admin.DescribeConfigsAsync([new ConfigResource { Type = ResourceType.Topic, Name = queue }]).ConfigureAwait(false);
         var retention = configs[0].Entries.TryGetValue("retention.ms", out var entry) &&
                         long.TryParse(entry.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds) && milliseconds > 0
-            ? TimeSpan.FromMilliseconds(milliseconds)
+            ? BrokerClock.FromMilliseconds(milliseconds)
             : (TimeSpan?)null;
         var partitions = await Task.Run(() => Admin.GetMetadata(queue, RequestTimeout).Topics.Single().Partitions.Count, cancellationToken)
             .ConfigureAwait(false);
