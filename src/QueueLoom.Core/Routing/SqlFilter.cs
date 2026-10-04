@@ -399,15 +399,14 @@ public sealed class SqlFilter
 
     /// <summary>
     /// Decimal operands, including a long and a Double that round-trips through Decimal.
-    /// Two longs stay on integer arithmetic. Two doubles stay on double arithmetic, so 0.1 + 0.2
-    /// does not change. A long and an exact double (9007199254740993 + 0.0) use Decimal, because
-    /// widening that long to double would make it a different integer.
+    /// At least one side must already be Decimal, so two longs keep integer arithmetic and a
+    /// long beside a double stays on double arithmetic.
     /// </summary>
     private static bool TryDecimals(object? a, object? b, out decimal left, out decimal right)
     {
         left = 0;
         right = 0;
-        if (a is long && b is long || a is double && b is double || a is not (decimal or long or double) || b is not (decimal or long or double))
+        if (a is not decimal && b is not decimal)
         {
             return false;
         }
@@ -774,37 +773,13 @@ public sealed class SqlFilter
             {
                 return integer;
             }
-            // A double is kept only when it is the same value as the decimal spelling. 5.0 and 0.1 stay
-            // doubles; 9007199254740993.0 does not become 9007199254740992.
-            if (decimal.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var exact))
-            {
-                if (double.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var asDouble) &&
-                    DoubleIs(exact, asDouble))
-                {
-                    return asDouble;
-                }
-                return exact;
-            }
+            // A decimal_constant is a double, including a point or an exponent. Service Bus stores it
+            // that way and compares it with C# promotion, so 9007199254740993.0 is 9007199254740992d.
             if (double.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var real))
             {
                 return real;
             }
             throw new SqlFilterSyntaxException($"'{token.Text}' is not a number.", token.Start);
-        }
-
-        /// <summary>True when <paramref name="asDouble"/> converts back to <paramref name="exact"/> without rounding.</summary>
-        private static bool DoubleIs(decimal exact, double asDouble)
-        {
-            if (!double.IsFinite(asDouble))
-            {
-                return false;
-            }
-            var limit = (double)decimal.MaxValue;
-            if (asDouble >= limit || asDouble <= -limit)
-            {
-                return false;
-            }
-            return (decimal)asDouble == exact;
         }
 
         private string Slice(int start) => _text[start.._tokens[_index - 1].End].Trim();

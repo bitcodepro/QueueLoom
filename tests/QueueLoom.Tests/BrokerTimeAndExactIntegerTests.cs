@@ -186,16 +186,45 @@ public sealed class BrokerTimeAndExactIntegerTests
     [Fact]
     public void A_long_is_not_widened_into_a_different_double()
     {
-        // 9007199254740993 is not a double. Widening it makes the filter match its neighbour.
-        Assert.Equal(RoutingOutcome.Skips, Check("id = 9007199254740992.0", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Skips, Check("id = 9007199254740993.0", 9007199254740992L));
-        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740993m));
-        Assert.Equal(RoutingOutcome.Receives, Check("id > 9007199254740992.0", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Skips, Check("id + 0.0 = 9007199254740992", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Receives, Check("id + 0.0 = 9007199254740993", 9007199254740993L));
+        // A long that double cannot hold is not cast to a neighbouring double. That pair is unknown,
+        // not a skip and not a match. 2^53 itself is exact, and so is an ordinary small long.
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254741000.0", 9007199254741001L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9223372036854775807.0", 9223372036854775806L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id > 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id + 0.0 = 9007199254740992", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id + 0.0 = 9007199254740993", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740993.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740993.0", 9007199254740993m));
+        // 9007199254740993.0 is the double 2^53, the same value as this long.
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740992L));
         Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992d));
         Assert.Equal(RoutingOutcome.Receives, Check("id = 5.0", 5L));
+        // long.MaxValue widens to 2^63, so it is not compared with the double +Infinity of 1e400.
+        // Main reported Receives by that cast. Guessing the same match is the loss this guard refuses.
+        Assert.Equal(RoutingOutcome.Unknown, Check("id < 1e400", long.MaxValue));
+    }
+
+    [Fact]
+    public void An_exactly_representable_double_matches_its_literal()
+    {
+        // These spellings have 16 or 17 significant digits. Parsing them as decimal and casting
+        // back misses the double, so the preview used to say unknown for the property's own value.
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 1234567.123456789", 1234567.123456789d));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 0.30000000000000004", 0.30000000000000004d));
+    }
+
+    [Fact]
+    public void Long_and_double_arithmetic_follows_double_promotion()
+    {
+        Assert.Equal(RoutingOutcome.Skips, Check("id * 0.1 = 0.3", 3L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id * 0.1 = 0.30000000000000004", 3L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id * 0.1 > 0.3", 3L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id % 0.1 = 0", 1L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id / 3.0 = 1.6666666666666667", 5L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id * 0.1 = 0.3 OR id = 99", 3L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id * 3 = 0.3", 0.1f));
     }
 
     [Fact]
