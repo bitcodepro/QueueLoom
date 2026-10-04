@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using QueueLoom.Core.Profiles;
 
@@ -262,7 +263,7 @@ public static partial class ProfileValidator
         }
 
         if (!string.IsNullOrWhiteSpace(settings.EmulatorHost) &&
-            !HostAndPortPattern().IsMatch(settings.EmulatorHost))
+            !IsHostAndPort(settings.EmulatorHost))
         {
             errors.Add(new ValidationError(
                 "profile.gcp.emulator.invalid",
@@ -309,7 +310,7 @@ public static partial class ProfileValidator
                 "At least one bootstrap server is required, for example broker-1:9092.", nameof(profile.Kafka)));
             return;
         }
-        if (settings.BootstrapServers.Split(',', StringSplitOptions.TrimEntries).Any(server => !HostAndPortPattern().IsMatch(server)))
+        if (settings.BootstrapServers.Split(',', StringSplitOptions.TrimEntries).Any(server => !IsHostAndPort(server)))
         {
             errors.Add(new ValidationError("profile.kafka.servers.invalid",
                 "List the servers as host:port separated by commas, for example broker-1:9092,broker-2:9092.", nameof(profile.Kafka)));
@@ -348,6 +349,12 @@ public static partial class ProfileValidator
 
     [GeneratedRegex("^[A-Za-z0-9.-]+:[0-9]{1,5}$")]
     private static partial Regex HostAndPortPattern();
+
+    /// <summary>host:port with a port from 1 to 65535, as the RabbitMQ port is checked.</summary>
+    private static bool IsHostAndPort(string value) =>
+        HostAndPortPattern().IsMatch(value) &&
+        int.TryParse(value[(value.LastIndexOf(':') + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var port) &&
+        port is >= 1 and <= 65535;
 
     private static void ValidateAuthentication(
         ServiceBusProfile profile,

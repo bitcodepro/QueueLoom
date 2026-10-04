@@ -289,7 +289,8 @@ public sealed partial class MainWindow : Window
             }
             if (_settingsStore is not null)
             {
-                await _settingsStore.SaveMonitorIntervalSecondsAsync(_viewModel.MonitorIntervalSeconds);
+                // A settings file that cannot be rewritten (damaged or from a newer version) must not skip disposal.
+                await SavePreferenceBestEffortAsync(() => _settingsStore.SaveMonitorIntervalSecondsAsync(_viewModel.MonitorIntervalSeconds));
             }
             await _viewModel.DisposeAsync();
         }

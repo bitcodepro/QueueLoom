@@ -85,12 +85,11 @@ public sealed partial class MainWindowViewModel
         get => _draftOriginNotice;
         private set
         {
-            // The notice changes whenever the draft's origin changes, so the resend choice follows it.
-            if (SetProperty(ref _draftOriginNotice, value))
-            {
-                DraftMovesOriginal = false;
-                OnPropertyChanged(nameof(CanMoveDraftOriginal));
-            }
+            // The notice is set whenever the draft's origin changes, so the resend choice starts over with it,
+            // even when two dead-letter drafts share the same notice text.
+            SetProperty(ref _draftOriginNotice, value);
+            DraftMovesOriginal = false;
+            OnPropertyChanged(nameof(CanMoveDraftOriginal));
         }
     }
 
