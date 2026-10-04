@@ -474,7 +474,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     _finished.Add(partition);
                     continue;
                 }
-                var previous = _lastRead[partition];
+                // Unknown where reading began: no gap before this record counts as empty.
+                var previous = _lastRead.TryGetValue(partition, out var last) ? last : result.Offset.Value - 1;
                 _lastRead[partition] = result.Offset.Value;
                 var leased = ToLeased(result, previous);
                 if (visit is null) messages.Add(leased);
