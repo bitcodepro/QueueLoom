@@ -202,9 +202,21 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 var scanned = await ReceiveUpToAsync(channel, request.MaximumMessagesPerTarget, held, cancellationToken)
                     .ConfigureAwait(false);
                 var matches = new List<BrowsedMessage>();
+                var undecided = 0;
                 foreach (var message in scanned)
                 {
-                    if (!DeadLetterSearchMatcher.IsMatch(message.Message, request.Search))
+                    bool isMatch;
+                    try
+                    {
+                        isMatch = DeadLetterSearchMatcher.IsMatch(message.Message, request.Search);
+                    }
+                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+                    {
+                        // Not a "no": the source is reported as incomplete, and the scan goes on.
+                        undecided++;
+                        continue;
+                    }
+                    if (!isMatch)
                     {
                         continue;
                     }
@@ -222,7 +234,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                     target.SubQueue,
                     scanned.Count,
                     matches,
-                    ScanLimitReached: scanned.Count >= request.MaximumMessagesPerTarget));
+                    ScanLimitReached: scanned.Count >= request.MaximumMessagesPerTarget,
+                    Error: DeadLetterSearchSourceResult.RegexTimeoutError(undecided)));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

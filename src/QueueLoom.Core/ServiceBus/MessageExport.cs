@@ -25,7 +25,7 @@ public static class MessageExport
     [
         "environment", "source", "subQueue", "messageId", "correlationId", "subject", "contentType", "sessionId",
         "enqueuedAtUtc", "deliveryCount", "deadLetterReason", "deadLetterDescription", "applicationProperties",
-        "amqpType", "amqpAppId", "partition", "offset", "bodyEncoding", "body"
+        "amqpType", "amqpAppId", "bodySize", "bodyTruncated", "partition", "offset", "bodyEncoding", "body"
     ];
 
     public static MessageExportFormat FormatFor(string path) =>
@@ -153,6 +153,8 @@ public static class MessageExport
                 applicationProperties,
                 properties.AmqpType,
                 properties.AmqpAppId,
+                message.BodySize.ToString(CultureInfo.InvariantCulture),
+                message.IsBodyTruncated ? "true" : "false",
                 message.Position?.Partition.ToString(CultureInfo.InvariantCulture),
                 message.Position?.Offset.ToString(CultureInfo.InvariantCulture),
                 encoding,
@@ -163,7 +165,10 @@ public static class MessageExport
         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>RFC 4180 quoting; a leading =, +, - or @ is prefixed so spreadsheets do not run it as a formula.</summary>
+    /// <summary>
+    /// RFC 4180 quoting; a leading =, +, - or @ is prefixed so spreadsheets do not run it as a formula, and so is a
+    /// leading tab or carriage return, which spreadsheets skip before reading the formula behind it.
+    /// </summary>
     internal static string Csv(string? value)
     {
         if (string.IsNullOrEmpty(value))
@@ -171,7 +176,7 @@ public static class MessageExport
             return string.Empty;
         }
 
-        if (value[0] is '=' or '+' or '-' or '@')
+        if (value[0] is '=' or '+' or '-' or '@' or '\t' or '\r')
         {
             value = "'" + value;
         }

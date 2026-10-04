@@ -195,7 +195,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                     ContentType: contentType ?? (format == MessageBodyFormat.Json ? "application/json" : null),
                     Subject: subject),
                 applicationProperties?.Select(pair => new MessageApplicationProperty(pair.Key, ApplicationPropertyType.String, pair.Value)));
-            var validation = MessageDraftValidator.Validate(draft);
+            var validation = MessageDraftValidator.Validate(draft, profile.Provider);
             if (!validation.IsValid)
             {
                 throw new McpException(string.Join(" ", validation.Errors.Select(error => error.Message)));

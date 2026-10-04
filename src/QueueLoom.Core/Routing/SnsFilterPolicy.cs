@@ -530,6 +530,11 @@ public static class SnsFilterPolicy
                 return null;
             }
             var text = message.AttributeTextOf(key);
+            if (message.WireTypeOf(key) == "String.Array" && TryReadArray(text) is { } items)
+            {
+                // A String.Array attribute matches a policy value when any of its items does.
+                return items;
+            }
             return value switch
             {
                 byte[] => [new Scalar(ScalarKind.Binary, string.Empty)],
@@ -546,6 +551,21 @@ public static class SnsFilterPolicy
         }
 
         public override Scope? Child(string key) => null;
+
+        private static IReadOnlyList<Scalar>? TryReadArray(string text)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(text);
+                return document.RootElement.ValueKind == JsonValueKind.Array
+                    ? document.RootElement.EnumerateArray().Select(BodyScope.ToScalar).ToArray()
+                    : null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
     }
 
     /// <summary>
@@ -581,7 +601,7 @@ public static class SnsFilterPolicy
         private static IEnumerable<JsonElement> Flatten(JsonElement element) =>
             element.ValueKind == JsonValueKind.Array ? element.EnumerateArray().SelectMany(Flatten) : [element];
 
-        private static Scalar ToScalar(JsonElement value) => value.ValueKind switch
+        internal static Scalar ToScalar(JsonElement value) => value.ValueKind switch
         {
             JsonValueKind.String => new Scalar(ScalarKind.String, value.GetString() ?? string.Empty),
             JsonValueKind.Number => new Scalar(ScalarKind.Number, value.GetRawText(), value.GetDouble()),

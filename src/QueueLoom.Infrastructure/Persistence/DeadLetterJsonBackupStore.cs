@@ -322,6 +322,11 @@ public sealed class DeadLetterJsonBackupSession(
             writer.WriteString("name", value.Name);
             writer.WriteString("type", value.Type.ToString());
             writer.WriteString("value", value.Value);
+            if (value.WireType is not null)
+            {
+                // The service's own type label (SNS String.Array) is restored with the message.
+                writer.WriteString("wireType", value.WireType);
+            }
             writer.WriteEndObject();
         }
         writer.WriteEndArray();

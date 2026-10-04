@@ -10,7 +10,18 @@ public sealed partial class AzureServiceBusWorkspace
     private const QueueSettingFlags AzureSettings = QueueSettingFlags.MessageTimeToLive | QueueSettingFlags.MaxDeliveryCount |
                                                     QueueSettingFlags.LockDuration | QueueSettingFlags.DeadLetterOnExpiration;
 
-    public QueueManagementCapabilities? QueueManagement => new("queue", AzureSettings, AzureSettings, CanCreateDeadLetterQueue: false);
+    // CreateQueueOptions: LockDuration "Max value is 5 minutes" (and must be positive); MaxDeliveryCount "Minimum value is 1".
+    internal static readonly QueueSettingLimits AzureLimits = new("Azure Service Bus")
+    {
+        MinDeliveryCount = 1,
+        MaxLock = TimeSpan.FromMinutes(5),
+        LockMustBePositive = true
+    };
+
+    public QueueManagementCapabilities? QueueManagement => new("queue", AzureSettings, AzureSettings, CanCreateDeadLetterQueue: false)
+    {
+        Limits = AzureLimits
+    };
 
     public async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
@@ -30,6 +41,7 @@ public sealed partial class AzureServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(definition);
         ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
+        RefuseOutOfRange(definition.Settings);
         var options = new CreateQueueOptions(definition.Name);
         Apply(definition.Settings, options);
         await Administer(() => GetAdministrationClient().CreateQueueAsync(options, cancellationToken)).ConfigureAwait(false);
@@ -41,6 +53,7 @@ public sealed partial class AzureServiceBusWorkspace
         ArgumentNullException.ThrowIfNull(settings);
         ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
+        RefuseOutOfRange(settings);
         var administration = GetAdministrationClient();
         var properties = (await administration.GetQueueAsync(queue, cancellationToken).ConfigureAwait(false)).Value;
         if (settings.MessageTimeToLive is { } timeToLive)
@@ -69,6 +82,14 @@ public sealed partial class AzureServiceBusWorkspace
         GetConnectedProfile().EnsureQueueManagementAllowed();
         await Administer(() => GetAdministrationClient().DeleteQueueAsync(queue, cancellationToken)).ConfigureAwait(false);
         _cachedTopology = null;
+    }
+
+    private static void RefuseOutOfRange(QueueSettings settings)
+    {
+        if (AzureLimits.Check(settings) is { } error)
+        {
+            throw new InvalidOperationException(error);
+        }
     }
 
     private static void Apply(QueueSettings settings, CreateQueueOptions options)

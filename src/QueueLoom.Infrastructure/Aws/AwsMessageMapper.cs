@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Amazon.SQS.Model;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Messaging;
@@ -11,11 +12,24 @@ internal static class AwsMessageMapper
 {
     private const int MaximumDelaySeconds = 900;
 
-    public static BrowsedMessage FromSqs(Message message, ServiceBusEntityReference source, ServiceBusSubQueue subQueue)
+    /// <param name="snsEnvelope">
+    /// The messages come through an SNS subscription without raw message delivery, so each body is SNS's JSON envelope.
+    /// With raw delivery, an SNS-shaped body is the application's own payload and is left alone.
+    /// </param>
+    public static BrowsedMessage FromSqs(Message message, ServiceBusEntityReference source, ServiceBusSubQueue subQueue,
+        bool snsEnvelope = false)
     {
         var system = message.Attributes ?? [];
         var attributes = (message.MessageAttributes ?? [])
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+        var body = message.Body ?? string.Empty;
+        // Read through an SNS subscription without raw message delivery, the SQS body is SNS's JSON envelope. A copy
+        // goes back to the topic, so it must carry the published body and attributes, not the envelope.
+        if (snsEnvelope && attributes.Count == 0 && TryReadSnsEnvelope(body, out var published, out var envelopeAttributes))
+        {
+            body = published;
+            attributes = envelopeAttributes;
+        }
         var standard = attributes
             .Where(item => IsStringType(item.Value.DataType) && item.Value.StringValue is not null)
             .ToDictionary(item => item.Key, item => item.Value.StringValue, StringComparer.Ordinal);
@@ -34,7 +48,7 @@ internal static class AwsMessageMapper
             source,
             subQueue,
             LeasedMessageIdentity.SequenceNumberFor(message.MessageId ?? message.ReceiptHandle),
-            Encoding.UTF8.GetBytes(message.Body ?? string.Empty),
+            Encoding.UTF8.GetBytes(body),
             properties,
             attributes
                 .OrderBy(item => item.Key, StringComparer.Ordinal)
@@ -47,6 +61,60 @@ internal static class AwsMessageMapper
                 ? $"From {AwsQueueInfo.LastSegment(sourceArn)} after {ReadInt(system, "ApproximateReceiveCount")} receives"
                 : null)
         { HasSequenceNumber = false };
+    }
+
+    /// <summary>
+    /// SNS's notification envelope: {"Type":"Notification","MessageId","TopicArn","Message","MessageAttributes":
+    /// {"name":{"Type":"String|Number|Binary|String.Array","Value":"..."}},...}. Binary values are base64.
+    /// </summary>
+    internal static bool TryReadSnsEnvelope(string body, out string message, out Dictionary<string, MessageAttributeValue> attributes)
+    {
+        message = string.Empty;
+        attributes = new Dictionary<string, MessageAttributeValue>(StringComparer.Ordinal);
+        if (!body.AsSpan().TrimStart().StartsWith("{", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("Type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "Notification" ||
+                !root.TryGetProperty("TopicArn", out var topicArn) || topicArn.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("MessageId", out var messageId) || messageId.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("Message", out var published) || published.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            if (root.TryGetProperty("MessageAttributes", out var items) && items.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var item in items.EnumerateObject())
+                {
+                    if (item.Value.ValueKind != JsonValueKind.Object ||
+                        !item.Value.TryGetProperty("Type", out var dataType) || dataType.ValueKind != JsonValueKind.String ||
+                        !item.Value.TryGetProperty("Value", out var value) || value.ValueKind != JsonValueKind.String)
+                    {
+                        attributes.Clear();
+                        return false;
+                    }
+                    var typeName = dataType.GetString()!;
+                    attributes[item.Name] = typeName.StartsWith("Binary", StringComparison.Ordinal)
+                        ? new MessageAttributeValue { DataType = typeName, BinaryValue = new MemoryStream(Convert.FromBase64String(value.GetString()!)) }
+                        : new MessageAttributeValue { DataType = typeName, StringValue = value.GetString() };
+                }
+            }
+
+            message = published.GetString()!;
+            return true;
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException)
+        {
+            attributes.Clear();
+            return false;
+        }
     }
 
     public static string BodyText(MessageDraft message) =>
@@ -93,6 +161,64 @@ internal static class AwsMessageMapper
         return result;
     }
 
+    /// <summary>SQS: "Each message can have up to 10 attributes" (SNS raw delivery to SQS has the same limit).</summary>
+    public const int MaximumSqsAttributes = 10;
+
+    /// <summary>
+    /// Refuses, before the SDK call, attributes SQS (<paramref name="sqs"/>) or SNS would refuse: names outside the
+    /// allowed characters, SQS names starting with "AWS." or "Amazon.", and more than 10 attributes on an SQS message,
+    /// counting the correlation ID, subject, content type, reply-to and to that travel as attributes. SNS reserves
+    /// "AWS." names for its own mobile push attributes, so those stay allowed there.
+    /// </summary>
+    public static void EnsureAttributesAccepted(IReadOnlyCollection<string> names, bool sqs)
+    {
+        var service = sqs ? "Amazon SQS" : "Amazon SNS";
+        if (names.FirstOrDefault(name => !QueueLoom.Core.Validation.MessageDraftValidator.IsAwsAttributeName(name)) is { } invalid)
+        {
+            throw new InvalidOperationException(
+                $"{service} does not accept the attribute name '{invalid}': use up to 256 letters, digits, '_', '-' and '.', " +
+                "not starting or ending with '.' and without '..'. Nothing was sent.");
+        }
+        if (!sqs)
+        {
+            return;
+        }
+        if (names.FirstOrDefault(name => name.StartsWith("AWS.", StringComparison.OrdinalIgnoreCase) ||
+                                         name.StartsWith("Amazon.", StringComparison.OrdinalIgnoreCase)) is { } reserved)
+        {
+            throw new InvalidOperationException(
+                $"Amazon SQS reserves attribute names starting with 'AWS.' or 'Amazon.'; rename '{reserved}'. Nothing was sent.");
+        }
+        if (names.Count > MaximumSqsAttributes)
+        {
+            throw new InvalidOperationException(
+                $"Amazon SQS accepts at most {MaximumSqsAttributes} message attributes; this message has {names.Count} " +
+                "(application properties plus correlation ID, subject, content type, reply-to and to, which travel as attributes). " +
+                "Remove some before sending. Nothing was sent.");
+        }
+    }
+
+    /// <summary>
+    /// FIFO MessageGroupId and MessageDeduplicationId: at most 128 characters of letters, digits and ASCII punctuation.
+    /// </summary>
+    public static void EnsureFifoIdentifiers(string groupId, string deduplicationId)
+    {
+        foreach (var (value, name, property) in new[]
+                 {
+                     (groupId, "MessageGroupId", "session ID, else partition key"),
+                     (deduplicationId, "MessageDeduplicationId", "MessageId")
+                 })
+        {
+            // Printable ASCII without the space: letters, digits and !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~.
+            if (value.Length > 128 || value.Any(character => character is <= ' ' or >= '\x7f'))
+            {
+                throw new InvalidOperationException(
+                    $"Amazon SQS and SNS FIFO {name} ({property}) must be at most 128 letters, digits and ASCII punctuation, " +
+                    $"without spaces; '{(value.Length > 40 ? value[..40] + "…" : value)}' is not. Nothing was sent.");
+            }
+        }
+    }
+
     /// <summary>FIFO queues and topics need a group: the session ID, else the partition key.</summary>
     public static string GroupId(MessageDraft message) =>
         FirstNonEmpty(message.Properties.SessionId, message.Properties.PartitionKey) ?? "default";
@@ -120,7 +246,14 @@ internal static class AwsMessageMapper
     /// writes its type as the label ("Number.Int32", "String.Guid") so the type survives a round trip.
     /// </summary>
     internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property) =>
-        property.Type switch
+        // A label QueueLoom has no type for (SNS String.Array, another producer's custom label) goes back unchanged,
+        // as long as the property still has the type it was read with (a type changed in the editor wins).
+        property.WireType is { } wire &&
+        (wire.StartsWith("String.", StringComparison.Ordinal) && property.Type == ApplicationPropertyType.String ||
+         wire.StartsWith("Number.", StringComparison.Ordinal) &&
+         property.Type is ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or ApplicationPropertyType.String)
+            ? (wire, property.Value, null)
+            : property.Type switch
         {
             ApplicationPropertyType.String => ("String", property.Value, null),
             ApplicationPropertyType.Binary => ("Binary", null, Convert.FromBase64String(property.Value)),
@@ -151,6 +284,8 @@ internal static class AwsMessageMapper
             return new MessageApplicationProperty(name, labelled, value);
         }
 
+        // A label QueueLoom has no type for is remembered, so a resent copy carries the same type again.
+        var wireType = label is { Length: > 0 } ? dataType : null;
         if (parts[0] == "Number")
         {
             var type = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
@@ -158,10 +293,10 @@ internal static class AwsMessageMapper
                 : decimal.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
                     ? ApplicationPropertyType.Decimal
                     : ApplicationPropertyType.String;
-            return new MessageApplicationProperty(name, type, value);
+            return new MessageApplicationProperty(name, type, value) { WireType = wireType };
         }
 
-        return new MessageApplicationProperty(name, ApplicationPropertyType.String, value);
+        return new MessageApplicationProperty(name, ApplicationPropertyType.String, value) { WireType = wireType };
     }
 
     private static bool IsStringType(string? dataType) =>

@@ -12,8 +12,26 @@ public sealed partial class AwsSqsSnsWorkspace
     private const QueueSettingFlags SqsSettings =
         QueueSettingFlags.MessageTimeToLive | QueueSettingFlags.MaxDeliveryCount | QueueSettingFlags.LockDuration;
 
+    // SetQueueAttributes: MessageRetentionPeriod 60 to 1,209,600 seconds, VisibilityTimeout 0 to 43,200 seconds;
+    // a redrive policy's maxReceiveCount (Maximum receives) 1 to 1,000.
+    internal static readonly QueueSettingLimits SqsLimits = new("Amazon SQS")
+    {
+        MinTimeToLive = TimeSpan.FromSeconds(60),
+        MaxTimeToLive = TimeSpan.FromSeconds(1_209_600),
+        TimeToLiveName = "retention period",
+        MinDeliveryCount = 1,
+        MaxDeliveryCount = 1_000,
+        DeliveryCountName = "maximum receive count",
+        MinLock = TimeSpan.Zero,
+        MaxLock = TimeSpan.FromSeconds(43_200),
+        LockName = "visibility timeout"
+    };
+
     public override QueueManagementCapabilities? QueueManagement => new("queue", SqsSettings, SqsSettings, CanCreateDeadLetterQueue: true,
-        UpdateNote: "Time to live is the SQS retention period (1 minute to 14 days); the lock is the visibility timeout (up to 12 hours).");
+        UpdateNote: "Time to live is the SQS retention period (1 minute to 14 days); the lock is the visibility timeout (up to 12 hours).")
+    {
+        Limits = SqsLimits
+    };
 
     public override async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)
     {
@@ -63,8 +81,8 @@ public sealed partial class AwsSqsSnsWorkspace
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
         ManageAsync(async token =>
         {
-            var url = await QueueUrlAsync(queue, token).ConfigureAwait(false);
             var attributes = Attributes(settings);
+            var url = await QueueUrlAsync(queue, token).ConfigureAwait(false);
             if (settings.MaxDeliveryCount is { } maxReceiveCount)
             {
                 var current = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["RedrivePolicy"] },
@@ -98,16 +116,24 @@ public sealed partial class AwsSqsSnsWorkspace
         }
     }
 
+    /// <summary>
+    /// The queue attributes for <paramref name="settings"/>. A value outside SQS's range is refused, never changed to the nearest
+    /// allowed one: a queue that keeps messages 14 days when 30 were asked for loses them without anyone knowing.
+    /// </summary>
     private static Dictionary<string, string> Attributes(QueueSettings settings)
     {
+        if (SqsLimits.Check(settings) is { } error)
+        {
+            throw new InvalidOperationException(error);
+        }
         var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
         if (settings.MessageTimeToLive is { } retention)
         {
-            attributes["MessageRetentionPeriod"] = ((long)Math.Clamp(retention.TotalSeconds, 60, 1_209_600)).ToString(CultureInfo.InvariantCulture);
+            attributes["MessageRetentionPeriod"] = ((long)retention.TotalSeconds).ToString(CultureInfo.InvariantCulture);
         }
         if (settings.LockDuration is { } visibility)
         {
-            attributes["VisibilityTimeout"] = ((long)Math.Clamp(visibility.TotalSeconds, 0, 43_200)).ToString(CultureInfo.InvariantCulture);
+            attributes["VisibilityTimeout"] = ((long)visibility.TotalSeconds).ToString(CultureInfo.InvariantCulture);
         }
         return attributes;
     }
@@ -116,7 +142,7 @@ public sealed partial class AwsSqsSnsWorkspace
         JsonSerializer.Serialize(new Dictionary<string, object>
         {
             ["deadLetterTargetArn"] = deadLetterArn,
-            ["maxReceiveCount"] = Math.Clamp(maxReceiveCount, 1, 1_000)
+            ["maxReceiveCount"] = maxReceiveCount
         });
 
     private static TimeSpan? Seconds(IReadOnlyDictionary<string, string> attributes, string name) =>

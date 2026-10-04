@@ -144,13 +144,14 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                     ? throw new InvalidOperationException(
                         $"SNS does not store messages for {subscription.Protocol} endpoints, so there is nothing to browse. " +
                         "Only SQS subscriptions in this account and region can be browsed.")
-                    : new SqsChannel(this, source, subQueue, endpointQueue, belongsTo: null);
+                    : new SqsChannel(this, source, subQueue, endpointQueue, belongsTo: null, snsEnvelope: !subscription.RawMessageDelivery);
             }
 
             var deadLetterQueue = index.FindQueueByArn(subscription.DeadLetterTargetArn)
                 ?? throw new InvalidOperationException(
                     $"Subscription '{source.DisplayName}' has no dead-letter queue. Add a redrive policy to it in AWS first.");
-            return new SqsChannel(this, source, subQueue, deadLetterQueue, belongsTo: subscription.Arn);
+            return new SqsChannel(this, source, subQueue, deadLetterQueue, belongsTo: subscription.Arn,
+                snsEnvelope: !subscription.RawMessageDelivery);
         }
 
         throw new ArgumentException("Only queues and subscriptions hold messages.", nameof(source));
@@ -173,11 +174,13 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 MessageBody = body,
                 MessageAttributes = AwsMessageMapper.ToSqsAttributes(message)
             };
+            AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: true);
             if (queue.IsFifo)
             {
                 RejectFutureScheduling(message, "Amazon SQS FIFO queues");
                 request.MessageGroupId = AwsMessageMapper.GroupId(message);
                 request.MessageDeduplicationId = AwsMessageMapper.DeduplicationId(message);
+                AwsMessageMapper.EnsureFifoIdentifiers(request.MessageGroupId, request.MessageDeduplicationId);
             }
             else if (AwsMessageMapper.DelaySeconds(message, TimeProvider.GetUtcNow()) is { } delay)
             {
@@ -199,10 +202,12 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 Message = body,
                 MessageAttributes = AwsMessageMapper.ToSnsAttributes(message)
             };
+            AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: false);
             if (topic.IsFifo)
             {
                 request.MessageGroupId = AwsMessageMapper.GroupId(message);
                 request.MessageDeduplicationId = AwsMessageMapper.DeduplicationId(message);
+                AwsMessageMapper.EnsureFifoIdentifiers(request.MessageGroupId, request.MessageDeduplicationId);
             }
 
             await Sns.PublishAsync(request, cancellationToken).ConfigureAwait(false);
@@ -317,7 +322,8 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                            item.Attributes.GetValueOrDefault("FilterPolicy")!.Trim() == "{}"
                 ? null
                 : item.Attributes["FilterPolicy"],
-            FilterPolicyOnBody = item.Attributes.GetValueOrDefault("FilterPolicyScope") == "MessageBody"
+            FilterPolicyOnBody = item.Attributes.GetValueOrDefault("FilterPolicyScope") == "MessageBody",
+            RawMessageDelivery = string.Equals(item.Attributes.GetValueOrDefault("RawMessageDelivery"), "true", StringComparison.OrdinalIgnoreCase)
         }));
     }
 
@@ -326,7 +332,8 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
         AwsQueueInfo queue,
-        string? belongsTo) : ILeasedMessageChannel
+        string? belongsTo,
+        bool snsEnvelope = false) : ILeasedMessageChannel
     {
         public string PhysicalName => queue.Name;
 
@@ -350,7 +357,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
             return (response.Messages ?? [])
                 .Select(message => new LeasedMessage(
-                    AwsMessageMapper.FromSqs(message, source, subQueue),
+                    AwsMessageMapper.FromSqs(message, source, subQueue, snsEnvelope),
                     message.ReceiptHandle,
                     BelongsToSource(message)))
                 .ToArray();

@@ -260,7 +260,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ? values.EnumerateArray().Select(value => new MessageApplicationProperty(
                 ReadRequiredString(value, "name"),
                 ReadEnum<ApplicationPropertyType>(value, "type"),
-                ReadRequiredString(value, "value"))).ToArray()
+                ReadRequiredString(value, "value")) { WireType = ReadOptionalString(value, "wireType") }).ToArray()
             : [];
         if (root.GetProperty("schemaVersion").GetInt32() < 3 && ReadOptionalString(root, "provider") == "RabbitMq")
         {

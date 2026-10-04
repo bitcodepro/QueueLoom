@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
@@ -7,9 +8,27 @@ namespace QueueLoom.Core.Validation;
 
 public static class MessageDraftValidator
 {
+    /// <summary>Azure Service Bus identifiers; also SQS/SNS FIFO MessageGroupId and MessageDeduplicationId.</summary>
     public const int MaxMessageIdentifierLength = 128;
 
-    /// <param name="provider">The service the draft is sent to. Without it, a draft read from Kafka follows Kafka rules.</param>
+    /// <summary>Google Pub/Sub: "An ordering key can be up to 1 KB in length."</summary>
+    public const int MaxPubSubOrderingKeyBytes = 1024;
+
+    /// <summary>AMQP 0-9-1 short string (RabbitMQ message-id, correlation-id, content-type, reply-to, type, app-id).</summary>
+    public const int MaxAmqpShortStringBytes = 255;
+
+    /// <summary>Google Pub/Sub quotas: 100 attributes per message, keys up to 256 bytes, values up to 1,024 bytes.</summary>
+    public const int MaxPubSubAttributes = 100;
+    public const int MaxPubSubAttributeKeyBytes = 256;
+    public const int MaxPubSubAttributeValueBytes = 1024;
+
+    /// <summary>SQS and SNS message attribute names: up to 256 characters.</summary>
+    public const int MaxAwsAttributeNameLength = 256;
+
+    /// <param name="provider">
+    /// The service the draft is sent to; each service has its own identifier limits. Without it, a draft read from
+    /// Kafka follows Kafka rules and any other draft follows Azure Service Bus, the strictest.
+    /// </param>
     public static ValidationResult Validate(MessageDraft? draft, MessagingProvider? provider = null)
     {
         if (draft is null)
@@ -20,10 +39,13 @@ public static class MessageDraftValidator
 
         var errors = new List<ValidationError>();
         ValidateBody(draft.Body, errors);
-        // Azure caps identifiers at 128 characters; a Kafka key (PartitionKey) and MessageId header are arbitrary.
-        var limitIdentifiers = provider is null ? draft.KafkaEnvelope is null : provider != MessagingProvider.Kafka;
-        ValidateBrokerProperties(draft.Properties, errors, limitIdentifiers);
+        var rules = provider ?? (draft.KafkaEnvelope is null ? MessagingProvider.AzureServiceBus : MessagingProvider.Kafka);
+        ValidateBrokerProperties(draft.Properties, errors, rules);
         ValidateApplicationProperties(draft.ApplicationProperties, errors);
+        if (draft.Properties is not null && draft.ApplicationProperties is not null)
+        {
+            ValidateProviderAttributes(draft.Properties, draft.ApplicationProperties, errors, rules);
+        }
 
         return errors.Count == 0 ? ValidationResult.Valid : new ValidationResult(errors);
     }
@@ -86,7 +108,7 @@ public static class MessageDraftValidator
     private static void ValidateBrokerProperties(
         EditableMessageProperties? properties,
         ICollection<ValidationError> errors,
-        bool limitIdentifiers)
+        MessagingProvider rules)
     {
         if (properties is null)
         {
@@ -97,13 +119,36 @@ public static class MessageDraftValidator
             return;
         }
 
-        if (limitIdentifiers)
+        switch (rules)
         {
-            ValidateLength(properties.MessageId, nameof(properties.MessageId), errors);
-            ValidateLength(properties.SessionId, nameof(properties.SessionId), errors);
-            ValidateLength(properties.ReplyToSessionId, nameof(properties.ReplyToSessionId), errors);
-            ValidateLength(properties.PartitionKey, nameof(properties.PartitionKey), errors);
-            ValidateLength(properties.TransactionPartitionKey, nameof(properties.TransactionPartitionKey), errors);
+            case MessagingProvider.AzureServiceBus:
+                // Service Bus caps every identifier at 128 characters.
+                ValidateLength(properties.MessageId, nameof(properties.MessageId), errors);
+                ValidateLength(properties.SessionId, nameof(properties.SessionId), errors);
+                ValidateLength(properties.ReplyToSessionId, nameof(properties.ReplyToSessionId), errors);
+                ValidateLength(properties.PartitionKey, nameof(properties.PartitionKey), errors);
+                ValidateLength(properties.TransactionPartitionKey, nameof(properties.TransactionPartitionKey), errors);
+                break;
+            case MessagingProvider.AmazonSqsSns:
+                // FIFO MessageDeduplicationId (MessageId) and MessageGroupId (SessionId, else PartitionKey): 128 characters.
+                ValidateLength(properties.MessageId, nameof(properties.MessageId), errors, "Amazon SQS and SNS");
+                ValidateLength(properties.SessionId, nameof(properties.SessionId), errors, "Amazon SQS and SNS");
+                ValidateLength(properties.PartitionKey, nameof(properties.PartitionKey), errors, "Amazon SQS and SNS");
+                break;
+            case MessagingProvider.GooglePubSub:
+                // The ordering key is the session ID, else the partition key. Pub/Sub assigns its own message ID.
+                ValidateBytes(properties.SessionId, nameof(properties.SessionId), errors, MaxPubSubOrderingKeyBytes, "the Google Pub/Sub ordering key limit");
+                ValidateBytes(properties.PartitionKey, nameof(properties.PartitionKey), errors, MaxPubSubOrderingKeyBytes, "the Google Pub/Sub ordering key limit");
+                break;
+            case MessagingProvider.RabbitMq:
+                const string shortString = "the RabbitMQ (AMQP 0-9-1 short string) limit";
+                ValidateBytes(properties.MessageId, nameof(properties.MessageId), errors, MaxAmqpShortStringBytes, shortString);
+                ValidateBytes(properties.CorrelationId, nameof(properties.CorrelationId), errors, MaxAmqpShortStringBytes, shortString);
+                ValidateBytes(properties.ContentType, nameof(properties.ContentType), errors, MaxAmqpShortStringBytes, shortString);
+                ValidateBytes(properties.ReplyTo, nameof(properties.ReplyTo), errors, MaxAmqpShortStringBytes, shortString);
+                ValidateBytes(properties.AmqpType, nameof(properties.AmqpType), errors, MaxAmqpShortStringBytes, shortString);
+                ValidateBytes(properties.AmqpAppId, nameof(properties.AmqpAppId), errors, MaxAmqpShortStringBytes, shortString);
+                break;
         }
 
         if (properties.TimeToLive is { } timeToLive && timeToLive <= TimeSpan.Zero)
@@ -128,16 +173,104 @@ public static class MessageDraftValidator
     private static void ValidateLength(
         string? value,
         string memberName,
-        ICollection<ValidationError> errors)
+        ICollection<ValidationError> errors,
+        string? service = null)
     {
         if (value?.Length > MaxMessageIdentifierLength)
         {
             errors.Add(new ValidationError(
                 "message.identifier.too_long",
-                $"{memberName} cannot exceed {MaxMessageIdentifierLength} characters.",
+                service is null
+                    ? $"{memberName} cannot exceed {MaxMessageIdentifierLength} characters."
+                    : $"{memberName} cannot exceed {MaxMessageIdentifierLength} characters for {service}.",
                 memberName));
         }
     }
+
+    private static void ValidateBytes(
+        string? value,
+        string memberName,
+        ICollection<ValidationError> errors,
+        int maxBytes,
+        string limitName)
+    {
+        if (value is not null && Encoding.UTF8.GetByteCount(value) > maxBytes)
+        {
+            errors.Add(new ValidationError(
+                "message.identifier.too_long",
+                $"{memberName} cannot exceed {maxBytes.ToString("N0", CultureInfo.InvariantCulture)} bytes of UTF-8 ({limitName}).",
+                memberName));
+        }
+    }
+
+    /// <summary>
+    /// SQS and SNS attribute names: A-Z, a-z, 0-9, '_', '-' and '.', up to 256 characters, not starting or ending with
+    /// a period and without periods in a row. Pub/Sub: at most 100 attributes, keys up to 256 bytes and values up to
+    /// 1,024 bytes; the standard properties QueueLoom sends as attributes count too.
+    /// </summary>
+    private static void ValidateProviderAttributes(
+        EditableMessageProperties properties,
+        IReadOnlyList<MessageApplicationProperty> applicationProperties,
+        ICollection<ValidationError> errors,
+        MessagingProvider rules)
+    {
+        if (rules == MessagingProvider.AmazonSqsSns)
+        {
+            for (var index = 0; index < applicationProperties.Count; index++)
+            {
+                if (applicationProperties[index]?.Name is not { Length: > 0 } name || IsAwsAttributeName(name))
+                {
+                    continue;
+                }
+                errors.Add(new ValidationError(
+                    "message.application_property.name_invalid",
+                    $"Amazon SQS and SNS do not accept the attribute name '{name}': use up to {MaxAwsAttributeNameLength} letters, digits, " +
+                    "'_', '-' and '.', not starting or ending with '.' and without '..'.",
+                    $"{nameof(MessageDraft.ApplicationProperties)}[{index}]"));
+            }
+        }
+        else if (rules == MessagingProvider.GooglePubSub)
+        {
+            // The same map the publish builds: standard attributes first, then application properties, which replace a
+            // standard attribute of the same name (ordinal names).
+            var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (name, value) in MessageAttributeConventions.StandardAttributes(properties))
+            {
+                attributes[name] = value;
+            }
+            foreach (var property in applicationProperties.Where(property => property?.Name is not null))
+            {
+                attributes[property.Name] = property.Value ?? string.Empty;
+            }
+            if (attributes.Count > MaxPubSubAttributes)
+            {
+                errors.Add(new ValidationError(
+                    "message.application_properties.too_many",
+                    $"Google Pub/Sub accepts at most {MaxPubSubAttributes} attributes per message; this message has {attributes.Count} " +
+                    "(application properties plus correlation ID, subject, content type, reply-to and to).",
+                    nameof(MessageDraft.ApplicationProperties)));
+            }
+            foreach (var (name, value) in attributes)
+            {
+                if (Encoding.UTF8.GetByteCount(name) > MaxPubSubAttributeKeyBytes ||
+                    Encoding.UTF8.GetByteCount(value) > MaxPubSubAttributeValueBytes)
+                {
+                    errors.Add(new ValidationError(
+                        "message.application_property.too_long",
+                        $"Google Pub/Sub accepts attribute names up to {MaxPubSubAttributeKeyBytes} bytes and values up to " +
+                        $"{MaxPubSubAttributeValueBytes.ToString("N0", CultureInfo.InvariantCulture)} bytes; " +
+                        $"'{(name.Length > 40 ? name[..40] + "…" : name)}' is longer.",
+                        nameof(MessageDraft.ApplicationProperties)));
+                }
+            }
+        }
+    }
+
+    /// <summary>Whether SQS and SNS accept <paramref name="name"/> as a message attribute name.</summary>
+    public static bool IsAwsAttributeName(string name) =>
+        name.Length is > 0 and <= MaxAwsAttributeNameLength && name[0] != '.' && name[^1] != '.' &&
+        !name.Contains("..", StringComparison.Ordinal) &&
+        name.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-' or '.');
 
     private static void ValidateApplicationProperties(
         IReadOnlyList<MessageApplicationProperty>? properties,

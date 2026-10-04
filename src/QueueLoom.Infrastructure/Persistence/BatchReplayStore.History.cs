@@ -57,7 +57,8 @@ public sealed partial class BatchReplayStore
             new OperationItem(index, payload.Origin, payload.Properties.MessageId, destination.Path, "Pending")), token);
 
     public async Task<ReplayPlan> CreateResendAsync(Guid profileId, IReadOnlyList<ResendItem> items, ResendMode mode,
-        int rate, string? ns, string configurationIdentity, string kind, CancellationToken token, bool deferActivation = false)
+        int rate, string? ns, string configurationIdentity, string kind, CancellationToken token, bool deferActivation = false,
+        QueueLoom.Core.Profiles.MessagingProvider? provider = null)
     {
         if (profileId == Guid.Empty || items.Count is < 1 or > 1000 || rate is < 0 or > 100 ||
             items.Any(i => !i.Destination.CanSend || (mode == ResendMode.Move && !i.Key.IsValid)))
@@ -76,7 +77,7 @@ public sealed partial class BatchReplayStore
                 var item = items[index];
                 bytes += item.Message.Body.GetBytes().Length;
                 if (bytes > 32 * 1024 * 1024) throw new InvalidOperationException("Operation bodies exceed 32 MiB. Narrow the selection.");
-                var validation = MessageDraftValidator.Validate(item.Message);
+                var validation = MessageDraftValidator.Validate(item.Message, provider);
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 var payload = new ReplayPayload(item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToArray(),
                     $"{item.Original.Source.Path} / {item.Original.SubQueue} / {item.Original.SequenceNumber} / {item.Original.Properties.MessageId}")

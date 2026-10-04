@@ -16,7 +16,7 @@ internal static class ApplicationPropertiesJson
     {
         var values = properties.ToDictionary(
             property => property.Name,
-            property => new PropertyValue(property.Type, property.Value),
+            property => new PropertyValue(property.Type, property.Value, property.WireType),
             StringComparer.Ordinal);
         return JsonSerializer.Serialize(values, Options);
     }
@@ -33,9 +33,13 @@ internal static class ApplicationPropertiesJson
         return values.Select(pair => new MessageApplicationProperty(
                 pair.Key,
                 pair.Value.Type,
-                pair.Value.Value ?? string.Empty))
+                pair.Value.Value ?? string.Empty) { WireType = pair.Value.WireType })
             .ToArray();
     }
 
-    private sealed record PropertyValue(ApplicationPropertyType Type, string? Value);
+    /// <param name="WireType">The service's own type label (SNS "String.Array"), shown only when the property has one.</param>
+    private sealed record PropertyValue(
+        ApplicationPropertyType Type,
+        string? Value,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? WireType = null);
 }

@@ -287,6 +287,12 @@
                          Text="A topic named like another one plus one of these endings is shown as its dead-letter queue, for example orders.DLT for orders." />
             </StackPanel>
             <StackPanel Spacing="7">
+              <CheckBox Content="Partition keys like Java and Spring producers (murmur2)" IsChecked="{Binding KafkaJavaCompatiblePartitioner}"
+                        AutomationProperties.Name="Java-compatible partitioner" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="Turn on when the topics' producers are Java-based, so a resent keyed record reaches the same partition. Off keeps librdkafka's default (CRC32)." />
+            </StackPanel>
+            <StackPanel Spacing="7">
               <TextBlock Text="SCHEMA REGISTRY (OPTIONAL)" Classes="eyebrow" />
               <Grid ColumnDefinitions="2*,14,*,14,*">
                 <TextBox Grid.Column="0" Text="{Binding SchemaRegistryUrl}" PlaceholderText="http://schema-registry:8081"

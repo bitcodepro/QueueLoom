@@ -223,7 +223,7 @@ public sealed partial class MainWindowViewModel
         var windowed = ApplySearchWindow(results, out var outsideWindow);
         ReplaceMessages(windowed
             .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
-            .ThenBy(result => result.Message.SequenceNumber)
+            .ThenBy(result => result.Message.HasSequenceNumber ? result.Message.SequenceNumber : 0)
             .ThenBy(result => result.ProfileName, StringComparer.OrdinalIgnoreCase));
         SelectedMessage = Messages.FirstOrDefault();
         var scopeName = filter.ProfileId.HasValue ? filter.Name : "all environments";

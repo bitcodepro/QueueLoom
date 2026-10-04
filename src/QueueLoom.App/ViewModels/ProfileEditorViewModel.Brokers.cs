@@ -15,6 +15,7 @@ public sealed partial class ProfileEditorViewModel
     private string _brokerPassword = string.Empty;
     private string _kafkaBootstrapServers = string.Empty;
     private bool _kafkaUseTls;
+    private bool _kafkaJavaCompatiblePartitioner;
     private KafkaSaslMechanism _kafkaSaslMechanism = KafkaSaslMechanism.ScramSha512;
     private string _kafkaUserName = string.Empty;
     private string _kafkaDeadLetterSuffixes = string.Join(", ", KafkaSettings.DefaultDeadLetterSuffixes);
@@ -124,6 +125,13 @@ public sealed partial class ProfileEditorViewModel
         set => SetProperty(ref _kafkaDeadLetterSuffixes, value);
     }
 
+    /// <summary>Resent keyed records use murmur2 (Java and Spring producers) instead of librdkafka's CRC32.</summary>
+    public bool KafkaJavaCompatiblePartitioner
+    {
+        get => _kafkaJavaCompatiblePartitioner;
+        set => SetProperty(ref _kafkaJavaCompatiblePartitioner, value);
+    }
+
     /// <summary>Optional Confluent-compatible Schema Registry, used to decode Avro, Protobuf and JSON Schema bodies.</summary>
     public string SchemaRegistryUrl
     {
@@ -167,6 +175,7 @@ public sealed partial class ProfileEditorViewModel
             _kafkaUserName = kafka.UserName ?? string.Empty;
             _kafkaDeadLetterSuffixes = string.Join(", ", kafka.EffectiveDeadLetterSuffixes);
             _schemaRegistryUrl = kafka.SchemaRegistryUrl ?? string.Empty;
+            _kafkaJavaCompatiblePartitioner = kafka.JavaCompatiblePartitioner;
             _schemaRegistryUserName = kafka.SchemaRegistryUserName ?? string.Empty;
             _hasExistingSchemaRegistryPassword = kafka.SchemaRegistryUserName is not null;
         }
@@ -208,7 +217,8 @@ public sealed partial class ProfileEditorViewModel
             IsKafkaSasl ? NullIfWhiteSpace(KafkaUserName) : null,
             suffixes.SequenceEqual(KafkaSettings.DefaultDeadLetterSuffixes) ? null : suffixes,
             NullIfWhiteSpace(SchemaRegistryUrl)?.TrimEnd('/'),
-            NullIfWhiteSpace(SchemaRegistryUrl) is null ? null : NullIfWhiteSpace(SchemaRegistryUserName));
+            NullIfWhiteSpace(SchemaRegistryUrl) is null ? null : NullIfWhiteSpace(SchemaRegistryUserName),
+            KafkaJavaCompatiblePartitioner);
         if (settings.SchemaRegistryUserName is not null && string.IsNullOrEmpty(SchemaRegistryPassword) && !_hasExistingSchemaRegistryPassword)
         {
             Error = "Enter the Schema Registry password or API secret.";

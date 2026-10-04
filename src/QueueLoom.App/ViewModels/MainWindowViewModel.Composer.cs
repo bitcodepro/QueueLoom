@@ -7,6 +7,7 @@ using QueueLoom.App.Serialization;
 using QueueLoom.App.Services;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Core.Validation;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -245,6 +246,11 @@ public sealed partial class MainWindowViewModel
                 "This draft belongs to a different environment. Reconnect it or start a new message before sending.");
         }
         var draft = BuildDraft();
+        // The destination service's limits, before the confirmation and before anything reaches the service.
+        if (MessageDraftValidator.Validate(draft, profile.Provider) is { IsValid: false } invalid)
+        {
+            throw new InvalidOperationException(string.Join(" ", invalid.Errors.Select(error => error.Message)));
+        }
 
         var warning = _draftSourceIsLocalBackup
             ? "Send a copy reconstructed from the local backup? The backup JSON remains unchanged."

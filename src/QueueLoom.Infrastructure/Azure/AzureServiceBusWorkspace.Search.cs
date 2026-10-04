@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Globalization;
 using System.Text;
 using Azure;
 using Azure.Core;
@@ -298,6 +297,7 @@ public sealed partial class AzureServiceBusWorkspace
 
         var matches = new List<BrowsedMessage>();
         var scanned = 0;
+        var undecided = 0;
         try
         {
             var scan = await WalkSearchPagesAsync(
@@ -307,7 +307,18 @@ public sealed partial class AzureServiceBusWorkspace
                     azureMessage =>
                     {
                         scanned = checked(scanned + 1);
-                        if (!MatchesSearch(azureMessage, request.Search))
+                        bool isMatch;
+                        try
+                        {
+                            isMatch = MatchesSearch(azureMessage, request.Search);
+                        }
+                        catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+                        {
+                            // Not a "no": the source is reported as incomplete below, and the scan goes on.
+                            undecided++;
+                            return;
+                        }
+                        if (!isMatch)
                         {
                             return;
                         }
@@ -328,7 +339,8 @@ public sealed partial class AzureServiceBusWorkspace
                 target.SubQueue,
                 scanned,
                 Array.AsReadOnly(matches.ToArray()),
-                scan.SafetyLimitReached);
+                scan.SafetyLimitReached,
+                DeadLetterSearchSourceResult.RegexTimeoutError(undecided));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -459,8 +471,13 @@ public sealed partial class AzureServiceBusWorkspace
         return query.Matches(
             [message.CorrelationId, message.MessageId, message.Subject, message.SessionId, message.ContentType, message.To, message.ReplyTo,
                 message.DeadLetterReason, message.DeadLetterErrorDescription],
+            // The same text the message list shows (ISO dates, base64 bytes), not Convert.ToString's
+            // "10/04/2026 08:15:00" or "System.Byte[]".
             message.ApplicationProperties.Select(property =>
-                new KeyValuePair<string, string?>(property.Key, Convert.ToString(property.Value, CultureInfo.InvariantCulture))),
+            {
+                var shown = AzureMessageMapper.ToDomainProperty(property);
+                return new KeyValuePair<string, string?>(shown.Name, shown.Value);
+            }),
             body[..Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes)],
             message.ContentType);
     }
