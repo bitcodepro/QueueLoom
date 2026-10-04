@@ -26,7 +26,8 @@ public sealed class KafkaBinaryHeaderAndAwsLabelTests
     {
         var headers = new Headers { { "opaque", new byte[] { 0xff, 0x00, 0xfe } } };
         var azure = AzureMessageMapper.ToAzure(BrowseKafka(headers).CreateDraft());
-        Assert.Equal(new byte[] { 0xff, 0x00, 0xfe }, Assert.IsType<byte[]>(azure.ApplicationProperties["opaque"]));
+        // Service Bus rejects byte[] properties, so the bytes go as their Base64 text, not as a lossy UTF-8 guess.
+        Assert.Equal(Convert.ToBase64String(new byte[] { 0xff, 0x00, 0xfe }), Assert.IsType<string>(azure.ApplicationProperties["opaque"]));
     }
 
     [Theory]

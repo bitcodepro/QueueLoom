@@ -120,14 +120,18 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 FileShare.Read,
                 16 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var document = await JsonSerializer.DeserializeAsync<SettingsDocument>(
-                    stream,
-                    SerializerOptions,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            // The schema version is read before the v1 model is bound: a newer file may change the type of a known field.
+            if (json.RootElement.ValueKind == JsonValueKind.Object &&
+                json.RootElement.TryGetProperty(nameof(SettingsDocument.SchemaVersion), out var version) &&
+                version.ValueKind == JsonValueKind.Number && version.TryGetInt32(out var number) && number > 1)
+            {
+                return (AppSettings.Default, FileState.Newer);
+            }
+            var document = json.RootElement.Deserialize<SettingsDocument>(SerializerOptions);
             if (document is not { SchemaVersion: 1 })
             {
-                return (AppSettings.Default, document is { SchemaVersion: > 1 } ? FileState.Newer : FileState.Damaged);
+                return (AppSettings.Default, FileState.Damaged);
             }
 
             // Unknown theme names (for example from a newer version) keep the default theme

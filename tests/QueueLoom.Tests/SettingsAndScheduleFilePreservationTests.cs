@@ -22,6 +22,23 @@ public sealed class SettingsAndScheduleFilePreservationTests
     }
 
     [Fact]
+    public async Task UpdatingSettings_LeavesANewerSchemaWithAChangedFieldTypeByteForByte()
+    {
+        using var dir = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(dir.Path);
+        Directory.CreateDirectory(paths.RootDirectory);
+        var original = """{"SchemaVersion":2,"MonitorIntervalSeconds":"300","SavedSearches":[{"Name":"Prod errors","Query":"error"}]}"""u8.ToArray();
+        await File.WriteAllBytesAsync(paths.SettingsFile, original);
+
+        using var store = new JsonAppSettingsStore(paths);
+        Assert.Equal(AppSettings.Default.MonitorIntervalSeconds, (await store.LoadAsync()).MonitorIntervalSeconds);
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveMonitorIntervalSecondsAsync(60));
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(paths.SettingsFile));
+        Assert.Empty(Directory.GetFiles(paths.RootDirectory, "settings.json.damaged-*"));
+    }
+
+    [Fact]
     public async Task UpdatingSettings_DoesNotWipeAFileWithOneMalformedField()
     {
         using var dir = new TemporaryDirectory();

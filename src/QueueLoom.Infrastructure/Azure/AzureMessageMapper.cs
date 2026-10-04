@@ -98,7 +98,15 @@ internal static class AzureMessageMapper
     internal static MessageApplicationProperty ToDomainProperty(KeyValuePair<string, object> property) =>
         ApplicationPropertyValues.FromObject(property.Key, property.Value is BinaryData binary ? binary.ToArray() : property.Value);
 
-    private static object ParseApplicationProperty(MessageApplicationProperty property) => ApplicationPropertyValues.ToObject(property);
+    /// <summary>
+    /// The value Service Bus is given. A Binary property (a Kafka or RabbitMQ header, for example) is sent as its
+    /// Base64 text: the service rejects byte[] application properties with MessageSizeExceeded, and the SDK documents
+    /// Base64 text as the workaround. The bytes are kept exactly, only their representation changes.
+    /// </summary>
+    private static object ParseApplicationProperty(MessageApplicationProperty property) =>
+        property.Type == ApplicationPropertyType.Binary
+            ? Convert.ToBase64String(Convert.FromBase64String(property.Value))
+            : ApplicationPropertyValues.ToObject(property);
 
     private static DomainMessageState MapState(AzureMessageState state) =>
         state switch
