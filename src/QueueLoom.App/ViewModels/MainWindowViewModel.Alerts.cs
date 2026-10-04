@@ -15,7 +15,13 @@ public sealed partial class MainWindowViewModel
     public bool SystemNotifications
     {
         get => _systemNotifications;
-        set => SetProperty(ref _systemNotifications, value);
+        set
+        {
+            if (SetProperty(ref _systemNotifications, value))
+            {
+                SendTestAlertCommand?.NotifyCanExecuteChanged();
+            }
+        }
     }
 
     private bool _keepInTray;

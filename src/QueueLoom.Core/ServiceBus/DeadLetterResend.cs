@@ -1,4 +1,5 @@
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Diagnostics;
 
 namespace QueueLoom.Core.ServiceBus;
 
@@ -135,7 +136,8 @@ public static class DeadLetterResender
             catch (Exception exception)
             {
                 failed++;
-                results[index] = new ResendItemResult(items[index], ResendOutcome.Failed, exception.GetBaseException().Message);
+                // Shown in the app and returned to MCP clients: one redacted line, never raw SDK text.
+                results[index] = new ResendItemResult(items[index], ResendOutcome.Failed, SensitiveDataRedactor.SummarizeException(exception));
             }
 
             progress?.Report(new ResendProgress(index + 1, items.Count, failed));
@@ -170,7 +172,7 @@ public static class DeadLetterResender
                 foreach (var index in sent)
                 {
                     results[index] = new ResendItemResult(items[index], ResendOutcome.SentOriginalKept,
-                        $"The copy was sent, but removing the original failed: {exception.GetBaseException().Message}");
+                        $"The copy was sent, but removing the original failed: {SensitiveDataRedactor.SummarizeException(exception)}");
                 }
             }
         }

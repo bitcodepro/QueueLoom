@@ -19,6 +19,7 @@ public sealed class QueueDialogViewModel : ObservableObject
     private readonly QueueManagementCapabilities _capabilities;
     private string _name = string.Empty;
     private double? _timeToLive;
+    private readonly (TimeSpan Value, double Shown, TimeUnit Unit)? _currentTimeToLive;
     private TimeUnit _timeToLiveUnit = TimeUnit.Days;
     private int? _maxDeliveryCount;
     private int? _lockSeconds;
@@ -41,6 +42,7 @@ public sealed class QueueDialogViewModel : ObservableObject
             (_timeToLive, _timeToLiveUnit) = ttl.TotalDays >= 1 && ttl.TotalDays % 1 == 0 ? (ttl.TotalDays, TimeUnit.Days)
                 : ttl.TotalHours >= 1 && ttl.TotalHours % 1 == 0 ? (ttl.TotalHours, TimeUnit.Hours)
                 : (Math.Round(ttl.TotalMinutes, 2), TimeUnit.Minutes);
+            _currentTimeToLive = (ttl, _timeToLive.Value, _timeToLiveUnit);
         }
         _maxDeliveryCount = current?.MaxDeliveryCount;
         _lockSeconds = current?.LockDuration is { } lockDuration ? (int)lockDuration.TotalSeconds : null;
@@ -180,7 +182,12 @@ public sealed class QueueDialogViewModel : ObservableObject
         }
 
         TimeSpan? timeToLive = null;
-        if (ShowTimeToLive && TimeToLive is { } ttl)
+        if (ShowTimeToLive && _currentTimeToLive is { } shown && TimeToLive == shown.Shown && TimeToLiveUnit == shown.Unit)
+        {
+            // Untouched: the field shows a rounded value, so the exact current TTL goes back.
+            timeToLive = shown.Value;
+        }
+        else if (ShowTimeToLive && TimeToLive is { } ttl)
         {
             try
             {

@@ -120,9 +120,10 @@ public sealed partial class GooglePubSubWorkspace
     {
         if (settings.MessageTimeToLive is { } retention)
         {
-            if (retention < TimeSpan.FromMinutes(10) || retention > TimeSpan.FromDays(7))
+            // projects.subscriptions messageRetentionDuration: "Cannot be more than 31 days or less than 10 minutes."
+            if (retention < TimeSpan.FromMinutes(10) || retention > TimeSpan.FromDays(31))
             {
-                throw new InvalidOperationException("Pub/Sub keeps unacknowledged messages for 10 minutes to 7 days.");
+                throw new InvalidOperationException("Pub/Sub keeps unacknowledged messages for 10 minutes to 31 days.");
             }
             subscription.MessageRetentionDuration = Duration.FromTimeSpan(retention);
         }

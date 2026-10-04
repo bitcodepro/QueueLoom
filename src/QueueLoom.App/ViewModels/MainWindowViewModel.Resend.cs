@@ -96,7 +96,7 @@ public sealed partial class MainWindowViewModel
             .ToArray();
         DeadLetterResender.EnsureSafeMessageIds(profile.Provider, items, options.Mode);
         // A draft that can never be sent is refused now, not retried by the schedule every 20 seconds.
-        if (items.Select(item => (item, validation: MessageDraftValidator.Validate(item.Message)))
+        if (items.Select(item => (item, validation: MessageDraftValidator.Validate(item.Message, profile.Provider)))
                 .FirstOrDefault(pair => !pair.validation.IsValid) is { item: { } invalid } failed)
         {
             throw new InvalidOperationException(

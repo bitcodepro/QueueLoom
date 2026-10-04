@@ -163,7 +163,7 @@ public sealed partial class BatchReplayStore
             var payload = await ReadPayload(folder, index, token);
             var draft = ToDraft(payload);
             bytes += draft.Body.GetBytes().Length;
-            if (bytes > 32 * 1024 * 1024 || !MessageDraftValidator.Validate(draft).IsValid)
+            if (bytes > 32 * 1024 * 1024 || !MessageDraftValidator.Validate(draft, workspace.ConnectedProvider).IsValid)
                 throw new InvalidDataException("Operation payload exceeds limits or is invalid.");
             var destination = payload.Destination ?? plan.Destination;
             if (!destination.CanSend) throw new InvalidDataException("Invalid operation destination.");
@@ -176,6 +176,7 @@ public sealed partial class BatchReplayStore
         }
         DeadLetterResender.EnsureSafeMessageIds(workspace.ConnectedProvider, prepared.Values.ToArray(), plan.Mode);
         var results = new List<ResendItemResult>();
+        var sentForMove = new List<(int Position, int Index)>();
         string? backup = null;
         foreach (var index in indexes)
         {
@@ -207,32 +208,50 @@ public sealed partial class BatchReplayStore
             }
             // A failure saving acknowledgement leaves Sending: recovery must never resend it.
             await WriteStateAsync(stateFile, "Sent", CancellationToken.None);
-            var result = new ResendItemResult(item, ResendOutcome.Sent);
-            if (plan.Mode == ResendMode.Move)
+            if (plan.Mode == ResendMode.Move) sentForMove.Add((results.Count, index));
+            results.Add(new ResendItemResult(item, ResendOutcome.Sent));
+            progress?.Report(new ResendProgress(results.Count, indexes.Count, results.Count(r => r.Outcome == ResendOutcome.Failed)));
+        }
+        var attempted = results.Count;
+        if (sentForMove.Count > 0)
+        {
+            // Copies are out; remove every sent original in ONE backed-up scan, like DeadLetterResender. A scan per
+            // item leases every other dead letter once per item (raising receive/delivery counts) and scatters backups.
+            ValidateConnection(plan, workspace, canWrite);
+            foreach (var (_, index) in sentForMove)
+                await WriteStateAsync(Path.Combine(folder, $"{index:D6}.state"), "Deleting", CancellationToken.None);
+            DeleteDeadLetterMessagesResult? deletion = null;
+            Exception? failure = null;
+            try
             {
-                ValidateConnection(plan, workspace, canWrite);
-                await WriteStateAsync(stateFile, "Deleting", CancellationToken.None);
+                deletion = await workspace.DeleteDeadLetterMessagesAsync(
+                    new DeleteDeadLetterMessagesRequest(sentForMove.Select(sent => prepared[sent.Index].Key)), CancellationToken.None);
+                backup = deletion.BackupDirectory;
+            }
+            catch (Exception exception) { failure = exception; }
+            var outcomes = deletion?.Messages.GroupBy(m => m.Message).ToDictionary(g => g.Key, g => g.First());
+            foreach (var (position, index) in sentForMove)
+            {
+                var item = prepared[index];
+                var stateFile = Path.Combine(folder, $"{index:D6}.state");
                 try
                 {
-                    var deletion = await workspace.DeleteDeadLetterMessagesAsync(new DeleteDeadLetterMessagesRequest([item.Key]), CancellationToken.None);
-                    backup = deletion.BackupDirectory;
-                    var outcome = deletion.Messages.SingleOrDefault(m => m.Message == item.Key);
+                    if (failure is not null) throw failure;
+                    var outcome = outcomes!.GetValueOrDefault(item.Key);
                     var moved = outcome?.Outcome == DeadLetterMessageDeletionOutcome.Deleted;
                     await WriteStateAsync(stateFile, moved ? "Moved" : "SentOriginalKept", CancellationToken.None);
-                    result = new ResendItemResult(item, moved ? ResendOutcome.Moved : ResendOutcome.SentOriginalKept, outcome?.Detail);
+                    results[position] = new ResendItemResult(item, moved ? ResendOutcome.Moved : ResendOutcome.SentOriginalKept, outcome?.Detail);
                 }
                 catch (Exception exception)
                 {
                     await WriteStateAsync(stateFile, "DeleteUncertain", CancellationToken.None);
                     await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.detail"),
                         SensitiveDataRedactor.SummarizeException(exception), CancellationToken.None);
-                    result = new ResendItemResult(item, ResendOutcome.SentOriginalKept, "Send confirmed; deletion outcome unknown. Never resend this item.");
+                    results[position] = new ResendItemResult(item, ResendOutcome.SentOriginalKept, "Send confirmed; deletion outcome unknown. Never resend this item.");
                 }
             }
-            results.Add(result);
-            progress?.Report(new ResendProgress(results.Count, indexes.Count, results.Count(r => r.Outcome == ResendOutcome.Failed)));
         }
-        foreach (var index in indexes.Skip(results.Count)) results.Add(new ResendItemResult(prepared[index], ResendOutcome.Cancelled, "Unattempted; continue from history."));
+        foreach (var index in indexes.Skip(attempted)) results.Add(new ResendItemResult(prepared[index], ResendOutcome.Cancelled, "Unattempted; continue from history."));
         return new ResendResult(results, backup);
     }
 }
