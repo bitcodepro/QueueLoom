@@ -1,4 +1,5 @@
 using System.Globalization;
+using Amazon.SQS.Model;
 using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Aws;
@@ -181,6 +182,71 @@ public sealed class BrokerTimeAndExactIntegerTests
     [InlineData("amount + 0.5 = 5.5")]
     public void Whole_decimal_matches_a_fractional_literal(string filter) =>
         Assert.Equal(RoutingOutcome.Receives, CheckAmount(filter, 5m));
+
+    [Fact]
+    public void A_long_promotes_to_double_with_the_documented_precision_loss()
+    {
+        // Service Bus uses C# implicit Int64-to-Double. 9007199254740993 therefore equals 9007199254740992.0.
+        // The same integer written without a decimal point stays a long, so the two values stay different.
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id > 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id = 9007199254740992", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id > 9007199254740992", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992d));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 5.0", 5L));
+        // A real decimal still uses the exact decimal rules. This spelling is not that double.
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740993.0", 9007199254740993m));
+    }
+
+    [Theory]
+    [InlineData("id < 1e400")]
+    [InlineData("id > -1e400")]
+    public void A_non_finite_literal_is_left_to_Service_Bus(string filter)
+    {
+        // 1e400 is +Infinity. That is not the long-exactness question, and the broker has not been checked.
+        Assert.Throws<SqlFilterNotSupportedException>(() => SqlFilter.Parse(filter));
+        Assert.Equal(RoutingOutcome.Unknown, Check(filter, long.MaxValue));
+    }
+
+    [Fact]
+    public void An_exactly_representable_double_matches_its_literal()
+    {
+        // These spellings have 16 or 17 significant digits. Parsing them as decimal and casting
+        // back misses the double, so the preview used to say unknown for the property's own value.
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 1234567.123456789", 1234567.123456789d));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 0.30000000000000004", 0.30000000000000004d));
+    }
+
+    [Fact]
+    public void Long_and_double_arithmetic_follows_double_promotion()
+    {
+        Assert.Equal(RoutingOutcome.Skips, Check("id * 0.1 = 0.3", 3L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id * 0.1 = 0.30000000000000004", 3L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id * 0.1 > 0.3", 3L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id % 0.1 = 0", 1L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id / 3.0 = 1.6666666666666667", 5L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id * 0.1 = 0.3 OR id = 99", 3L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id * 3 = 0.3", 0.1f));
+    }
+
+    [Fact]
+    public void An_sqs_sent_timestamp_outside_the_calendar_does_not_fail_the_message()
+    {
+        var message = new Message
+        {
+            MessageId = "m-1",
+            Body = "hello",
+            Attributes = new Dictionary<string, string> { ["SentTimestamp"] = "253402300800000" }
+        };
+
+        var browsed = AwsMessageMapper.FromSqs(message, Source, ServiceBusSubQueue.Active);
+
+        Assert.Equal("m-1", browsed.Properties.MessageId);
+        Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(browsed.Body.Span));
+        Assert.Null(browsed.EnqueuedAt);
+    }
 
     private static RoutingOutcome Check(string filter, object value) =>
         TopicRouting.Check(new SubscriptionRule("r", RuleFilterKind.Sql, filter),
