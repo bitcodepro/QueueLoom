@@ -597,6 +597,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         return result;
     }
 
+    /// <summary>How many messages of other sources (or repeated deliveries) a purge holds before it stops.</summary>
+    internal const int MaximumHeldDuringPurge = 20_000;
+
     private async Task<DeadLetterPurgeSourceResult> PurgeTargetAsync(
         DeadLetterPurgeTarget target,
         ILeasedMessageChannel channel,
@@ -655,6 +658,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 {
                     result = new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
                         $"{failed.Count} message(s) could not be deleted from {channel.PhysicalName}. Their backups are kept.");
+                    break;
+                }
+                if (outstanding.Count >= MaximumHeldDuringPurge)
+                {
+                    // A shared dead-letter queue full of other sources' messages: held ones come back after their
+                    // hold ends, so the receive never runs dry. Stop instead of scanning forever.
+                    result = new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
+                        $"Stopped after {outstanding.Count:N0} messages of other sources in {channel.PhysicalName}; run the purge again for the rest.");
                     break;
                 }
             }

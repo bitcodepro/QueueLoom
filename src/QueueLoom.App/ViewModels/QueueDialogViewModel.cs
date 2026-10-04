@@ -179,10 +179,22 @@ public sealed class QueueDialogViewModel : ObservableObject
             return null;
         }
 
+        TimeSpan? timeToLive = null;
+        if (ShowTimeToLive && TimeToLive is { } ttl)
+        {
+            try
+            {
+                timeToLive = TimeToLiveUnit switch { TimeUnit.Minutes => TimeSpan.FromMinutes(ttl), TimeUnit.Hours => TimeSpan.FromHours(ttl), _ => TimeSpan.FromDays(ttl) };
+            }
+            catch (OverflowException)
+            {
+                Error = "The time to keep unread messages is too long.";
+                return null;
+            }
+        }
+
         return new QueueSettings(
-            ShowTimeToLive && TimeToLive is { } ttl
-                ? TimeToLiveUnit switch { TimeUnit.Minutes => TimeSpan.FromMinutes(ttl), TimeUnit.Hours => TimeSpan.FromHours(ttl), _ => TimeSpan.FromDays(ttl) }
-                : null,
+            timeToLive,
             ShowMaxDeliveryCount ? MaxDeliveryCount : null,
             ShowLockDuration && LockSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null,
             ShowDeadLetterOnExpiration ? DeadLetterOnExpiration : null,

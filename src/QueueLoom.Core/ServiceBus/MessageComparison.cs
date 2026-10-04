@@ -49,7 +49,9 @@ public static class MessageComparison
         var rightLines = Lines(right.Body);
         var sourceTruncated = left.IsBodyTruncated || right.IsBodyTruncated;
         var lineLimitReached = leftLines.Length > MaximumLines || rightLines.Length > MaximumLines;
-        var lines = Diff(leftLines.Take(MaximumLines).ToArray(), rightLines.Take(MaximumLines).ToArray());
+        var lines = Diff(leftLines.Take(MaximumLines).ToArray(), rightLines.Take(MaximumLines).ToArray())
+            .Select(line => line.Text.Contains('\r') ? line with { Text = line.Text.Replace('\r', '␍') } : line)
+            .ToArray();
         return new MessageComparisonResult(lines, CompareProperties(left, right), sourceTruncated || lineLimitReached)
         {
             SourceBodyTruncated = sourceTruncated,
@@ -138,6 +140,7 @@ public static class MessageComparison
             using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
                    {
                        Indented = true,
+                       NewLine = "\n",
                        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
                    }))
             {
@@ -148,7 +151,9 @@ public static class MessageComparison
         catch (JsonException)
         {
         }
-        return text.ReplaceLineEndings("\n").Split('\n');
+        // Lines end at \n only; a carriage return stays in the line, so a body written with \r\n or a lone \r
+        // never compares equal to the same text written with \n. It becomes a visible mark only after the diff.
+        return text.Split('\n');
     }
 
     private static IReadOnlyList<PropertyDifference> CompareProperties(BrowsedMessage left, BrowsedMessage right)

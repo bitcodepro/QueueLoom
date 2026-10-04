@@ -127,7 +127,8 @@ public sealed partial class MessageSearchQuery
         {
             try
             {
-                document = JsonDocument.Parse(body);
+                // A UTF-8 byte order mark is not JSON, but many writers put one in front of it.
+                document = JsonDocument.Parse(body.Span.StartsWith("\uFEFF"u8) ? body[3..] : body);
             }
             catch (JsonException)
             {
@@ -263,6 +264,7 @@ public sealed partial class MessageSearchQuery
             (JsonValueKind.String, JsonValueKind.String) => value.GetString() == expected.GetString(),
             (JsonValueKind.Number, JsonValueKind.Number) => CompareNumbers(value.GetRawText(), expected.GetRawText()) == 0,
             (JsonValueKind.String, JsonValueKind.Number) => CompareNumbers(value.GetString(), expected.GetRawText()) == 0,
+            (JsonValueKind.Number, JsonValueKind.String) => CompareNumbers(expected.GetString(), value.GetRawText()) == 0,
             (JsonValueKind.True or JsonValueKind.False, JsonValueKind.True or JsonValueKind.False) => value.ValueKind == expected.ValueKind,
             (JsonValueKind.Null, JsonValueKind.Null) => true,
             _ => false
@@ -414,7 +416,11 @@ public sealed partial class MessageSearchQuery
                         {
                             throw Error("Expected a number, * or a 'quoted name' inside [ ].");
                         }
-                        steps.Add(new Index(int.Parse(text[start.._position], CultureInfo.InvariantCulture)));
+                        if (!int.TryParse(text[start.._position], NumberStyles.None, CultureInfo.InvariantCulture, out var index))
+                        {
+                            throw Error($"The index {text[start.._position]} is too large.");
+                        }
+                        steps.Add(new Index(index));
                     }
                     SkipSpaces();
                     if (!TryText("]"))
@@ -449,7 +455,15 @@ public sealed partial class MessageSearchQuery
             if (word is "true" or "false" or "null" ||
                 double.TryParse(word, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
             {
-                return JsonDocument.Parse(word).RootElement.Clone();
+                try
+                {
+                    return JsonDocument.Parse(word).RootElement.Clone();
+                }
+                catch (JsonException)
+                {
+                    // .5, 05, +5 and Infinity read as numbers in .NET but not in JSON, which the bodies are compared in.
+                    throw Error($"'{word}' is not a JSON number; write it as JSON does, for example 0.5 or 5.");
+                }
             }
             throw Error(word.Length == 0
                 ? "A value is missing after the comparison."

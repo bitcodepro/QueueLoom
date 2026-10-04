@@ -454,7 +454,14 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         await using var channel = await _connection.CreateChannelAsync();
         for (var index = 0; index < count; index++)
         {
-            var message = await channel.BasicGetAsync(queue, autoAck: false) ?? throw new InvalidOperationException("Nothing to reject.");
+            // Publishing happened on another channel without confirms, so the message can arrive a moment later.
+            BasicGetResult? message = null;
+            for (var attempt = 0; message is null && attempt < 50; attempt++)
+            {
+                message = await channel.BasicGetAsync(queue, autoAck: false);
+                if (message is null) await Task.Delay(100);
+            }
+            if (message is null) throw new InvalidOperationException("Nothing to reject.");
             await channel.BasicRejectAsync(message.DeliveryTag, requeue: false);
         }
     }

@@ -335,6 +335,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         private readonly Dictionary<int, long> _windowFrom = [];
         private readonly Dictionary<int, long> _low = [];
         private readonly Dictionary<int, long> _deletableFrom = [];
+        // The offset of the record read before the latest one in each partition (or one before where reading began).
+        // Kafka hands out a partition's records in order, so offsets in between hold no readable record: only
+        // transaction markers, aborted records or records compaction removed.
+        private readonly Dictionary<int, long> _lastRead = [];
         private readonly HashSet<int> _finished = [];
         private IConsumer<byte[]?, byte[]?>? _consumer;
         private BrowseStart _start = BrowseStart.Oldest;
@@ -434,6 +438,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     var to = _windowFrom[partition];
                     var from = to - Math.Min(width, to - _low[partition]);
                     _windowFrom[partition] = from;
+                    _lastRead[partition] = from - 1;
                     ends[partition] = to;
                     assignments.Add(new(topic.Name, partition, from));
                 }
@@ -469,8 +474,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     _finished.Add(partition);
                     continue;
                 }
-                if (visit is null) messages.Add(ToLeased(result));
-                else visit(ToLeased(result));
+                // Unknown where reading began: no gap before this record counts as empty.
+                var previous = _lastRead.TryGetValue(partition, out var last) ? last : result.Offset.Value - 1;
+                _lastRead[partition] = result.Offset.Value;
+                var leased = ToLeased(result, previous);
+                if (visit is null) messages.Add(leased);
+                else visit(leased);
                 if (result.Offset.Value >= _end[partition] - 1)
                 {
                     _finished.Add(partition);
@@ -494,9 +503,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 var next = _deletableFrom[partition.Key];
                 foreach (var message in partition.OrderBy(message => Position(message).Offset))
                 {
-                    if (Position(message).Offset == next)
+                    var (_, offset, previous) = Position(message);
+                    // A gap before the record counts as deleted when the record read just before it is already gone,
+                    // so a topic written by a transactional producer (a marker after each record) can be emptied.
+                    if (offset == next || offset > next && previous < next)
                     {
-                        next++;
+                        next = offset + 1;
                     }
                     else
                     {
@@ -519,9 +531,26 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                         _deletableFrom[deletion.Partition.Value] = deletion.Offset.Value;
                     }
                 }
-                catch (DeleteRecordsException)
+                catch (DeleteRecordsException exception)
                 {
-                    return messages;
+                    // Partitions that were cut stay cut; only the messages of the others are not deleted.
+                    var refused = new HashSet<int>();
+                    foreach (var report in exception.Results)
+                    {
+                        if (report.Error.IsError)
+                        {
+                            refused.Add(report.Partition.Value);
+                        }
+                        else
+                        {
+                            _deletableFrom[report.Partition.Value] = report.Offset.Value;
+                        }
+                    }
+                    if (refused.Count == 0)
+                    {
+                        refused.UnionWith(deletions.Select(deletion => deletion.Partition.Value));
+                    }
+                    return messages.Where(message => refused.Contains(Position(message).Partition) || failed.Contains(message)).ToList();
                 }
             }
             return failed;
@@ -555,6 +584,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 var (from, to) = Range(partition, marks.Low.Value, marks.High.Value, byTime);
                 _end[partition] = to;
                 _deletableFrom[partition] = marks.Low.Value;
+                _lastRead[partition] = from - 1;
                 if (to > from)
                 {
                     assignments.Add(new TopicPartitionOffset(topic.Name, partition, new Offset(from)));
@@ -590,18 +620,23 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             return (from, to);
         }
 
-        private LeasedMessage ToLeased(ConsumeResult<byte[]?, byte[]?> result)
+        private LeasedMessage ToLeased(ConsumeResult<byte[]?, byte[]?> result, long previous)
         {
             var message = KafkaMessageMapper.FromKafka(result, source, subQueue);
             var original = KafkaMessageMapper.OriginalTopic(result.Message.Headers);
-            return new LeasedMessage(message, $"{result.Partition.Value}:{result.Offset.Value}",
-                BelongsToSource: belongsTo is null || original is null || original == belongsTo);
+            return new LeasedMessage(message, $"{result.Partition.Value}:{result.Offset.Value}:{previous}",
+                BelongsToSource: belongsTo is null || original is null || original == belongsTo)
+            {
+                // Every offset is its own record, even when two share a MessageId header (a resent copy, a retry).
+                DeliveryIdentity = $"{result.Partition.Value}:{result.Offset.Value}"
+            };
         }
 
-        private static (int Partition, long Offset) Position(LeasedMessage message)
+        private static (int Partition, long Offset, long Previous) Position(LeasedMessage message)
         {
             var parts = message.LeaseHandle.Split(':');
-            return (int.Parse(parts[0], CultureInfo.InvariantCulture), long.Parse(parts[1], CultureInfo.InvariantCulture));
+            return (int.Parse(parts[0], CultureInfo.InvariantCulture), long.Parse(parts[1], CultureInfo.InvariantCulture),
+                long.Parse(parts[2], CultureInfo.InvariantCulture));
         }
     }
 }

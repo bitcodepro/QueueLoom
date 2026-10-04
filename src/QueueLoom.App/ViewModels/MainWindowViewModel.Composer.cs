@@ -441,7 +441,8 @@ public sealed partial class MainWindowViewModel
 
     private void BindDraftToConnectedEnvironment()
     {
-        _draftProfileId = _workspace.ConnectedProfileId;
+        // The environment the operator connected to: a monitor check may have the workspace on another one for a moment.
+        _draftProfileId = _connectedProfile?.Id;
         _draftProfileName = _connectedProfile?.Name;
         OnPropertyChanged(nameof(HasDraftEnvironmentMismatch));
         OnPropertyChanged(nameof(DraftEnvironmentWarning));

@@ -86,7 +86,7 @@ public static partial class DeadLetterCauses
     [GeneratedRegex(@"\b(?=[0-9a-fA-F]*\d)(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{12,}\b")]
     private static partial Regex HexId();
 
-    [GeneratedRegex(@"(?<![\p{L}_])\d+([.,]\d+)?(?![\p{L}_])")]
+    [GeneratedRegex(@"(?<![\p{L}_\d])(?>\d+(?:[.,]\d+)?)(?![_\d])")]
     private static partial Regex Number();
 
     [GeneratedRegex(@"\s+")]

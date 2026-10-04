@@ -38,12 +38,13 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         try
         {
             return File.Exists(FilePath)
-                ? (JsonSerializer.Deserialize<List<ResendDocument>>(File.ReadAllText(FilePath), Options) ?? []).Select(ToModel).ToArray()
+                ? (JsonSerializer.Deserialize<List<ResendDocument?>>(File.ReadAllText(FilePath), Options) ?? []).Select(ToModel).ToArray()
                 : [];
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or InvalidDataException or ArgumentException)
         {
-            // A damaged file is kept aside rather than overwritten, so nothing scheduled is silently lost.
+            // A damaged file is kept aside rather than overwritten, so nothing scheduled is silently lost, and the
+            // app still starts.
             File.Move(FilePath, FilePath + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
             return [];
         }
@@ -110,11 +111,22 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
             { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata }).ToList())
         { ConfigurationIdentity = resend.ConfigurationIdentity };
 
-    private static ScheduledResend ToModel(ResendDocument document) => new(
+    private static ScheduledResend ToModel(ResendDocument? document)
+    {
+        // Valid JSON can still miss parts a job needs, for example after a hand edit or a partial write.
+        if (document is null || document.EnvironmentName is null || document.DestinationDisplay is null || document.Items is null ||
+            document.Items.Any(item => item is null || item.Source is null || item.Destination is null || item.Body is null))
+        {
+            throw new InvalidDataException("A scheduled resend is incomplete.");
+        }
+        return ToModelCore(document);
+    }
+
+    private static ScheduledResend ToModelCore(ResendDocument document) => new(
         document.Id, document.ProfileId, document.EnvironmentName, document.CreatedAt, document.DueAt, document.Mode,
         document.MessagesPerSecond, document.DestinationDisplay,
         document.Items.Select(item => new ScheduledResendItem(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId,
-            item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties)
+            item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties?.Where(property => property is not null))
             { KafkaEnvelope = item.KafkaEnvelope, LegacyAmqpMetadata = !item.HasSeparatedAmqpMetadata })).ToArray())
         { ConfigurationIdentity = document.ConfigurationIdentity };
 

@@ -112,6 +112,50 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
     }
 
     [EmulatorFact(Emulators.Kafka)]
+    public async Task Records_that_share_a_MessageId_are_each_shown_and_purged()
+    {
+        await DeadLetterAsync("o-3", "o-3");
+        var orders = ServiceBusEntityReference.Queue(_orders);
+
+        Assert.Equal(2, (await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter))).Count);
+        var purge = await _workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
+            [new DeadLetterPurgeTarget(orders, ServiceBusSubQueue.DeadLetter)], batchSize: 20, maximumMessagesPerSubQueue: 100));
+
+        Assert.Equal(2, purge.DeletedCount);
+        Assert.False(purge.HasFailures);
+        Assert.Equal((2L, 2L), await WatermarksAsync(DeadLetters));
+    }
+
+    [EmulatorFact(Emulators.Kafka)]
+    public async Task A_dead_letter_topic_written_in_transactions_can_be_purged()
+    {
+        using (var producer = new ProducerBuilder<string?, string>(new ProducerConfig
+               { BootstrapServers = Emulators.KafkaServers, TransactionalId = Emulators.Unique("dlt"), EnableIdempotence = true }).Build())
+        {
+            producer.InitTransactions(TimeSpan.FromSeconds(30));
+            for (var index = 0; index < 5; index++)
+            {
+                producer.BeginTransaction();
+                await producer.ProduceAsync(new TopicPartition(DeadLetters, 0), new Message<string?, string>
+                {
+                    Value = "dead-" + index,
+                    Headers = new Headers { { "kafka_dlt-original-topic", Encoding.UTF8.GetBytes(_orders) } }
+                });
+                producer.CommitTransaction(TimeSpan.FromSeconds(30));
+            }
+        }
+        var orders = ServiceBusEntityReference.Queue(_orders);
+        Assert.True((await WatermarksAsync(DeadLetters)).High > 5);
+
+        var purge = await _workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
+            [new DeadLetterPurgeTarget(orders, ServiceBusSubQueue.DeadLetter)], batchSize: 20, maximumMessagesPerSubQueue: 100));
+
+        Assert.Equal(5, purge.DeletedCount);
+        Assert.False(purge.HasFailures);
+        Assert.Empty(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(orders, ServiceBusSubQueue.DeadLetter)));
+    }
+
+    [EmulatorFact(Emulators.Kafka)]
     public async Task Dead_letters_are_read_by_offset_with_their_reason_and_nothing_changes()
     {
         await DeadLetterAsync("o-3", "o-4");

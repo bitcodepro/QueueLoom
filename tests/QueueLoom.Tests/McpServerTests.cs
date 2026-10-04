@@ -61,6 +61,41 @@ public sealed class McpServerTests
     }
 
     [Fact]
+    public async Task DeadLetterHistory_LeavesOutScansWithUnreadableQueues()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        var profile = (await server.Profiles.ListAsync())[0];
+        server.Workspace.Snapshots[profile.Id] = new DeadLetterSnapshot(profile.Id, DateTimeOffset.UtcNow,
+        [
+            new DeadLetterEntitySnapshot(Orders.Reference, 2),
+            new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("payments"), null, error: "Unauthorized")
+        ]);
+
+        await server.CallAsync("scan_dead_letters");
+        var history = await server.CallAsync("get_dead_letter_history", new() { ["hours"] = 6 });
+
+        Assert.Equal(0, history.GetProperty("sampleCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Environments_ExactNameWinsAndSameNamesAreNeverGuessed()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        var upper = CreateProfile("DEVELOPMENT", EnvironmentKind.Test);
+        await server.Profiles.UpsertAsync(upper);
+        server.Workspace.Snapshots[upper.Id] = new DeadLetterSnapshot(upper.Id, DateTimeOffset.UtcNow, []);
+
+        var scan = await server.CallAsync("scan_dead_letters", new() { ["environment"] = "DEVELOPMENT" });
+        Assert.Equal("DEVELOPMENT", scan.GetProperty("environment").GetString());
+
+        await server.Profiles.UpsertAsync(CreateProfile("DEVELOPMENT", EnvironmentKind.Test));
+        Assert.Contains("pass the id", await server.CallForErrorAsync("scan_dead_letters", new() { ["environment"] = "DEVELOPMENT" }),
+            StringComparison.Ordinal);
+        Assert.Equal("DEVELOPMENT", (await server.CallAsync("scan_dead_letters", new() { ["environment"] = upper.Id.ToString() }))
+            .GetProperty("environment").GetString());
+    }
+
+    [Fact]
     public async Task TopicRouting_ExplainsWhichSubscriptionsReceiveAMessage()
     {
         await using var server = await McpTestServer.StartAsync();

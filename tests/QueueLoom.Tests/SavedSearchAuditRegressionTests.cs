@@ -276,4 +276,35 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(searches, workspace.SearchRequests.Count);
         Assert.Equal(connections, workspace.ConnectCalls);
     }
+
+    [Fact]
+    public async Task SavedSearchAudit_ChosenWhileASearchRunsDiscardsTheEarlierQuerysMatches()
+    {
+        var (viewModel, workspace, _) = await CreateSearchedViewModelAsync(ProfileAccessMode.ReadWrite);
+        await using var lifetime = viewModel;
+        var scope = viewModel.SelectedDeadLetterEnvironmentFilter!;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        workspace.SearchGate = _ =>
+        {
+            started.TrySetResult();
+            return release.Task;
+        };
+        viewModel.DeadLetterSearchQuery = "correlation";
+        var pending = viewModel.SearchDeadLettersCommand.ExecuteAsync();
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            viewModel.SelectedSavedSearch = new SavedSearch("Order 1042", "order-1042", scope.ProfileId);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal("order-1042", viewModel.DeadLetterSearchQuery);
+        Assert.Empty(viewModel.Messages);
+        Assert.Contains("Search again", viewModel.DeadLetterSearchStatus, StringComparison.Ordinal);
+    }
 }

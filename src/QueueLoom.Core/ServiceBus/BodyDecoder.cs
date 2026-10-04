@@ -672,7 +672,7 @@ public static class BodyDecoder
             }
             catch (Exception exception) when (exception is FormatException or JsonException or InvalidDataException
                                                   or ArgumentException or OverflowException or IndexOutOfRangeException
-                                                  or InvalidOperationException)
+                                                  or InvalidOperationException or KeyNotFoundException)
             {
                 return (null, $"The Avro data could not be read: {exception.Message}");
             }
@@ -751,10 +751,26 @@ public static class BodyDecoder
 
         public JsonElement Root { get; }
 
+        // A named type that refers to itself without a record or union in between never reads a byte, so the
+        // depth stops it before the stack runs out. Real nesting this deep is not readable as JSON anyway.
+        private const int MaximumDepth = 1000;
+        private int _depth;
+
         public void Write(Utf8JsonWriter writer, JsonElement schema, AvroReader reader)
         {
             CheckOutputBudget(writer);
-            WriteValue(writer, schema, reader);
+            if (++_depth > MaximumDepth)
+            {
+                throw new InvalidDataException("The Avro schema nests too deeply or refers to itself.");
+            }
+            try
+            {
+                WriteValue(writer, schema, reader);
+            }
+            finally
+            {
+                _depth--;
+            }
             CheckOutputBudget(writer);
             // The Stream overload buffers JSON inside the writer. Drain after each bounded token
             // window, including primitive arrays, rather than waiting for Flush/Dispose at the end.
