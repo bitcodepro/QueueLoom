@@ -48,6 +48,20 @@ public sealed class RabbitMqTopologyTests
     }
 
     [Fact]
+    public void DeadLetterQueues_WithoutARoutingKey_FollowTheKeysTheQueueIsBoundWith()
+    {
+        var index = new RabbitMqTopologyIndex(
+            [
+                Queue("orders", """{"x-dead-letter-exchange":"dlx"}"""),
+                Queue("orders-dlq", "{}"), Queue("other-dlq", "{}")
+            ],
+            [new("app", "direct"), new("dlx", "direct")],
+            [new("app", "orders", "order.created"), new("dlx", "orders-dlq", "order.created"), new("dlx", "other-dlq", "invoice.created")]);
+
+        Assert.Equal("orders-dlq", index.DeadLetterQueueOf("orders"));
+    }
+
+    [Fact]
     public void Profiles_NeedAHostAndAUser()
     {
         ServiceBusProfile Rabbit(RabbitMqSettings settings) => ServiceBusProfile.CreateNew(

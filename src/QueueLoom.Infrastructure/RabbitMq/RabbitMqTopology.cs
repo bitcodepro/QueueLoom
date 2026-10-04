@@ -191,7 +191,8 @@ internal sealed class RabbitMqTopologyIndex
     }
 
     /// <summary>
-    /// Follows the queue's dead-letter exchange and routing key to the queue that receives its dead letters:
+    /// Follows the queue's dead-letter exchange and routing key to the queue that receives its dead letters (without a
+    /// dead-letter routing key, the keys the queue is bound with are tried after its name):
     /// the default exchange routes by queue name; direct and topic exchanges by their bindings; fanout and headers
     /// exchanges to every bound queue (the first one is used).
     /// </summary>
@@ -214,17 +215,35 @@ internal sealed class RabbitMqTopologyIndex
             return null;
         }
 
-        return Bindings
-            .Where(binding => binding.Exchange == exchange.Name && binding.Queue != queue.Name && _queues.ContainsKey(binding.Queue))
-            .Where(binding => exchange.Type switch
+        // Without x-dead-letter-routing-key a dead letter keeps the routing key it was published with: the queue name
+        // through the default exchange, or a key one of the queue's own bindings accepts.
+        IEnumerable<string> keys = queue.DeadLetterRoutingKey is { } fixedKey
+            ? [fixedKey]
+            : new[] { queue.Name }.Concat(Bindings
+                .Where(binding => binding.Queue == queue.Name && binding.Exchange.Length > 0 && binding.Exchange != exchange.Name)
+                .Select(binding => binding.RoutingKey)
+                .Where(key => key.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal));
+        foreach (var key in keys)
+        {
+            var target = Bindings
+                .Where(binding => binding.Exchange == exchange.Name && binding.Queue != queue.Name && _queues.ContainsKey(binding.Queue))
+                .Where(binding => exchange.Type switch
+                {
+                    "direct" => binding.RoutingKey == key,
+                    "topic" => TopicMatches(binding.RoutingKey, key),
+                    _ => true
+                })
+                .Select(binding => binding.Queue)
+                .Order(StringComparer.Ordinal)
+                .FirstOrDefault();
+            if (target is not null)
             {
-                "direct" => binding.RoutingKey == routingKey,
-                "topic" => TopicMatches(binding.RoutingKey, routingKey),
-                _ => true
-            })
-            .Select(binding => binding.Queue)
-            .Order(StringComparer.Ordinal)
-            .FirstOrDefault();
+                return target;
+            }
+        }
+        return null;
     }
 
     /// <summary>AMQP topic matching: '*' is one word, '#' is zero or more words.</summary>

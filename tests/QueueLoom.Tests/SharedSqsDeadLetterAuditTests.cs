@@ -76,10 +76,30 @@ public sealed class SharedSqsDeadLetterAuditTests
         Assert.Empty(broker.Deleted);
     }
 
-    private static AwsSqsSnsWorkspace CreateWorkspace(string root, MixedSqsClient broker)
+    [Fact]
+    public async Task QueueScopedPurgeStopsWhenOtherSourcesNeverRunOut()
+    {
+        using var directory = new TemporaryDirectory();
+        var broker = new EndlessOtherSourceClient();
+        await using var workspace = CreateWorkspace(directory.Path, broker, 0);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        var result = await workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
+            [ServiceBusEntityReference.Queue("q")], [ServiceBusSubQueue.DeadLetter]), timeout.Token);
+
+        Assert.False(timeout.IsCancellationRequested);
+        var source = Assert.Single(result.Sources);
+        Assert.Contains("other sources", source.Error, StringComparison.Ordinal);
+        Assert.Equal(0, result.DeletedCount);
+        Assert.Equal(LeasedMessagingWorkspace.MaximumHeldDuringPurge, broker.Released.Count);
+    }
+
+    private static AwsSqsSnsWorkspace CreateWorkspace(string root, MixedSqsClient broker) => CreateWorkspace(root, broker, broker.Ids.Length);
+
+    private static AwsSqsSnsWorkspace CreateWorkspace(string root, AmazonSQSClient broker, int sharedCount)
     {
         var owner = new AwsSqsSnsWorkspace(new DeepAuditCloudTests.EmptyVault(), backupStore: new DeadLetterJsonBackupStore(QueueLoomPaths.ForRoot(root)));
-        var shared = new AwsQueueInfo("shared", "http://localhost/shared", SharedArn, false, broker.Ids.Length, 0, 0, null, null, null);
+        var shared = new AwsQueueInfo("shared", "http://localhost/shared", SharedArn, false, sharedCount, 0, 0, null, null, null);
         var queue = new AwsQueueInfo("q", "http://localhost/q", QueueArn, false, 0, 0, 0, SharedArn, null, null);
         var subscription = new AwsSubscriptionInfo("arn:aws:sns:us-east-1:123:events:s", "sqs", QueueArn, SharedArn) { Name = "s" };
         var index = new AwsTopologyIndex([shared, queue], [new AwsTopicInfo("events", "arn:aws:sns:us-east-1:123:events", false, [subscription])]);
@@ -90,6 +110,23 @@ public sealed class SharedSqsDeadLetterAuditTests
         Set(typeof(LeasedMessagingWorkspace), "_cachedTopology", index.ToTopology(DateTimeOffset.UtcNow));
         return owner;
         void Set(Type type, string field, object value) => type.GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(owner, value);
+    }
+
+    private sealed class EndlessOtherSourceClient() : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost" })
+    {
+        private int _next;
+        public List<string> Released { get; } = [];
+        public override Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ReceiveMessageResponse
+            {
+                Messages = Enumerable.Range(0, request.MaxNumberOfMessages ?? 10).Select(_ => $"other-{_next++}").Select(id => new Message
+                {
+                    MessageId = id, ReceiptHandle = id, Body = id,
+                    Attributes = new() { ["DeadLetterQueueSourceArn"] = "arn:aws:sqs:us-east-1:123:other" }
+                }).ToList()
+            });
+        public override Task<ChangeMessageVisibilityBatchResponse> ChangeMessageVisibilityBatchAsync(ChangeMessageVisibilityBatchRequest request, CancellationToken cancellationToken = default)
+        { Released.AddRange(request.Entries.Select(e => e.ReceiptHandle)); return Task.FromResult(new ChangeMessageVisibilityBatchResponse { Failed = [] }); }
     }
 
     private sealed class MixedSqsClient() : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost" })
