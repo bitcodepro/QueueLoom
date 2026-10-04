@@ -20,6 +20,19 @@ internal static class BrokerClock
         }
     }
 
+    /// <summary>Null when <paramref name="milliseconds"/> is outside year 1 through 9999.</summary>
+    public static DateTimeOffset? FromUnixMilliseconds(long milliseconds)
+    {
+        try
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Null when <paramref name="milliseconds"/> does not fit in a TimeSpan. Negative spans that do fit are kept.</summary>
     public static TimeSpan? FromMilliseconds(long milliseconds)
     {

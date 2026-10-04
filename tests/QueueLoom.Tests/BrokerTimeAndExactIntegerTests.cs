@@ -1,4 +1,5 @@
 using System.Globalization;
+using Amazon.SQS.Model;
 using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Aws;
@@ -181,6 +182,38 @@ public sealed class BrokerTimeAndExactIntegerTests
     [InlineData("amount + 0.5 = 5.5")]
     public void Whole_decimal_matches_a_fractional_literal(string filter) =>
         Assert.Equal(RoutingOutcome.Receives, CheckAmount(filter, 5m));
+
+    [Fact]
+    public void A_long_is_not_widened_into_a_different_double()
+    {
+        // 9007199254740993 is not a double. Widening it makes the filter match its neighbour.
+        Assert.Equal(RoutingOutcome.Skips, Check("id = 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id = 9007199254740993.0", 9007199254740992L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740993m));
+        Assert.Equal(RoutingOutcome.Receives, Check("id > 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id + 0.0 = 9007199254740992", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id + 0.0 = 9007199254740993", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 5.0", 5L));
+    }
+
+    [Fact]
+    public void An_sqs_sent_timestamp_outside_the_calendar_does_not_fail_the_message()
+    {
+        var message = new Message
+        {
+            MessageId = "m-1",
+            Body = "hello",
+            Attributes = new Dictionary<string, string> { ["SentTimestamp"] = "253402300800000" }
+        };
+
+        var browsed = AwsMessageMapper.FromSqs(message, Source, ServiceBusSubQueue.Active);
+
+        Assert.Equal("m-1", browsed.Properties.MessageId);
+        Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(browsed.Body.Span));
+        Assert.Null(browsed.EnqueuedAt);
+    }
 
     private static RoutingOutcome Check(string filter, object value) =>
         TopicRouting.Check(new SubscriptionRule("r", RuleFilterKind.Sql, filter),

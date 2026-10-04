@@ -399,13 +399,15 @@ public sealed class SqlFilter
 
     /// <summary>
     /// Decimal operands, including a long and a Double that round-trips through Decimal.
-    /// At least one side must already be Decimal, so two longs keep integer arithmetic.
+    /// Two longs stay on integer arithmetic. Two doubles stay on double arithmetic, so 0.1 + 0.2
+    /// does not change. A long and an exact double (9007199254740993 + 0.0) use Decimal, because
+    /// widening that long to double would make it a different integer.
     /// </summary>
     private static bool TryDecimals(object? a, object? b, out decimal left, out decimal right)
     {
         left = 0;
         right = 0;
-        if (a is not decimal && b is not decimal)
+        if (a is long && b is long || a is double && b is double || a is not (decimal or long or double) || b is not (decimal or long or double))
         {
             return false;
         }
@@ -479,12 +481,27 @@ public sealed class SqlFilter
         return (decimal)asDouble == number ? asDouble : null;
     }
 
+    /// <summary>
+    /// A long joins a double only when that double is the same integer. Casting 9007199254740993
+    /// makes it 9007199254740992, which would report a match against a different number.
+    /// </summary>
     private static double? Number(object? value) => value switch
     {
-        long number => number,
+        long number => ExactLong(number),
         double number => number,
         _ => null
     };
+
+    private static double? ExactLong(long number)
+    {
+        var asDouble = (double)number;
+        // (double)long.MaxValue is 2^63, which does not fit back into a long.
+        if (!double.IsFinite(asDouble) || asDouble < long.MinValue || asDouble >= 9223372036854775808d)
+        {
+            return null;
+        }
+        return (long)asDouble == number ? asDouble : null;
+    }
 
     private static bool IsNumeric(object? value) =>
         value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
@@ -757,11 +774,37 @@ public sealed class SqlFilter
             {
                 return integer;
             }
+            // A double is kept only when it is the same value as the decimal spelling. 5.0 and 0.1 stay
+            // doubles; 9007199254740993.0 does not become 9007199254740992.
+            if (decimal.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var exact))
+            {
+                if (double.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var asDouble) &&
+                    DoubleIs(exact, asDouble))
+                {
+                    return asDouble;
+                }
+                return exact;
+            }
             if (double.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var real))
             {
                 return real;
             }
             throw new SqlFilterSyntaxException($"'{token.Text}' is not a number.", token.Start);
+        }
+
+        /// <summary>True when <paramref name="asDouble"/> converts back to <paramref name="exact"/> without rounding.</summary>
+        private static bool DoubleIs(decimal exact, double asDouble)
+        {
+            if (!double.IsFinite(asDouble))
+            {
+                return false;
+            }
+            var limit = (double)decimal.MaxValue;
+            if (asDouble >= limit || asDouble <= -limit)
+            {
+                return false;
+            }
+            return (decimal)asDouble == exact;
         }
 
         private string Slice(int start) => _text[start.._tokens[_index - 1].End].Trim();
