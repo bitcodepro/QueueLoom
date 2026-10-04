@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Messaging;
 
 namespace QueueLoom.Infrastructure.RabbitMq;
 
@@ -32,7 +33,7 @@ public sealed partial class RabbitMqWorkspace
                     arguments.TryGetProperty("x-message-ttl", out var value) && value.TryGetInt64(out var milliseconds)
             ? milliseconds
             : null;
-        return new QueueSettings(ttl is null ? null : TimeSpan.FromMilliseconds(ttl.Value), (int?)info.DeliveryLimit);
+        return new QueueSettings(ttl is null ? null : BrokerClock.FromMilliseconds(ttl.Value), (int?)info.DeliveryLimit);
     }
 
     public override Task CreateQueueAsync(QueueDefinition definition, CancellationToken cancellationToken = default) =>
