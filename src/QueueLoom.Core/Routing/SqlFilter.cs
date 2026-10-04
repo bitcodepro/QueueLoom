@@ -71,12 +71,17 @@ public sealed class SqlFilter
         public string Display => scope == "user" ? name : $"{scope}.{name}";
 
         /// <summary>
-        /// Numbers are widened to long or double for comparison. Guid, date, time span, character, URI and binary
-        /// values are left to Service Bus: how SQL compares them with literals is not something to guess.
+        /// Numbers are widened to long or double for comparison, except a whole Decimal inside Int64, which stays
+        /// Decimal so division stays fractional. Guid, date, time span, character, URI and binary values are left
+        /// to Service Bus: how SQL compares them with literals is not something to guess.
         /// </summary>
         public override object? Evaluate(Context context)
         {
             var value = RoutingValue.Normalize(Resolve(context, out _));
+            if (value is decimal number && decimal.Truncate(number) == number && number >= long.MinValue && number <= long.MaxValue)
+            {
+                return number;
+            }
             return value is null or string or bool or long or double
                 ? value
                 : throw new SqlFilterNotSupportedException(
@@ -98,7 +103,8 @@ public sealed class SqlFilter
                 ("NOT", bool flag) => !flag,
                 ("-", long number) => number == long.MinValue ? throw Overflow() : -number,
                 ("-", double number) => -number,
-                ("+", long or double) => value,
+                ("-", decimal number) => -number,
+                ("+", long or double or decimal) => value,
                 (_, null) => null,
                 _ => null
             };
@@ -145,7 +151,28 @@ public sealed class SqlFilter
                     throw Overflow();
                 }
             }
-            if (Number(a) is { } p && Number(b) is { } q)
+            // Decimal promotes like C#: a Decimal and a long divide as Decimal, so 5m / 2 is 2.5 rather than 2.
+            // A Double joins that only when it is an exact Decimal (5m + 0.5). Otherwise an exact Decimal
+            // widens to Double. Two numbers that fit neither way are left to Service Bus, not treated as SQL null.
+            if (TryDecimals(a, b, out var decA, out var decB))
+            {
+                try
+                {
+                    return op switch
+                    {
+                        "+" => decA + decB,
+                        "-" => decA - decB,
+                        "*" => decA * decB,
+                        "/" => decB == 0 ? null : decA / decB,
+                        _ => decB == 0 ? null : decA % decB
+                    };
+                }
+                catch (OverflowException)
+                {
+                    throw Overflow();
+                }
+            }
+            if (TryDoubles(a, b, out var p, out var q))
             {
                 return op switch
                 {
@@ -155,6 +182,10 @@ public sealed class SqlFilter
                     "/" => q == 0 ? null : p / q,
                     _ => q == 0 ? null : p % q
                 };
+            }
+            if (IsNumeric(a) && IsNumeric(b))
+            {
+                throw InexactNumbers();
             }
             if (op == "+" && a is string s && b is string t)
             {
@@ -310,7 +341,10 @@ public sealed class SqlFilter
         }
     }
 
-    /// <summary>-1, 0 or 1; null when either side is missing or the two cannot be compared.</summary>
+    /// <summary>
+    /// -1, 0 or 1; null when either side is missing or the types differ. Two numbers that cannot be
+    /// combined exactly are refused, so the preview says unknown rather than a skip.
+    /// </summary>
     private static int? Compare(object? a, object? b, bool equality)
     {
         switch (a, b)
@@ -324,7 +358,101 @@ public sealed class SqlFilter
             case (long x, long y):
                 return x.CompareTo(y);
         }
-        return Number(a) is { } p && Number(b) is { } q ? p.CompareTo(q) : null;
+        if (TryDecimals(a, b, out var decA, out var decB))
+        {
+            return decA.CompareTo(decB);
+        }
+        if (TryDoubles(a, b, out var p, out var q))
+        {
+            return p.CompareTo(q);
+        }
+        if (IsNumeric(a) && IsNumeric(b))
+        {
+            throw InexactNumbers();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Decimal operands, including a long and a Double that round-trips through Decimal.
+    /// At least one side must already be Decimal, so two longs keep integer arithmetic.
+    /// </summary>
+    private static bool TryDecimals(object? a, object? b, out decimal left, out decimal right)
+    {
+        left = 0;
+        right = 0;
+        if (a is not decimal && b is not decimal)
+        {
+            return false;
+        }
+        if (ToDecimal(a) is not { } x || ToDecimal(b) is not { } y)
+        {
+            return false;
+        }
+        left = x;
+        right = y;
+        return true;
+    }
+
+    /// <summary>Long, Double, or a Decimal that round-trips through Double.</summary>
+    private static bool TryDoubles(object? a, object? b, out double left, out double right)
+    {
+        left = 0;
+        right = 0;
+        if (ToDouble(a) is not { } x || ToDouble(b) is not { } y)
+        {
+            return false;
+        }
+        left = x;
+        right = y;
+        return true;
+    }
+
+    private static decimal? ToDecimal(object? value) => value switch
+    {
+        decimal number => number,
+        long number => number,
+        double number => ExactDecimal(number),
+        _ => null
+    };
+
+    private static double? ToDouble(object? value) => value switch
+    {
+        decimal number => ExactDouble(number),
+        _ => Number(value)
+    };
+
+    /// <summary>The double as a decimal when <c>(double)(decimal)d</c> is the same value.</summary>
+    private static decimal? ExactDecimal(double number)
+    {
+        if (!double.IsFinite(number))
+        {
+            return null;
+        }
+        // (double)decimal.MaxValue is already outside Decimal. Every smaller finite double converts.
+        var limit = (double)decimal.MaxValue;
+        if (number >= limit || number <= -limit)
+        {
+            return null;
+        }
+        var asDecimal = (decimal)number;
+        return (double)asDecimal == number ? asDecimal : null;
+    }
+
+    /// <summary>The decimal as a double when <c>(decimal)(double)d</c> is the same value.</summary>
+    private static double? ExactDouble(decimal number)
+    {
+        var asDouble = (double)number;
+        if (!double.IsFinite(asDouble))
+        {
+            return null;
+        }
+        var limit = (double)decimal.MaxValue;
+        if (asDouble >= limit || asDouble <= -limit)
+        {
+            return null;
+        }
+        return (decimal)asDouble == number ? asDouble : null;
     }
 
     private static double? Number(object? value) => value switch
@@ -333,6 +461,13 @@ public sealed class SqlFilter
         double number => number,
         _ => null
     };
+
+    private static bool IsNumeric(object? value) =>
+        value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
+
+    /// <summary>Number() cannot accept this numeric pair. A SQL null would preview as a skip.</summary>
+    private static SqlFilterNotSupportedException InexactNumbers() =>
+        new("These numbers are not exactly representable together; Service Bus decides.");
 
     private static string Format(object? value) => value switch
     {

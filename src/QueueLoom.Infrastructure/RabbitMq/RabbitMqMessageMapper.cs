@@ -33,8 +33,9 @@ internal static class RabbitMqMessageMapper
             .Select(header => ToProperty(header.Key, header.Value))
             .ToList();
 
+        // A non-numeric expiration is already ignored. One that does not fit in a TimeSpan is the same: missing, not a failed read.
         TimeSpan? timeToLive = long.TryParse(properties.Expiration, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds)
-            ? TimeSpan.FromMilliseconds(milliseconds)
+            ? BrokerClock.FromMilliseconds(milliseconds)
             : null;
         var messageProperties = new EditableMessageProperties(
             MessageId: properties.IsMessageIdPresent() ? properties.MessageId : null,
@@ -59,7 +60,8 @@ internal static class RabbitMqMessageMapper
             applicationProperties,
             ServiceBusMessageState.Active,
             deliveryCount: deliveryCount,
-            enqueuedAt: properties.IsTimestampPresent() ? DateTimeOffset.FromUnixTimeSeconds(properties.Timestamp.UnixTime) : null,
+            // Publishers sometimes store milliseconds in the seconds field. That is still a message; the time is omitted.
+            enqueuedAt: properties.IsTimestampPresent() ? BrokerClock.FromUnixSeconds(properties.Timestamp.UnixTime) : null,
             deadLetterReason: death?.Reason,
             deadLetterErrorDescription: death is null
                 ? null
@@ -131,8 +133,10 @@ internal static class RabbitMqMessageMapper
         double number => new MessageApplicationProperty(name, ApplicationPropertyType.Double, number.ToString("R", CultureInfo.InvariantCulture)),
         float number => new MessageApplicationProperty(name, ApplicationPropertyType.Single, number.ToString("R", CultureInfo.InvariantCulture)),
         decimal number => new MessageApplicationProperty(name, ApplicationPropertyType.Decimal, number.ToString(CultureInfo.InvariantCulture)),
-        AmqpTimestamp timestamp => new MessageApplicationProperty(name, ApplicationPropertyType.DateTimeOffset,
-            DateTimeOffset.FromUnixTimeSeconds(timestamp.UnixTime).ToString("O", CultureInfo.InvariantCulture)),
+        // A timestamp outside the calendar stays the raw seconds, so one header cannot fail the whole message.
+        AmqpTimestamp timestamp => BrokerClock.FromUnixSeconds(timestamp.UnixTime) is { } at
+            ? new MessageApplicationProperty(name, ApplicationPropertyType.DateTimeOffset, at.ToString("O", CultureInfo.InvariantCulture))
+            : new MessageApplicationProperty(name, ApplicationPropertyType.Int64, timestamp.UnixTime.ToString(CultureInfo.InvariantCulture)),
         null => new MessageApplicationProperty(name, ApplicationPropertyType.String, string.Empty),
         _ => new MessageApplicationProperty(name, ApplicationPropertyType.String, JsonSerializer.Serialize(ToJsonValue(value)))
     };
@@ -152,7 +156,7 @@ internal static class RabbitMqMessageMapper
     private static object? ToJsonValue(object? value) => value switch
     {
         byte[] bytes => Encoding.UTF8.GetString(bytes),
-        AmqpTimestamp timestamp => DateTimeOffset.FromUnixTimeSeconds(timestamp.UnixTime),
+        AmqpTimestamp timestamp => BrokerClock.FromUnixSeconds(timestamp.UnixTime) ?? (object)timestamp.UnixTime,
         IDictionary<string, object?> table => table.ToDictionary(pair => pair.Key, pair => ToJsonValue(pair.Value)),
         IEnumerable<object?> list => list.Select(ToJsonValue).ToArray(),
         _ => value
@@ -195,7 +199,7 @@ internal static class RabbitMqMessageMapper
                     var other => other ?? "Dead-lettered"
                 },
                 entry.TryGetValue("count", out var count) ? ToLong(count) ?? 1 : 1,
-                entry.TryGetValue("time", out var time) && time is AmqpTimestamp stamp ? DateTimeOffset.FromUnixTimeSeconds(stamp.UnixTime) : null,
+                entry.TryGetValue("time", out var time) && time is AmqpTimestamp stamp ? BrokerClock.FromUnixSeconds(stamp.UnixTime) : null,
                 routingKeys);
         }
         return null;
