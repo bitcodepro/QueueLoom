@@ -67,13 +67,17 @@ public sealed partial class RabbitMqWorkspace
             }
             catch when (createdDeadLetter is not null && outcome.Refused)
             {
-                // The broker certainly did not create the main queue, so the new, still empty dead-letter queue would
-                // only block every retry with "already exists". When the PUT may have succeeded (a timeout, a
-                // cancellation, a lost response), the dead-letter queue stays: the main queue may route to it.
-                var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
-                using var _ = await management.DeleteAsync(
-                        $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(createdDeadLetter)}?if-empty=true", CancellationToken.None)
-                    .ConfigureAwait(false);
+                // Only a confirmed refusal with the main queue still absent removes the dead-letter queue this call
+                // created; otherwise it would block every retry with "already exists". It stays when the main queue
+                // exists (another creator won the race and may route to it) or its state is unknown (a timeout, a
+                // cancellation, a lost response, a failed lookup).
+                if (await QueueExistsAsync(definition.Name).ConfigureAwait(false) == false)
+                {
+                    var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
+                    using var _ = await management.DeleteAsync(
+                            $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(createdDeadLetter)}?if-empty=true", CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
                 throw;
             }
         }, cancellationToken);
@@ -107,6 +111,23 @@ public sealed partial class RabbitMqWorkspace
         public bool Refused { get; set; } = true;
     }
 
+    /// <summary>True or false when the broker answers clearly; null when the lookup itself fails.</summary>
+    private async Task<bool?> QueueExistsAsync(string name)
+    {
+        try
+        {
+            var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
+            using var response = await management.GetAsync(
+                    $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(name)}", CancellationToken.None)
+                .ConfigureAwait(false);
+            return response.StatusCode == HttpStatusCode.NotFound ? false : response.IsSuccessStatusCode ? true : null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private async Task PutQueueAsync(string name, Dictionary<string, object> arguments, CancellationToken cancellationToken,
         PutOutcome? outcome = null)
     {
@@ -126,5 +147,11 @@ public sealed partial class RabbitMqWorkspace
             outcome.Refused = true;
         }
         await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
+        // RabbitMQ answers 201 when it creates the queue and 204 when an equivalent one already exists: another
+        // creator won the race after the lookup above, and that queue is not ours to configure or clean up.
+        if (response.StatusCode == HttpStatusCode.NoContent)
+        {
+            throw new InvalidOperationException($"A queue named '{name}' already exists.");
+        }
     }
 }

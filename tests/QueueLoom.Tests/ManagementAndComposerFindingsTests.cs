@@ -137,8 +137,37 @@ public sealed class ManagementAndComposerFindingsTests
         Assert.Contains("orders.dlq", broker.Queues);
     }
 
+    // Another creator wins the race: after the first lookup of "orders" returns 404 and this call creates
+    // "orders.dlq", someone else creates "orders" routing to that dead-letter queue. The live queue's dead-letter
+    // target must survive, whether the race shows up in the second lookup or as RabbitMQ's 204 on the PUT.
+    [Theory]
+    [InlineData("before-lookup")]
+    [InlineData("before-put")]
+    public async Task RabbitMq_DeadLetterQueueStaysWhenAnotherCreatorWinsTheRace(string moment)
+    {
+        var broker = new QueueBroker([]) { CreateConcurrently = ("orders", moment) };
+        await using var workspace = new RabbitMqWorkspace(new DeepAuditCloudTests.EmptyVault());
+        typeof(RabbitMqWorkspace).GetField("_management", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(workspace, new HttpClient(broker) { BaseAddress = new Uri("http://broker.invalid/") });
+        typeof(LeasedMessagingWorkspace).GetField("_profile", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace,
+            ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Test, new(AuthenticationKind.RabbitMqPassword),
+                accessMode: ProfileAccessMode.ReadWrite) with
+            { Provider = MessagingProvider.RabbitMq, AllowQueueManagement = true, RabbitMq = new("broker.invalid", "guest") });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(TimeSpan.FromMinutes(5)), CreateDeadLetterQueue: true)));
+
+        Assert.Contains("already exists", error.Message, StringComparison.Ordinal);
+        Assert.Contains("orders", broker.Queues);
+        Assert.Contains("orders.dlq", broker.Queues);
+        Assert.DoesNotContain(broker.Requests, request => request.StartsWith("DELETE", StringComparison.Ordinal));
+    }
+
     private sealed class QueueBroker(IEnumerable<string> existing) : HttpMessageHandler
     {
+        /// <summary>Another creator declares this queue right after the dead-letter queue PUT succeeds.</summary>
+        public (string Name, string Moment)? CreateConcurrently { get; init; }
+        public List<string> Requests { get; } = [];
         public HashSet<string> Queues { get; } = [.. existing];
         public string? RejectPutOf { get; init; }
         public string? LoseResponseOf { get; init; }
@@ -147,6 +176,18 @@ public sealed class ManagementAndComposerFindingsTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var name = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath.Split('/').Last());
+            Requests.Add($"{request.Method} {name}");
+            if (CreateConcurrently is { } race && name == race.Name && Queues.Contains(race.Name + ".dlq") && !Queues.Contains(race.Name) &&
+                (race.Moment == "before-lookup" && request.Method == HttpMethod.Get ||
+                 race.Moment == "before-put" && request.Method == HttpMethod.Put))
+            {
+                // The other creator's declaration lands now; a PUT then finds an equivalent queue (RabbitMQ: 204).
+                Queues.Add(race.Name);
+                if (request.Method == HttpMethod.Put)
+                {
+                    return Task.FromResult(Reply(HttpStatusCode.NoContent, string.Empty));
+                }
+            }
             HttpResponseMessage Reply(HttpStatusCode status, string body = "{}") =>
                 new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
             if (request.Method == HttpMethod.Get)
