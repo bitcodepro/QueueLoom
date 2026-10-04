@@ -32,6 +32,8 @@ public sealed record KafkaSettings(
     IReadOnlyList<string>? DeadLetterSuffixes = null,
     string? SchemaRegistryUrl = null,
     string? SchemaRegistryUserName = null,
+    // Omitted while off, so an unchanged profile serializes, and is identified (ScheduledResend.IdentityFor), as before.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     bool JavaCompatiblePartitioner = false)
 {
     public static readonly IReadOnlyList<string> DefaultDeadLetterSuffixes = [".DLT", "-dlt", ".dlq", "-dlq", "_dlq", ".DLQ"];

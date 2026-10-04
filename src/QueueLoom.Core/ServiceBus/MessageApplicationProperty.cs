@@ -14,5 +14,6 @@ public sealed record MessageApplicationProperty(
     /// an SNS "String.Array" (its value is the JSON array text) or another producer's custom SQS label such as
     /// "Number.1" or "String.customer". Null for QueueLoom's own types.
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? WireType { get; init; }
 }

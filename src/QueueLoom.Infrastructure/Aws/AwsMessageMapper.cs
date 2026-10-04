@@ -246,9 +246,12 @@ internal static class AwsMessageMapper
     /// writes its type as the label ("Number.Int32", "String.Guid") so the type survives a round trip.
     /// </summary>
     internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property) =>
-        // A label QueueLoom has no type for (SNS String.Array, another producer's custom label) goes back unchanged.
-        property.WireType is { } wire && property.Type != ApplicationPropertyType.Binary &&
-        (wire.StartsWith("String.", StringComparison.Ordinal) || wire.StartsWith("Number.", StringComparison.Ordinal))
+        // A label QueueLoom has no type for (SNS String.Array, another producer's custom label) goes back unchanged,
+        // as long as the property still has the type it was read with (a type changed in the editor wins).
+        property.WireType is { } wire &&
+        (wire.StartsWith("String.", StringComparison.Ordinal) && property.Type == ApplicationPropertyType.String ||
+         wire.StartsWith("Number.", StringComparison.Ordinal) &&
+         property.Type is ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or ApplicationPropertyType.String)
             ? (wire, property.Value, null)
             : property.Type switch
         {
