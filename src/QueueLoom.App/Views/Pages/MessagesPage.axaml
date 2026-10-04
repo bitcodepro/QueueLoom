@@ -322,8 +322,9 @@
                                   CommandParameter="{Binding CorrelationId}" />
                       </ContextMenu>
                     </Grid.ContextMenu>
-                    <CheckBox IsChecked="{Binding IsMarked}" IsVisible="{Binding CanDelete}"
+                    <CheckBox IsChecked="{Binding IsMarked}"
                               MinWidth="0" Padding="0" VerticalAlignment="Center"
+                              ToolTip.Tip="Tick two messages to compare them. Dead letters can also be deleted or resent; scheduled or deferred messages cancelled or removed"
                               AutomationProperties.Name="{Binding MessageId, StringFormat='Select message {0}'}" />
                     <TextBlock Grid.Column="1" Text="{Binding SequenceDisplay}" Classes="muted" VerticalAlignment="Center" />
                     <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">

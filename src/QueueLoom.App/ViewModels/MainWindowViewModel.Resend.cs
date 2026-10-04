@@ -22,7 +22,7 @@ public sealed partial class MainWindowViewModel
     {
         ResendMarkedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Resending selected messages", ResendMarkedMessagesAsync, token, allowCancellation: true),
-            () => !IsBusy && CanWrite && HasMarkedMessages);
+            () => !IsBusy && CanWrite && HasMarkedMessagesForChanges);
     }
 
     private async Task ResendMarkedMessagesAsync(CancellationToken cancellationToken)
@@ -31,6 +31,11 @@ public sealed partial class MainWindowViewModel
         if (marked.Length == 0)
         {
             throw new InvalidOperationException("Tick the messages to resend first.");
+        }
+        if (marked.Any(message => !message.CanDelete))
+        {
+            throw new InvalidOperationException(
+                "Only dead-lettered messages can be resent. Untick the active messages; they can only be compared or exported.");
         }
         if (marked.Length > DeadLetterResender.MaximumMessages)
         {
