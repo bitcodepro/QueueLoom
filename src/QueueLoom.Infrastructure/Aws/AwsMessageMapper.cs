@@ -177,6 +177,6 @@ internal static class AwsMessageMapper
 
     private static DateTimeOffset? ReadEpochMilliseconds(Dictionary<string, string> attributes, string name) =>
         long.TryParse(attributes.GetValueOrDefault(name), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-            ? DateTimeOffset.FromUnixTimeMilliseconds(value)
+            ? BrokerClock.FromUnixMilliseconds(value)
             : null;
 }
