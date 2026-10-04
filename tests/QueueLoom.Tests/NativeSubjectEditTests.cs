@@ -55,6 +55,29 @@ public sealed partial class ViewModelStateTests
         Assert.False(AwsMessageMapper.ToSnsAttributes(sent).ContainsKey(MessageAttributeConventions.Subject));
     }
 
+    // "Send and remove original" clears the reference to the original; sending the displayed draft again must still
+    // publish a native-only subject natively, not as a new Subject attribute (ten attributes becoming eleven).
+    [Fact]
+    public async Task NativeOnlySubject_StaysNativeWhenTheDraftIsSentAgainAfterAMove()
+    {
+        var (viewModel, workspace) = await OpenSubjectDraftAsync(attribute: null, native: "Order 7 shipped");
+        await using var _ = viewModel;
+        viewModel.DraftMessageId = "moved-copy";
+        viewModel.DraftMovesOriginal = true;
+
+        await viewModel.SendDraftCommand.ExecuteAsync();
+        Assert.Single(workspace.DeleteRequests);
+        Assert.Equal("Order 7 shipped", viewModel.DraftSubject);
+        viewModel.DraftMessageId = "second-copy";
+        await viewModel.SendDraftCommand.ExecuteAsync();
+
+        Assert.Equal(2, workspace.SentMessages.Count);
+        var again = workspace.SentMessages.Last().Message;
+        Assert.Null(again.Properties.Subject);
+        Assert.Equal("Order 7 shipped", again.Properties.NativeSubject);
+        Assert.False(AwsMessageMapper.ToSnsAttributes(again).ContainsKey(MessageAttributeConventions.Subject));
+    }
+
     [Fact]
     public async Task NativeOnlySubject_EditedInTheComposerStaysNativeOnly()
     {
