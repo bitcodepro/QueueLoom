@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using QueueLoom.Core.ServiceBus;
@@ -61,6 +62,7 @@ public sealed partial class AwsSqsSnsWorkspace
             // an existing "-dlq" queue (perhaps another queue's) silently adopted.
             await EnsureQueueMissingAsync(definition.Name, token).ConfigureAwait(false);
             string? createdDeadLetter = null;
+            string? createdDeadLetterName = null;
             if (definition.CreateDeadLetterQueue)
             {
                 var deadLetterName = fifo ? definition.Name[..^5] + "-dlq.fifo" : definition.Name + "-dlq";
@@ -74,6 +76,7 @@ public sealed partial class AwsSqsSnsWorkspace
                 var deadLetter = await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = deadLetterName, Attributes = deadLetterAttributes },
                     token).ConfigureAwait(false);
                 createdDeadLetter = deadLetter.QueueUrl;
+                createdDeadLetterName = deadLetterName;
                 var arn = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
                 {
                     QueueUrl = deadLetter.QueueUrl,
@@ -86,22 +89,14 @@ public sealed partial class AwsSqsSnsWorkspace
             {
                 await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = definition.Name, Attributes = attributes }, token).ConfigureAwait(false);
             }
-            catch (AmazonSQSException exception) when (createdDeadLetter is not null && (int)exception.StatusCode is >= 400 and < 500)
+            catch (AmazonServiceException exception) when (createdDeadLetter is not null)
             {
-                // SQS refused the queue (a 4xx), so nothing routes to the dead-letter queue this call created; leaving it
-                // would block every retry. It stays when the queue exists after all (another creator may route to it)
-                // or its state cannot be read.
-                if (await QueueExistsAsync(definition.Name).ConfigureAwait(false) == false)
-                {
-                    try
-                    {
-                        await Sqs.DeleteQueueAsync(createdDeadLetter, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch (AmazonSQSException)
-                    {
-                    }
-                }
-                throw;
+                // The dead-letter queue is never deleted here. CreateQueue returns an existing queue whose attributes match,
+                // so another operator may have created the same name between the check above and this call, and
+                // DeleteQueue removes a queue whatever it holds: ownership cannot be proven, so it stays and is named.
+                throw new InvalidOperationException(
+                    $"SQS did not create the queue '{definition.Name}': {exception.Message} The dead-letter queue " +
+                    $"'{createdDeadLetterName}' was left in place; delete it in AWS if nothing else uses it.", exception);
             }
         }, cancellationToken);
 
@@ -116,24 +111,6 @@ public sealed partial class AwsSqsSnsWorkspace
             return;
         }
         throw new InvalidOperationException($"A queue named '{name}' already exists.");
-    }
-
-    /// <summary>True or false when SQS answers clearly; null when the lookup itself fails.</summary>
-    private async Task<bool?> QueueExistsAsync(string name)
-    {
-        try
-        {
-            await Sqs.GetQueueUrlAsync(name, CancellationToken.None).ConfigureAwait(false);
-            return true;
-        }
-        catch (QueueDoesNotExistException)
-        {
-            return false;
-        }
-        catch (AmazonSQSException)
-        {
-            return null;
-        }
     }
 
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>

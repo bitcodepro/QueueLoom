@@ -79,6 +79,23 @@ public sealed partial class AwsSqsSnsWorkspace
                 // combinations, which QueueLoom does not check), the first must be undone: otherwise the old policy is
                 // applied to the other scope (attribute keys looked up in the body), or the new one to the old scope,
                 // and the subscription silently stops receiving what it received before.
+                if (!IsDefiniteRejection(exception))
+                {
+                    // A timeout, a cancellation or a lost response does not say whether SNS applied the second change.
+                    // What SNS now holds decides: both applied is done; only the first applied is undone below.
+                    var state = await TryReadFilterAsync(current.Arn).ConfigureAwait(false);
+                    if (state is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"SNS changed {first}, but whether it applied {second} is unknown and the subscription could not be read " +
+                            "back, so its filter policy and scope may not match. Check FilterPolicy and FilterPolicyScope in AWS. " +
+                            $"({exception.Message})", exception);
+                    }
+                    if (state.Value.OnBody == rule.OnMessageBody && SamePolicy(state.Value.Policy, rule.Expression))
+                    {
+                        return;
+                    }
+                }
                 try
                 {
                     await SetAttributeAsync(current.Arn, first, previous, CancellationToken.None).ConfigureAwait(false);
@@ -100,6 +117,42 @@ public sealed partial class AwsSqsSnsWorkspace
             // An empty policy removes it: the subscription receives every message again.
             await SetAttributeAsync(current.Arn, "FilterPolicy", "{}", token).ConfigureAwait(false);
         }, cancellationToken);
+
+    /// <summary>SNS answered and refused the change (a 4xx), so it was certainly not applied.</summary>
+    private static bool IsDefiniteRejection(Exception exception) =>
+        (exception as AmazonServiceException ?? exception.InnerException as AmazonServiceException) is { } service &&
+        (int)service.StatusCode is >= 400 and < 500;
+
+    /// <summary>The subscription's filter policy and scope as SNS holds them now; null when they cannot be read.</summary>
+    private async Task<(string? Policy, bool OnBody)?> TryReadFilterAsync(string subscriptionArn)
+    {
+        try
+        {
+            var attributes = (await Sns.GetSubscriptionAttributesAsync(
+                    new Sns.GetSubscriptionAttributesRequest { SubscriptionArn = subscriptionArn }, CancellationToken.None)
+                .ConfigureAwait(false)).Attributes ?? [];
+            return (attributes.GetValueOrDefault("FilterPolicy"), attributes.GetValueOrDefault("FilterPolicyScope") == "MessageBody");
+        }
+        catch (Exception exception) when (exception is AmazonServiceException or HttpRequestException or TaskCanceledException
+                                              or OperationCanceledException or IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The same JSON policy, whatever its spacing (SNS may return it reformatted).</summary>
+    private static bool SamePolicy(string? held, string expected)
+    {
+        try
+        {
+            return held is not null && System.Text.Json.Nodes.JsonNode.DeepEquals(
+                System.Text.Json.Nodes.JsonNode.Parse(held), System.Text.Json.Nodes.JsonNode.Parse(expected));
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
 
     private string FindTopicArn(string topic) =>
         _index.FindTopic(topic)?.Arn ?? throw new InvalidOperationException($"Topic '{topic}' was not found. Refresh and try again.");

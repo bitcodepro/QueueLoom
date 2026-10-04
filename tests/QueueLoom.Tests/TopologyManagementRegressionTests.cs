@@ -52,12 +52,35 @@ public sealed class TopologyManagementRegressionTests
         if (failure == "dead-letter-exists") sqs.Queues["orders-dlq"] = new Dictionary<string, string> { ["MessageRetentionPeriod"] = "1209600" };
         await using var workspace = SqsWorkspace(sqs);
 
-        await Assert.ThrowsAnyAsync<Exception>(() =>
+        var error = await Assert.ThrowsAnyAsync<Exception>(() =>
             workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(MaxDeliveryCount: 3), CreateDeadLetterQueue: true)));
 
-        // Only what was there before stays: no new dead-letter queue, and no queue wired to someone else's.
-        Assert.Equal(failure == "dead-letter-exists", sqs.Queues.ContainsKey("orders-dlq"));
+        // A taken name is refused before anything is created. When SQS refuses the main queue after the dead-letter
+        // queue was created, that queue is never deleted (its ownership cannot be proven) but named in the error.
+        Assert.Equal(failure != "queue-exists", sqs.Queues.ContainsKey("orders-dlq"));
         Assert.Equal(failure == "queue-exists", sqs.Queues.ContainsKey("orders"));
+        Assert.Empty(sqs.Deleted);
+        if (failure == "queue-rejected")
+        {
+            Assert.Contains("'orders-dlq' was left in place", error.Message, StringComparison.Ordinal);
+        }
+    }
+
+    // Another operator creates "orders-dlq" between QueueLoom's check and its CreateQueue call; SQS returns that
+    // existing queue's URL (same attributes). When the main queue is then refused, the other operator's dead-letter
+    // queue, with its messages, must never be deleted.
+    [Fact]
+    public async Task SqsCreate_ADeadLetterQueueAnotherCreatorMadeMeanwhileIsNeverDeleted()
+    {
+        using var sqs = new SqsBroker { RejectCreateOf = "orders", CreateConcurrently = "orders-dlq" };
+        await using var workspace = SqsWorkspace(sqs);
+
+        var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+            workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(MaxDeliveryCount: 3), CreateDeadLetterQueue: true)));
+
+        Assert.True(sqs.Queues.ContainsKey("orders-dlq"));
+        Assert.Empty(sqs.Deleted);
+        Assert.Contains("orders-dlq", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -144,6 +167,60 @@ public sealed class TopologyManagementRegressionTests
 
         Assert.Equal("MessageBody", sns.Attributes[UsArn]["FilterPolicyScope"]);
         Assert.Equal("""{"order":{"status":["failed"]}}""", sns.Attributes[UsArn]["FilterPolicy"]);
+    }
+
+    // A timeout or lost response does not mean SNS refused the change. The review's example: a body policy changed to an
+    // attribute policy, where SNS applies the scope change but the response is lost. Both changes are in place, so
+    // nothing is rolled back (restoring only the policy would leave the old body policy under the attribute scope).
+    [Fact]
+    public async Task SnsScopeSwitch_SecondChangeAppliedButItsResponseLostIsNotRolledBack()
+    {
+        using var sns = new SnsBroker();
+        sns.Add(UsArn, "arn:aws:sqs:us-east-1:111111111111:orders", """{"kind":["invoice"]}""", "MessageBody");
+        sns.LoseResponse = request => request.AttributeName == "FilterPolicyScope";
+        await using var workspace = SnsWorkspace(sns);
+        var flat = new SubscriptionRule(AwsSqsSnsWorkspace.FilterPolicyRule, RuleFilterKind.SnsFilterPolicy) { Expression = """{"region":["EU"]}""" };
+
+        await workspace.SaveSubscriptionRuleAsync("events", "sqs:orders", flat, replace: true);
+
+        Assert.Equal("MessageAttributes", sns.Attributes[UsArn]["FilterPolicyScope"]);
+        Assert.Equal("""{"region":["EU"]}""", sns.Attributes[UsArn]["FilterPolicy"]);
+        Assert.Equal(2, sns.Changes.Count);
+    }
+
+    [Fact]
+    public async Task SnsScopeSwitch_SecondChangeNotAppliedWithAnUnknownOutcomeIsRolledBack()
+    {
+        using var sns = new SnsBroker();
+        sns.Add(UsArn, "arn:aws:sqs:us-east-1:111111111111:orders", """{"kind":["invoice"]}""", "MessageBody");
+        sns.LoseResponse = request => request.AttributeName == "FilterPolicyScope";
+        sns.LoseAfterApplying = false;
+        await using var workspace = SnsWorkspace(sns);
+        var flat = new SubscriptionRule(AwsSqsSnsWorkspace.FilterPolicyRule, RuleFilterKind.SnsFilterPolicy) { Expression = """{"region":["EU"]}""" };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => workspace.SaveSubscriptionRuleAsync("events", "sqs:orders", flat, replace: true));
+
+        Assert.Equal("MessageBody", sns.Attributes[UsArn]["FilterPolicyScope"]);
+        Assert.Equal("""{"kind":["invoice"]}""", sns.Attributes[UsArn]["FilterPolicy"]);
+    }
+
+    [Fact]
+    public async Task SnsScopeSwitch_UnknownOutcomeThatCannotBeReadBackWarnsInsteadOfGuessing()
+    {
+        using var sns = new SnsBroker();
+        sns.Add(UsArn, "arn:aws:sqs:us-east-1:111111111111:orders", """{"kind":["invoice"]}""", "MessageBody");
+        await using var workspace = SnsWorkspace(sns);
+        _ = await workspace.GetTopicRulesAsync("events");
+        sns.LoseResponse = request => request.AttributeName == "FilterPolicyScope";
+        var flat = new SubscriptionRule(AwsSqsSnsWorkspace.FilterPolicyRule, RuleFilterKind.SnsFilterPolicy) { Expression = """{"region":["EU"]}""" };
+        var reads = 0;
+        sns.BeforeRead = () => { if (++reads > 1) sns.FailReads = true; };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            workspace.SaveSubscriptionRuleAsync("events", "sqs:orders", flat, replace: true));
+
+        Assert.Contains("Check FilterPolicy and FilterPolicyScope", error.Message, StringComparison.Ordinal);
+        Assert.Equal(2, sns.Changes.Count);
     }
 
     // ---- Finding 4: SNS subscriptions are addressed by a derived name --------------------------------------------------
@@ -234,6 +311,9 @@ public sealed class TopologyManagementRegressionTests
         public Dictionary<string, Dictionary<string, string>> Queues { get; } = new(StringComparer.Ordinal);
         public List<CreateQueueRequest> Created { get; } = [];
         public string? RejectCreateOf { get; init; }
+        /// <summary>Another operator creates this queue, with the same attributes, right before QueueLoom's CreateQueue.</summary>
+        public string? CreateConcurrently { get; init; }
+        public List<string> Deleted { get; } = [];
 
         private static string Url(string name) => "https://sqs.us-east-1.amazonaws.com/111111111111/" + name;
         private static string NameOf(string url) => url.TrimEnd('/').Split('/')[^1];
@@ -249,6 +329,12 @@ public sealed class TopologyManagementRegressionTests
         public override Task<CreateQueueResponse> CreateQueueAsync(CreateQueueRequest request, CancellationToken cancellationToken = default)
         {
             var attributes = request.Attributes ?? [];
+            if (request.QueueName == CreateConcurrently && !Queues.ContainsKey(request.QueueName))
+            {
+                Queues[request.QueueName] = new Dictionary<string, string>(attributes, StringComparer.Ordinal) { ["(other operator)"] = "x" };
+                // SQS still answers with the existing queue's URL: the attributes it was asked for match.
+                return Task.FromResult(new CreateQueueResponse { QueueUrl = Url(request.QueueName) });
+            }
             if (request.QueueName == RejectCreateOf)
                 throw new AmazonSQSException("Invalid value for the parameter RedrivePolicy.")
                     { ErrorCode = "InvalidAttributeValue", StatusCode = System.Net.HttpStatusCode.BadRequest };
@@ -276,6 +362,7 @@ public sealed class TopologyManagementRegressionTests
 
         public override Task<DeleteQueueResponse> DeleteQueueAsync(DeleteQueueRequest request, CancellationToken cancellationToken = default)
         {
+            Deleted.Add(NameOf(request.QueueUrl));
             Queues.Remove(NameOf(request.QueueUrl));
             return Task.FromResult(new DeleteQueueResponse());
         }
@@ -289,6 +376,11 @@ public sealed class TopologyManagementRegressionTests
         public List<Sns.SetSubscriptionAttributesRequest> Changes { get; } = [];
         /// <summary>Which changes SNS refuses, for example a policy over its five-key limit.</summary>
         public Func<Sns.SetSubscriptionAttributesRequest, bool>? Refuse { get; set; }
+        /// <summary>Changes whose response is lost: applied (or not, per <see cref="LoseAfterApplying"/>), then a timeout.</summary>
+        public Func<Sns.SetSubscriptionAttributesRequest, bool>? LoseResponse { get; set; }
+        public bool LoseAfterApplying { get; set; } = true;
+        public bool FailReads { get; set; }
+        public Action? BeforeRead { get; set; }
 
         public void Add(string arn, string endpoint, string? policy, string? scope)
         {
@@ -313,10 +405,15 @@ public sealed class TopologyManagementRegressionTests
             Task.FromResult(new Sns.ListSubscriptionsByTopicResponse { Subscriptions = [.. _subscriptions] });
 
         public override Task<Sns.GetSubscriptionAttributesResponse> GetSubscriptionAttributesAsync(Sns.GetSubscriptionAttributesRequest request,
-            CancellationToken cancellationToken = default) =>
-            Attributes.TryGetValue(request.SubscriptionArn, out var attributes)
+            CancellationToken cancellationToken = default)
+        {
+            BeforeRead?.Invoke();
+            if (FailReads)
+                throw new HttpRequestException("The connection was reset.");
+            return Attributes.TryGetValue(request.SubscriptionArn, out var attributes)
                 ? Task.FromResult(new Sns.GetSubscriptionAttributesResponse { Attributes = new Dictionary<string, string>(attributes) })
                 : throw new Amazon.SimpleNotificationService.Model.NotFoundException("Subscription does not exist");
+        }
 
         public override Task<Sns.GetTopicAttributesResponse> GetTopicAttributesAsync(Sns.GetTopicAttributesRequest request,
             CancellationToken cancellationToken = default) =>
@@ -330,6 +427,15 @@ public sealed class TopologyManagementRegressionTests
             if (Refuse?.Invoke(request) == true)
                 throw new AmazonSimpleNotificationServiceException($"Invalid parameter: {request.AttributeName}: refused")
                     { ErrorCode = "InvalidParameter", StatusCode = System.Net.HttpStatusCode.BadRequest };
+            if (LoseResponse?.Invoke(request) == true)
+            {
+                if (LoseAfterApplying)
+                {
+                    Changes.Add(request);
+                    attributes[request.AttributeName] = request.AttributeValue;
+                }
+                throw new TaskCanceledException("The request timed out.");
+            }
             Changes.Add(request);
             attributes[request.AttributeName] = request.AttributeValue;
             return Task.FromResult(new Sns.SetSubscriptionAttributesResponse());
