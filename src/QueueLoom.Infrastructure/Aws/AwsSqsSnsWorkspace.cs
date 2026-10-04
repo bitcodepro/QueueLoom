@@ -81,6 +81,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
         _sqs = null;
         _sns = null;
         _index = AwsTopologyIndex.Empty;
+        _shownSubscriptions.Clear();
         return ValueTask.CompletedTask;
     }
 
@@ -373,6 +374,8 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
         public string PhysicalName => queue.Name;
 
         public int MaximumBatchSize => MaximumBatch;
+
+        public bool ReadsOneBatchPerMessageGroup => queue.IsFifo;
 
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {

@@ -6,7 +6,8 @@ namespace QueueLoom.App.Services;
 
 public sealed record UpdateCheckResult(Version Version, string Tag, Uri ReleasePage);
 
-public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDisposable
+// currentVersion: the running version with its pre-release tag (for example "1.0.0-rc.1"); null reads it from the application.
+public sealed class GitHubUpdateChecker(HttpClient? httpClient = null, string? currentVersion = null) : IDisposable
 {
     private static readonly Uri ReleasesApi =
         new("https://api.github.com/repos/bitcodepro/QueueLoom/releases?per_page=30");
@@ -57,7 +58,7 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
                 }
             }
 
-            return latestVersion is not null && latestVersion > CurrentVersion
+            return latestVersion is not null && IsNewer(latestVersion, currentVersion ?? CurrentVersionText)
                 ? new UpdateCheckResult(latestVersion, latestTag!,
                     new Uri($"https://github.com/bitcodepro/QueueLoom/releases/tag/{Uri.EscapeDataString(latestTag!)}"))
                 : null;
@@ -77,6 +78,41 @@ public sealed class GitHubUpdateChecker(HttpClient? httpClient = null) : IDispos
     }
 
     public static Version CurrentVersion => Normalize(Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0));
+
+    /// <summary>
+    /// The running version as released, with its pre-release tag ("1.0.0-rc.1") and without build metadata. The
+    /// assembly version drops the tag, so a release candidate would otherwise look as new as its final release.
+    /// </summary>
+    public static string CurrentVersionText
+    {
+        get
+        {
+            var informational = Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion;
+            var metadata = informational?.IndexOf('+', StringComparison.Ordinal) ?? -1;
+            if (metadata >= 0)
+            {
+                informational = informational![..metadata];
+            }
+            return TryParseVersion(informational, out _) ? informational!.Trim() : CurrentVersion.ToString(3);
+        }
+    }
+
+    /// <summary>
+    /// True when a published release is newer than the running version. A final release is newer than a
+    /// pre-release of the same version (1.0.0 after 1.0.0-rc.1), as semantic versioning orders them.
+    /// </summary>
+    internal static bool IsNewer(Version release, string current)
+    {
+        if (!TryParseVersion(current, out var running))
+        {
+            return true;
+        }
+        var value = current.Trim();
+        var metadata = value.IndexOf('+', StringComparison.Ordinal);
+        var isPrerelease = (metadata >= 0 ? value[..metadata] : value).Contains('-', StringComparison.Ordinal);
+        return release > running || (release == running && isPrerelease);
+    }
 
     internal static bool TryParseVersion(string? tag, out Version version)
     {

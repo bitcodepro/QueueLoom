@@ -239,7 +239,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                     target.SubQueue,
                     scanned.Count,
                     matches,
-                    ScanLimitReached: scanned.Count >= request.MaximumMessagesPerTarget,
+                    // SQS FIFO hands out no more of a group while the scan holds some of it: the rest stays unseen.
+                    ScanLimitReached: scanned.Count >= request.MaximumMessagesPerTarget ||
+                                      (channel.ReadsOneBatchPerMessageGroup && held.Count > 0),
                     Error: DeadLetterSearchSourceResult.RegexTimeoutError(undecided)));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

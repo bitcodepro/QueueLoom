@@ -39,6 +39,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     private PublisherServiceApiClient? _publisher;
     private SubscriberServiceApiClient? _subscriber;
     private Monitoring.MetricServiceClient? _metrics;
+    // gRPC channels the builders created for this connection (an emulator or a service account key; the default
+    // credentials share GAX's channel pool instead). A dropped client does not close its channel, so each one is
+    // shut down when the connection closes; otherwise every reconnect would leave a connection open.
+    private readonly List<ChannelBase> _channels = [];
     private string _projectId = string.Empty;
     private IReadOnlyDictionary<(string Topic, string Subscription), Subscription> _subscriptions =
         new Dictionary<(string, string), Subscription>();
@@ -77,13 +81,21 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         }
 
         _publisher = await publisherBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
+        TrackChannel(publisherBuilder.LastCreatedChannel);
         _subscriber = await subscriberBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
+        TrackChannel(subscriberBuilder.LastCreatedChannel);
         // Counts come from Cloud Monitoring. The emulator has none, and without monitoring.timeSeries.list
         // permission the counts fall back to reading dead letters, as before.
-        _metrics = string.IsNullOrWhiteSpace(settings.EmulatorHost)
-            ? await new Monitoring.MetricServiceClientBuilder { GoogleCredential = publisherBuilder.GoogleCredential }
-                .BuildAsync(cancellationToken).ConfigureAwait(false)
-            : null;
+        if (string.IsNullOrWhiteSpace(settings.EmulatorHost))
+        {
+            var metricsBuilder = new Monitoring.MetricServiceClientBuilder { GoogleCredential = publisherBuilder.GoogleCredential };
+            _metrics = await metricsBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
+            TrackChannel(metricsBuilder.LastCreatedChannel);
+        }
+        else
+        {
+            _metrics = null;
+        }
         _projectId = settings.ProjectId.Trim();
 
         // Proves the endpoint, the credentials and pubsub.topics.list without touching messages.
@@ -96,14 +108,37 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         }
     }
 
-    protected override ValueTask CloseAsync()
+    protected override async ValueTask CloseAsync()
     {
         _publisher = null;
         _subscriber = null;
         _metrics = null;
         _subscriptions = new Dictionary<(string, string), Subscription>();
         _deadLetterReaders = new Dictionary<string, Subscription>();
-        return ValueTask.CompletedTask;
+        var channels = _channels.ToArray();
+        _channels.Clear();
+        foreach (var channel in channels)
+        {
+            try
+            {
+                await channel.ShutdownAsync().ConfigureAwait(false);
+                // Grpc.Net.Client's GrpcChannel keeps its HTTP/2 connection until it is disposed; ShutdownAsync alone
+                // does not release it.
+                (channel as IDisposable)?.Dispose();
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException or RpcException)
+            {
+                // Closing goes on: the other channels are still shut down.
+            }
+        }
+    }
+
+    private void TrackChannel(ChannelBase? channel)
+    {
+        if (channel is not null && !_channels.Contains(channel))
+        {
+            _channels.Add(channel);
+        }
     }
 
     protected override async Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken cancellationToken)

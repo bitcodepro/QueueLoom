@@ -212,7 +212,7 @@ public sealed partial class MainWindow : Window
                     _logger?.LogInformation("Installed QueueLoom {Version}", update.Version);
                 }
                 : null;
-            var dialog = new UpdateDialogViewModel(GitHubUpdateChecker.CurrentVersion.ToString(3), update, install, reason,
+            var dialog = new UpdateDialogViewModel(GitHubUpdateChecker.CurrentVersionText, update, install, reason,
                 _viewModel?.ExportDiagnosticsCommand, _viewModel?.Diagnostics);
             if (await _dialogService.ShowUpdateAsync(dialog, _launcher) == UpdateDialogResult.Restart && target is not null)
             {

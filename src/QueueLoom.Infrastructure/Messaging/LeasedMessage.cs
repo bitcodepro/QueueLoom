@@ -30,6 +30,12 @@ public interface ILeasedMessageChannel
     /// <summary>Why the channel cannot safely attribute deliveries to the requested source.</summary>
     string? SourceAttributionError => null;
 
+    /// <summary>
+    /// True for an SQS FIFO queue: while messages of a group are held, SQS hands out no further messages of that group,
+    /// so running dry does not prove that every message was seen.
+    /// </summary>
+    bool ReadsOneBatchPerMessageGroup => false;
+
     /// <summary>Receives and holds up to <paramref name="maxMessages"/> messages. An empty result means none arrived in a short wait.</summary>
     Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken);
 

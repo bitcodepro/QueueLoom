@@ -239,7 +239,9 @@ internal sealed class AwsTopologyIndex
             return new ServiceBusQueue(queue.Name, runtime, ServiceBusEntityStatus.Active)
             {
                 HasDeadLetterQueue = deadLetterQueue is not null,
-                Note = note
+                Note = note,
+                // The dead-letter queue of a FIFO queue is a FIFO queue too.
+                ReadsOneBatchPerMessageGroup = queue.IsFifo
             };
         });
 
@@ -261,6 +263,8 @@ internal sealed class AwsTopologyIndex
                     subscription.IsConfirmed ? ServiceBusEntityStatus.Active : ServiceBusEntityStatus.Creating)
                 {
                     HasDeadLetterQueue = deadLetterQueue is not null,
+                    // An SNS FIFO topic delivers to FIFO queues only, and dead-letters into a FIFO queue.
+                    ReadsOneBatchPerMessageGroup = topic.IsFifo || endpointQueue?.IsFifo == true,
                     Note = subscription.IsConfirmed
                         ? endpointQueue is null ? $"Delivers to {subscription.Protocol}: {subscription.Endpoint}" : null
                         : "Pending confirmation"

@@ -64,6 +64,9 @@ public sealed partial class MainWindowViewModel
                                                _writeUnlockProfileId == connectedProfileBeforeSearch.Id
             ? _writeUnlockExpiresAt
             : null;
+        // Searching another environment connects it and then reconnects this one, which clears the Composer
+        // destination of the draft the operator has open; it is put back below, as the global scan does.
+        var destinationBeforeSearch = SelectedDestination?.Reference;
         var results = new List<MessageItemViewModel>();
         var scannedMessages = 0;
         var searchedTargets = 0;
@@ -202,6 +205,11 @@ public sealed partial class MainWindowViewModel
                                     temporaryWriteExpiryBeforeSearch,
                                     restoreCancellation.Token)
                                 .ConfigureAwait(true);
+                        }
+                        if (_connectedProfile?.Id == connectedProfileBeforeSearch.Id &&
+                            destinationBeforeSearch is not null && SelectedDestination is null)
+                        {
+                            SelectedDestination = Destinations.FirstOrDefault(item => item.Reference == destinationBeforeSearch);
                         }
                     }
                     else if (_workspace.ConnectionState == WorkspaceConnectionState.Connected)

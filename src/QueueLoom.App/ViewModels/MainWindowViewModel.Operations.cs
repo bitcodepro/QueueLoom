@@ -25,6 +25,8 @@ public sealed partial class MainWindowViewModel
     private bool _browseExhausted;
     private bool _browseDisplayLimit;
     private bool _browseRequestLimit;
+    // An SQS FIFO read ran dry while it held messages of some groups: SQS hid the rest of those groups.
+    private bool _browseHeldGroups;
     private decimal? _purgeLimitPerSource = 1000;
     private bool _hasDlqScan;
     public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0", CultureInfo.CurrentCulture) : "—";
@@ -71,7 +73,9 @@ public sealed partial class MainWindowViewModel
         $"{Messages.Count:N0} loaded · {RetainedBrowseBytes / 1024d:N1} KiB retained · " +
         (_browseRequestLimit ? "Browse request limit reached (1,000 messages); this provider has no continuation position" :
             _browseDisplayLimit || Messages.Count >= BrowseDisplayLimit ? "Display limit reached (10,000 messages / 128 MiB)" :
-            _browseExhausted ? "End of available messages" : "Use Load next 100 to continue");
+            _browseExhausted && _browseHeldGroups
+                ? "End of what SQS returned: it hands out no more of a FIFO message group while some of it is held, so more may exist in those groups"
+                : _browseExhausted ? "End of available messages" : "Use Load next 100 to continue");
 
     private void InitializeOperationsFeatures()
     {
@@ -143,6 +147,7 @@ public sealed partial class MainWindowViewModel
     private void ResetBrowsePaging()
     {
         _browseProfile = null; _browseSource = null; _browseCursor = null; _browseExhausted = false; _browseDisplayLimit = false; _browseRequestLimit = false;
+        _browseHeldGroups = false;
         NotifyBrowseFeatures();
     }
 
@@ -193,6 +198,8 @@ public sealed partial class MainWindowViewModel
             if (message.SequenceNumber == long.MaxValue) _browseExhausted = true;
         }
         _browseExhausted |= page.Count < requested;
+        // Paging cannot help there: asking again returns the same first batch of each group.
+        _browseHeldGroups = page.Count > 0 && page.Count < requested && ReadsOneBatchPerMessageGroup(source);
         if (!positional && requested == BrowseMessagesRequest.MaximumMaxMessages && page.Count == requested)
         {
             _browseRequestLimit = true;
@@ -201,6 +208,12 @@ public sealed partial class MainWindowViewModel
         SelectedMessage ??= Messages.FirstOrDefault();
         NotifyBrowseFeatures();
     }
+
+    private bool ReadsOneBatchPerMessageGroup(ServiceBusEntityReference source) =>
+        _topology is { } topology &&
+        (topology.Queues.Any(queue => queue.Reference == source && queue.ReadsOneBatchPerMessageGroup) ||
+         topology.Topics.SelectMany(topic => topic.Subscriptions)
+             .Any(subscription => subscription.Reference == source && subscription.ReadsOneBatchPerMessageGroup));
 
     private void NotifyBrowseFeatures()
     {

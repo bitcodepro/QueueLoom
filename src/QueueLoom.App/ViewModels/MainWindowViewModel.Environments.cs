@@ -316,9 +316,16 @@ public sealed partial class MainWindowViewModel
     private async Task DeleteEnvironmentAsync(ProfileItemViewModel? target, CancellationToken cancellationToken)
     {
         var selected = target ?? throw new InvalidOperationException("Select an environment first.");
+        // A scheduled resend runs only in its own environment, and a removed environment never comes back under the
+        // same ID (an import gets a new one): its resends are cancelled with it rather than left waiting forever.
+        var waitingResends = ScheduledResends.Count(item => item.Resend.ProfileId == selected.Id);
         var confirmed = await _dialogs.ConfirmAsync(
             "Delete environment",
-            $"Remove '{selected.Name}' and its locally encrypted credential? Azure resources are not changed.",
+            $"Remove '{selected.Name}' and its locally encrypted credential? Nothing changes in " +
+            $"{selected.Profile.Provider.DisplayName()}: its queues, topics and messages stay." +
+            (waitingResends > 0
+                ? $"\n\n{waitingResends:N0} scheduled resend(s) waiting for this environment are cancelled; nothing is sent."
+                : string.Empty),
             isDangerous: true,
             requiredText: selected.Name,
             cancellationToken: cancellationToken).ConfigureAwait(true);
@@ -370,7 +377,23 @@ public sealed partial class MainWindowViewModel
         }
         await StopMonitorForConfigurationChangeAsync(selected.Id).ConfigureAwait(true);
         InvalidateProfileArtifacts(selected.Id, "Its environment was removed; the previous draft is no longer sendable.");
-        AddActivity("Warning", "Environment removed", selected.Name);
+        var cancelledResends = 0;
+        foreach (var item in ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).ToArray())
+        {
+            try
+            {
+                RemoveScheduled(item.Resend);
+            }
+            catch (IOException)
+            {
+                // Left listed (RemoveScheduled reported why); it can still be cancelled on Activity.
+                continue;
+            }
+            ScheduledResends.Remove(item);
+            cancelledResends++;
+        }
+        AddActivity("Warning", "Environment removed", selected.Name +
+            (cancelledResends > 0 ? $" · {cancelledResends:N0} scheduled resend(s) cancelled; nothing was sent" : string.Empty));
         await ReloadProfilesAsync(cancellationToken).ConfigureAwait(true);
     }
 

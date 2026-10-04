@@ -156,7 +156,7 @@ public sealed partial class MainWindowViewModel
                       (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
         StatusText = $"Resend: {summary}";
         AddActivity(
-            result.FailedCount == 0 && result.OriginalsKeptCount == 0 ? "Success" : "Warning",
+            result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0 ? "Success" : "Warning",
             options.Mode == ResendMode.Move ? "Selected messages moved" : "Selected messages resent",
             summary + (result.BackupDirectory is null ? string.Empty : $" · backup {result.BackupDirectory}"),
             options.Destination);

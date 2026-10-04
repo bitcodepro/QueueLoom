@@ -269,10 +269,14 @@ public sealed class ResendDialogViewModel : ObservableObject
     {
         get
         {
-            var sources = Messages
+            var groups = Messages
                 .GroupBy(message => message.Source.DisplayName)
                 .Select(group => $"• {group.Key}: {group.Count():N0}")
-                .Take(8);
+                .ToArray();
+            // Every source is accounted for: the ones not listed are counted, as the delete confirmation does.
+            var sources = groups.Length > 8
+                ? groups.Take(8).Append($"… and {groups.Length - 8:N0} more sources")
+                : groups;
             var targets = Destination.Reference is { } reference
                 ? [reference]
                 : Messages.Select(message => DeadLetterResender.OriginalDestination(message.Source)).Distinct().ToArray();

@@ -642,6 +642,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         ToggleMonitorCommand.NotifyCanExecuteChanged();
         UnlockWritesCommand.NotifyCanExecuteChanged();
         DeleteMarkedMessagesCommand?.NotifyCanExecuteChanged();
+        // Resend and Export depend on IsBusy and write access as well as on the ticks.
+        ResendMarkedMessagesCommand?.NotifyCanExecuteChanged();
+        ExportMessagesCommand?.NotifyCanExecuteChanged();
         NotifyQueueManagement();
     }
 

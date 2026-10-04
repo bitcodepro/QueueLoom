@@ -336,11 +336,51 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     {
         while (!string.IsNullOrWhiteSpace(directory) &&
                directory.StartsWith(_rootWithSeparator, _pathComparison) &&
-               !string.Equals(directory, RootDirectory, _pathComparison) &&
-               !Directory.EnumerateFileSystemEntries(directory).Any())
+               !string.Equals(directory, RootDirectory, _pathComparison))
         {
-            Directory.Delete(directory);
+            if (!Directory.EnumerateFileSystemEntries(directory).Any())
+            {
+                Directory.Delete(directory);
+            }
+            else if (!TryRemoveFinishedEmptySession(directory))
+            {
+                return;
+            }
             directory = Path.GetDirectoryName(directory);
+        }
+    }
+
+    /// <summary>How long a session must have been quiet before its folder may go: a purge writes its files as it goes.</summary>
+    private static readonly TimeSpan SessionQuietPeriod = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// A backup session folder whose last message file is gone keeps only its session.json; it goes too, unless the
+    /// session started so recently that a purge may still be writing into it.
+    /// </summary>
+    private static bool TryRemoveFinishedEmptySession(string directory)
+    {
+        try
+        {
+            var entries = Directory.EnumerateFileSystemEntries(directory).Take(2).ToArray();
+            if (entries.Length != 1 ||
+                !string.Equals(Path.GetFileName(entries[0]), "session.json", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            var session = new FileInfo(entries[0]);
+            if (!session.Exists || session.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                DateTime.UtcNow - session.LastWriteTimeUtc < SessionQuietPeriod)
+            {
+                return false;
+            }
+            session.Delete();
+            Directory.Delete(directory);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The message file is already gone; a leftover session folder is only clutter, so the delete still succeeds.
+            return false;
         }
     }
 

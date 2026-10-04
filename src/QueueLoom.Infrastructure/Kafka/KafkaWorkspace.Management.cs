@@ -36,17 +36,41 @@ public sealed partial class KafkaWorkspace
             {
                 configs["retention.ms"] = ((long)retention.TotalMilliseconds).ToString(CultureInfo.InvariantCulture);
             }
-            var topics = new List<TopicSpecification>
-            {
-                // -1 lets the cluster pick its default replication factor.
-                new() { Name = definition.Name, NumPartitions = definition.Settings.Partitions ?? 1, ReplicationFactor = -1, Configs = configs }
-            };
+            // CreateTopics creates each topic of a request on its own, so one request for both could create one and
+            // refuse the other. The topic goes first: when it is refused, nothing has been created.
+            // -1 lets the cluster pick its default replication factor.
+            await Administer(() => Admin.CreateTopicsAsync(
+            [
+                new TopicSpecification
+                {
+                    Name = definition.Name, NumPartitions = definition.Settings.Partitions ?? 1, ReplicationFactor = -1, Configs = configs
+                }
+            ])).ConfigureAwait(false);
+            var created = new List<string> { definition.Name };
             if (definition.CreateDeadLetterQueue)
             {
-                topics.Add(new TopicSpecification { Name = definition.Name + ".DLT", NumPartitions = 1, ReplicationFactor = -1 });
+                var deadLetter = definition.Name + ".DLT";
+                try
+                {
+                    await Admin.CreateTopicsAsync([new TopicSpecification { Name = deadLetter, NumPartitions = 1, ReplicationFactor = -1 }])
+                        .ConfigureAwait(false);
+                    created.Add(deadLetter);
+                }
+                catch (CreateTopicsException exception) when (exception.Results.All(result =>
+                                                                  !result.Error.IsError || result.Error.Code == ErrorCode.TopicAlreadyExists))
+                {
+                    // A dead-letter topic of that name already exists (Spring Kafka's recoverer creates "<topic>.DLT"
+                    // too); it is the one dead letters of the new topic go to.
+                }
+                catch (KafkaException exception)
+                {
+                    var reason = (exception as CreateTopicsException)?.Results.FirstOrDefault(result => result.Error.IsError)?.Error.Reason
+                                 ?? exception.Error.Reason;
+                    throw new InvalidOperationException(
+                        $"Topic '{definition.Name}' was created, but Kafka refused its dead-letter topic '{deadLetter}': {reason}", exception);
+                }
             }
-            await Administer(() => Admin.CreateTopicsAsync(topics)).ConfigureAwait(false);
-            await WaitUntilVisibleAsync(topics.Select(topic => topic.Name).ToArray(), token).ConfigureAwait(false);
+            await WaitUntilVisibleAsync(created, token).ConfigureAwait(false);
         }, cancellationToken);
 
     /// <summary>

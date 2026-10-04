@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using Amazon.Runtime;
 using Amazon.SimpleNotificationService;
 using QueueLoom.Core.Routing;
 using Sns = Amazon.SimpleNotificationService.Model;
@@ -12,6 +14,9 @@ public sealed partial class AwsSqsSnsWorkspace
 {
     public const string FilterPolicyRule = "FilterPolicy";
 
+    /// <summary>Per topic, the subscription names the last rules read showed, with the ARN each one stood for.</summary>
+    private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, string>> _shownSubscriptions = new(StringComparer.Ordinal);
+
     public override bool SupportsSubscriptionRules => true;
 
     public override RoutingService RoutingService => RoutingService.Sns;
@@ -20,6 +25,8 @@ public sealed partial class AwsSqsSnsWorkspace
         ReadRulesAsync<IReadOnlyList<SubscriptionRules>>(async token =>
         {
             var info = await ReadTopicAsync(FindTopicArn(topic), token).ConfigureAwait(false);
+            // The names are derived and numbered in list order; a change addresses the subscription shown, by its ARN.
+            _shownSubscriptions[topic] = info.Subscriptions.ToDictionary(item => item.Name, item => item.Arn, StringComparer.Ordinal);
             return info.Subscriptions.Select(subscription => new SubscriptionRules(subscription.Name, subscription.FilterPolicy is null
                 ? []
                 :
@@ -58,15 +65,48 @@ public sealed partial class AwsSqsSnsWorkspace
             // SNS checks a policy against the scope in force, so the order follows the new policy: a body policy (it may
             // nest) is set once the scope is MessageBody, as AWS documents; an attribute policy (always flat, so valid
             // under either scope) goes first and the scope follows.
-            if (rule.OnMessageBody)
+            var (first, value, previous, second, next) = rule.OnMessageBody
+                ? ("FilterPolicyScope", scope, current.FilterPolicyOnBody ? "MessageBody" : "MessageAttributes", "FilterPolicy", rule.Expression)
+                : ("FilterPolicy", rule.Expression, current.FilterPolicy ?? "{}", "FilterPolicyScope", scope);
+            await SetAttributeAsync(current.Arn, first, value, token).ConfigureAwait(false);
+            try
             {
-                await SetAttributeAsync(current.Arn, "FilterPolicyScope", scope, token).ConfigureAwait(false);
-                await SetAttributeAsync(current.Arn, "FilterPolicy", rule.Expression, token).ConfigureAwait(false);
+                await SetAttributeAsync(current.Arn, second, next, token).ConfigureAwait(false);
             }
-            else
+            catch (Exception exception)
             {
-                await SetAttributeAsync(current.Arn, "FilterPolicy", rule.Expression, token).ConfigureAwait(false);
-                await SetAttributeAsync(current.Arn, "FilterPolicyScope", scope, token).ConfigureAwait(false);
+                // The two attributes are separate calls. When SNS refuses the second (a policy over its five keys or 150
+                // combinations, which QueueLoom does not check), the first must be undone: otherwise the old policy is
+                // applied to the other scope (attribute keys looked up in the body), or the new one to the old scope,
+                // and the subscription silently stops receiving what it received before.
+                if (!IsDefiniteRejection(exception))
+                {
+                    // A timeout, a cancellation or a lost response does not say whether SNS applied the second change.
+                    // What SNS now holds decides: both applied is done; only the first applied is undone below.
+                    var state = await TryReadFilterAsync(current.Arn).ConfigureAwait(false);
+                    if (state is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"SNS changed {first}, but whether it applied {second} is unknown and the subscription could not be read " +
+                            "back, so its filter policy and scope may not match. Check FilterPolicy and FilterPolicyScope in AWS. " +
+                            $"({exception.Message})", exception);
+                    }
+                    if (state.Value.OnBody == rule.OnMessageBody && SamePolicy(state.Value.Policy, rule.Expression))
+                    {
+                        return;
+                    }
+                }
+                try
+                {
+                    await SetAttributeAsync(current.Arn, first, previous, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception restore) when (restore is AmazonServiceException or InvalidOperationException)
+                {
+                    throw new InvalidOperationException(
+                        $"SNS changed {first} but refused {second}, and restoring {first} failed too, so the subscription filters " +
+                        $"with a mix of the old and new settings. Check it in AWS. ({exception.Message})", exception);
+                }
+                throw;
             }
         }, cancellationToken);
 
@@ -78,13 +118,57 @@ public sealed partial class AwsSqsSnsWorkspace
             await SetAttributeAsync(current.Arn, "FilterPolicy", "{}", token).ConfigureAwait(false);
         }, cancellationToken);
 
+    /// <summary>SNS answered and refused the change (a 4xx), so it was certainly not applied.</summary>
+    private static bool IsDefiniteRejection(Exception exception) =>
+        (exception as AmazonServiceException ?? exception.InnerException as AmazonServiceException) is { } service &&
+        (int)service.StatusCode is >= 400 and < 500;
+
+    /// <summary>The subscription's filter policy and scope as SNS holds them now; null when they cannot be read.</summary>
+    private async Task<(string? Policy, bool OnBody)?> TryReadFilterAsync(string subscriptionArn)
+    {
+        try
+        {
+            var attributes = (await Sns.GetSubscriptionAttributesAsync(
+                    new Sns.GetSubscriptionAttributesRequest { SubscriptionArn = subscriptionArn }, CancellationToken.None)
+                .ConfigureAwait(false)).Attributes ?? [];
+            return (attributes.GetValueOrDefault("FilterPolicy"), attributes.GetValueOrDefault("FilterPolicyScope") == "MessageBody");
+        }
+        catch (Exception exception) when (exception is AmazonServiceException or HttpRequestException or TaskCanceledException
+                                              or OperationCanceledException or IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The same JSON policy, whatever its spacing (SNS may return it reformatted).</summary>
+    private static bool SamePolicy(string? held, string expected)
+    {
+        try
+        {
+            return held is not null && System.Text.Json.Nodes.JsonNode.DeepEquals(
+                System.Text.Json.Nodes.JsonNode.Parse(held), System.Text.Json.Nodes.JsonNode.Parse(expected));
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
+
     private string FindTopicArn(string topic) =>
         _index.FindTopic(topic)?.Arn ?? throw new InvalidOperationException($"Topic '{topic}' was not found. Refresh and try again.");
 
     private async Task<AwsSubscriptionInfo> FindSubscriptionAsync(string topic, string subscription, CancellationToken cancellationToken)
     {
+        // SNS subscriptions have no names: QueueLoom derives "sqs:orders" from the endpoint and numbers clashes
+        // ("sqs:orders (2)", queues of one name in two regions or accounts) in list order. Once a namesake is
+        // unsubscribed, a name can point at another subscription, so the one that was shown is found by its ARN.
+        var shown = _shownSubscriptions.TryGetValue(topic, out var names) && names.TryGetValue(subscription, out var arn)
+            ? arn
+            : _index.FindSubscription(topic, subscription)?.Arn;
         var info = await ReadTopicAsync(FindTopicArn(topic), cancellationToken).ConfigureAwait(false);
-        var found = info.Subscriptions.FirstOrDefault(item => item.Name == subscription)
+        var found = (shown is not null && shown.StartsWith("arn:", StringComparison.Ordinal)
+                        ? info.Subscriptions.FirstOrDefault(item => item.Arn == shown)
+                        : info.Subscriptions.FirstOrDefault(item => item.Name == subscription))
                     ?? throw new InvalidOperationException($"Subscription '{subscription}' of {topic} was not found. Refresh and try again.");
         return found.IsConfirmed
             ? found

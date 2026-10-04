@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using QueueLoom.Core.ServiceBus;
@@ -56,9 +57,16 @@ public sealed partial class AwsSqsSnsWorkspace
                 attributes["FifoQueue"] = "true";
             }
 
+            // CreateQueue returns the URL of an existing queue whose attributes match instead of failing, so a taken name
+            // is refused here, before anything is created; otherwise an existing queue would be reported as created and
+            // an existing "-dlq" queue (perhaps another queue's) silently adopted.
+            await EnsureQueueMissingAsync(definition.Name, token).ConfigureAwait(false);
+            string? createdDeadLetter = null;
+            string? createdDeadLetterName = null;
             if (definition.CreateDeadLetterQueue)
             {
                 var deadLetterName = fifo ? definition.Name[..^5] + "-dlq.fifo" : definition.Name + "-dlq";
+                await EnsureQueueMissingAsync(deadLetterName, token).ConfigureAwait(false);
                 // Keep dead letters as long as SQS allows, so there is time to look at them.
                 var deadLetterAttributes = new Dictionary<string, string>(StringComparer.Ordinal) { ["MessageRetentionPeriod"] = "1209600" };
                 if (fifo)
@@ -67,6 +75,8 @@ public sealed partial class AwsSqsSnsWorkspace
                 }
                 var deadLetter = await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = deadLetterName, Attributes = deadLetterAttributes },
                     token).ConfigureAwait(false);
+                createdDeadLetter = deadLetter.QueueUrl;
+                createdDeadLetterName = deadLetterName;
                 var arn = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
                 {
                     QueueUrl = deadLetter.QueueUrl,
@@ -75,8 +85,33 @@ public sealed partial class AwsSqsSnsWorkspace
                 attributes["RedrivePolicy"] = RedrivePolicy(arn, definition.Settings.MaxDeliveryCount ?? 5);
             }
 
-            await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = definition.Name, Attributes = attributes }, token).ConfigureAwait(false);
+            try
+            {
+                await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = definition.Name, Attributes = attributes }, token).ConfigureAwait(false);
+            }
+            catch (AmazonServiceException exception) when (createdDeadLetter is not null)
+            {
+                // The dead-letter queue is never deleted here. CreateQueue returns an existing queue whose attributes match,
+                // so another operator may have created the same name between the check above and this call, and
+                // DeleteQueue removes a queue whatever it holds: ownership cannot be proven, so it stays and is named.
+                throw new InvalidOperationException(
+                    $"SQS did not create the queue '{definition.Name}': {exception.Message} The dead-letter queue " +
+                    $"'{createdDeadLetterName}' was left in place; delete it in AWS if nothing else uses it.", exception);
+            }
         }, cancellationToken);
+
+    private async Task EnsureQueueMissingAsync(string name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Sqs.GetQueueUrlAsync(name, cancellationToken).ConfigureAwait(false);
+        }
+        catch (QueueDoesNotExistException)
+        {
+            return;
+        }
+        throw new InvalidOperationException($"A queue named '{name}' already exists.");
+    }
 
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
         ManageAsync(async token =>

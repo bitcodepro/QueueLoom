@@ -169,6 +169,7 @@ public sealed partial class MainWindowViewModel
 
         var summary = $"{result.SentCount:N0} of {resend.Items.Count:N0} sent" +
                       (resend.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
+                      (result.OriginalsKeptCount > 0 ? $" · {result.OriginalsKeptCount:N0} originals kept" : string.Empty) +
                       (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain (review history)" : string.Empty) +
                       (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
         StatusText = $"Scheduled resend: {summary}";
