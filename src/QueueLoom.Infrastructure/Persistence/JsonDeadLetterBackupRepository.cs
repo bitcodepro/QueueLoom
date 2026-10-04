@@ -23,7 +23,14 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     }
 
     public string RootDirectory { get; }
-    private string MetadataDirectory => Path.Combine(Path.GetDirectoryName(RootDirectory)!, "backup-metadata-cache");
+    // Next to the backups folder; a backups folder at a drive root has no parent, so the cache goes inside it
+    // (it holds .cache files, which are never listed as backups).
+    private string MetadataDirectory => Path.Combine(
+        Path.GetDirectoryName(RootDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) ?? RootDirectory,
+        "backup-metadata-cache");
+
+    private string CachePathFor(string path) =>
+        Path.Combine(MetadataDirectory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path))) + ".cache");
     private sealed record MetadataCache(long Length, long LastWriteTicks, DeadLetterBackupSummary? Summary);
     private static readonly JsonSerializerOptions CacheJsonOptions = new() { RespectRequiredConstructorParameters = true };
 
@@ -36,6 +43,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
         }
 
         var summaries = new List<DeadLetterBackupSummary>();
+        var listedCaches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var enumerationOptions = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -50,7 +58,8 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             {
                 var path = ValidateMessagePath(file);
                 var info = new FileInfo(path);
-                var cachePath = Path.Combine(MetadataDirectory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path))) + ".cache");
+                var cachePath = CachePathFor(path);
+                listedCaches.Add(cachePath);
                 DeadLetterBackupSummary? summary = null;
                 try
                 {
@@ -83,6 +92,23 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
+                long length;
+                DateTime lastWrite;
+                try
+                {
+                    // Deleted by another window or by retention cleanup since it was listed: nothing to show.
+                    var info = new FileInfo(file);
+                    if (!info.Exists)
+                    {
+                        continue;
+                    }
+                    length = info.Length;
+                    lastWrite = info.LastWriteTimeUtc;
+                }
+                catch (Exception infoException) when (infoException is IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
                 summaries.Add(new DeadLetterBackupSummary(
                     Path.GetFullPath(file),
                     Guid.Empty,
@@ -96,12 +122,13 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                     null,
                     null,
                     null,
-                    File.GetLastWriteTimeUtc(file),
-                    new FileInfo(file).Length,
+                    lastWrite,
+                    length,
                     $"Unreadable backup: {exception.GetBaseException().Message}"));
             }
         }
 
+        RemoveOrphanCaches(listedCaches);
         return summaries
             .OrderByDescending(summary => summary.EnqueuedAt ?? summary.BackedUpAt)
             .ThenBy(summary => summary.Source.Path, StringComparer.OrdinalIgnoreCase)
@@ -147,8 +174,45 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
         }
 
         File.Delete(path);
+        // The cache repeats the message's metadata (ids, reasons), so it goes with the backup.
+        TryDelete(CachePathFor(path));
         RemoveEmptyParentDirectories(Path.GetDirectoryName(path));
         return Task.CompletedTask;
+    }
+
+    /// <summary>Removes cache entries of backups that are gone, for example deleted by hand or by another version.</summary>
+    private void RemoveOrphanCaches(HashSet<string> listedCaches)
+    {
+        try
+        {
+            if (!Directory.Exists(MetadataDirectory))
+            {
+                return;
+            }
+            foreach (var cache in Directory.EnumerateFiles(MetadataDirectory, "*.cache"))
+            {
+                if (!listedCaches.Contains(cache))
+                {
+                    TryDelete(cache);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A cache is never a durable backup; it is pruned again on the next list.
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A cache is never a durable backup.
+        }
     }
 
     private DeadLetterBackupSummary ParseSummary(string file, JsonElement root)

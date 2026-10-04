@@ -43,7 +43,10 @@ internal sealed class LinuxSecretServiceMasterKeyStore : IPlatformMasterKeyStore
             }
         }
 
-        if (lookup.ExitCode is not (0 or 1))
+        // secret-tool exits with 1 both when nothing is stored and when it cannot reach the keyring (D-Bus down, a
+        // locked collection); only the first is silent. Creating a key after the second would replace the stored key
+        // and lose every secret it protects.
+        if (lookup.ExitCode is not (0 or 1) || !string.IsNullOrWhiteSpace(lookup.Error))
         {
             throw new SecureStoreUnavailableException(
                 $"Linux Secret Service lookup failed: {SanitizeError(lookup.Error)}");
