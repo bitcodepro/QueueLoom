@@ -145,6 +145,18 @@ public sealed partial class ViewModelStateTests
         Assert.StartsWith(error, dialog.Error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(TimeUnit.Days)]
+    [InlineData(TimeUnit.Hours)]
+    [InlineData(TimeUnit.Minutes)]
+    public void QueueDialog_HugeTimeToLiveIsAnErrorNotACrash(TimeUnit unit)
+    {
+        var dialog = new QueueDialogViewModel(SqsLike, "Orders") { Name = "orders", TimeToLive = 1e18, TimeToLiveUnit = unit };
+
+        Assert.Null(dialog.TryBuildDefinition());
+        Assert.Contains("too long", dialog.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void QueueDialog_ForKafkaCannotShrinkPartitions()
     {

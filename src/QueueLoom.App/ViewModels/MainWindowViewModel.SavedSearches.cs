@@ -75,6 +75,16 @@ public sealed partial class MainWindowViewModel
             {
                 SearchDeadLettersCommand.Execute(null);
             }
+            else if (IsBusy)
+            {
+                // A search still running belongs to the previous query: its matches must not appear under this one.
+                _messageResultsGeneration++;
+                ResetBrowsePaging();
+                Messages.Clear();
+                SelectedMessage = null;
+                DeadLetterSearchStatus = "The earlier search was set aside. Search again to run the saved search.";
+                ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
+            }
         }
     }
 

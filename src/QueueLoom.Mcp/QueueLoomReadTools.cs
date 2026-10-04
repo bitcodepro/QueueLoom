@@ -66,13 +66,30 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var snapshot = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All, token), cancellationToken)
                 .ConfigureAwait(false);
-            History?.Append(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name));
+            RecordHistory(snapshot, profile.Name);
             return new DeadLetterScanInfo(
                 profile.Name,
                 snapshot.CapturedAt,
                 snapshot.TotalCount,
                 snapshot.Entities.Where(entity => entity.Count > 0 || !entity.IsSuccessful).Select(McpMapping.ToInfo).ToArray());
         });
+
+    /// <summary>Records a complete scan only (a partial one would draw a false dip); history is best effort.</summary>
+    private void RecordHistory(DeadLetterSnapshot snapshot, string environmentName)
+    {
+        if (History is null || snapshot.HasFailures)
+        {
+            return;
+        }
+        try
+        {
+            History.Append(DeadLetterHistorySample.FromSnapshot(snapshot, environmentName));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The scan itself succeeded; a history file that cannot be written does not change its answer.
+        }
+    }
 
     [McpServerTool(Name = "get_dead_letter_history", Title = "Dead-letter history", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("How the number of dead-lettered messages in an environment changed over time, from QueueLoom's own records " +

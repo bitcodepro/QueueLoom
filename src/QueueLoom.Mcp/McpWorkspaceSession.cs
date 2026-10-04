@@ -41,10 +41,26 @@ public sealed class McpWorkspaceSession(
         }
 
         var key = environment.Trim();
-        return all.FirstOrDefault(profile => string.Equals(profile.Name, key, StringComparison.OrdinalIgnoreCase))
-               ?? all.FirstOrDefault(profile => Guid.TryParse(key, out var id) && profile.Id == id)
-               ?? throw new McpException(
-                   $"Unknown environment '{key}'. Saved environments: {string.Join(", ", all.Select(profile => profile.Name))}.");
+        if (Guid.TryParse(key, out var id) && all.FirstOrDefault(profile => profile.Id == id) is { } byId)
+        {
+            return byId;
+        }
+        // An exact name wins over one that differs only in case; several left is a question, never a guess.
+        foreach (var comparison in new[] { StringComparison.Ordinal, StringComparison.OrdinalIgnoreCase })
+        {
+            var matches = all.Where(profile => string.Equals(profile.Name, key, comparison)).ToArray();
+            if (matches.Length == 1)
+            {
+                return matches[0];
+            }
+            if (matches.Length > 1)
+            {
+                throw new McpException(
+                    $"Several environments are named '{key}'; pass the id of one: {string.Join(", ", matches.Select(profile => $"{profile.Name} ({profile.Id})"))}.");
+            }
+        }
+        throw new McpException(
+            $"Unknown environment '{key}'. Saved environments: {string.Join(", ", all.Select(profile => profile.Name))}.");
     }
 
     /// <summary>Runs a read against the environment over a read-only connection.</summary>
