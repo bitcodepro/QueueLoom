@@ -184,26 +184,30 @@ public sealed class BrokerTimeAndExactIntegerTests
         Assert.Equal(RoutingOutcome.Receives, CheckAmount(filter, 5m));
 
     [Fact]
-    public void A_long_is_not_widened_into_a_different_double()
+    public void A_long_promotes_to_double_with_the_documented_precision_loss()
     {
-        // A long that double cannot hold is not cast to a neighbouring double. That pair is unknown,
-        // not a skip and not a match. 2^53 itself is exact, and so is an ordinary small long.
-        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740992.0", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254741000.0", 9007199254741001L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9223372036854775807.0", 9223372036854775806L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id > 9007199254740992.0", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id + 0.0 = 9007199254740992", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id + 0.0 = 9007199254740993", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740993.0", 9007199254740993L));
-        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740993.0", 9007199254740993m));
-        // 9007199254740993.0 is the double 2^53, the same value as this long.
-        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740992L));
+        // Service Bus uses C# implicit Int64-to-Double. 9007199254740993 therefore equals 9007199254740992.0.
+        // The same integer written without a decimal point stays a long, so the two values stay different.
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id > 9007199254740992.0", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Skips, Check("id = 9007199254740992", 9007199254740993L));
+        Assert.Equal(RoutingOutcome.Receives, Check("id > 9007199254740992", 9007199254740993L));
         Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992L));
         Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740992.0", 9007199254740992d));
+        Assert.Equal(RoutingOutcome.Receives, Check("id = 9007199254740993.0", 9007199254740993L));
         Assert.Equal(RoutingOutcome.Receives, Check("id = 5.0", 5L));
-        // long.MaxValue widens to 2^63, so it is not compared with the double +Infinity of 1e400.
-        // Main reported Receives by that cast. Guessing the same match is the loss this guard refuses.
-        Assert.Equal(RoutingOutcome.Unknown, Check("id < 1e400", long.MaxValue));
+        // A real decimal still uses the exact decimal rules. This spelling is not that double.
+        Assert.Equal(RoutingOutcome.Unknown, Check("id = 9007199254740993.0", 9007199254740993m));
+    }
+
+    [Theory]
+    [InlineData("id < 1e400")]
+    [InlineData("id > -1e400")]
+    public void A_non_finite_literal_is_left_to_Service_Bus(string filter)
+    {
+        // 1e400 is +Infinity. That is not the long-exactness question, and the broker has not been checked.
+        Assert.Throws<SqlFilterNotSupportedException>(() => SqlFilter.Parse(filter));
+        Assert.Equal(RoutingOutcome.Unknown, Check(filter, long.MaxValue));
     }
 
     [Fact]

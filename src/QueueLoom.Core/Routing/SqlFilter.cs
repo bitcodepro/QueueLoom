@@ -481,31 +481,20 @@ public sealed class SqlFilter
     }
 
     /// <summary>
-    /// A long joins a double only when that double is the same integer. Casting 9007199254740993
-    /// makes it 9007199254740992, which would report a match against a different number.
+    /// A long promotes to double the way C# does, precision loss included.
+    /// Service Bus documents that binding, so 9007199254740993 compared with 9007199254740992.0 is true.
     /// </summary>
     private static double? Number(object? value) => value switch
     {
-        long number => ExactLong(number),
+        long number => number,
         double number => number,
         _ => null
     };
 
-    private static double? ExactLong(long number)
-    {
-        var asDouble = (double)number;
-        // (double)long.MaxValue is 2^63, which does not fit back into a long.
-        if (!double.IsFinite(asDouble) || asDouble < long.MinValue || asDouble >= 9223372036854775808d)
-        {
-            return null;
-        }
-        return (long)asDouble == number ? asDouble : null;
-    }
-
     private static bool IsNumeric(object? value) =>
         value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
 
-    /// <summary>Number() cannot accept this numeric pair. A SQL null would preview as a skip.</summary>
+    /// <summary>These numeric values cannot be combined exactly. A SQL null would preview as a skip.</summary>
     private static SqlFilterNotSupportedException InexactNumbers() =>
         new("These numbers are not exactly representable together; Service Bus decides.");
 
@@ -777,6 +766,12 @@ public sealed class SqlFilter
             // that way and compares it with C# promotion, so 9007199254740993.0 is 9007199254740992d.
             if (double.TryParse(token.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var real))
             {
+                // 1e400 is +Infinity. Broker behavior for a non-finite literal is not verified here.
+                if (!double.IsFinite(real))
+                {
+                    throw new SqlFilterNotSupportedException(
+                        $"'{token.Text}' is not a finite number; Service Bus decides what that comparison gives.");
+                }
                 return real;
             }
             throw new SqlFilterSyntaxException($"'{token.Text}' is not a number.", token.Start);
