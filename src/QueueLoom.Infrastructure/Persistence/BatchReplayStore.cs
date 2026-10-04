@@ -33,34 +33,59 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         var folder = DirectoryFor(id);
         Directory.CreateDirectory(folder);
         AtomicFile.RestrictDirectoryToCurrentUser(folder);
-        var count = 0;
-        long bytes = 0;
-        foreach (var (draft, origin) in drafts)
+        try
         {
-            token.ThrowIfCancellationRequested();
-            bytes += draft.Body.GetBytes().Length;
-            if (++count > 1000 || bytes > 32 * 1024 * 1024)
-                throw new InvalidOperationException("Replay is limited to 1,000 messages and 32 MiB of bodies. Narrow the selection.");
-            var properties = draft.Properties with
+            var count = 0;
+            long bytes = 0;
+            foreach (var (draft, origin) in drafts)
             {
-                MessageId = preserveIds && !string.IsNullOrWhiteSpace(draft.Properties.MessageId)
-                    ? draft.Properties.MessageId : Guid.NewGuid().ToString("N"),
-                // Replay means send now. TTL remains explicit; enqueue timestamps are broker-owned.
-                ScheduledEnqueueTime = null
-            };
-            var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope };
-            var validation = MessageDraftValidator.Validate(prepared);
-            if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
-            var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin)
-                { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata };
-            await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
-            await WriteItemMetadata(folder, count - 1, payload, destination, token);
+                token.ThrowIfCancellationRequested();
+                bytes += draft.Body.GetBytes().Length;
+                if (++count > 1000 || bytes > 32 * 1024 * 1024)
+                    throw new InvalidOperationException("Replay is limited to 1,000 messages and 32 MiB of bodies. Narrow the selection.");
+                var properties = draft.Properties with
+                {
+                    MessageId = preserveIds && !string.IsNullOrWhiteSpace(draft.Properties.MessageId)
+                        ? draft.Properties.MessageId : Guid.NewGuid().ToString("N"),
+                    // Replay means send now. TTL remains explicit; enqueue timestamps are broker-owned.
+                    ScheduledEnqueueTime = null
+                };
+                var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope };
+                var validation = MessageDraftValidator.Validate(prepared);
+                if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
+                var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin)
+                    { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata };
+                await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
+                await WriteItemMetadata(folder, count - 1, payload, destination, token);
+            }
+            if (count == 0) throw new InvalidOperationException("Select at least one readable message.");
+            var plan = new ReplayPlan(id, profileId, destination, DateTimeOffset.UtcNow, count, rate, preserveIds, fullyQualifiedNamespace, configurationIdentity);
+            // Publishing the plan last prevents resuming a partially prepared batch.
+            await AtomicFile.WriteTextAsync(Path.Combine(folder, "plan.json"), JsonSerializer.Serialize(plan), token);
+            return plan;
         }
-        if (count == 0) throw new InvalidOperationException("Select at least one readable message.");
-        var plan = new ReplayPlan(id, profileId, destination, DateTimeOffset.UtcNow, count, rate, preserveIds, fullyQualifiedNamespace, configurationIdentity);
-        // Publishing the plan last prevents resuming a partially prepared batch.
-        await AtomicFile.WriteTextAsync(Path.Combine(folder, "plan.json"), JsonSerializer.Serialize(plan), token);
-        return plan;
+        catch
+        {
+            // A batch that cannot be prepared leaves no body snapshots behind: nothing lists or cleans a folder without plan.json.
+            DeleteUnpublished(folder);
+            throw;
+        }
+    }
+
+    /// <summary>Removes a folder whose plan was never published; a published plan is history and is kept.</summary>
+    private static void DeleteUnpublished(string folder)
+    {
+        try
+        {
+            if (Directory.Exists(folder) && !File.Exists(Path.Combine(folder, "plan.json")))
+            {
+                Directory.Delete(folder, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The original failure is what the caller needs to see.
+        }
     }
 
     public ReplayPlan? Latest(Guid profileId) => List().FirstOrDefault(plan => plan.ProfileId == profileId && plan.Kind == "Replay");

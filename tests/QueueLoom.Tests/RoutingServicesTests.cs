@@ -67,7 +67,7 @@ public sealed class SnsFilterPolicyEvaluationTests
     [Theory]
     [InlineData("""["EU"]""", "JSON object")]
     [InlineData("""{"region": "EU"}""", "list of values")]
-    [InlineData("""{"region": [{"wildcard": "E*"}]}""", "no operator")]
+    [InlineData("""{"region": [{"glob": "E*"}]}""", "no operator")]
     [InlineData("""{"amount": [{"numeric": ["<", 5, ">", 1]}]}""", "does not take")]
     [InlineData("""{"order": {"status": ["x"]}}""", "MessageBody")]
     [InlineData("""{"region": [""", "not valid JSON")]

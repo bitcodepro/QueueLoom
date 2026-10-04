@@ -349,8 +349,11 @@ public sealed partial class MainWindowViewModel
             .Select(message => (message.Source, message.SubQueue, message.SequenceNumber))
             .ToHashSet();
         using var batch = BatchMessageUpdates();
+        // A search across environments lists rows from several of them, and sequence numbers repeat between
+        // environments: only the rows of the environment the deletion ran in are removed.
         foreach (var item in Messages
-                     .Where(item => deleted.Contains((item.Message.Source, item.Message.SubQueue, item.Message.SequenceNumber)))
+                     .Where(item => (item.ProfileId is null || item.ProfileId == profileId) &&
+                                    deleted.Contains((item.Message.Source, item.Message.SubQueue, item.Message.SequenceNumber)))
                      .ToArray())
         {
             Messages.Remove(item);

@@ -14,11 +14,17 @@ public sealed partial class MainWindowViewModel
         get => _selectedDeadLetterEnvironmentFilter;
         set
         {
+            var previousProfileId = _selectedDeadLetterEnvironmentFilter?.ProfileId;
             if (SetProperty(ref _selectedDeadLetterEnvironmentFilter, value))
             {
-                Messages.Clear();
-                SelectedMessage = null;
-                ResetBrowsePaging();
+                // The filters are rebuilt whenever the environment list changes; the listed messages and their ticks
+                // are only dropped when the scope really moves to another environment.
+                if (value?.ProfileId != previousProfileId)
+                {
+                    Messages.Clear();
+                    SelectedMessage = null;
+                    ResetBrowsePaging();
+                }
                 ApplyDeadLetterEnvironmentFilter();
                 OnPropertyChanged(nameof(CanPurgeEnvironmentDeadLetters));
                 NotifyCommandStates();
@@ -123,7 +129,10 @@ public sealed partial class MainWindowViewModel
 
     private void RefreshDeadLetterEnvironmentFilters()
     {
-        var selectedProfileId = SelectedProfile?.Id;
+        // Keep the scope chosen on the Messages page; the Environments list selection only fills a scope that is gone.
+        var selectedProfileId = _selectedDeadLetterEnvironmentFilter is { } current && Profiles.Any(profile => profile.Id == current.ProfileId)
+            ? current.ProfileId
+            : SelectedProfile?.Id;
 
         DeadLetterEnvironmentFilters.Clear();
         foreach (var profile in Profiles)

@@ -571,8 +571,18 @@ public sealed partial class MainWindowViewModel
         }
         NotifyMonitorNotificationsChanged();
 
-        Messages.Clear();
-        SelectedMessage = null;
+        // Only the rows of the changed or removed environment go; another environment's results and ticks stay.
+        using (BatchMessageUpdates())
+        {
+            foreach (var item in Messages.Where(item => item.ProfileId == profileId).ToArray())
+            {
+                Messages.Remove(item);
+            }
+        }
+        if (SelectedMessage is not null && !Messages.Contains(SelectedMessage))
+        {
+            SelectedMessage = Messages.FirstOrDefault();
+        }
         if (_draftProfileId == profileId)
         {
             _draftProfileId = null;

@@ -211,13 +211,13 @@ public sealed class PubSubFilter
                 return ParseString();
             }
             var start = _position;
-            while (_position < text.Length && (char.IsLetterOrDigit(text[_position]) || text[_position] == '_'))
+            while (_position < text.Length && (char.IsLetterOrDigit(text[_position]) || text[_position] is '_' or '-'))
             {
                 _position++;
             }
             if (start == _position)
             {
-                throw new SqlFilterSyntaxException("Expected an attribute name; write other names in \"quotes\".", _position);
+                throw new SqlFilterSyntaxException("Expected an attribute name; write names with characters other than letters, digits, - and _ in \"quotes\".", _position);
             }
             return text[start.._position];
         }

@@ -17,6 +17,13 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException("Only Azure Service Bus has scheduled and deferred messages.");
         }
 
+        // Refused before the confirmation (a typed name in Production), not by the workspace after it.
+        if (marked.Count > PendingMessages.MaximumMessages)
+        {
+            throw new InvalidOperationException(
+                $"At most {PendingMessages.MaximumMessages:N0} messages can be cancelled or removed at once. Narrow the selection.");
+        }
+
         var scheduled = marked.Count(message => message.IsScheduled);
         var deferred = marked.Count(message => message.IsDeferred);
         var sources = marked
@@ -59,7 +66,8 @@ public sealed partial class MainWindowViewModel
             .Select(item => (item.Message.Source, item.Message.SequenceNumber))
             .ToHashSet();
         using var batch = BatchMessageUpdates();
-        foreach (var item in Messages.Where(item => removed.Contains((item.Message.Source, item.Message.SequenceNumber))).ToArray())
+        foreach (var item in Messages.Where(item => (item.ProfileId is null || item.ProfileId == connectedProfileId) &&
+                                                    removed.Contains((item.Message.Source, item.Message.SequenceNumber))).ToArray())
         {
             Messages.Remove(item);
         }
@@ -86,7 +94,7 @@ public sealed partial class MainWindowViewModel
         if (problem is not null)
         {
             ErrorText = $"{summary}. Sequence {problem.Message.SequenceNumber} in {problem.Message.Source.DisplayName}: " +
-                        $"{problem.Detail ?? "unknown reason"}. The messages that were not removed are still listed.";
+                        $"{SanitizeException(new InvalidOperationException(problem.Detail ?? "Unknown reason."))} The messages that were not removed are still listed.";
         }
     }
 }

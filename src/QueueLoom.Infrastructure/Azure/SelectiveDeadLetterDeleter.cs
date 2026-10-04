@@ -58,6 +58,7 @@ internal static class SelectiveDeadLetterDeleter
         var seen = new HashSet<long>();
         var scanned = 0;
         var emptyReceives = 0;
+        var redeliveredSinceFresh = 0;
         var cancelled = false;
         string? receiveError = null;
 
@@ -146,9 +147,16 @@ internal static class SelectiveDeadLetterDeleter
                 }
 
                 reportProgress?.Invoke(scanned, results.Count(result => result.Outcome == DeadLetterMessageDeletionOutcome.Deleted));
-                if (fresh == 0)
+                if (fresh > 0)
                 {
-                    // Only redelivered messages: the whole queue has been seen.
+                    redeliveredSinceFresh = 0;
+                }
+                else if ((redeliveredSinceFresh += batch.Count) >= seen.Count)
+                {
+                    // Every message seen so far came back without a new one: the whole queue has been seen. A single
+                    // batch of redelivered messages is not enough: when locks expire mid-scan, Service Bus hands the
+                    // earlier messages out again before the rest of the queue, and stopping there reported unscanned
+                    // messages as already gone.
                     break;
                 }
             }

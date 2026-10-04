@@ -5,10 +5,14 @@ namespace QueueLoom.Core.Diagnostics;
 /// <summary>Removes credential material from text that is shown to operators or written to logs.</summary>
 public static class SensitiveDataRedactor
 {
+    // The backtracking engine is used on purpose: with NonBacktracking (.NET 10.0.12) this pattern stopped matching
+    // in long, word-rich text such as a large stack trace, so a secret at the end of a log entry was written as is.
+    // The pattern has no nested quantifiers, so backtracking stays linear; the timeout is only a backstop (100 ms
+    // also replaced long log lines, or errors on a busy machine, with "[Text omitted]").
     private static readonly Regex SensitiveValuePattern = new(
         @"\b(SharedAccessKey|SharedAccessSignature|sig|password|client_secret)\s*=\s*[^;\s&]+",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking,
-        TimeSpan.FromMilliseconds(100));
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
 
     public static string Redact(string? text)
     {

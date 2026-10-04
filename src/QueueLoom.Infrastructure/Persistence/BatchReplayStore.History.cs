@@ -68,24 +68,33 @@ public sealed partial class BatchReplayStore
         var folder = DirectoryFor(plan.Id);
         Directory.CreateDirectory(folder);
         AtomicFile.RestrictDirectoryToCurrentUser(folder);
-        long bytes = 0;
-        for (var index = 0; index < items.Count; index++)
+        try
         {
-            var item = items[index];
-            bytes += item.Message.Body.GetBytes().Length;
-            if (bytes > 32 * 1024 * 1024) throw new InvalidOperationException("Operation bodies exceed 32 MiB. Narrow the selection.");
-            var validation = MessageDraftValidator.Validate(item.Message);
-            if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
-            var payload = new ReplayPayload(item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToArray(),
-                $"{item.Original.Source.Path} / {item.Original.SubQueue} / {item.Original.SequenceNumber} / {item.Original.Properties.MessageId}")
-            { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata, Destination = item.Destination,
-                Original = item.Key };
-            await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.message.json"), JsonSerializer.Serialize(payload), token);
-            await WriteItemMetadata(folder, index, payload, item.Destination, token);
-            if (deferActivation) await WriteStateAsync(Path.Combine(folder, $"{index:D6}.state"), "AwaitingScheduleClaim", token);
+            long bytes = 0;
+            for (var index = 0; index < items.Count; index++)
+            {
+                var item = items[index];
+                bytes += item.Message.Body.GetBytes().Length;
+                if (bytes > 32 * 1024 * 1024) throw new InvalidOperationException("Operation bodies exceed 32 MiB. Narrow the selection.");
+                var validation = MessageDraftValidator.Validate(item.Message);
+                if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
+                var payload = new ReplayPayload(item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToArray(),
+                    $"{item.Original.Source.Path} / {item.Original.SubQueue} / {item.Original.SequenceNumber} / {item.Original.Properties.MessageId}")
+                { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata, Destination = item.Destination,
+                    Original = item.Key };
+                await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.message.json"), JsonSerializer.Serialize(payload), token);
+                await WriteItemMetadata(folder, index, payload, item.Destination, token);
+                if (deferActivation) await WriteStateAsync(Path.Combine(folder, $"{index:D6}.state"), "AwaitingScheduleClaim", token);
+            }
+            await AtomicFile.WriteTextAsync(Path.Combine(folder, "plan.json"), JsonSerializer.Serialize(plan), token);
+            return plan;
         }
-        await AtomicFile.WriteTextAsync(Path.Combine(folder, "plan.json"), JsonSerializer.Serialize(plan), token);
-        return plan;
+        catch
+        {
+            // A resend that cannot be prepared (an invalid draft, cancellation) leaves no body snapshots behind.
+            DeleteUnpublished(folder);
+            throw;
+        }
     }
 
     /// <summary>Only the caller that atomically consumed the exact scheduled job may activate its snapshot.
