@@ -123,8 +123,16 @@ public sealed partial class MainWindowViewModel
         {
             var result = await _replayStore.RunItemsAsync(plan, indexes, retry, _workspace, () => CanWrite, null, token);
             RemoveResentOriginals(result);
-            StatusText = $"Recovery: {result.SentCount} acknowledged; {result.FailedCount} failed or uncertain. Review item outcomes.";
-            AddActivity("Info", "Operation recovery stopped", StatusText);
+            var summary = $"{result.SentCount:N0} of {indexes.Length:N0} acknowledged" +
+                          (plan.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
+                          (result.OriginalsKeptCount > 0 ? $" · {result.OriginalsKeptCount:N0} originals kept" : string.Empty) +
+                          (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain" : string.Empty) +
+                          (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
+            StatusText = $"Recovery: {summary}. Review item outcomes.";
+            var complete = result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0;
+            AddActivity(complete ? "Success" : "Warning",
+                complete ? "Operation recovery completed" : result.CancelledCount > 0 ? "Operation recovery cancelled" : "Operation recovery incomplete",
+                $"{plan.Id:N} · {summary}" + (result.BackupDirectory is null ? string.Empty : $" · backup {result.BackupDirectory}"));
         }
         finally { RefreshOperationHistory(); }
     }

@@ -8,6 +8,9 @@
     <StackPanel Spacing="4">
       <TextBlock Text="Explorer" Classes="pageTitle" />
       <TextBlock Text="Queues, topics, subscriptions and live runtime counters. Click a column header to sort." Classes="muted" />
+      <TextBlock Text="{Binding SelectedEntityDeliveryNote}" Classes="warning" FontSize="12" TextWrapping="Wrap"
+                 IsVisible="{Binding HasSelectedEntityDeliveryNote}"
+                 AutomationProperties.Name="Selected entity delivery note" />
     </StackPanel>
 
     <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
@@ -21,9 +24,9 @@
       <Button Grid.Column="2" Content="Refresh" Classes="quiet" Command="{Binding RefreshTopologyCommand}"
               ToolTip.Tip="Reload queues, topics, subscriptions, and runtime counters (Ctrl+R)" />
       <Button Grid.Column="4" Content="View active" Classes="quiet" Command="{Binding BrowseSelectedActiveCommand}"
-              ToolTip.Tip="Non-destructively view active messages in the selected queue or subscription" />
+              ToolTip.Tip="View active messages in the selected queue or subscription without removing them. On Amazon SQS, Google Pub/Sub and RabbitMQ each read counts as a delivery (see the note below)" />
       <Button Grid.Column="6" Content="View DLQ" Classes="primary" Command="{Binding BrowseSelectedDeadLettersCommand}"
-              ToolTip.Tip="Peek 100 messages without locking them; load more in Messages" />
+              ToolTip.Tip="Read 100 messages without removing them; load more in Messages. Azure Service Bus peeks without locking; other services hold them briefly" />
       <Button Grid.Column="8" Content="Transfer DLQ" Classes="quiet" Command="{Binding BrowseSelectedTransferDeadLettersCommand}"
               ToolTip.Tip="View messages in the selected transfer dead-letter queue" />
       <Button Grid.Column="10" Content="Rules…" Classes="quiet" Command="{Binding OpenTopicRoutingCommand}"

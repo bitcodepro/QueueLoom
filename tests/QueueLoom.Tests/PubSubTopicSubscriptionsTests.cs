@@ -1,0 +1,237 @@
+using System.Reflection;
+using Google.Api.Gax;
+using Google.Api.Gax.Grpc;
+using Google.Cloud.PubSub.V1;
+using Grpc.Core;
+using QueueLoom.Core.Profiles;
+using QueueLoom.Core.Routing;
+using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Google;
+using QueueLoom.Infrastructure.Messaging;
+
+namespace QueueLoom.Tests;
+
+public sealed class PubSubTopicSubscriptionsTests
+{
+    // projects.topics.subscriptions.list "Lists the names of the attached subscriptions on this topic", whichever
+    // project they live in; the project listing used before only saw this project's subscriptions.
+    [Fact]
+    public async Task Rules_CountSubscriptionsInOtherProjectsAcrossPages()
+    {
+        var publisher = new FakePublisher
+        {
+            TopicSubscriptions =
+            [
+                ["projects/project-b/subscriptions/audit"],
+                ["projects/project-c/subscriptions/secret", "projects/project-a/subscriptions/local"]
+            ]
+        };
+        var subscriber = new FakeSubscriber();
+        subscriber.Existing["projects/project-b/subscriptions/audit"] = new Subscription
+        {
+            Name = "projects/project-b/subscriptions/audit", Topic = "projects/project-a/topics/events", Filter = "attributes.region = \"EU\""
+        };
+        subscriber.Existing["projects/project-a/subscriptions/local"] = new Subscription
+        {
+            Name = "projects/project-a/subscriptions/local", Topic = "projects/project-a/topics/events"
+        };
+        subscriber.Denied.Add("projects/project-c/subscriptions/secret");
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var rules = await workspace.GetTopicRulesAsync("events");
+
+        Assert.Equal("projects/project-a/topics/events", publisher.ListedTopic);
+        Assert.Equal(2, publisher.PagesRead);
+        Assert.Equal(["local", "projects/project-b/subscriptions/audit", "projects/project-c/subscriptions/secret"],
+            rules.Select(item => item.Subscription));
+        var audit = rules.Single(item => item.Subscription.EndsWith("/audit", StringComparison.Ordinal));
+        Assert.Equal("attributes.region = \"EU\"", Assert.Single(audit.Rules).Expression);
+        Assert.Contains("project-b", audit.Note, StringComparison.Ordinal);
+        var secret = rules.Single(item => item.Subscription.EndsWith("/secret", StringComparison.Ordinal));
+        Assert.NotNull(secret.Unreadable);
+
+        var message = new RoutingMessage(new EditableMessageProperties(), [new MessageApplicationProperty("region", ApplicationPropertyType.String, "US")]);
+        var routed = TopicRouting.Route("events", rules, message, RoutingService.PubSub);
+        Assert.False(routed.IsDropped);
+        Assert.DoesNotContain("has no subscriptions", routed.Headline, StringComparison.Ordinal);
+        Assert.Equal(RoutingOutcome.Unknown, routed.Subscriptions.Single(item => item.Subscription.EndsWith("/secret", StringComparison.Ordinal)).Outcome);
+        Assert.Equal(RoutingOutcome.Skips, routed.Subscriptions.Single(item => item.Subscription.EndsWith("/audit", StringComparison.Ordinal)).Outcome);
+    }
+
+    [Fact]
+    public async Task Rules_TopicWhoseOnlySubscriptionIsElsewhereIsNotReportedAsDroppingEverything()
+    {
+        var publisher = new FakePublisher { TopicSubscriptions = [["projects/project-b/subscriptions/audit"]] };
+        var subscriber = new FakeSubscriber();
+        subscriber.Existing["projects/project-b/subscriptions/audit"] = new Subscription
+        {
+            Name = "projects/project-b/subscriptions/audit", Topic = "projects/project-a/topics/events"
+        };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var rules = await workspace.GetTopicRulesAsync("events");
+
+        var routed = TopicRouting.Route("events", rules, new RoutingMessage(new EditableMessageProperties(), Array.Empty<MessageApplicationProperty>()), RoutingService.PubSub);
+        Assert.Single(routed.Subscriptions);
+        Assert.Equal(RoutingOutcome.Receives, routed.Subscriptions[0].Outcome);
+        Assert.Equal("1 of 1 subscriptions receive it.", routed.Headline);
+    }
+
+    // projects.subscriptions.create "returns ALREADY_EXISTS" for a taken name, but the dead-letter topic and its
+    // subscription were made first and stayed behind. A taken name is now refused before anything is created.
+    [Fact]
+    public async Task Create_TakenNameIsRefusedBeforeTheDeadLetterTopicIsCreated()
+    {
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber();
+        subscriber.Existing["projects/project-a/subscriptions/orders"] = new Subscription { Name = "projects/project-a/subscriptions/orders" };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events")));
+
+        Assert.Contains("already exists", error.Message, StringComparison.Ordinal);
+        Assert.Empty(publisher.CreatedTopics);
+        Assert.Empty(subscriber.Created);
+    }
+
+    // When the main subscription is refused or taken after the check (another operator in the same moment), the
+    // dead-letter topic and subscription are not deleted: that operator may already use them. They are named.
+    [Theory]
+    [InlineData(StatusCode.AlreadyExists)]
+    [InlineData(StatusCode.PermissionDenied)]
+    public async Task Create_RefusedMainSubscriptionNamesWhatWasCreatedAndDeletesNothing(StatusCode refusal)
+    {
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber { Refuse = ("projects/project-a/subscriptions/orders", refusal) };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events")));
+
+        Assert.Contains("projects/project-a/topics/orders-dead-letter", error.Message, StringComparison.Ordinal);
+        Assert.Contains("projects/project-a/subscriptions/orders-dead-letter", error.Message, StringComparison.Ordinal);
+        Assert.Contains("left in place", error.Message, StringComparison.Ordinal);
+        Assert.Equal(["projects/project-a/topics/orders-dead-letter"], publisher.CreatedTopics);
+        Assert.Empty(publisher.DeletedTopics);
+        Assert.Empty(subscriber.Deleted);
+    }
+
+    private static GooglePubSubWorkspace Workspace(FakePublisher publisher, FakeSubscriber subscriber)
+    {
+        var workspace = new GooglePubSubWorkspace(new DeepAuditCloudTests.EmptyVault());
+        Set(typeof(GooglePubSubWorkspace), workspace, "_publisher", publisher);
+        Set(typeof(GooglePubSubWorkspace), workspace, "_subscriber", subscriber);
+        Set(typeof(GooglePubSubWorkspace), workspace, "_projectId", "project-a");
+        Set(typeof(LeasedMessagingWorkspace), workspace, "_profile",
+            ViewModelStateTests.CreateProfile("Isolated", EnvironmentKind.Test, ProfileAccessMode.ReadWrite) with
+            {
+                Provider = MessagingProvider.GooglePubSub, AllowQueueManagement = true
+            });
+        return workspace;
+    }
+
+    private static void Set(System.Type type, object target, string name, object value) =>
+        type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+
+    private sealed class FakePublisher : PublisherServiceApiClient
+    {
+        public string[][] TopicSubscriptions { get; init; } = [];
+        public string? ListedTopic { get; private set; }
+        public int PagesRead { get; private set; }
+        public List<string> CreatedTopics { get; } = [];
+        public List<string> DeletedTopics { get; } = [];
+
+        public override PagedAsyncEnumerable<ListTopicSubscriptionsResponse, string> ListTopicSubscriptionsAsync(
+            ListTopicSubscriptionsRequest request, CallSettings? callSettings = null)
+        {
+            ListedTopic = request.Topic;
+            var pages = TopicSubscriptions.Select((names, index) => new ListTopicSubscriptionsResponse
+            {
+                Subscriptions = { names },
+                NextPageToken = index < TopicSubscriptions.Length - 1 ? $"page-{index + 1}" : string.Empty
+            }).ToArray();
+            return new FakePaged<ListTopicSubscriptionsResponse, string>(pages, page => page.Subscriptions, () => PagesRead++);
+        }
+
+        public override Task<Topic> CreateTopicAsync(Topic request, CallSettings? callSettings = null)
+        {
+            CreatedTopics.Add(request.Name);
+            return Task.FromResult(request);
+        }
+
+        public override Task DeleteTopicAsync(DeleteTopicRequest request, CallSettings? callSettings = null)
+        {
+            DeletedTopics.Add(request.Topic);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeSubscriber : SubscriberServiceApiClient
+    {
+        public Dictionary<string, Subscription> Existing { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> Denied { get; } = new(StringComparer.Ordinal);
+        public (string Name, StatusCode Status)? Refuse { get; init; }
+        public List<string> Created { get; } = [];
+        public List<string> Deleted { get; } = [];
+
+        public override Task<Subscription> GetSubscriptionAsync(GetSubscriptionRequest request, CallSettings? callSettings = null) =>
+            Denied.Contains(request.Subscription) ? Task.FromException<Subscription>(new RpcException(new Status(StatusCode.PermissionDenied, "denied")))
+            : Existing.TryGetValue(request.Subscription, out var subscription) ? Task.FromResult(subscription)
+            : Task.FromException<Subscription>(new RpcException(new Status(StatusCode.NotFound, "not found")));
+
+        public override Task<Subscription> CreateSubscriptionAsync(Subscription request, CallSettings? callSettings = null)
+        {
+            if (Refuse is { } refuse && refuse.Name == request.Name)
+                return Task.FromException<Subscription>(new RpcException(new Status(refuse.Status, "refused by the fake")));
+            if (Existing.ContainsKey(request.Name))
+                return Task.FromException<Subscription>(new RpcException(new Status(StatusCode.AlreadyExists, "exists")));
+            Created.Add(request.Name);
+            Existing[request.Name] = request;
+            return Task.FromResult(request);
+        }
+
+        public override Task DeleteSubscriptionAsync(DeleteSubscriptionRequest request, CallSettings? callSettings = null)
+        {
+            Deleted.Add(request.Subscription);
+            return Task.CompletedTask;
+        }
+
+        public override PagedAsyncEnumerable<ListSubscriptionsResponse, Subscription> ListSubscriptionsAsync(
+            ListSubscriptionsRequest request, CallSettings? callSettings = null) =>
+            new FakePaged<ListSubscriptionsResponse, Subscription>(
+                [new ListSubscriptionsResponse { Subscriptions = { Existing.Values.Where(item => item.Name.StartsWith(request.Project + "/", StringComparison.Ordinal)) } }],
+                page => page.Subscriptions, () => { });
+    }
+
+    /// <summary>The library's paged result over fixed pages, read page by page as the client library does.</summary>
+    private sealed class FakePaged<TResponse, TResource>(TResponse[] pages, Func<TResponse, IEnumerable<TResource>> items, Action pageRead)
+        : PagedAsyncEnumerable<TResponse, TResource>
+    {
+        public override IAsyncEnumerable<TResponse> AsRawResponses() => Raw();
+
+        public override Task<Page<TResource>> ReadPageAsync(int pageSize, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public override async IAsyncEnumerator<TResource> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+        {
+            await foreach (var page in Raw().WithCancellation(cancellationToken))
+            {
+                foreach (var item in items(page))
+                {
+                    yield return item;
+                }
+            }
+        }
+
+        private async IAsyncEnumerable<TResponse> Raw()
+        {
+            foreach (var page in pages)
+            {
+                await Task.Yield();
+                pageRead();
+                yield return page;
+            }
+        }
+    }
+}

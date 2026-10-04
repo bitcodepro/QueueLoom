@@ -87,8 +87,16 @@ public sealed partial class MainWindowViewModel
                       (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not processed (cancelled)" : string.Empty);
         StatusText = summary;
         MessageListTitle = $"Backup saved to {result.BackupDirectory}";
-        AddActivity(result.FailedCount == 0 ? "Warning" : "Error", "Scheduled or deferred messages removed",
-            $"{summary} · {result.BackupDirectory}");
+        // "Removed" only when every ticked message was; a cancelled run, failures and messages that were already gone
+        // (delivered meanwhile) say so in the title, not only in the details.
+        var title = result.RemovedCount == marked.Count
+            ? "Scheduled or deferred messages removed"
+            : result.CancelledCount > 0
+                ? "Removal of scheduled or deferred messages cancelled"
+                : result.RemovedCount == 0
+                    ? "Scheduled or deferred messages not removed"
+                    : "Partial removal of scheduled or deferred messages";
+        AddActivity(result.FailedCount == 0 ? "Warning" : "Error", title, $"{summary} · {result.BackupDirectory}");
 
         var problem = result.Messages.FirstOrDefault(item => item.Outcome == DeadLetterMessageDeletionOutcome.Failed);
         if (problem is not null)

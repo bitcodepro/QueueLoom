@@ -25,6 +25,13 @@ public sealed record ServiceBusSubscription(
     /// <summary>Azure Service Bus: where dead letters are forwarded instead of staying in the dead-letter queue, or null.</summary>
     public string? ForwardDeadLettersTo { get; init; }
 
+    /// <summary>
+    /// How many deliveries the service allows a message of this subscription before it dead-letters it, where reading
+    /// counts as a delivery: the Pub/Sub dead-letter policy's maxDeliveryAttempts, or the redrive policy's maxReceiveCount
+    /// of the SQS queue an SNS subscription delivers to. Null when there is none or the service does not say.
+    /// </summary>
+    public int? MaxDeliveryCount { get; init; }
+
     public ServiceBusEntityReference Reference =>
         ServiceBusEntityReference.Subscription(TopicName, Name);
 }

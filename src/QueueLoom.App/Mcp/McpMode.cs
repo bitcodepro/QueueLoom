@@ -65,7 +65,20 @@ internal static class McpMode
         }
     }
 
-    private static Task RunServerAsync(
+    private static async Task RunServerAsync(
+        McpServerSettings settings,
+        QueueLoomPaths paths,
+        FileLoggerProvider logs,
+        IOperationApprover approver)
+    {
+        // An MCP server can run for days and appends to the shared Activity journal, so it applies the same retention.
+        // Operation history belongs to the desktop app, which cleans it up itself.
+        using var retention = new LocalHistoryRetention(new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")), null);
+        _ = retention.Start();
+        await RunMcpServerAsync(settings, paths, logs, approver).ConfigureAwait(false);
+    }
+
+    private static Task RunMcpServerAsync(
         McpServerSettings settings,
         QueueLoomPaths paths,
         FileLoggerProvider logs,

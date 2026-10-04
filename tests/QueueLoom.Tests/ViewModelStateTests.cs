@@ -1174,13 +1174,16 @@ public sealed partial class ViewModelStateTests
 
         public List<IReadOnlyList<BrowsedMessage>> PendingRemovals { get; } = [];
 
+        /// <summary>The outcome the fake reports for each pending message; removed when not set (e.g. Cancelled for a stopped run).</summary>
+        public Func<BrowsedMessage, DeadLetterMessageDeletionOutcome>? PendingOutcome { get; set; }
+
         public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
             IReadOnlyList<BrowsedMessage> messages,
             CancellationToken cancellationToken = default)
         {
             PendingRemovals.Add(messages);
             return Task.FromResult(new RemovePendingMessagesResult(
-                messages.Select(message => new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
+                messages.Select(message => new PendingMessageRemovalResult(message, PendingOutcome?.Invoke(message) ?? DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 

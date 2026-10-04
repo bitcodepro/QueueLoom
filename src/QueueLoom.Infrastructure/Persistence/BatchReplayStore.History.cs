@@ -51,6 +51,11 @@ public sealed partial class BatchReplayStore
                 Detail = File.Exists(detail) ? File.ReadAllText(detail) : null
             });
         }
+        // Checked last: retention removes plan.json before any item file, so a plan still present here proves no item
+        // above was read from a half-removed operation (a missing state file would otherwise read as Pending).
+        if (!File.Exists(Path.Combine(folder, "plan.json")))
+            throw new InvalidDataException("This operation is no longer saved; finished operations are removed after " +
+                                           $"{LocalHistoryRetention.RetentionDays} days. Refresh the history.");
         return new OperationHistory(plan, items);
     }
 

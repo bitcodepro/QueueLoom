@@ -379,6 +379,9 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {
+            // Every receive counts, also one released at once: ApproximateReceiveCount is "the number of times a message
+            // has been received across all queues but not deleted" (SQS API Reference, ReceiveMessage), and a redrive
+            // policy moves a message after maxReceiveCount receives (SQS Developer Guide, "Using dead-letter queues").
             var response = await owner.Sqs.ReceiveMessageAsync(
                     new ReceiveMessageRequest
                     {

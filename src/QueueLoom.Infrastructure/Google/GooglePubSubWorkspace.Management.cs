@@ -61,37 +61,71 @@ public sealed partial class GooglePubSubWorkspace
                 TopicAsTopicName = TopicResource(topic)
             };
             Apply(subscription, definition.Settings);
-            if (definition.CreateDeadLetterQueue)
-            {
-                var deadLetterTopic = TopicName.FromProjectTopic(_projectId, definition.Name + DeadLetterEnding);
-                await CreateIfMissingAsync(() => Publisher.CreateTopicAsync(deadLetterTopic, token)).ConfigureAwait(false);
-                // Dead letters are read through a subscription, so the topic gets one with the same name.
-                await CreateIfMissingAsync(() => Subscriber.CreateSubscriptionAsync(new Subscription
-                {
-                    SubscriptionName = SubscriptionName.FromProjectSubscription(_projectId, definition.Name + DeadLetterEnding),
-                    TopicAsTopicName = deadLetterTopic,
-                    MessageRetentionDuration = Duration.FromTimeSpan(TimeSpan.FromDays(7))
-                }, token)).ConfigureAwait(false);
-                subscription.DeadLetterPolicy = new DeadLetterPolicy
-                {
-                    DeadLetterTopic = deadLetterTopic.ToString(),
-                    MaxDeliveryAttempts = definition.Settings.MaxDeliveryCount ?? 5
-                };
-            }
-            else if (definition.Settings.MaxDeliveryCount is not null)
+            if (!definition.CreateDeadLetterQueue && definition.Settings.MaxDeliveryCount is not null)
             {
                 throw new InvalidOperationException("Deliveries before dead-lettering need a dead-letter topic. Tick the dead-letter option.");
             }
 
+            // projects.subscriptions.create "returns ALREADY_EXISTS" for a taken name, but only after the dead-letter
+            // topic and subscription would have been made. A taken name is refused here, before anything is created.
+            await EnsureSubscriptionMissingAsync(subscription.SubscriptionName, token).ConfigureAwait(false);
+            var created = new List<string>();
             try
             {
+                if (definition.CreateDeadLetterQueue)
+                {
+                    var deadLetterTopic = TopicName.FromProjectTopic(_projectId, definition.Name + DeadLetterEnding);
+                    if (await CreateIfMissingAsync(() => Publisher.CreateTopicAsync(deadLetterTopic, token)).ConfigureAwait(false))
+                    {
+                        created.Add($"dead-letter topic {deadLetterTopic}");
+                    }
+                    // Dead letters are read through a subscription, so the topic gets one with the same name.
+                    var deadLetterSubscription = SubscriptionName.FromProjectSubscription(_projectId, definition.Name + DeadLetterEnding);
+                    if (await CreateIfMissingAsync(() => Subscriber.CreateSubscriptionAsync(new Subscription
+                        {
+                            SubscriptionName = deadLetterSubscription,
+                            TopicAsTopicName = deadLetterTopic,
+                            MessageRetentionDuration = Duration.FromTimeSpan(TimeSpan.FromDays(7))
+                        }, token)).ConfigureAwait(false))
+                    {
+                        created.Add($"dead-letter subscription {deadLetterSubscription}");
+                    }
+                    subscription.DeadLetterPolicy = new DeadLetterPolicy
+                    {
+                        DeadLetterTopic = deadLetterTopic.ToString(),
+                        MaxDeliveryAttempts = definition.Settings.MaxDeliveryCount ?? 5
+                    };
+                }
+
                 await Subscriber.CreateSubscriptionAsync(subscription, token).ConfigureAwait(false);
             }
-            catch (RpcException exception) when (exception.StatusCode == StatusCode.AlreadyExists)
+            catch (RpcException exception)
             {
-                throw new InvalidOperationException($"A subscription named '{definition.Name}' already exists.", exception);
+                // What this call created is never deleted here: another operator creating the same subscription at the
+                // same moment adopts the same "-dead-letter" topic and subscription (they already exist for it), so
+                // ownership cannot be proven and deleting them could break their dead-lettering. They are named instead.
+                var reason = exception.StatusCode == StatusCode.AlreadyExists
+                    ? $"A subscription named '{definition.Name}' already exists."
+                    : $"Pub/Sub did not create the subscription '{definition.Name}': {exception.Status.Detail}";
+                throw new InvalidOperationException(created.Count == 0
+                    ? reason
+                    : $"{reason} Created before that and left in place: {string.Join(" and ", created)}. " +
+                      "Delete them in Google Cloud if nothing else uses them.", exception);
             }
         }, cancellationToken);
+
+    private async Task EnsureSubscriptionMissingAsync(SubscriptionName name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Subscriber.GetSubscriptionAsync(name, cancellationToken).ConfigureAwait(false);
+        }
+        catch (RpcException exception) when (exception.StatusCode == StatusCode.NotFound)
+        {
+            return;
+        }
+        throw new InvalidOperationException($"A subscription named '{name.SubscriptionId}' already exists.");
+    }
 
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
         ManageAsync(async token =>
@@ -155,14 +189,17 @@ public sealed partial class GooglePubSubWorkspace
         }
     }
 
-    private static async Task CreateIfMissingAsync(Func<Task> create)
+    /// <summary>True when this call created it; false when it already existed (and is adopted, not owned).</summary>
+    private static async Task<bool> CreateIfMissingAsync(Func<Task> create)
     {
         try
         {
             await create().ConfigureAwait(false);
+            return true;
         }
         catch (RpcException exception) when (exception.StatusCode == StatusCode.AlreadyExists)
         {
+            return false;
         }
     }
 }

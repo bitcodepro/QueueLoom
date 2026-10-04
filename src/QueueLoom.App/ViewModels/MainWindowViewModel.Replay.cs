@@ -34,7 +34,7 @@ public sealed partial class MainWindowViewModel
             () => CanPrepareReplay && FilteredBackupMessages.Count is > 0 and <= 1000);
         ReplayLoadedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Replaying loaded messages", ct => PrepareReplayAsync(false, ct), token),
-            () => CanPrepareReplay && Messages.Count is > 0 and <= 1000);
+            () => CanPrepareReplay && MessagesToReplay().Count is > 0 and <= 1000);
         ResumeReplayCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Resuming latest batch", ResumeReplayAsync, token),
             () => !IsBusy && CanWrite && _replayStore is not null);
@@ -48,6 +48,15 @@ public sealed partial class MainWindowViewModel
         ReplayLoadedMessagesCommand?.NotifyCanExecuteChanged(); ResumeReplayCommand?.NotifyCanExecuteChanged();
     }
 
+    /// <summary>"Replay loaded messages" copies the ticked messages when any are ticked, otherwise every loaded one.</summary>
+    private IReadOnlyList<MessageItemViewModel> MessagesToReplay()
+    {
+        var marked = Messages.Where(message => message.IsMarked).ToArray();
+        return marked.Length > 0 ? marked : Messages;
+    }
+
+    private static string MessageCount(int count) => count == 1 ? "1 message" : $"{count:N0} messages";
+
     private bool HasBrokerAssignedIdentity(Guid profileId) =>
         Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Provider is
             MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub or MessagingProvider.Kafka;
@@ -60,6 +69,7 @@ public sealed partial class MainWindowViewModel
         var rate = ReplayRate;
         var inputs = new List<(MessageDraft Draft, string Origin)>();
         long totalBytes = 0;
+        string selection;
         if (backups)
         {
             // A failed settlement retried later leaves two backups of one message; restore it once. That identity is
@@ -83,13 +93,19 @@ public sealed partial class MainWindowViewModel
                 if (totalBytes > 32 * 1024 * 1024) throw new InvalidOperationException("Narrow the backup filter to at most 32 MiB.");
                 inputs.Add((message.CreateDraft(), $"{item.ProfileName} / {item.SourceDisplay} / {item.MessageId}"));
             }
+            selection = $"The {MessageCount(inputs.Count)} of the filtered backups";
         }
         else
         {
-            foreach (var item in Messages)
+            // The ticked messages when any are ticked (e.g. after a reason chip or a search), otherwise every loaded one.
+            var ticked = Messages.Any(item => item.IsMarked);
+            foreach (var item in MessagesToReplay())
                 inputs.Add((item.Message.CreateDraft(), $"{item.ProfileName} / {item.Message.Source.Path} / {item.Message.Properties.MessageId}"));
+            selection = ticked
+                ? $"The {MessageCount(inputs.Count)} you ticked"
+                : $"All {MessageCount(inputs.Count)} in the list";
         }
-        if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token).ConfigureAwait(true)) return;
+        if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token, selection).ConfigureAwait(true)) return;
         if (!CanWrite || ConnectedProfileId != profile.Id) throw new InvalidOperationException("Environment or write access changed.");
             var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay,
                 ScheduledResend.IdentityFor(profile), profile.Provider).ConfigureAwait(true);
@@ -105,11 +121,12 @@ public sealed partial class MainWindowViewModel
     }
 
     private Task<bool> ConfirmReplayAsync(ServiceBusProfile profile, ServiceBusEntityReference destination,
-        int count, bool preserve, int rate, CancellationToken token) => _dialogs.ConfirmAsync("Review batch replay",
+        int count, bool preserve, int rate, CancellationToken token, string? selection = null) => _dialogs.ConfirmAsync("Review batch replay",
         $"Destination environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\nDestination: {destination.Path}\n" +
-        $"Batch size: {count} (resume skips acknowledged items)\nRate: {rate}/second\n" +
+        $"Batch size: {count:N0} (resume skips acknowledged items)\nRate: {rate}/second\n" +
         $"Message IDs: {(preserve ? "preserved; duplicate detection may suppress delivery" : "new stable IDs assigned to the batch")}\n\n" +
-        "All selected messages are copied to this destination, including messages from other environments. " +
+        $"{selection ?? $"The {MessageCount(count)} of the saved batch"} {(count == 1 ? "is" : "are")} copied to this destination, " +
+        "including messages from other environments. " +
         "Originals remain unchanged. Scheduled time is cleared; TTL is retained. " +
         (destination.Kind == ServiceBusEntityKind.Topic ? "The topic can fan out to every matching subscription. " : "") +
         "A local replay snapshot contains full message bodies. Uncertain deliveries block automatic resume.",
