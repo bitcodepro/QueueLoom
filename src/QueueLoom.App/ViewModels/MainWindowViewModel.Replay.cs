@@ -65,11 +65,16 @@ public sealed partial class MainWindowViewModel
             // A failed settlement retried later leaves two backups of one message; restore it once. That identity is
             // only trusted where the broker assigns it (Service Bus sequence numbers, SQS and Pub/Sub message IDs,
             // Kafka offsets). RabbitMQ derives it from the publisher's Message ID, which independent deliveries can
-            // share, so those backups, and those of environments no longer listed, are all restored.
+            // share, so those backups, and those of environments no longer listed, are all restored. The namespace is
+            // part of the identity: an environment can be repointed to another namespace under the same profile id,
+            // and a backup that does not record its namespace is never merged.
             var unique = FilteredBackupMessages
-                .DistinctBy(item => string.IsNullOrEmpty(item.Summary.MessageId) || !HasBrokerAssignedIdentity(item.Summary.ProfileId)
+                .DistinctBy(item => string.IsNullOrEmpty(item.Summary.MessageId) ||
+                                    string.IsNullOrEmpty(item.Summary.FullyQualifiedNamespace) ||
+                                    !HasBrokerAssignedIdentity(item.Summary.ProfileId)
                     ? (object)item.Summary.FilePath
-                    : (item.Summary.ProfileId, item.Summary.Source, item.Summary.SubQueue, item.Summary.SequenceNumber, item.Summary.MessageId))
+                    : (item.Summary.ProfileId, item.Summary.FullyQualifiedNamespace.ToUpperInvariant(), item.Summary.Source,
+                        item.Summary.SubQueue, item.Summary.SequenceNumber, item.Summary.MessageId))
                 .ToArray();
             foreach (var item in unique)
             {
