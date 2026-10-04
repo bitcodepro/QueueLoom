@@ -163,10 +163,33 @@ public sealed class BrokerTimeAndExactIntegerTests
     public void Ulong_2pow63_is_not_long_max() =>
         Assert.NotEqual(RoutingOutcome.Receives, Check("id = 9223372036854775807", 9223372036854775808UL));
 
+    [Theory]
+    [InlineData("amount > fee")]
+    [InlineData("amount + fee > 5")]
+    public void Integral_and_fractional_decimals_compare_together(string filter)
+    {
+        var message = new RoutingMessage(EditableMessageProperties.Empty,
+            new Dictionary<string, object?> { ["amount"] = 5m, ["fee"] = 0.5m });
+        Assert.Equal(RoutingOutcome.Receives, Check(filter, message));
+    }
+
+    [Theory]
+    [InlineData("amount > 2.5")]
+    [InlineData("amount = 5.0")]
+    [InlineData("amount IN (5.0, 6.0)")]
+    [InlineData("amount * 1.5 > 7")]
+    [InlineData("amount + 0.5 = 5.5")]
+    public void Whole_decimal_matches_a_fractional_literal(string filter) =>
+        Assert.Equal(RoutingOutcome.Receives, CheckAmount(filter, 5m));
+
     private static RoutingOutcome Check(string filter, object value) =>
         TopicRouting.Check(new SubscriptionRule("r", RuleFilterKind.Sql, filter),
             new RoutingMessage(EditableMessageProperties.Empty, new Dictionary<string, object?> { ["id"] = value })).Outcome;
 
     private static RoutingOutcome Check(string filter, RoutingMessage message) =>
         TopicRouting.Check(new SubscriptionRule("r", RuleFilterKind.Sql, filter), message).Outcome;
+
+    private static RoutingOutcome CheckAmount(string filter, object value) =>
+        Check(filter, new RoutingMessage(EditableMessageProperties.Empty,
+            new Dictionary<string, object?> { ["amount"] = value }));
 }
