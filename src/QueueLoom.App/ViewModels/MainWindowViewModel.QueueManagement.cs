@@ -118,14 +118,36 @@ public sealed partial class MainWindowViewModel
 
     private async Task DeleteQueueAsync(CancellationToken cancellationToken)
     {
-        var (profile, _) = RequireQueueManagement();
+        var (profile, capabilities) = RequireQueueManagement();
         var entity = RequireManageableSelection();
-        var messages = entity.Active + entity.DeadLetters;
+        // Only a built-in dead-letter queue (Service Bus: "can't be deleted or managed independently of the main entity")
+        // is part of its entity. Where QueueLoom creates the dead-letter queue itself (SQS, RabbitMQ, Pub/Sub, Kafka),
+        // the dead-letter count is that of a separate queue or topic, which stays.
+        var deadLettersGoToo = !capabilities.CanCreateDeadLetterQueue;
+        // Scheduled (Service Bus) and delayed (SQS) messages are in the entity and go with it.
+        var scheduled = entity.HasScheduledMessages ? entity.Scheduled : 0;
+        var deadLetters = deadLettersGoToo ? entity.DeadLetters : 0;
+        var transferDeadLetters = deadLettersGoToo && entity.HasTransferDeadLetters ? entity.TransferDeadLetters : 0;
+        var messages = entity.Active + scheduled + deadLetters + transferDeadLetters;
+        var parts = new[]
+        {
+            $"{entity.Active:N0} active",
+            scheduled > 0 ? $"{scheduled:N0} scheduled or delayed" : null,
+            deadLettersGoToo ? $"{deadLetters:N0} dead-lettered" : null,
+            transferDeadLetters > 0 ? $"{transferDeadLetters:N0} in the transfer dead-letter queue" : null
+        }.OfType<string>().ToArray();
+        var counts = $": {(parts.Length == 1 ? parts[0] : string.Join(", ", parts[..^1]) + " and " + parts[^1])} right now. ";
+        var separateDeadLetters = !deadLettersGoToo && entity.DeadLetters > 0
+            ? $"Its {entity.DeadLetters:N0} dead letters sit in a separate dead-letter {QueueKindName}, which is not deleted. "
+            : string.Empty;
+        // What other entities send here (dead letters, forwarded messages) has nowhere to go afterwards: RabbitMQ drops
+        // it, Service Bus dead-letters it at the source. The note from the topology read says who that is.
+        var role = string.IsNullOrWhiteSpace(entity.Note) ? string.Empty : $"About this {QueueKindName}: {entity.Note}.\n\n";
         var confirmed = await _dialogs.ConfirmAsync(
             $"Delete {QueueKindName} {entity.Name}",
-            $"Environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\n" +
+            $"Environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\n" + role +
             $"The {QueueKindName} {entity.Name} and every message in it are deleted" +
-            (messages > 0 ? $": {entity.Active:N0} active and {entity.DeadLetters:N0} dead-lettered right now. " : ". ") +
+            (messages > 0 ? counts : ". ") + separateDeadLetters +
             "Messages are not backed up; export or back them up first if you may need them. This cannot be undone.\n\n" +
             $"Type the name of the {QueueKindName} to confirm.",
             isDangerous: true,

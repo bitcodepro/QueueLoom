@@ -186,7 +186,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [McpServerTool(Name = "peek_messages", Title = "Peek messages", ReadOnly = true, Idempotent = true)]
     [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
                  "SQS and Pub/Sub receive the messages and release them at once (paging is not available there). " +
-                 "Bodies longer than 4,000 characters are truncated. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
+                 "Bodies longer than 4,000 characters are truncated, as are property values over 1,000 characters (at most 50 properties) " +
+                 "and dead-letter reasons or descriptions over 4,000; the *Truncated fields say when. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
                  "unpacked in decodedBody. Use fromSequenceNumber to page on Azure.")]
     public Task<MessageListInfo> PeekMessagesAsync(
         [Description("Queue name, or 'topic/subscription'.")] string entity,
@@ -217,7 +218,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [McpServerTool(Name = "search_dead_letters", Title = "Search dead letters", ReadOnly = true, Idempotent = true)]
     [Description("Searches every dead-letter queue of the environment: text in the Message ID, Correlation ID, subject, " +
                  "application properties or body (first 1 MiB), a /regular expression/, or a condition on a field of the JSON body. " +
-                 "Results can be passed to delete_dead_letter_messages.")]
+                 "Results are capped like peek_messages (the *Truncated fields say when) and can be passed to delete_dead_letter_messages.")]
     public Task<MessageListInfo> SearchDeadLettersAsync(
         [Description(QueryDescription)] string query,
         [Description(EnvironmentDescription)] string? environment = null,

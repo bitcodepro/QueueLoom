@@ -56,9 +56,15 @@ public sealed partial class AwsSqsSnsWorkspace
                 attributes["FifoQueue"] = "true";
             }
 
+            // CreateQueue returns the URL of an existing queue whose attributes match instead of failing, so a taken name
+            // is refused here, before anything is created; otherwise an existing queue would be reported as created and
+            // an existing "-dlq" queue (perhaps another queue's) silently adopted.
+            await EnsureQueueMissingAsync(definition.Name, token).ConfigureAwait(false);
+            string? createdDeadLetter = null;
             if (definition.CreateDeadLetterQueue)
             {
                 var deadLetterName = fifo ? definition.Name[..^5] + "-dlq.fifo" : definition.Name + "-dlq";
+                await EnsureQueueMissingAsync(deadLetterName, token).ConfigureAwait(false);
                 // Keep dead letters as long as SQS allows, so there is time to look at them.
                 var deadLetterAttributes = new Dictionary<string, string>(StringComparer.Ordinal) { ["MessageRetentionPeriod"] = "1209600" };
                 if (fifo)
@@ -67,6 +73,7 @@ public sealed partial class AwsSqsSnsWorkspace
                 }
                 var deadLetter = await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = deadLetterName, Attributes = deadLetterAttributes },
                     token).ConfigureAwait(false);
+                createdDeadLetter = deadLetter.QueueUrl;
                 var arn = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
                 {
                     QueueUrl = deadLetter.QueueUrl,
@@ -75,8 +82,59 @@ public sealed partial class AwsSqsSnsWorkspace
                 attributes["RedrivePolicy"] = RedrivePolicy(arn, definition.Settings.MaxDeliveryCount ?? 5);
             }
 
-            await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = definition.Name, Attributes = attributes }, token).ConfigureAwait(false);
+            try
+            {
+                await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = definition.Name, Attributes = attributes }, token).ConfigureAwait(false);
+            }
+            catch (AmazonSQSException exception) when (createdDeadLetter is not null && (int)exception.StatusCode is >= 400 and < 500)
+            {
+                // SQS refused the queue (a 4xx), so nothing routes to the dead-letter queue this call created; leaving it
+                // would block every retry. It stays when the queue exists after all (another creator may route to it)
+                // or its state cannot be read.
+                if (await QueueExistsAsync(definition.Name).ConfigureAwait(false) == false)
+                {
+                    try
+                    {
+                        await Sqs.DeleteQueueAsync(createdDeadLetter, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (AmazonSQSException)
+                    {
+                    }
+                }
+                throw;
+            }
         }, cancellationToken);
+
+    private async Task EnsureQueueMissingAsync(string name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Sqs.GetQueueUrlAsync(name, cancellationToken).ConfigureAwait(false);
+        }
+        catch (QueueDoesNotExistException)
+        {
+            return;
+        }
+        throw new InvalidOperationException($"A queue named '{name}' already exists.");
+    }
+
+    /// <summary>True or false when SQS answers clearly; null when the lookup itself fails.</summary>
+    private async Task<bool?> QueueExistsAsync(string name)
+    {
+        try
+        {
+            await Sqs.GetQueueUrlAsync(name, CancellationToken.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (QueueDoesNotExistException)
+        {
+            return false;
+        }
+        catch (AmazonSQSException)
+        {
+            return null;
+        }
+    }
 
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
         ManageAsync(async token =>

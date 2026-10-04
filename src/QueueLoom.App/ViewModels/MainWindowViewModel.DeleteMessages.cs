@@ -336,9 +336,10 @@ public sealed partial class MainWindowViewModel
                       (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not processed (cancelled)" : string.Empty);
         StatusText = $"Selected messages: {summary}";
         MessageListTitle = $"Backup saved to {result.BackupDirectory}";
+        // "Backed up and deleted" only when every ticked message was; not found or cancelled ones were not deleted.
         AddActivity(
             result.FailedCount == 0 ? "Warning" : "Error",
-            result.FailedCount == 0 ? "Selected dead letters backed up and deleted" : "Partial deletion of selected dead letters",
+            result.DeletedCount == marked.Length ? "Selected dead letters backed up and deleted" : "Partial deletion of selected dead letters",
             $"{summary} · {result.BackupDirectory}");
 
         var problem = result.Messages.FirstOrDefault(message =>

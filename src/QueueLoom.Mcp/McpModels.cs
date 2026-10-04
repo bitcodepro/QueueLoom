@@ -103,6 +103,11 @@ public sealed record DeadLetterHistoryInfo(
 
 public sealed record DeadLetterScanInfo(string Environment, DateTimeOffset CapturedAt, long TotalCount, IReadOnlyList<DeadLetterSourceInfo> Sources);
 
+/// <param name="DecodedBodyTruncated">True when the decoded body was cut at 4,000 characters.</param>
+/// <param name="ApplicationPropertiesTruncated">
+/// True when a property value was cut at 1,000 characters or properties beyond the first 50 were left out.
+/// </param>
+/// <param name="DeadLetterTextTruncated">True when the dead-letter reason or description was cut at 4,000 characters.</param>
 public sealed record MessageInfo(
     string Entity,
     string SubQueue,
@@ -122,7 +127,10 @@ public sealed record MessageInfo(
     string State,
     DateTimeOffset? ScheduledFor,
     string? DecodedAs = null,
-    string? DecodedBody = null);
+    string? DecodedBody = null,
+    bool DecodedBodyTruncated = false,
+    bool ApplicationPropertiesTruncated = false,
+    bool DeadLetterTextTruncated = false);
 
 public sealed record MessageListInfo(string Environment, string Summary, IReadOnlyList<MessageInfo> Messages);
 
@@ -136,6 +144,8 @@ public sealed record ChangeResult(string Environment, bool Approved, string Summ
 internal static class McpMapping
 {
     private const int MaximumBodyCharacters = 4_000;
+    internal const int MaximumPropertyValueCharacters = 1_000;
+    internal const int MaximumApplicationProperties = 50;
 
     public static EnvironmentInfo ToInfo(ServiceBusProfile profile) => new(
         profile.Name,
@@ -189,6 +199,19 @@ internal static class McpMapping
         {
             text = text[..MaximumBodyCharacters];
         }
+        var decodedText = decoded?.Text;
+        var decodedTruncated = decodedText?.Length > MaximumBodyCharacters;
+        // Properties and dead-letter texts can be as long as bodies (a Kafka DLT stack trace header, an Azure
+        // description), so they are capped too and the reply says so.
+        var properties = new Dictionary<string, string>(StringComparer.Ordinal);
+        var propertiesTruncated = message.ApplicationProperties.Count > MaximumApplicationProperties;
+        foreach (var property in message.ApplicationProperties.Take(MaximumApplicationProperties))
+        {
+            properties[property.Name] = Cap(property.Value, MaximumPropertyValueCharacters, ref propertiesTruncated)!;
+        }
+        var deadLetterTruncated = false;
+        var reason = Cap(message.DeadLetterReason, MaximumBodyCharacters, ref deadLetterTruncated);
+        var description = Cap(message.DeadLetterErrorDescription, MaximumBodyCharacters, ref deadLetterTruncated);
 
         return new MessageInfo(
             EntityName(message.Source),
@@ -200,16 +223,29 @@ internal static class McpMapping
             message.Properties.ContentType,
             message.EnqueuedAt,
             message.DeliveryCount,
-            message.DeadLetterReason,
-            message.DeadLetterErrorDescription,
-            message.ApplicationProperties.ToDictionary(property => property.Name, property => property.Value),
+            reason,
+            description,
+            properties,
             body.Format.ToString(),
             text,
             truncated,
             message.State == ServiceBusMessageState.Unknown ? (message.IsDeadLetter ? "DeadLettered" : "Active") : message.State.ToString(),
             message.State == ServiceBusMessageState.Scheduled ? message.Properties.ScheduledEnqueueTime : null,
             decoded?.Summary,
-            decoded is null ? null : decoded.Text.Length > MaximumBodyCharacters ? decoded.Text[..MaximumBodyCharacters] : decoded.Text);
+            decodedText is null ? null : decodedTruncated ? decodedText[..MaximumBodyCharacters] : decodedText,
+            decodedTruncated,
+            propertiesTruncated,
+            deadLetterTruncated);
+    }
+
+    private static string? Cap(string? value, int maximum, ref bool truncated)
+    {
+        if (value is null || value.Length <= maximum)
+        {
+            return value;
+        }
+        truncated = true;
+        return value[..maximum];
     }
 }
 

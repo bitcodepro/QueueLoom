@@ -98,7 +98,9 @@ public sealed partial class MainWindowViewModel
                 AddActivity("Warning", "Subscription rule deleted", $"{profile.Name} · {topic} / {subscription} · {rule.DisplayName}: {rule.FilterText}", reference);
             },
             editor => _dialogs.EditRuleAsync(editor, cancellationToken),
-            (title, text, requiredText) => _dialogs.ConfirmAsync(title, text, isDangerous: true, requiredText: requiredText,
+            // Production asks for its name before any rule or binding is deleted, not only the last one.
+            (title, text, requiredText) => _dialogs.ConfirmAsync(title, text, isDangerous: true,
+                requiredText: requiredText ?? (profile.Environment == EnvironmentKind.Production ? profile.Name : null),
                 cancellationToken: cancellationToken));
         var routing = new TopicRoutingViewModel(topic, profile.Name, canEdit, hint, services, message, origin, service);
         try { await _dialogs.ShowTopicRoutingAsync(routing, cancellationToken).ConfigureAwait(true); }
