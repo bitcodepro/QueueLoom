@@ -99,3 +99,32 @@ public sealed class SnsWildcardMatchingTests
             SnsFilterPolicy.Evaluate("""{"region": [{"exists": false}]}""", false, message).Outcome);
     }
 }
+
+/// <summary>AWS SNS key matching: exists:false means the key is absent; exists:true needs a non-null, non-empty value.</summary>
+public sealed class SnsExistsSemanticsTests
+{
+    private static RoutingMessage Body(string json) =>
+        new(EditableMessageProperties.Empty, Array.Empty<KeyValuePair<string, object?>>()) { Body = json };
+
+    [Theory]
+    [InlineData("""{"store": null, "other": 1}""")]
+    [InlineData("""{"store": "", "other": 1}""")]
+    [InlineData("""{"store": [], "other": 1}""")]
+    [InlineData("""{"store": {"name": "fans"}, "other": 1}""")]
+    public void ExistsFalseDoesNotMatchAKeyThatIsThere(string body) =>
+        Assert.Equal(RoutingOutcome.Skips, SnsFilterPolicy.Evaluate("""{"store": [{"exists": false}]}""", true, Body(body)).Outcome);
+
+    [Fact]
+    public void ExistsFalseMatchesAMissingKey() =>
+        Assert.Equal(RoutingOutcome.Receives,
+            SnsFilterPolicy.Evaluate("""{"store": [{"exists": false}]}""", true, Body("""{"other": 1}""")).Outcome);
+
+    [Theory]
+    [InlineData("""{"store": "", "other": 1}""", "Skips")]
+    [InlineData("""{"store": "fans", "other": 1}""", "Receives")]
+    [InlineData("""{"store": 0, "other": 1}""", "Receives")]
+    [InlineData("""{"store": false, "other": 1}""", "Receives")]
+    public void ExistsTrueNeedsANonEmptyValue(string body, string expected) =>
+        Assert.Equal(expected, SnsFilterPolicy.Evaluate("""{"store": [{"exists": true}]}""", true, Body(body)).Outcome.ToString());
+}
+

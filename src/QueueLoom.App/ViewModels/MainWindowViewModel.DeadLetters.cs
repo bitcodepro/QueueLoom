@@ -14,6 +14,13 @@ public sealed partial class MainWindowViewModel
         get => _selectedDeadLetterEnvironmentFilter;
         set
         {
+            if (_rebuildingEnvironmentLists > 0)
+            {
+                // A bound ComboBox writes a transient null while its collection is cleared; the rebuild restores
+                // the scope itself afterwards, so nothing is cleared on the way.
+                _selectedDeadLetterEnvironmentFilter = value;
+                return;
+            }
             var previousProfileId = _selectedDeadLetterEnvironmentFilter?.ProfileId;
             if (SetProperty(ref _selectedDeadLetterEnvironmentFilter, value))
             {
@@ -127,21 +134,32 @@ public sealed partial class MainWindowViewModel
 
     public int VisibleDlqSourceRowCount => FilteredDeadLetterSources.Count;
 
-    private void RefreshDeadLetterEnvironmentFilters()
+    private void RefreshDeadLetterEnvironmentFilters(DeadLetterEnvironmentFilterItemViewModel? scope = null)
     {
         // Keep the scope chosen on the Messages page; the Environments list selection only fills a scope that is gone.
-        var selectedProfileId = _selectedDeadLetterEnvironmentFilter is { } current && Profiles.Any(profile => profile.Id == current.ProfileId)
+        var current = scope ?? _selectedDeadLetterEnvironmentFilter;
+        var selectedProfileId = current is not null && Profiles.Any(profile => profile.Id == current.ProfileId)
             ? current.ProfileId
             : SelectedProfile?.Id;
 
-        DeadLetterEnvironmentFilters.Clear();
-        foreach (var profile in Profiles)
+        _rebuildingEnvironmentLists++;
+        try
         {
-            DeadLetterEnvironmentFilters.Add(new DeadLetterEnvironmentFilterItemViewModel(
-                profile.Id,
-                profile.Name,
-                profile.EnvironmentLabel,
-                profile.EnvironmentTone));
+            DeadLetterEnvironmentFilters.Clear();
+            foreach (var profile in Profiles)
+            {
+                DeadLetterEnvironmentFilters.Add(new DeadLetterEnvironmentFilterItemViewModel(
+                    profile.Id,
+                    profile.Name,
+                    profile.EnvironmentLabel,
+                    profile.EnvironmentTone));
+            }
+            // Whatever the ComboBox wrote while the list was empty, the change is judged against the scope before it.
+            _selectedDeadLetterEnvironmentFilter = current;
+        }
+        finally
+        {
+            _rebuildingEnvironmentLists--;
         }
 
         SelectedDeadLetterEnvironmentFilter = DeadLetterEnvironmentFilters

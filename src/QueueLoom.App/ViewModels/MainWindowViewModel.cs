@@ -41,6 +41,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private ServiceBusProfile? _connectedProfile;
     private EntityItemViewModel? _selectedEntity;
     private DeadLetterEnvironmentFilterItemViewModel? _selectedDeadLetterEnvironmentFilter;
+    /// <summary>Above zero while the environment lists are rebuilt; bound selections written meanwhile are transient.</summary>
+    private int _rebuildingEnvironmentLists;
     private DlqSourceItemViewModel? _selectedDlqSource;
     private Guid? _preferredDlqSourceProfileId;
     private ServiceBusEntityReference? _preferredDlqSourceEntity;

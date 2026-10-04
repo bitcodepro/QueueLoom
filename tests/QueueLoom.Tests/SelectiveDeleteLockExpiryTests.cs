@@ -36,6 +36,42 @@ public sealed class SelectiveDeleteLockExpiryTests
         Assert.Equal([25L], backups);
     }
 
+    [Fact]
+    public async Task ExpiryOfTheWholeScannedPrefixStillReachesTheTail()
+    {
+        // Locks 1-20 expire on the third receive: two batches of redelivered messages cover everything seen so far,
+        // yet the tail (21-30) has not been scanned.
+        var queue = new ExpiringLockQueue(Enumerable.Range(1, 30).Select(i => Message(i)));
+        queue.OnReceive = receive => { if (receive == 3) queue.ExpireLocks(1, 20); };
+        var backups = new List<long>();
+
+        var results = await SelectiveDeadLetterDeleter.DeleteAsync(queue,
+            [new DeadLetterMessageKey(Orders, ServiceBusSubQueue.DeadLetter, 25, "message-25")],
+            (message, _) => { lock (backups) backups.Add(message.SequenceNumber); return Task.CompletedTask; },
+            batchSize: 10, maximumScanned: 1_000, emptyReceiveConfirmations: 2, TimeSpan.Zero, null, CancellationToken.None);
+
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Deleted, Assert.Single(results).Outcome);
+        Assert.Equal([25L], backups);
+    }
+
+    [Fact]
+    public async Task LocksThatKeepExpiringAreReportedAsAnIncompleteScanNotAsGone()
+    {
+        // Every lock expires before the next receive, so the scan can never get past the first ten messages.
+        var queue = new ExpiringLockQueue(Enumerable.Range(1, 30).Select(i => Message(i)));
+        queue.OnReceive = _ => queue.ExpireLocks(1, 30);
+
+        var results = await SelectiveDeadLetterDeleter.DeleteAsync(queue,
+            [new DeadLetterMessageKey(Orders, ServiceBusSubQueue.DeadLetter, 25, "message-25")],
+            (_, _) => Task.CompletedTask,
+            batchSize: 10, maximumScanned: 1_000, emptyReceiveConfirmations: 2, TimeSpan.Zero, null, CancellationToken.None);
+
+        var result = Assert.Single(results);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Failed, result.Outcome);
+        Assert.Contains("lock", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(25L, queue.Remaining);
+    }
+
     private static ServiceBusReceivedMessage Message(long sequenceNumber) =>
         ServiceBusModelFactory.ServiceBusReceivedMessage(
             body: BinaryData.FromString($"message-{sequenceNumber}"),

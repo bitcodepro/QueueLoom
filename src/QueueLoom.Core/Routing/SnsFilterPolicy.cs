@@ -316,11 +316,13 @@ public static class SnsFilterPolicy
             condition.EnumerateObject().ToArray() is [{ Name: "exists" } exists] &&
             exists.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
-            // exists looks at leaf values only: null, [] and a nested object do not count as present.
-            var present = values is { Count: > 0 } && values.Any(value => value.Kind != ScalarKind.Null);
+            // exists:true needs a non-null, non-empty leaf value (null, "", [] and a nested object do not count);
+            // exists:false means the key is absent, so a key holding null or "" is still there.
+            var nonEmpty = values is { Count: > 0 } &&
+                           values.Any(value => value.Kind != ScalarKind.Null && !(value.Kind == ScalarKind.String && value.Text.Length == 0));
             return exists.Value.GetBoolean()
-                ? present ? Match.Yes : Match.No
-                : !present && hasProperties ? Match.Yes : Match.No;
+                ? nonEmpty ? Match.Yes : Match.No
+                : values is null && hasProperties ? Match.Yes : Match.No;
         }
         if (values is null)
         {

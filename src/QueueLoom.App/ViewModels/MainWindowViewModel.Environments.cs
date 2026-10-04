@@ -17,7 +17,10 @@ public sealed partial class MainWindowViewModel
         {
             if (SetProperty(ref _selectedProfile, value))
             {
-                RefreshDeadLetterEnvironmentFilters();
+                if (_rebuildingEnvironmentLists == 0)
+                {
+                    RefreshDeadLetterEnvironmentFilters();
+                }
                 OnPropertyChanged(nameof(HasSelectedProfile));
                 OnPropertyChanged(nameof(SelectedProfileName));
                 OnPropertyChanged(nameof(IsSelectedProfileConnected));
@@ -377,14 +380,24 @@ public sealed partial class MainWindowViewModel
         var selectedId = selectId ?? await _profileRepository.GetSelectedProfileIdAsync(cancellationToken)
             .ConfigureAwait(true);
 
-        Profiles.Clear();
-        foreach (var profile in profiles)
+        // While the list is rebuilt, the bound ComboBox sets SelectedProfile to null; the search scope must not follow.
+        var scope = _selectedDeadLetterEnvironmentFilter;
+        _rebuildingEnvironmentLists++;
+        try
         {
-            Profiles.Add(new ProfileItemViewModel(profile));
+            Profiles.Clear();
+            foreach (var profile in profiles)
+            {
+                Profiles.Add(new ProfileItemViewModel(profile));
+            }
+            SelectedProfile = Profiles.FirstOrDefault(item => item.Id == selectedId) ?? Profiles.FirstOrDefault();
         }
-        SelectedProfile = Profiles.FirstOrDefault(item => item.Id == selectedId) ?? Profiles.FirstOrDefault();
+        finally
+        {
+            _rebuildingEnvironmentLists--;
+        }
         UpdateProfileConnectionStates();
-        RefreshDeadLetterEnvironmentFilters();
+        RefreshDeadLetterEnvironmentFilters(scope);
         OnPropertyChanged(nameof(HasProfiles));
         OnPropertyChanged(nameof(EnvironmentActionLabel));
         OnPropertyChanged(nameof(EnvironmentActionCommand));
