@@ -32,7 +32,10 @@ internal static class KafkaMessageMapper
 
         var applicationProperties = texts
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair => new MessageApplicationProperty(pair.Key, ApplicationPropertyType.String, pair.Value))
+            // A header that is not UTF-8 text is binary (its text is base64), so it stays bytes when the message
+            // moves to another service.
+            .Select(pair => new MessageApplicationProperty(pair.Key,
+                IsText(headers[pair.Key]) ? ApplicationPropertyType.String : ApplicationPropertyType.Binary, pair.Value))
             .Concat(headers
                 .Where(header => DeadLetterHeaderPrefixes.Any(prefix => header.Key.StartsWith(prefix, StringComparison.Ordinal)))
                 .OrderBy(header => header.Key, StringComparer.Ordinal)
@@ -154,6 +157,19 @@ internal static class KafkaMessageMapper
             : name.EndsWith("original-offset", StringComparison.Ordinal) && value.Length == 8
                 ? BinaryPrimitives.ReadInt64BigEndian(value).ToString(CultureInfo.InvariantCulture)
                 : Text(value);
+
+    private static bool IsText(byte[] bytes)
+    {
+        try
+        {
+            StrictUtf8.GetCharCount(bytes);
+            return true;
+        }
+        catch (DecoderFallbackException)
+        {
+            return false;
+        }
+    }
 
     private static string Text(byte[] bytes)
     {

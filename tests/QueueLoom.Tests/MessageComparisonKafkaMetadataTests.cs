@@ -11,7 +11,8 @@ public sealed class MessageComparisonKafkaMetadataTests
     {
         var left = Browse([0xff]);
         var right = Browse("/w=="u8.ToArray());
-        Assert.Equal(left.ApplicationProperties, right.ApplicationProperties);
+        // The same base64 text, but the binary header is typed Binary and the text header String.
+        Assert.Equal(left.ApplicationProperties.Select(p => p.Value), right.ApplicationProperties.Select(p => p.Value));
 
         Assert.False(MessageComparison.Compare(left, right).AreEqual);
     }

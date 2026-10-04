@@ -45,7 +45,7 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         {
             // A damaged file is kept aside rather than overwritten, so nothing scheduled is silently lost, and the
             // app still starts.
-            File.Move(FilePath, FilePath + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
+            File.Move(FilePath, FilePath + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}");
             return [];
         }
     }

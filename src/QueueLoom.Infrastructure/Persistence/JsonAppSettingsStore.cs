@@ -20,7 +20,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         {
             try
             {
-                return await ReadAsync(cancellationToken).ConfigureAwait(false);
+                return (await ReadAsync(cancellationToken).ConfigureAwait(false)).Settings;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -49,7 +49,12 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         {
             await using var transaction = await CrossProcessFileLock.AcquireAsync(paths.SettingsFile + ".lock", cancellationToken)
                 .ConfigureAwait(false);
-            var current = await ReadAsync(cancellationToken).ConfigureAwait(false);
+            var (current, state) = await ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (state == FileState.Newer)
+            {
+                // A file from a newer QueueLoom is left as it is; rewriting it here would drop what this version cannot read.
+                throw new InvalidDataException("The settings file was written by a newer version of QueueLoom, so it is not changed.");
+            }
             var updated = update(current).Normalize();
             var document = JsonSerializer.Serialize(
                 new SettingsDocument
@@ -65,6 +70,11 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 },
                 SerializerOptions);
             paths.EnsureCreated();
+            if (state == FileState.Damaged)
+            {
+                // The damaged file is kept aside, so saved searches and the webhook can still be recovered from it.
+                File.Move(paths.SettingsFile, paths.SettingsFile + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}");
+            }
             await AtomicFile.WriteTextAsync(paths.SettingsFile, document, cancellationToken).ConfigureAwait(false);
             return updated;
         }
@@ -91,12 +101,14 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         _gate.Dispose();
     }
 
-    /// <summary>Reads the file; a missing or corrupt file yields defaults, an unreadable one throws.</summary>
-    private async Task<AppSettings> ReadAsync(CancellationToken cancellationToken)
+    private enum FileState { Read, Damaged, Newer }
+
+    /// <summary>Reads the file; a missing, corrupt or newer file yields defaults, an unreadable one throws.</summary>
+    private async Task<(AppSettings Settings, FileState State)> ReadAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(paths.SettingsFile))
         {
-            return AppSettings.Default;
+            return (AppSettings.Default, FileState.Read);
         }
 
         try
@@ -115,7 +127,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 .ConfigureAwait(false);
             if (document is not { SchemaVersion: 1 })
             {
-                return AppSettings.Default;
+                return (AppSettings.Default, document is { SchemaVersion: > 1 } ? FileState.Newer : FileState.Damaged);
             }
 
             // Unknown theme names (for example from a newer version) keep the default theme
@@ -124,7 +136,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                         Enum.IsDefined(parsed)
                 ? parsed
                 : AppSettings.Default.Theme;
-            return new AppSettings(document.MonitorIntervalSeconds, theme)
+            return (new AppSettings(document.MonitorIntervalSeconds, theme)
             {
                 SavedSearches = document.SavedSearches ?? [],
                 SystemNotifications = document.SystemNotifications ?? AppSettings.Default.SystemNotifications,
@@ -132,11 +144,11 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 AlertWebhookUrl = document.AlertWebhookUrl,
                 ProtobufSchemaPath = document.ProtobufSchemaPath,
                 BackupRetentionDays = document.BackupRetentionDays
-            }.Normalize();
+            }.Normalize(), FileState.Read);
         }
         catch (JsonException)
         {
-            return AppSettings.Default;
+            return (AppSettings.Default, FileState.Damaged);
         }
     }
 

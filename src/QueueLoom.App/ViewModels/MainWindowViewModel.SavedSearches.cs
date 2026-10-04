@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Settings;
+using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -135,6 +136,16 @@ public sealed partial class MainWindowViewModel
         var query = DeadLetterSearchQuery.Trim();
         if (query.Length == 0)
         {
+            return;
+        }
+        try
+        {
+            // A broken /regular expression/ or $.json.path is refused now, not when the saved search is picked later.
+            MessageSearchQuery.Parse(query);
+        }
+        catch (MessageSearchQueryException exception)
+        {
+            ErrorText = exception.Message;
             return;
         }
 

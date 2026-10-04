@@ -113,6 +113,22 @@ public sealed partial class ViewModelStateTests
     }
 
     [Theory]
+    [InlineData("/[unclosed/")]
+    [InlineData("$.")]
+    public async Task SavedSearchAudit_AQueryThatCannotRunIsNotSaved(string query)
+    {
+        var profile = CreateProfile("Development", EnvironmentKind.Development);
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace());
+        await viewModel.InitializeAsync();
+
+        viewModel.DeadLetterSearchQuery = query;
+        viewModel.SaveSearchCommand.Execute(null);
+
+        Assert.Empty(viewModel.SavedSearches);
+        Assert.False(string.IsNullOrEmpty(viewModel.ErrorText));
+    }
+
+    [Theory]
     [InlineData("$.order.customer.account.identifier == 'customer-1001'", "$.order.customer.account.identifier == 'customer-1002'")]
     [InlineData("$.region == 'EU'", "$.region == 'eu'")]
     public async Task SavedSearchAudit_DifferentQueriesWithCollidingLabelsBothSurviveRestart(string first, string second)

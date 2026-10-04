@@ -143,8 +143,10 @@ internal static class AwsMessageMapper
         }
 
         var value = stringValue ?? string.Empty;
-        if (label is not null && Enum.TryParse<ApplicationPropertyType>(label, ignoreCase: false, out var labelled) &&
-            labelled != ApplicationPropertyType.Binary)
+        // Only a type name counts; Enum.TryParse would also read another producer's "Number.1" as a QueueLoom type.
+        if (label is { Length: > 0 } && char.IsAsciiLetter(label[0]) &&
+            Enum.TryParse<ApplicationPropertyType>(label, ignoreCase: false, out var labelled) &&
+            Enum.IsDefined(labelled) && labelled != ApplicationPropertyType.Binary)
         {
             return new MessageApplicationProperty(name, labelled, value);
         }

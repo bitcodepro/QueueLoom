@@ -109,11 +109,35 @@ public sealed class SqlFilter
     {
         public override object? Evaluate(Context context)
         {
-            var a = left.Evaluate(context) as bool?;
-            var b = right.Evaluate(context) as bool?;
+            // A side QueueLoom cannot check does not matter when the other one decides: FALSE AND x, TRUE OR x.
+            var a = Side(left, context, out var leftError);
+            var b = Side(right, context, out var rightError);
+            var decisive = op != "AND";
+            if (a == decisive || b == decisive)
+            {
+                return decisive;
+            }
+            if ((leftError ?? rightError) is { } error)
+            {
+                throw error;
+            }
             return op == "AND"
                 ? a == false || b == false ? false : a == true && b == true ? true : null
                 : a == true || b == true ? true : a == false && b == false ? false : null;
+        }
+
+        private static bool? Side(Node node, Context context, out SqlFilterNotSupportedException? error)
+        {
+            try
+            {
+                error = null;
+                return node.Evaluate(context) as bool?;
+            }
+            catch (SqlFilterNotSupportedException exception)
+            {
+                error = exception;
+                return null;
+            }
         }
     }
 
