@@ -406,8 +406,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     {
         await RunOperationAsync("Loading environments", async token =>
         {
-            LoadActivityHistory();
+            // Environments first: a damaged or unreadable activity journal must not leave the app without them.
             await ReloadProfilesAsync(token).ConfigureAwait(true);
+            try
+            {
+                LoadActivityHistory();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "The activity history could not be read");
+                AddActivity("Warning", "Activity history not loaded", SanitizeException(exception));
+            }
             try
             {
                 await DeleteOldBackupsAsync(automatic: true, token).ConfigureAwait(true);

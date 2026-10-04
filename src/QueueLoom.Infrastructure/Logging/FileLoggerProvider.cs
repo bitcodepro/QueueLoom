@@ -13,6 +13,7 @@ namespace QueueLoom.Infrastructure.Logging;
 public sealed class FileLoggerProvider : ILoggerProvider
 {
     private const long MaximumFileBytes = 10 * 1024 * 1024;
+    private const string WriteLockName = ".queueloom-log.lock";
 
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new(StringComparer.Ordinal);
     private readonly object _sync = new();
@@ -21,6 +22,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
     private readonly Func<DateTimeOffset> _clock;
     private readonly LogLevel _minimumLevel;
     private bool _disposed;
+    private DateTime _retentionDay;
 
     public FileLoggerProvider(
         string directory,
@@ -81,7 +83,21 @@ public sealed class FileLoggerProvider : ILoggerProvider
             try
             {
                 System.IO.Directory.CreateDirectory(_directory);
+                // Long-running processes (the tray app, an MCP server) must prune too, not only at construction.
+                if (timestamp.Date != _retentionDay)
+                {
+                    TryDeleteExpiredFiles(timestamp);
+                }
                 var path = Path.Combine(_directory, FileNameFor(timestamp));
+                // The desktop app and every MCP server process append to the same daily file. Each append opens the
+                // file, seeks to its end and writes, so two unsynchronized processes overwrite each other's lines
+                // (or, on Windows, one fails with a sharing violation). A short cross-process lock serializes appends
+                // without locking the log file itself, so readers are never blocked.
+                using var writeLock = TryAcquireWriteLock();
+                if (writeLock is null)
+                {
+                    return;
+                }
                 if (File.Exists(path) && new FileInfo(path).Length > MaximumFileBytes)
                 {
                     return;
@@ -95,8 +111,33 @@ public sealed class FileLoggerProvider : ILoggerProvider
         }
     }
 
-    private void TryDeleteExpiredFiles()
+    private FileStream? TryAcquireWriteLock()
     {
+        var path = Path.Combine(_directory, WriteLockName);
+        var started = Environment.TickCount64;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
+            }
+            catch (IOException) when (Environment.TickCount64 - started < 2_000)
+            {
+                Thread.Sleep(1);
+            }
+            catch (IOException)
+            {
+                // Another process holds the lock far longer than an append takes; drop this line rather than block work.
+                return null;
+            }
+        }
+    }
+
+    private void TryDeleteExpiredFiles() => TryDeleteExpiredFiles(_clock());
+
+    private void TryDeleteExpiredFiles(DateTimeOffset now)
+    {
+        _retentionDay = now.Date;
         try
         {
             if (!System.IO.Directory.Exists(_directory))
@@ -104,7 +145,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 return;
             }
 
-            var cutoff = _clock().AddDays(-_retainedDays).Date;
+            var cutoff = now.AddDays(-_retainedDays).Date;
             foreach (var file in System.IO.Directory.EnumerateFiles(_directory, "queueloom-*.log"))
             {
                 var stamp = Path.GetFileNameWithoutExtension(file)["queueloom-".Length..];

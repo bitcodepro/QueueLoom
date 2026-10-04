@@ -181,6 +181,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         {
             throw new InvalidOperationException("Google Pub/Sub cannot schedule messages. Clear the scheduled time.");
         }
+        if (QueueLoom.Core.Validation.MessageSizeLimits.Check(message, MessagingProvider.GooglePubSub) is { } tooLarge)
+        {
+            throw new DeliveryRejectedException(tooLarge + " Nothing was sent.");
+        }
 
         var pubsubMessage = new PubsubMessage { Data = ByteString.CopyFrom(message.Body.GetBytes()) };
         foreach (var (name, value) in MessageAttributeConventions.StandardAttributes(message.Properties))

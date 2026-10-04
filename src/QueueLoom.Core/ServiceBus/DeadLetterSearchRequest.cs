@@ -99,4 +99,15 @@ public sealed record DeadLetterSearchRequest
     public int MaximumMessagesPerTarget { get; }
 
     public int MaximumResults { get; }
+
+    /// <summary>
+    /// Only messages enqueued at or after this time are searched ("enqueued within"); a message without an enqueue
+    /// time is outside every window. Applied while scanning, before a match counts toward <see cref="MaximumResults"/>,
+    /// so older matches (dead letters are read oldest first) cannot use up the cap and hide the recent ones.
+    /// </summary>
+    public DateTimeOffset? EnqueuedSince { get; init; }
+
+    /// <summary>Whether a message enqueued at <paramref name="enqueuedAt"/> is inside <see cref="EnqueuedSince"/>.</summary>
+    public bool IsInWindow(DateTimeOffset? enqueuedAt) =>
+        EnqueuedSince is not { } since || enqueuedAt is { } at && at >= since;
 }

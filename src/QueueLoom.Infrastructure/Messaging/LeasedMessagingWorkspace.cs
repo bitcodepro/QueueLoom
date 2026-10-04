@@ -205,6 +205,11 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 var undecided = 0;
                 foreach (var message in scanned)
                 {
+                    // Outside the "enqueued within" window: never a match, so it cannot use up the result cap.
+                    if (!request.IsInWindow(message.Message.EnqueuedAt))
+                    {
+                        continue;
+                    }
                     bool isMatch;
                     try
                     {

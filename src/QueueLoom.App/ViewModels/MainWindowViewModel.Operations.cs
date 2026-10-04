@@ -214,9 +214,17 @@ public sealed partial class MainWindowViewModel
         NotifyReplayFeatures();
     }
 
-    private ActivityRecord MakeActivity(string level, string action, string details, ServiceBusEntityReference? source, DateTimeOffset? timestamp = null) =>
-        new(_operationId, timestamp ?? DateTimeOffset.UtcNow, level, action, SensitiveDataRedactor.Redact(details),
-            ConnectedProfileId, _connectedProfile?.Name, source);
+    private ActivityRecord MakeActivity(string level, string action, string details, ServiceBusEntityReference? source, DateTimeOffset? timestamp = null)
+    {
+        // The ID and the name name the same environment: the one the workspace is talking to. During a monitor check
+        // of another environment that is the monitored one, while _connectedProfile still holds the operator's.
+        var profileId = ConnectedProfileId;
+        var profileName = profileId is not { } id ? null
+            : _connectedProfile?.Id == id ? _connectedProfile.Name
+            : Profiles.FirstOrDefault(profile => profile.Id == id)?.Name;
+        return new(_operationId, timestamp ?? DateTimeOffset.UtcNow, level, action, SensitiveDataRedactor.Redact(details),
+            profileId, profileName, source);
+    }
 
     private void RecordOperationIntent(string action, string details, ServiceBusEntityReference? source)
     {

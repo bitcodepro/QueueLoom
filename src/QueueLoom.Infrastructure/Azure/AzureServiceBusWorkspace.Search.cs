@@ -307,6 +307,11 @@ public sealed partial class AzureServiceBusWorkspace
                     azureMessage =>
                     {
                         scanned = checked(scanned + 1);
+                        // Outside the "enqueued within" window: never a match, so it cannot use up the result cap.
+                        if (!request.IsInWindow(azureMessage.EnqueuedTime == default ? null : azureMessage.EnqueuedTime))
+                        {
+                            return;
+                        }
                         bool isMatch;
                         try
                         {

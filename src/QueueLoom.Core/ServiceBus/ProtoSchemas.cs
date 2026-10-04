@@ -62,6 +62,9 @@ public sealed class ProtoSchemaException(string message) : FormatException(messa
 /// </summary>
 public sealed class ProtoSchemaSet
 {
+    /// <summary>Deepest message nesting a schema may declare (the protobuf libraries' default recursion limit).</summary>
+    public const int MaximumNesting = 100;
+
     private readonly Dictionary<string, ProtoMessageType> _messages;
     private readonly Dictionary<string, ProtoEnumType> _enums;
 
@@ -117,7 +120,8 @@ public sealed class ProtoSchemaSet
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var files = Directory.Exists(path)
-            ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+            // One unreadable subfolder (a database volume, another account's cache) must not discard every schema beside it.
+            ? Directory.EnumerateFiles(path, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 })
                 .Where(file => Path.GetExtension(file).ToLowerInvariant() is ".proto" or ".desc" or ".pb" or ".protoset" or ".binpb")
                 .Order(StringComparer.Ordinal)
                 .Take(2_000)
@@ -224,7 +228,7 @@ public sealed class ProtoSchemaSet
                 {
                     if (field.Number == 4 && field.Bytes is not null)
                     {
-                        ReadMessage(field.Bytes, package, messages, enums);
+                        ReadMessage(field.Bytes, package, messages, enums, 1);
                     }
                     else if (field.Number == 5 && field.Bytes is not null)
                     {
@@ -244,8 +248,11 @@ public sealed class ProtoSchemaSet
         return new ProtoSchemaSet(messages, enums, [name]);
     }
 
-    private static void ReadMessage(byte[] data, string scope, List<ProtoMessageType> messages, List<ProtoEnumType> enums)
+    private static void ReadMessage(byte[] data, string scope, List<ProtoMessageType> messages, List<ProtoEnumType> enums, int depth)
     {
+        // Recursion without a limit overflows the stack, which no handler can catch; protoc stops at 100 levels too.
+        if (depth > ProtoSchemaSet.MaximumNesting)
+            throw new InvalidDataException($"Messages are nested more than {ProtoSchemaSet.MaximumNesting} levels deep.");
         var fields = Wire.Fields(data).ToArray();
         var name = fields.Where(field => field.Number == 1 && field.Bytes is not null)
             .Select(field => Encoding.UTF8.GetString(field.Bytes!)).FirstOrDefault();
@@ -277,7 +284,7 @@ public sealed class ProtoSchemaSet
                         typeName.Length == 0 ? null : typeName.TrimStart('.'), Number(4) == 3) { Oneof = oneof });
                     break;
                 case 3 when field.Bytes is not null:
-                    ReadMessage(field.Bytes, fullName, messages, enums);
+                    ReadMessage(field.Bytes, fullName, messages, enums, depth + 1);
                     break;
                 case 4 when field.Bytes is not null:
                     enums.Add(ReadEnum(field.Bytes, fullName));
@@ -393,6 +400,7 @@ internal sealed class ProtoTextParser(string text)
 
     private readonly List<string> _tokens = Tokenize(text);
     private int _position;
+    private int _depth;
     private string _package = string.Empty;
 
     public void Parse(List<MessageDeclaration> messages, List<ProtoEnumType> enums)
@@ -438,6 +446,23 @@ internal sealed class ProtoTextParser(string text)
     }
 
     private void ParseBody(string fullName, List<FieldDeclaration> fields, List<MessageDeclaration> messages, List<ProtoEnumType> enums, string? oneof = null)
+    {
+        // Messages and oneofs are parsed recursively; a stack overflow would end the process instead of reporting an error.
+        if (++_depth > ProtoSchemaSet.MaximumNesting)
+        {
+            throw new ProtoSchemaException($"Messages are nested more than {ProtoSchemaSet.MaximumNesting} levels deep.");
+        }
+        try
+        {
+            ParseBodyLevel(fullName, fields, messages, enums, oneof);
+        }
+        finally
+        {
+            _depth--;
+        }
+    }
+
+    private void ParseBodyLevel(string fullName, List<FieldDeclaration> fields, List<MessageDeclaration> messages, List<ProtoEnumType> enums, string? oneof)
     {
         while (true)
         {

@@ -55,7 +55,10 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
                 var record = JsonSerializer.Deserialize<ActivityRecord>(File.ReadAllText(file));
                 if (record is not null && (cutoff is null || record.Timestamp > cutoff)) records.Add(record);
             }
-            catch (JsonException) { /* A damaged record must not hide the remaining history. */ }
+            // A damaged record must not hide the remaining history: invalid JSON, valid JSON the model refuses
+            // (an entity without a name throws ArgumentException), or a file that cannot be read.
+            catch (Exception exception) when (exception is JsonException or ArgumentException or NotSupportedException or
+                                                  IOException or UnauthorizedAccessException) { }
         }
         return records.OrderByDescending(r => r.Timestamp).ToArray();
     }

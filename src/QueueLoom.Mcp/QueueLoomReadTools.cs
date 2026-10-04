@@ -306,9 +306,19 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 return ("search", result.Matches, result.IsComplete);
             }, cancellationToken).ConfigureAwait(false);
 
+            // The name is reserved (an empty file created exclusively) before writing, so two exports choosing the same
+            // name at the same moment get two files; the export then replaces only its own reservation.
             var path = ExportPath(profile.Name, label, fileName, extension);
-            await MessageExport.WriteAsync(path, messages.Select(message => new ExportedMessage(profile.Name, message)).ToArray(),
-                cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await MessageExport.WriteAsync(path, messages.Select(message => new ExportedMessage(profile.Name, message)).ToArray(),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                ReleaseReservation(path);
+                throw;
+            }
             session.Record("Info", "Exported messages", $"{messages.Count} message(s) to {path}", profile);
             return new ExportInfo(
                 profile.Name,
@@ -334,12 +344,39 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             safe = "messages";
         }
 
-        var path = Path.Combine(directory, safe + extension);
-        for (var copy = 2; File.Exists(path); copy++)
+        // Checking File.Exists and writing later let two exports in the same second pick the same name and the later
+        // move replace the earlier file. CreateNew claims the name atomically: whoever creates it owns it.
+        for (var copy = 1; ; copy++)
         {
-            path = Path.Combine(directory, $"{safe} ({copy}){extension}");
+            var path = Path.Combine(directory, copy == 1 ? safe + extension : $"{safe} ({copy}){extension}");
+            try
+            {
+                using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                }
+                return path;
+            }
+            catch (IOException) when (File.Exists(path) || Directory.Exists(path))
+            {
+                // Taken by an earlier export or another one running now: try the next number.
+            }
         }
-        return path;
+    }
+
+    /// <summary>Removes a reserved name the export never filled (still empty), so a failed export leaves no file.</summary>
+    private static void ReleaseReservation(string path)
+    {
+        try
+        {
+            if (new FileInfo(path) is { Exists: true, Length: 0 })
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The export's own failure is what the caller needs to see.
+        }
     }
 
     [McpServerTool(Name = "explain_dead_letters", Title = "Why dead letters pile up", ReadOnly = true, Idempotent = true)]

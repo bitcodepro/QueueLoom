@@ -107,6 +107,16 @@ internal static class AwsMessageMapper
                 }
             }
 
+            // The publisher's Publish Subject (the e-mail subject line) is part of the envelope, not an attribute. It
+            // becomes the draft's subject, which a resend to the topic publishes as the Subject again; a "Subject"
+            // message attribute of the published message, when there is one, stays what it was.
+            if (root.TryGetProperty("Subject", out var subject) && subject.ValueKind == JsonValueKind.String &&
+                subject.GetString() is { Length: > 0 } subjectText &&
+                !attributes.ContainsKey(MessageAttributeConventions.Subject))
+            {
+                attributes[MessageAttributeConventions.Subject] = new MessageAttributeValue { DataType = "String", StringValue = subjectText };
+            }
+
             message = published.GetString()!;
             return true;
         }
@@ -245,25 +255,24 @@ internal static class AwsMessageMapper
     /// SQS attribute types are String, Number and Binary, each with an optional custom label. QueueLoom
     /// writes its type as the label ("Number.Int32", "String.Guid") so the type survives a round trip.
     /// </summary>
-    internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property) =>
-        // A label QueueLoom has no type for (SNS String.Array, another producer's custom label) goes back unchanged,
-        // as long as the property still has the type it was read with (a type changed in the editor wins).
-        property.WireType is { } wire &&
-        (wire.StartsWith("String.", StringComparison.Ordinal) && property.Type == ApplicationPropertyType.String ||
-         wire.StartsWith("Number.", StringComparison.Ordinal) &&
-         property.Type is ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or ApplicationPropertyType.String)
-            ? (wire, property.Value, null)
-            : property.Type switch
-        {
-            ApplicationPropertyType.String => ("String", property.Value, null),
-            ApplicationPropertyType.Binary => ("Binary", null, Convert.FromBase64String(property.Value)),
-            ApplicationPropertyType.Byte or ApplicationPropertyType.SByte or ApplicationPropertyType.Int16 or
-                ApplicationPropertyType.UInt16 or ApplicationPropertyType.Int32 or ApplicationPropertyType.UInt32 or
-                ApplicationPropertyType.Int64 or ApplicationPropertyType.UInt64 or ApplicationPropertyType.Single or
-                ApplicationPropertyType.Double or ApplicationPropertyType.Decimal =>
-                ($"Number.{property.Type}", property.Value, null),
-            _ => ($"String.{property.Type}", property.Value, null)
-        };
+    internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property)
+    {
+        // The DataType choice lives in Core, so the size check before sending counts exactly what is sent.
+        var dataType = MessageAttributeConventions.AwsDataType(property);
+        return dataType == "Binary"
+            ? (dataType, null, Convert.FromBase64String(property.Value))
+            : (dataType, property.Value, null);
+    }
+
+    /// <summary>
+    /// SNS Publish Subject: "UTF-8 text with no line breaks or control characters, and less than 100 characters long".
+    /// A subject SNS would refuse is not set (it still travels as the Subject attribute).
+    /// </summary>
+    public static string? SnsSubject(MessageDraft message) =>
+        message.Properties.Subject is { Length: > 0 and < 100 } subject &&
+        !string.IsNullOrWhiteSpace(subject) && !subject.Any(character => char.IsControl(character) || (int)character is 0x2028 or 0x2029)
+            ? subject
+            : null;
 
     internal static MessageApplicationProperty ToProperty(string name, string? dataType, string? stringValue, MemoryStream? binaryValue)
     {

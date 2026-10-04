@@ -32,8 +32,25 @@ internal sealed record AwsQueueInfo(
             ReadLong(attributes, "ApproximateNumberOfMessagesDelayed"),
             ReadDeadLetterTargetArn(attributes.GetValueOrDefault("RedrivePolicy")),
             ReadEpochSeconds(attributes, "CreatedTimestamp"),
-            ReadEpochSeconds(attributes, "LastModifiedTimestamp"));
+            ReadEpochSeconds(attributes, "LastModifiedTimestamp"))
+        {
+            MaximumMessageSize = ReadMaximumMessageSize(attributes.GetValueOrDefault("MaximumMessageSize"))
+                                 ?? QueueLoom.Core.Validation.MessageSizeLimits.AmazonMaximumBytes
+        };
     }
+
+    /// <summary>
+    /// The queue's MaximumMessageSize: "An integer from 1,024 bytes (1 KiB) up to 1,048,576 bytes (1 MiB). Default:
+    /// 1,048,576 bytes (1 MiB)."
+    /// </summary>
+    public int MaximumMessageSize { get; init; } = QueueLoom.Core.Validation.MessageSizeLimits.AmazonMaximumBytes;
+
+    /// <summary>A MaximumMessageSize attribute within SQS/SNS's 1,024 to 1,048,576 bytes, else null (unknown).</summary>
+    internal static int? ReadMaximumMessageSize(string? value) =>
+        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bytes) &&
+        bytes is >= 1_024 and <= QueueLoom.Core.Validation.MessageSizeLimits.AmazonMaximumBytes
+            ? bytes
+            : null;
 
     public static string? ReadDeadLetterTargetArn(string? redrivePolicy)
     {
@@ -107,6 +124,12 @@ internal sealed record AwsSubscriptionInfo(
 
 internal sealed record AwsTopicInfo(string Name, string Arn, bool IsFifo, IReadOnlyList<AwsSubscriptionInfo> Subscriptions)
 {
+    /// <summary>
+    /// The topic's MaximumMessageSize ("Valid values are 1024 to 1048576 (1 MiB). The default is 262144 (256 KiB)"),
+    /// or null when the topic's attributes could not be read.
+    /// </summary>
+    public int? MaximumMessageSize { get; init; }
+
     public static AwsTopicInfo From(string arn, IEnumerable<AwsSubscriptionInfo> subscriptions)
     {
         var name = AwsQueueInfo.LastSegment(arn);

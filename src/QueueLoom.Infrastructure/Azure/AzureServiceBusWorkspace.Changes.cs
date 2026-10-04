@@ -9,6 +9,7 @@ using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Core.Validation;
 using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Azure;
@@ -34,8 +35,10 @@ public sealed partial class AzureServiceBusWorkspace
         using var batch = await sender.CreateMessageBatchAsync(cancellationToken).ConfigureAwait(false);
         if (!batch.TryAddMessage(message))
         {
-            throw new InvalidOperationException(
-                "The message is larger than the maximum batch/message size allowed by this Service Bus namespace.");
+            // Nothing was sent, which is proven: a durable resend records a rejection, not an uncertain delivery.
+            throw new DeliveryRejectedException(
+                $"The message is larger than this Service Bus entity accepts ({MessageSizeLimits.Bytes(batch.MaxSizeInBytes)} " +
+                "including properties; 256 KB on Basic and Standard, up to 100 MB on Premium). Nothing was sent.");
         }
 
         await sender.SendMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
