@@ -202,7 +202,9 @@ public static class SnsFilterPolicy
                          argument.ValueKind == JsonValueKind.Object && argument.EnumerateObject().Count() == 1 &&
                          argument.EnumerateObject().First() is { } inner &&
                          (inner.Name is "prefix" or "suffix" && inner.Value.ValueKind == JsonValueKind.String ||
-                          inner.Name == "equals-ignore-case" && inner.Value.ValueKind is JsonValueKind.String or JsonValueKind.Array)
+                          inner.Name == "equals-ignore-case" && (inner.Value.ValueKind == JsonValueKind.String ||
+                              inner.Value.ValueKind == JsonValueKind.Array && inner.Value.GetArrayLength() > 0 &&
+                              inner.Value.EnumerateArray().All(item => item.ValueKind == JsonValueKind.String)))
                 };
                 if (!valid)
                 {
@@ -422,7 +424,8 @@ public static class SnsFilterPolicy
                 "prefix" => Is(!value.Text.StartsWith(property.Value.GetString() ?? string.Empty, StringComparison.Ordinal)),
                 "suffix" => Is(!value.Text.EndsWith(property.Value.GetString() ?? string.Empty, StringComparison.Ordinal)),
                 _ => Is(!(property.Value.ValueKind == JsonValueKind.Array ? property.Value.EnumerateArray().ToArray() : [property.Value])
-                    .Any(item => string.Equals(item.GetString(), value.Text, StringComparison.OrdinalIgnoreCase)))
+                    .Any(item => item.ValueKind == JsonValueKind.String &&
+                                 string.Equals(item.GetString(), value.Text, StringComparison.OrdinalIgnoreCase)))
             };
         }
         var excluded = argument.ValueKind == JsonValueKind.Array ? argument.EnumerateArray().ToArray() : [argument];
@@ -498,7 +501,11 @@ public static class SnsFilterPolicy
                 byte[] => [new Scalar(ScalarKind.Binary, string.Empty)],
                 string => [new Scalar(ScalarKind.String, text)],
                 byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal =>
-                    [new Scalar(ScalarKind.Number, text, Convert.ToDouble(value, CultureInfo.InvariantCulture))],
+                    // SNS reads the Number from the text QueueLoom sends, so a Single 0.1 is 0.1, not 0.10000000149011612.
+                    [new Scalar(ScalarKind.Number, text,
+                        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
+                            ? number
+                            : Convert.ToDouble(value, CultureInfo.InvariantCulture))],
                 // QueueLoom sends other types (Boolean, Guid, dates…) as String attributes with their text.
                 _ => [new Scalar(ScalarKind.String, text)]
             };

@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace QueueLoom.Core.Routing;
 
@@ -97,7 +96,7 @@ public sealed class SqlFilter
             {
                 ("NOT", null) => null,
                 ("NOT", bool flag) => !flag,
-                ("-", long number) => -number,
+                ("-", long number) => number == long.MinValue ? throw Overflow() : -number,
                 ("-", double number) => -number,
                 ("+", long or double) => value,
                 (_, null) => null,
@@ -118,6 +117,10 @@ public sealed class SqlFilter
         }
     }
 
+    /// <summary>A whole-number result outside Int64: how Service Bus treats it is not something to guess.</summary>
+    private static SqlFilterNotSupportedException Overflow() =>
+        new("The arithmetic goes beyond a 64-bit whole number; Service Bus decides what that gives.");
+
     private sealed class Arithmetic(string op, Node left, Node right) : Node
     {
         public override object? Evaluate(Context context)
@@ -126,14 +129,21 @@ public sealed class SqlFilter
             var b = right.Evaluate(context);
             if (a is long x && b is long y)
             {
-                return op switch
+                try
                 {
-                    "+" => x + y,
-                    "-" => x - y,
-                    "*" => x * y,
-                    "/" => y == 0 ? null : x / y,
-                    _ => y == 0 ? null : x % y
-                };
+                    return op switch
+                    {
+                        "+" => checked(x + y),
+                        "-" => checked(x - y),
+                        "*" => checked(x * y),
+                        "/" => y == 0 ? null : x == long.MinValue && y == -1 ? throw Overflow() : x / y,
+                        _ => y == 0 ? null : x == long.MinValue && y == -1 ? throw Overflow() : x % y
+                    };
+                }
+                catch (OverflowException)
+                {
+                    throw Overflow();
+                }
             }
             if (Number(a) is { } p && Number(b) is { } q)
             {
@@ -199,35 +209,68 @@ public sealed class SqlFilter
 
     private sealed class Like(string text, Node value, string pattern, char? escape, bool negated) : Test(text)
     {
-        private readonly Regex _regex = ToRegex(pattern, escape);
+        // Each element is a literal character, '_' (one character) or '%' (any run), with escapes applied.
+        private readonly (char Character, char Kind)[] _pattern = Compile(pattern, escape);
 
         protected override bool? Check(Context context, out string? actual)
         {
             actual = Describe(value, context);
-            return value.Evaluate(context) is string candidate ? _regex.IsMatch(candidate) != negated : null;
+            return value.Evaluate(context) is string candidate ? Matches(candidate) != negated : null;
         }
 
-        private static Regex ToRegex(string pattern, char? escape)
+        private static (char, char)[] Compile(string pattern, char? escape)
         {
-            var builder = new StringBuilder("^");
+            var result = new List<(char, char)>();
             for (var index = 0; index < pattern.Length; index++)
             {
                 var character = pattern[index];
                 if (escape is { } escapeCharacter && character == escapeCharacter && index + 1 < pattern.Length)
                 {
-                    builder.Append(Regex.Escape(pattern[++index].ToString()));
+                    result.Add((pattern[++index], 'c'));
                 }
                 else
                 {
-                    builder.Append(character switch
-                    {
-                        '%' => ".*",
-                        '_' => ".",
-                        _ => Regex.Escape(character.ToString())
-                    });
+                    result.Add((character, character switch { '%' => '%', '_' => '_', _ => 'c' }));
                 }
             }
-            return new Regex(builder.Append('$').ToString(), RegexOptions.Singleline | RegexOptions.CultureInvariant);
+            return [.. result];
+        }
+
+        /// <summary>
+        /// Wildcard matching that backtracks only to the last '%', so it takes at most pattern × text steps; a
+        /// regular expression of ".*" runs can take exponential time on patterns such as '%a%a%a%a%b'.
+        /// </summary>
+        private bool Matches(string candidate)
+        {
+            int text = 0, position = 0, star = -1, resume = 0;
+            while (text < candidate.Length)
+            {
+                if (position < _pattern.Length && _pattern[position].Kind == '%')
+                {
+                    star = position++;
+                    resume = text;
+                }
+                else if (position < _pattern.Length &&
+                         (_pattern[position].Kind == '_' || _pattern[position].Character == candidate[text]))
+                {
+                    position++;
+                    text++;
+                }
+                else if (star >= 0)
+                {
+                    position = star + 1;
+                    text = ++resume;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            while (position < _pattern.Length && _pattern[position].Kind == '%')
+            {
+                position++;
+            }
+            return position == _pattern.Length;
         }
     }
 
@@ -251,7 +294,9 @@ public sealed class SqlFilter
         protected override bool? Check(Context context, out string? actual)
         {
             actual = Describe(value, context);
-            return value.Evaluate(context) is null != negated;
+            // A null test needs no comparison, so a property of any type (Guid, date…) is decided here.
+            var resolved = value is Property property ? property.Resolve(context, out _) : value.Evaluate(context);
+            return resolved is null != negated;
         }
     }
 

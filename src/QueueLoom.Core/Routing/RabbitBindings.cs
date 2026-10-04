@@ -119,7 +119,8 @@ public static class RabbitBindings
         null => null,
         bool flag => flag,
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
-        float or double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        // A Single is sent as the double its text names (0.1, not 0.10000000149011612), as the mapper parses it.
+        float or double => RoutingValue.Normalize(value),
         decimal number => number,
         DateTime or DateTimeOffset => value,
         byte[] bytes => bytes,

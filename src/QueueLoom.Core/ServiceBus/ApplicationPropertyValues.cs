@@ -42,6 +42,19 @@ public static class ApplicationPropertyValues
     public static object ToObject(MessageApplicationProperty property)
     {
         ArgumentNullException.ThrowIfNull(property);
+        try
+        {
+            return Parse(property);
+        }
+        catch (OverflowException exception)
+        {
+            // A number out of its type's range is a value that does not fit, like any other format error.
+            throw new FormatException($"{property.Value} does not fit in a {property.Type}.", exception);
+        }
+    }
+
+    private static object Parse(MessageApplicationProperty property)
+    {
         var value = property.Value;
         return property.Type switch
         {
@@ -55,9 +68,10 @@ public static class ApplicationPropertyValues
             ApplicationPropertyType.UInt32 => uint.Parse(value, CultureInfo.InvariantCulture),
             ApplicationPropertyType.Int64 => long.Parse(value, CultureInfo.InvariantCulture),
             ApplicationPropertyType.UInt64 => ulong.Parse(value, CultureInfo.InvariantCulture),
-            ApplicationPropertyType.Single => float.Parse(value, CultureInfo.InvariantCulture),
-            ApplicationPropertyType.Double => double.Parse(value, CultureInfo.InvariantCulture),
-            ApplicationPropertyType.Decimal => decimal.Parse(value, CultureInfo.InvariantCulture),
+            // Float, as the draft validator reads them: a comma is not a thousands separator, so "1,5" is refused, not 15.
+            ApplicationPropertyType.Single => float.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture),
+            ApplicationPropertyType.Double => double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture),
+            ApplicationPropertyType.Decimal => decimal.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture),
             ApplicationPropertyType.Character => value.Length == 1 ? value[0] : throw new FormatException("A character property holds exactly one character."),
             ApplicationPropertyType.Guid => Guid.Parse(value),
             ApplicationPropertyType.DateTime => DateTime.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
