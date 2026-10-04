@@ -196,6 +196,10 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var decision = await RequestApprovalAsync(server, profile, "Send a message",
                 $"One message will be sent to {McpMapping.EntityName(target)}.\n" +
                 $"Message ID: {draft.Properties.MessageId}\nSubject: {subject ?? "—"}\nCorrelation ID: {correlationId ?? "—"}\n" +
+                // Everything that is sent is shown: application properties drive subscription filters and consumers.
+                $"Content type: {draft.Properties.ContentType ?? "—"}\n" +
+                (draft.ApplicationProperties.Count == 0 ? string.Empty
+                    : "Application properties:\n" + string.Join("\n", draft.ApplicationProperties.Select(property => $"  {property.Name} = {property.Value}")) + "\n") +
                 $"Body ({format}, {Encoding.UTF8.GetByteCount(draft.Body.Content).ToString("N0", CultureInfo.InvariantCulture)} bytes):\n{preview}",
                 reason, cancellationToken).ConfigureAwait(false);
             if (!decision.Approved)

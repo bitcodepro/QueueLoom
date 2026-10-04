@@ -74,11 +74,14 @@ public sealed class MessageItemViewModel : ObservableObject
     /// <summary>The dead-letter reason and the pattern of its description, worked out once per message.</summary>
     public (string Reason, string? Pattern) CauseKey => _causeKey ??= DeadLetterCauses.KeyOf(Message);
 
-    /// <summary>Ticked by the operator to include the message in "Delete selected".</summary>
+    /// <summary>
+    /// Ticked by the operator. Any message can be ticked to compare or export it; deleting, removing and resending
+    /// still require every ticked message to be one those actions apply to (see <see cref="CanDelete"/>).
+    /// </summary>
     public bool IsMarked
     {
         get => _isMarked;
-        set => SetProperty(ref _isMarked, value && CanDelete);
+        set => SetProperty(ref _isMarked, value);
     }
 
     /// <summary>

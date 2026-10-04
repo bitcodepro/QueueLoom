@@ -46,7 +46,7 @@ public static class SnsFilterPolicy
     }
 
     private static readonly HashSet<string> Operators =
-        ["prefix", "suffix", "equals-ignore-case", "anything-but", "numeric", "exists", "cidr"];
+        ["prefix", "suffix", "equals-ignore-case", "anything-but", "numeric", "exists", "cidr", "wildcard"];
 
     /// <summary>Throws <see cref="FilterPolicyException"/> when SNS would reject the policy.</summary>
     public static void Validate(string policy, bool onBody)
@@ -193,7 +193,7 @@ public static class SnsFilterPolicy
                 {
                     "prefix" or "suffix" => argument.ValueKind == JsonValueKind.String ||
                                             argument.ValueKind == JsonValueKind.Object && IsIgnoreCase(argument),
-                    "equals-ignore-case" or "cidr" => argument.ValueKind == JsonValueKind.String,
+                    "equals-ignore-case" or "cidr" or "wildcard" => argument.ValueKind == JsonValueKind.String,
                     "exists" => argument.ValueKind is JsonValueKind.True or JsonValueKind.False,
                     "numeric" => IsNumericRange(argument),
                     _ => argument.ValueKind is JsonValueKind.String or JsonValueKind.Number ||
@@ -201,7 +201,7 @@ public static class SnsFilterPolicy
                          argument.EnumerateArray().All(item => item.ValueKind is JsonValueKind.String or JsonValueKind.Number) ||
                          argument.ValueKind == JsonValueKind.Object && argument.EnumerateObject().Count() == 1 &&
                          argument.EnumerateObject().First() is { } inner &&
-                         (inner.Name is "prefix" or "suffix" && inner.Value.ValueKind == JsonValueKind.String ||
+                         (inner.Name is "prefix" or "suffix" or "wildcard" && inner.Value.ValueKind == JsonValueKind.String ||
                           inner.Name == "equals-ignore-case" && (inner.Value.ValueKind == JsonValueKind.String ||
                               inner.Value.ValueKind == JsonValueKind.Array && inner.Value.GetArrayLength() > 0 &&
                               inner.Value.EnumerateArray().All(item => item.ValueKind == JsonValueKind.String)))
@@ -316,8 +316,12 @@ public static class SnsFilterPolicy
             condition.EnumerateObject().ToArray() is [{ Name: "exists" } exists] &&
             exists.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
+            // exists:true needs a non-null, non-empty leaf value (null, "", [] and a nested object do not count);
+            // exists:false means the key is absent, so a key holding null or "" is still there.
+            var nonEmpty = values is { Count: > 0 } &&
+                           values.Any(value => value.Kind != ScalarKind.Null && !(value.Kind == ScalarKind.String && value.Text.Length == 0));
             return exists.Value.GetBoolean()
-                ? values is not null ? Match.Yes : Match.No
+                ? nonEmpty ? Match.Yes : Match.No
                 : values is null && hasProperties ? Match.Yes : Match.No;
         }
         if (values is null)
@@ -400,6 +404,8 @@ public static class SnsFilterPolicy
             case "cidr":
                 return Is(value.Kind == ScalarKind.String && IPAddress.TryParse(value.Text, out var address) &&
                           IPNetwork.TryParse(argument.GetString(), out var network) && network.Contains(address));
+            case "wildcard":
+                return Is(value.Kind == ScalarKind.String && Wildcard(argument.GetString() ?? string.Empty, value.Text));
             case "anything-but":
                 return AnythingBut(argument, value);
             default:
@@ -423,6 +429,7 @@ public static class SnsFilterPolicy
             {
                 "prefix" => Is(!value.Text.StartsWith(property.Value.GetString() ?? string.Empty, StringComparison.Ordinal)),
                 "suffix" => Is(!value.Text.EndsWith(property.Value.GetString() ?? string.Empty, StringComparison.Ordinal)),
+                "wildcard" => Is(!Wildcard(property.Value.GetString() ?? string.Empty, value.Text)),
                 _ => Is(!(property.Value.ValueKind == JsonValueKind.Array ? property.Value.EnumerateArray().ToArray() : [property.Value])
                     .Any(item => item.ValueKind == JsonValueKind.String &&
                                  string.Equals(item.GetString(), value.Text, StringComparison.OrdinalIgnoreCase)))
@@ -435,6 +442,32 @@ public static class SnsFilterPolicy
             JsonValueKind.Number => value.Kind == ScalarKind.Number && value.Number == item.GetDouble(),
             _ => false
         }));
+    }
+
+    /// <summary>SNS wildcard matching: '*' stands for any run of characters, everything else is compared exactly.</summary>
+    private static bool Wildcard(string pattern, string text)
+    {
+        var parts = pattern.Split('*');
+        if (parts.Length == 1)
+        {
+            return string.Equals(pattern, text, StringComparison.Ordinal);
+        }
+        if (!text.StartsWith(parts[0], StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var position = parts[0].Length;
+        for (var index = 1; index < parts.Length - 1; index++)
+        {
+            var found = text.IndexOf(parts[index], position, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                return false;
+            }
+            position = found + parts[index].Length;
+        }
+        var last = parts[^1];
+        return text.Length - position >= last.Length && text.EndsWith(last, StringComparison.Ordinal);
     }
 
     private static bool InRange(JsonElement range, double number)
@@ -488,10 +521,11 @@ public static class SnsFilterPolicy
 
     private sealed class AttributeScope(RoutingMessage message) : Scope
     {
-        public override bool HasProperties => message.Attributes.Count > 0;
+        // SNS ignores Binary attributes in filter policies, so they are neither present nor counted.
+        public override bool HasProperties => message.Attributes.Values.Any(value => value is not byte[]);
         public override IReadOnlyList<Scalar>? Get(string key)
         {
-            if (!message.Attributes.TryGetValue(key, out var value))
+            if (!message.Attributes.TryGetValue(key, out var value) || value is byte[])
             {
                 return null;
             }

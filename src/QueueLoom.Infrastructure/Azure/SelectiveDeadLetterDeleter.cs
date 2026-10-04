@@ -58,6 +58,8 @@ internal static class SelectiveDeadLetterDeleter
         var seen = new HashSet<long>();
         var scanned = 0;
         var emptyReceives = 0;
+        var redeliveredSinceFresh = 0;
+        var locksKeptExpiring = false;
         var cancelled = false;
         string? receiveError = null;
 
@@ -146,9 +148,18 @@ internal static class SelectiveDeadLetterDeleter
                 }
 
                 reportProgress?.Invoke(scanned, results.Count(result => result.Outcome == DeadLetterMessageDeletionOutcome.Deleted));
-                if (fresh == 0)
+                if (fresh > 0)
                 {
-                    // Only redelivered messages: the whole queue has been seen.
+                    redeliveredSinceFresh = 0;
+                }
+                else if ((redeliveredSinceFresh += batch.Count) > seen.Count)
+                {
+                    // Redelivered messages do not prove the queue is exhausted: when locks expire mid-scan, Service Bus
+                    // hands the earlier messages out again before the rest of the queue. The scan keeps holding them
+                    // and goes on; it gives up only when messages come back a second time with nothing new, and then
+                    // says the scan was incomplete instead of claiming the rest is gone. A queue that really ends
+                    // shows up as empty receives, because every message seen is still held.
+                    locksKeptExpiring = true;
                     break;
                 }
             }
@@ -176,6 +187,8 @@ internal static class SelectiveDeadLetterDeleter
 
         var reason = receiveError ?? (cancelled
             ? null
+            : locksKeptExpiring
+                ? "Not reached: message locks kept expiring before the scan got this far, so it was left unchanged. Try again."
             : scanned >= maximumScanned
                 ? $"Not reached within the first {maximumScanned:N0} messages of this dead-letter queue; it was left unchanged."
                 : "Not in the dead-letter queue any more (already deleted, resubmitted or expired).");
@@ -183,7 +196,7 @@ internal static class SelectiveDeadLetterDeleter
         {
             results.Add(new DeadLetterMessageDeletionResult(
                 key,
-                receiveError is not null ? DeadLetterMessageDeletionOutcome.Failed : cancelled ? DeadLetterMessageDeletionOutcome.Cancelled : DeadLetterMessageDeletionOutcome.NotFound,
+                receiveError is not null || locksKeptExpiring ? DeadLetterMessageDeletionOutcome.Failed : cancelled ? DeadLetterMessageDeletionOutcome.Cancelled : DeadLetterMessageDeletionOutcome.NotFound,
                 reason));
         }
 

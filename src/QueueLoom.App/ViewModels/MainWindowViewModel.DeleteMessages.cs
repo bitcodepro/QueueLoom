@@ -13,6 +13,8 @@ public sealed partial class MainWindowViewModel
 {
     private readonly HashSet<MessageItemViewModel> _trackedMessages = [];
     private int _markedCount;
+    /// <summary>Ticked messages that can only be compared or exported (active messages that are not pending).</summary>
+    private int _markedBrowseOnlyCount;
     private int _messageBatchDepth;
     private bool _messagesChangedInBatch;
 
@@ -21,6 +23,9 @@ public sealed partial class MainWindowViewModel
     public int MarkedMessageCount => _markedCount;
 
     public bool HasMarkedMessages => _markedCount > 0;
+
+    /// <summary>Something is ticked and every ticked message is a dead letter or a pending message.</summary>
+    public bool HasMarkedMessagesForChanges => _markedCount > 0 && _markedBrowseOnlyCount == 0;
 
     public bool HasDeletableMessages => Messages.Any(message => message.CanDelete);
 
@@ -71,11 +76,12 @@ public sealed partial class MainWindowViewModel
         }
         set
         {
+            // "Select all" ticks what can be deleted; unticking clears every tick, including ones made to compare.
             var mark = value == true;
             using var batch = BatchMessageUpdates();
             foreach (var message in Messages)
             {
-                message.IsMarked = mark;
+                message.IsMarked = mark && message.CanDelete;
             }
         }
     }
@@ -84,7 +90,7 @@ public sealed partial class MainWindowViewModel
     {
         DeleteMarkedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Deleting selected messages", DeleteMarkedMessagesAsync, token, allowCancellation: true),
-            () => !IsBusy && CanWrite && HasMarkedMessages && CanDeleteSelectedMessages);
+            () => !IsBusy && CanWrite && HasMarkedMessagesForChanges && CanDeleteSelectedMessages);
         Messages.CollectionChanged += OnMessagesChangedForDeletion;
     }
 
@@ -108,6 +114,7 @@ public sealed partial class MainWindowViewModel
             {
                 item.PropertyChanged += OnMessageMarkChanged;
                 _markedCount += item.IsMarked ? 1 : 0;
+                _markedBrowseOnlyCount += item.IsMarked && !item.CanDelete ? 1 : 0;
             }
         }
         NotifyMarkedMessagesOrDefer();
@@ -119,6 +126,7 @@ public sealed partial class MainWindowViewModel
         {
             item.PropertyChanged -= OnMessageMarkChanged;
             _markedCount -= item.IsMarked ? 1 : 0;
+            _markedBrowseOnlyCount -= item.IsMarked && !item.CanDelete ? 1 : 0;
         }
     }
 
@@ -127,6 +135,10 @@ public sealed partial class MainWindowViewModel
         if (args.PropertyName == nameof(MessageItemViewModel.IsMarked) && sender is MessageItemViewModel item)
         {
             _markedCount += item.IsMarked ? 1 : -1;
+            if (!item.CanDelete)
+            {
+                _markedBrowseOnlyCount += item.IsMarked ? 1 : -1;
+            }
             NotifyMarkedMessagesOrDefer();
         }
     }
@@ -187,6 +199,7 @@ public sealed partial class MainWindowViewModel
         RebuildDeadLetterReasons();
         OnPropertyChanged(nameof(MarkedMessageCount));
         OnPropertyChanged(nameof(HasMarkedMessages));
+        OnPropertyChanged(nameof(HasMarkedMessagesForChanges));
         OnPropertyChanged(nameof(HasDeletableMessages));
         OnPropertyChanged(nameof(HasDeadLetterMessages));
         OnPropertyChanged(nameof(ShowDeleteMarkedMessages));
@@ -215,7 +228,8 @@ public sealed partial class MainWindowViewModel
         }
         if (marked.Any(message => !message.CanDelete))
         {
-            throw new InvalidOperationException("Only dead-lettered messages can be deleted. Untick active messages.");
+            throw new InvalidOperationException(
+                "Only dead-lettered, scheduled or deferred messages can be deleted. Untick the active messages; they can only be compared or exported.");
         }
         if (marked.Any(message => message.IsPending))
         {
@@ -349,8 +363,11 @@ public sealed partial class MainWindowViewModel
             .Select(message => (message.Source, message.SubQueue, message.SequenceNumber))
             .ToHashSet();
         using var batch = BatchMessageUpdates();
+        // A search across environments lists rows from several of them, and sequence numbers repeat between
+        // environments: only the rows of the environment the deletion ran in are removed.
         foreach (var item in Messages
-                     .Where(item => deleted.Contains((item.Message.Source, item.Message.SubQueue, item.Message.SequenceNumber)))
+                     .Where(item => (item.ProfileId is null || item.ProfileId == profileId) &&
+                                    deleted.Contains((item.Message.Source, item.Message.SubQueue, item.Message.SequenceNumber)))
                      .ToArray())
         {
             Messages.Remove(item);

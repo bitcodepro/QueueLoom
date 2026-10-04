@@ -187,8 +187,11 @@ public sealed class SelectiveDeadLetterDeleterTests
 
         var result = Assert.Single(await DeleteAsync(queue, [Key(99)], [], batchSize: 5));
 
-        Assert.Equal(DeadLetterMessageDeletionOutcome.NotFound, result.Outcome);
-        Assert.True(queue.ReceivedCount <= 10);
+        // With every lock expiring, QueueLoom cannot tell whether more messages follow, so it says so rather than
+        // claiming the message is gone; it still stops after the messages come back a second time.
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Failed, result.Outcome);
+        Assert.Contains("lock", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.True(queue.ReceivedCount <= 15);
         Assert.Equal(5, queue.Remaining.Count);
     }
 

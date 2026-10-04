@@ -2,6 +2,7 @@ using QueueLoom.App.Commands;
 using QueueLoom.App.Models;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Core.Validation;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -21,7 +22,7 @@ public sealed partial class MainWindowViewModel
     {
         ResendMarkedMessagesCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Resending selected messages", ResendMarkedMessagesAsync, token, allowCancellation: true),
-            () => !IsBusy && CanWrite && HasMarkedMessages);
+            () => !IsBusy && CanWrite && HasMarkedMessagesForChanges);
     }
 
     private async Task ResendMarkedMessagesAsync(CancellationToken cancellationToken)
@@ -30,6 +31,11 @@ public sealed partial class MainWindowViewModel
         if (marked.Length == 0)
         {
             throw new InvalidOperationException("Tick the messages to resend first.");
+        }
+        if (marked.Any(message => !message.CanDelete))
+        {
+            throw new InvalidOperationException(
+                "Only dead-lettered messages can be resent. Untick the active messages; they can only be compared or exported.");
         }
         if (marked.Length > DeadLetterResender.MaximumMessages)
         {
@@ -89,6 +95,14 @@ public sealed partial class MainWindowViewModel
             .Select(item => options.PreserveMessageIds ? item : item.WithNewMessageId())
             .ToArray();
         DeadLetterResender.EnsureSafeMessageIds(profile.Provider, items, options.Mode);
+        // A draft that can never be sent is refused now, not retried by the schedule every 20 seconds.
+        if (items.Select(item => (item, validation: MessageDraftValidator.Validate(item.Message)))
+                .FirstOrDefault(pair => !pair.validation.IsValid) is { item: { } invalid } failed)
+        {
+            throw new InvalidOperationException(
+                $"Sequence {invalid.Original.SequenceNumber} cannot be sent: " +
+                string.Join(" ", failed.validation.Errors.Select(error => error.Message)) + " Nothing was resent.");
+        }
         if (options.SendAt is { } sendAt)
         {
             ScheduleResend(profile, items, options, sendAt);

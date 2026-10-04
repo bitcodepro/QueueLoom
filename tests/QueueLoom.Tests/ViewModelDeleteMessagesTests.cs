@@ -89,7 +89,7 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
-    public void ActiveMessages_CannotBeMarked()
+    public void ActiveMessages_CanBeMarkedToCompareButAreNotDeletable()
     {
         var active = new MessageItemViewModel(new BrowsedMessage(
             ServiceBusEntityReference.Queue("orders"),
@@ -100,8 +100,9 @@ public sealed partial class ViewModelStateTests
 
         active.IsMarked = true;
 
+        // Ticking selects an active message for Compare and Export; Delete and Resend stay gated on CanDelete.
         Assert.False(active.CanDelete);
-        Assert.False(active.IsMarked);
+        Assert.True(active.IsMarked);
     }
 
     private static async Task<(MainWindowViewModel ViewModel, FakeWorkspace Workspace, FakeDialogService Dialogs)>
