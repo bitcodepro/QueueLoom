@@ -48,6 +48,10 @@ public sealed partial class MainWindowViewModel
         ReplayLoadedMessagesCommand?.NotifyCanExecuteChanged(); ResumeReplayCommand?.NotifyCanExecuteChanged();
     }
 
+    private bool HasBrokerAssignedIdentity(Guid profileId) =>
+        Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Provider is
+            MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub or MessagingProvider.Kafka;
+
     private async Task PrepareReplayAsync(bool backups, CancellationToken token)
     {
         var profile = _connectedProfile ?? throw new InvalidOperationException("Connect first.");
@@ -58,9 +62,12 @@ public sealed partial class MainWindowViewModel
         long totalBytes = 0;
         if (backups)
         {
-            // A failed settlement retried later leaves two backups of one message; restore it once.
+            // A failed settlement retried later leaves two backups of one message; restore it once. That identity is
+            // only trusted where the broker assigns it (Service Bus sequence numbers, SQS and Pub/Sub message IDs,
+            // Kafka offsets). RabbitMQ derives it from the publisher's Message ID, which independent deliveries can
+            // share, so those backups, and those of environments no longer listed, are all restored.
             var unique = FilteredBackupMessages
-                .DistinctBy(item => string.IsNullOrEmpty(item.Summary.MessageId)
+                .DistinctBy(item => string.IsNullOrEmpty(item.Summary.MessageId) || !HasBrokerAssignedIdentity(item.Summary.ProfileId)
                     ? (object)item.Summary.FilePath
                     : (item.Summary.ProfileId, item.Summary.Source, item.Summary.SubQueue, item.Summary.SequenceNumber, item.Summary.MessageId))
                 .ToArray();

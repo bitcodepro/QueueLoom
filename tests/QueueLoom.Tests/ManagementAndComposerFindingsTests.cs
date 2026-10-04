@@ -114,10 +114,35 @@ public sealed class ManagementAndComposerFindingsTests
         Assert.DoesNotContain("orders.dlq", broker.Queues);
     }
 
+    // An indeterminate outcome: the broker creates the queue, but the response is lost (timeout, cancellation or a
+    // dropped connection). The main queue routes its dead letters to "<name>.dlq", so that queue must stay.
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("connection")]
+    public async Task RabbitMq_DeadLetterQueueStaysWhenTheMainQueueMayHaveBeenCreated(string loss)
+    {
+        var broker = new QueueBroker([]) { LoseResponseOf = "orders", Loss = loss };
+        await using var workspace = new RabbitMqWorkspace(new DeepAuditCloudTests.EmptyVault());
+        typeof(RabbitMqWorkspace).GetField("_management", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(workspace, new HttpClient(broker) { BaseAddress = new Uri("http://broker.invalid/") });
+        typeof(LeasedMessagingWorkspace).GetField("_profile", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace,
+            ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Test, new(AuthenticationKind.RabbitMqPassword),
+                accessMode: ProfileAccessMode.ReadWrite) with
+            { Provider = MessagingProvider.RabbitMq, AllowQueueManagement = true, RabbitMq = new("broker.invalid", "guest") });
+
+        await Assert.ThrowsAnyAsync<Exception>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(TimeSpan.FromMinutes(5)), CreateDeadLetterQueue: true)));
+
+        Assert.Contains("orders", broker.Queues);
+        Assert.Contains("orders.dlq", broker.Queues);
+    }
+
     private sealed class QueueBroker(IEnumerable<string> existing) : HttpMessageHandler
     {
         public HashSet<string> Queues { get; } = [.. existing];
         public string? RejectPutOf { get; init; }
+        public string? LoseResponseOf { get; init; }
+        public string Loss { get; init; } = "timeout";
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -132,6 +157,13 @@ public sealed class ManagementAndComposerFindingsTests
                     return Task.FromResult(Reply(HttpStatusCode.BadRequest,
                         """{"error":"bad_request","reason":"precondition_failed: invalid arg 'x-message-ttl': {value_too_large,5184000000}"}"""));
                 Queues.Add(name);
+                if (name == LoseResponseOf)
+                {
+                    // Created on the broker, but the answer never arrives.
+                    return Loss == "timeout"
+                        ? Task.FromException<HttpResponseMessage>(new TaskCanceledException("The request timed out."))
+                        : Task.FromException<HttpResponseMessage>(new HttpRequestException("The connection was reset."));
+                }
                 return Task.FromResult(Reply(HttpStatusCode.Created));
             }
             if (request.Method == HttpMethod.Delete)

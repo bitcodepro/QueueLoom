@@ -60,13 +60,16 @@ public sealed partial class RabbitMqWorkspace
                 arguments["x-dead-letter-exchange"] = string.Empty;
                 arguments["x-dead-letter-routing-key"] = deadLetter;
             }
+            var outcome = new PutOutcome();
             try
             {
-                await PutQueueAsync(definition.Name, arguments, token).ConfigureAwait(false);
+                await PutQueueAsync(definition.Name, arguments, token, outcome).ConfigureAwait(false);
             }
-            catch when (createdDeadLetter is not null)
+            catch when (createdDeadLetter is not null && outcome.Refused)
             {
-                // The new, still empty dead-letter queue would otherwise block every retry with "already exists".
+                // The broker certainly did not create the main queue, so the new, still empty dead-letter queue would
+                // only block every retry with "already exists". When the PUT may have succeeded (a timeout, a
+                // cancellation, a lost response), the dead-letter queue stays: the main queue may route to it.
                 var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
                 using var _ = await management.DeleteAsync(
                         $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(createdDeadLetter)}?if-empty=true", CancellationToken.None)
@@ -98,15 +101,30 @@ public sealed partial class RabbitMqWorkspace
         }
     }
 
-    private async Task PutQueueAsync(string name, Dictionary<string, object> arguments, CancellationToken cancellationToken)
+    /// <summary>Whether a failed PUT certainly created nothing: it was never sent, or the broker answered 4xx.</summary>
+    private sealed class PutOutcome
+    {
+        public bool Refused { get; set; } = true;
+    }
+
+    private async Task PutQueueAsync(string name, Dictionary<string, object> arguments, CancellationToken cancellationToken,
+        PutOutcome? outcome = null)
     {
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
         var path = $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(name)}";
         await EnsureQueueMissingAsync(name, cancellationToken).ConfigureAwait(false);
 
         var body = JsonSerializer.Serialize(new { durable = true, auto_delete = false, arguments });
+        if (outcome is not null)
+        {
+            outcome.Refused = false;
+        }
         using var response = await management.PutAsync(path, new StringContent(body, Encoding.UTF8, "application/json"), cancellationToken)
             .ConfigureAwait(false);
+        if (outcome is not null && (int)response.StatusCode is >= 400 and < 500)
+        {
+            outcome.Refused = true;
+        }
         await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
     }
 }
