@@ -207,7 +207,7 @@ public static class MessageDraftValidator
         ApplicationPropertyType.UInt64 => ulong.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
         ApplicationPropertyType.Single => float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _),
         ApplicationPropertyType.Double => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _),
-        ApplicationPropertyType.Decimal => decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out _),
+        ApplicationPropertyType.Decimal => decimal.TryParse(value, ApplicationPropertyValues.DecimalStyle, CultureInfo.InvariantCulture, out _),
         ApplicationPropertyType.Character => value.Length == 1,
         ApplicationPropertyType.Guid => Guid.TryParse(value, out _),
         ApplicationPropertyType.DateTime => DateTime.TryParse(

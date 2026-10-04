@@ -39,6 +39,9 @@ public static class ApplicationPropertyValues
     }
 
     /// <summary>The typed value; throws <see cref="FormatException"/> when the text does not fit the type.</summary>
+    /// <summary>The Decimal spellings QueueLoom accepts wherever it reads one, such as "1,000", "100-" and "1e3".</summary>
+    public const NumberStyles DecimalStyle = NumberStyles.Number | NumberStyles.AllowExponent;
+
     public static object ToObject(MessageApplicationProperty property)
     {
         ArgumentNullException.ThrowIfNull(property);
@@ -71,7 +74,7 @@ public static class ApplicationPropertyValues
             // Float, as the draft validator reads them: a comma is not a thousands separator, so "1,5" is refused, not 15.
             ApplicationPropertyType.Single => float.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture),
             ApplicationPropertyType.Double => double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture),
-            ApplicationPropertyType.Decimal => decimal.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture),
+            ApplicationPropertyType.Decimal => decimal.Parse(value, DecimalStyle, CultureInfo.InvariantCulture),
             ApplicationPropertyType.Character => value.Length == 1 ? value[0] : throw new FormatException("A character property holds exactly one character."),
             ApplicationPropertyType.Guid => Guid.Parse(value),
             ApplicationPropertyType.DateTime => DateTime.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),

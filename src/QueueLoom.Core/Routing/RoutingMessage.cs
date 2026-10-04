@@ -75,6 +75,9 @@ public sealed class RoutingMessage
     /// <summary>The text each application property was given, where the message came with it (SNS and Pub/Sub send that text).</summary>
     private readonly Dictionary<string, string> _text = new(StringComparer.Ordinal);
 
+    /// <summary>The text an application property was given, when the message was built from typed text.</summary>
+    public bool TryGetText(string name, out string text) => _text.TryGetValue(name, out text!);
+
     /// <summary>The text of an attribute (see <see cref="Attributes"/>) as SNS and Pub/Sub would carry it.</summary>
     public string AttributeTextOf(string name) =>
         _user.ContainsKey(name) && _text.TryGetValue(name, out var text)

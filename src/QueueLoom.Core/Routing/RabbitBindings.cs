@@ -109,7 +109,11 @@ public static class RabbitBindings
         {
             return false;
         }
-        value = ToHeader(typed);
+        // A Single or Double given as text is sent as the double that text names, exactly as the mapper parses it.
+        value = typed is float or double && message.TryGetText(name, out var text)
+                && double.TryParse(text, CultureInfo.InvariantCulture, out var sent)
+            ? sent
+            : ToHeader(typed);
         return true;
     }
 
@@ -119,7 +123,7 @@ public static class RabbitBindings
         null => null,
         bool flag => flag,
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
-        // A Single is sent as the double its text names (0.1, not 0.10000000149011612), as the mapper parses it.
+        // A typed Single without its text is widened through its shortest text (0.1, not 0.10000000149011612).
         float or double => RoutingValue.Normalize(value),
         decimal number => number,
         DateTime or DateTimeOffset => value,
