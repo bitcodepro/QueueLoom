@@ -138,6 +138,7 @@ public static class MessageComparison
             using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
                    {
                        Indented = true,
+                       NewLine = "\n",
                        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
                    }))
             {
@@ -148,7 +149,9 @@ public static class MessageComparison
         catch (JsonException)
         {
         }
-        return text.ReplaceLineEndings("\n").Split('\n');
+        // Lines end at \n only; a carriage return stays in the line as a visible mark, so a body written with
+        // \r\n or a lone \r never compares equal to the same text written with \n.
+        return text.Split('\n').Select(line => line.Replace('\r', '\u240D')).ToArray();
     }
 
     private static IReadOnlyList<PropertyDifference> CompareProperties(BrowsedMessage left, BrowsedMessage right)
