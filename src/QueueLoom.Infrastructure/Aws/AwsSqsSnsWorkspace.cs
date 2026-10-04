@@ -173,11 +173,13 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 MessageBody = body,
                 MessageAttributes = AwsMessageMapper.ToSqsAttributes(message)
             };
+            AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: true);
             if (queue.IsFifo)
             {
                 RejectFutureScheduling(message, "Amazon SQS FIFO queues");
                 request.MessageGroupId = AwsMessageMapper.GroupId(message);
                 request.MessageDeduplicationId = AwsMessageMapper.DeduplicationId(message);
+                AwsMessageMapper.EnsureFifoIdentifiers(request.MessageGroupId, request.MessageDeduplicationId);
             }
             else if (AwsMessageMapper.DelaySeconds(message, TimeProvider.GetUtcNow()) is { } delay)
             {
@@ -199,10 +201,12 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 Message = body,
                 MessageAttributes = AwsMessageMapper.ToSnsAttributes(message)
             };
+            AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: false);
             if (topic.IsFifo)
             {
                 request.MessageGroupId = AwsMessageMapper.GroupId(message);
                 request.MessageDeduplicationId = AwsMessageMapper.DeduplicationId(message);
+                AwsMessageMapper.EnsureFifoIdentifiers(request.MessageGroupId, request.MessageDeduplicationId);
             }
 
             await Sns.PublishAsync(request, cancellationToken).ConfigureAwait(false);

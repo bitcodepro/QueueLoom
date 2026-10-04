@@ -136,7 +136,7 @@ public sealed partial class MainWindowViewModel
         if (_replayStore is null) return await DeadLetterResender.ResendAsync(_workspace, items, mode, rate, progress, token);
         var profile = _connectedProfile ?? throw new InvalidOperationException("Connect first.");
         var plan = preparedPlan ?? await _replayStore.CreateResendAsync(profile.Id, items, mode, rate, profile.EndpointDisplay,
-            ScheduledResend.IdentityFor(profile), kind, token);
+            ScheduledResend.IdentityFor(profile), kind, token, provider: profile.Provider);
         try { return await _replayStore.RunItemsAsync(plan, Enumerable.Range(0, plan.Count).ToArray(), false, _workspace, () => CanWrite, progress, token); }
         finally { RefreshOperationHistory(); }
     }

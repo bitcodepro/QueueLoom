@@ -38,6 +38,73 @@ public sealed record QueueManagementCapabilities(
     /// changing or deleting applies to the selected subscription.
     /// </summary>
     public bool ManagesSubscriptions { get; init; }
+
+    /// <summary>The service's own ranges, so a value it would refuse or change is refused before anything is saved.</summary>
+    public QueueSettingLimits? Limits { get; init; }
+}
+
+/// <summary>
+/// The ranges a service accepts for each setting; null means the service sets no limit QueueLoom knows of.
+/// <see cref="Check"/> names the service and its limit, so the person sees why a value cannot be saved.
+/// </summary>
+public sealed record QueueSettingLimits(string ServiceName)
+{
+    public TimeSpan? MinTimeToLive { get; init; }
+    public TimeSpan? MaxTimeToLive { get; init; }
+    public string TimeToLiveName { get; init; } = "time to live";
+    public int? MinDeliveryCount { get; init; }
+    public int? MaxDeliveryCount { get; init; }
+    public string DeliveryCountName { get; init; } = "maximum delivery count";
+    public TimeSpan? MinLock { get; init; }
+    public TimeSpan? MaxLock { get; init; }
+    /// <summary>The lock must be longer than zero (used when the service documents no other lower bound).</summary>
+    public bool LockMustBePositive { get; init; }
+    public string LockName { get; init; } = "lock duration";
+
+    /// <summary>The first setting outside the service's range, described for the person; null when all fit.</summary>
+    public string? Check(QueueSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (settings.MessageTimeToLive is { } ttl && (ttl < MinTimeToLive || ttl > MaxTimeToLive))
+        {
+            return $"{ServiceName} accepts a {TimeToLiveName} of {Range(MinTimeToLive, MaxTimeToLive)}.";
+        }
+        if (settings.MaxDeliveryCount is { } count && (count < MinDeliveryCount || count > MaxDeliveryCount))
+        {
+            return $"{ServiceName} accepts a {DeliveryCountName} of {Range(MinDeliveryCount, MaxDeliveryCount)}.";
+        }
+        if (settings.LockDuration is { } lockDuration &&
+            (lockDuration < MinLock || lockDuration > MaxLock || (LockMustBePositive && lockDuration <= TimeSpan.Zero)))
+        {
+            return MinLock is null && LockMustBePositive && MaxLock is { } max
+                ? $"{ServiceName} accepts a {LockName} of more than 0 seconds and at most {Describe(max)}."
+                : $"{ServiceName} accepts a {LockName} of {Range(MinLock, MaxLock)}.";
+        }
+        return null;
+    }
+
+    private static string Range(TimeSpan? min, TimeSpan? max) =>
+        min is { } low && max is { } high ? $"{Describe(low)} to {Describe(high)}"
+        : min is { } onlyLow ? $"at least {Describe(onlyLow)}"
+        : max is { } onlyHigh ? $"at most {Describe(onlyHigh)}"
+        : "any value";
+
+    private static string Range(int? min, int? max) =>
+        min is { } low && max is { } high ? $"{Number(low)} to {Number(high)}"
+        : min is { } onlyLow ? $"at least {Number(onlyLow)}"
+        : max is { } onlyHigh ? $"at most {Number(onlyHigh)}"
+        : "any value";
+
+    private static string Number(int value) => value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string Describe(TimeSpan value) =>
+        value.TotalDays >= 1 && value.TotalDays % 1 == 0 ? Unit(value.TotalDays, "day")
+        : value.TotalHours >= 1 && value.TotalHours % 1 == 0 ? Unit(value.TotalHours, "hour")
+        : value.TotalMinutes >= 1 && value.TotalMinutes % 1 == 0 ? Unit(value.TotalMinutes, "minute")
+        : Unit(value.TotalSeconds, "second");
+
+    private static string Unit(double amount, string unit) =>
+        $"{amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} {unit}{(amount == 1 ? string.Empty : "s")}";
 }
 
 [Flags]

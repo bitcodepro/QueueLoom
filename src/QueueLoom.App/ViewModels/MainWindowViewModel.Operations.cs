@@ -83,7 +83,13 @@ public sealed partial class MainWindowViewModel
             try
             {
                 using var document = JsonDocument.Parse(DraftBody);
-                DraftBody = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+                // Only the layout changes: the default encoder would rewrite non-ASCII text and <, >, &, ', + as
+                // escapes, so the body sent after formatting would no longer be the text the operator typed.
+                DraftBody = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                });
                 DraftBodyErrorLine = null;
                 ErrorText = string.Empty;
             }
@@ -104,7 +110,7 @@ public sealed partial class MainWindowViewModel
                 var property = new MessageApplicationProperty(PropertyName.Trim(), PropertyType, PropertyValue);
                 properties.RemoveAll(p => p.Name == property.Name);
                 properties.Add(property);
-                var validation = MessageDraftValidator.Validate(new MessageDraft(EditableMessageBody.Empty, applicationProperties: properties));
+                var validation = MessageDraftValidator.Validate(new MessageDraft(EditableMessageBody.Empty, applicationProperties: properties), _connectedProfile?.Provider);
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 DraftApplicationProperties = ApplicationPropertiesJson.Serialize(properties);
                 ErrorText = string.Empty;
@@ -173,7 +179,9 @@ public sealed partial class MainWindowViewModel
             ? page.OrderBy(m => m.SequenceNumber)
             : log && _browseStart.Kind == BrowseStartKind.Newest
                 ? page.OrderByDescending(m => m.EnqueuedAt ?? DateTimeOffset.MinValue).ThenByDescending(m => m.Position?.Offset ?? 0)
-                : page.OrderBy(m => m.EnqueuedAt ?? DateTimeOffset.MaxValue).ThenBy(m => m.Properties.MessageId, StringComparer.Ordinal);
+                // A stable sort: messages with the same time keep the order the service handed them out in (an SQS
+                // FIFO group sent in one batch shares its millisecond), which a resend of the selection replays.
+                : page.OrderBy(m => m.EnqueuedAt ?? DateTimeOffset.MaxValue);
         foreach (var message in ordered)
         {
             if (Messages.Count >= BrowseDisplayLimit || bytes + message.Body.Length > BrowseByteLimit)

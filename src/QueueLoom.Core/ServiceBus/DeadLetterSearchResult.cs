@@ -9,6 +9,12 @@ public sealed record DeadLetterSearchSourceResult(
     string? Error = null)
 {
     public bool IsSuccessful => string.IsNullOrWhiteSpace(Error);
+
+    /// <summary>The error of a source in which the regular expression ran out of time on some messages, or null.</summary>
+    public static string? RegexTimeoutError(int undecidedMessages) => undecidedMessages > 0
+        ? $"{undecidedMessages:N0} message(s) could not be checked: the regular expression took too long on them. " +
+          "Simplify the expression to search them."
+        : null;
 }
 
 public sealed record DeadLetterSearchResult
@@ -50,6 +56,7 @@ public sealed record DeadLetterSearchResult
     public IReadOnlyList<BrowsedMessage> Matches => Array.AsReadOnly(Sources
         .SelectMany(source => source.Matches)
         .OrderBy(message => message.EnqueuedAt ?? DateTimeOffset.MinValue)
-        .ThenBy(message => message.SequenceNumber)
+        // A derived sequence number (SQS, Pub/Sub, Kafka) is a hash: ties keep the order they were received in.
+        .ThenBy(message => message.HasSequenceNumber ? message.SequenceNumber : 0)
         .ToArray());
 }

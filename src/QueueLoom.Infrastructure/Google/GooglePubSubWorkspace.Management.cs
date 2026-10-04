@@ -22,7 +22,21 @@ public sealed partial class GooglePubSubWorkspace
         UpdateNote: "Deliveries before dead-lettering apply only when the subscription has a dead-letter topic. " +
                     "In Google Cloud, the Pub/Sub service agent needs permission to publish to that topic.")
     {
-        ManagesSubscriptions = true
+        ManagesSubscriptions = true,
+        // projects.subscriptions: messageRetentionDuration 10 minutes to 31 days, ackDeadlineSeconds 10 to 600,
+        // deadLetterPolicy.maxDeliveryAttempts 5 to 100.
+        Limits = new QueueSettingLimits("Google Pub/Sub")
+        {
+            MinTimeToLive = TimeSpan.FromMinutes(10),
+            MaxTimeToLive = TimeSpan.FromDays(31),
+            TimeToLiveName = "retention",
+            MinDeliveryCount = 5,
+            MaxDeliveryCount = 100,
+            DeliveryCountName = "number of delivery attempts",
+            MinLock = TimeSpan.FromSeconds(10),
+            MaxLock = TimeSpan.FromSeconds(600),
+            LockName = "acknowledgement deadline"
+        }
     };
 
     public override async Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default)

@@ -25,7 +25,8 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
 
     public async Task<ReplayPlan> CreateAsync(Guid profileId, ServiceBusEntityReference destination,
         IEnumerable<(MessageDraft Draft, string Origin)> drafts, bool preserveIds, int rate,
-        CancellationToken token, string? fullyQualifiedNamespace = null, string? configurationIdentity = null)
+        CancellationToken token, string? fullyQualifiedNamespace = null, string? configurationIdentity = null,
+        QueueLoom.Core.Profiles.MessagingProvider? provider = null)
     {
         if (!destination.CanSend || profileId == Guid.Empty) throw new ArgumentException("A connected profile and send destination are required.");
         if (rate is < 1 or > 50) throw new ArgumentOutOfRangeException(nameof(rate), "Use 1–50 messages per second.");
@@ -51,7 +52,8 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
                     ScheduledEnqueueTime = null
                 };
                 var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope };
-                var validation = MessageDraftValidator.Validate(prepared);
+                // The destination service's limits: a Pub/Sub ordering key or RabbitMQ message ID is not held to Azure's.
+                var validation = MessageDraftValidator.Validate(prepared, provider);
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin)
                     { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata };
@@ -115,7 +117,7 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
             var item = await ReadPayload(folder, i, token);
             validatedBytes += item.Body.GetBytes().Length;
             if (validatedBytes > 32 * 1024 * 1024) throw new InvalidDataException("Replay bodies exceed 32 MiB. Resume is blocked.");
-            var validation = MessageDraftValidator.Validate(ToDraft(item));
+            var validation = MessageDraftValidator.Validate(ToDraft(item), workspace.ConnectedProvider);
             if (!validation.IsValid) throw new InvalidDataException($"Replay item {i + 1} is invalid.");
         }
         try

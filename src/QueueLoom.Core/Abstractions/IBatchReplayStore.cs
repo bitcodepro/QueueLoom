@@ -16,14 +16,16 @@ public interface IBatchReplayStore
         int rate,
         CancellationToken token,
         string? fullyQualifiedNamespace = null,
-        string? configurationIdentity = null);
+        string? configurationIdentity = null,
+        QueueLoom.Core.Profiles.MessagingProvider? provider = null);
 
     ReplayPlan? Latest(Guid profileId);
 
     IReadOnlyList<ReplayPlan> List();
     OperationHistory ReadHistory(ReplayPlan plan);
     Task<ReplayPlan> CreateResendAsync(Guid profileId, IReadOnlyList<ResendItem> items, ResendMode mode,
-        int rate, string? ns, string configurationIdentity, string kind, CancellationToken token, bool deferActivation = false);
+        int rate, string? ns, string configurationIdentity, string kind, CancellationToken token, bool deferActivation = false,
+        QueueLoom.Core.Profiles.MessagingProvider? provider = null);
     Task ActivateScheduledAsync(ReplayPlan plan, CancellationToken token);
     Task<ResendResult> RunItemsAsync(ReplayPlan plan, IReadOnlyList<int> indexes, bool retryRejected,
         IServiceBusWorkspace workspace, Func<bool> canWrite, IProgress<ResendProgress>? progress, CancellationToken token);

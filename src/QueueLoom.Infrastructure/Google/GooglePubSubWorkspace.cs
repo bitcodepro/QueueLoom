@@ -32,6 +32,8 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     internal const string DeadLetterSourceSubscriptionProject = "CloudPubSubDeadLetterSourceSubscriptionProject";
     internal const string DeadLetterSourceDeliveryCount = "CloudPubSubDeadLetterSourceDeliveryCount";
     private const string DeadLetterAttributePrefix = "CloudPubSubDeadLetter";
+    // Attribute keys must be non-empty and must not begin with 'goog' (case-insensitive).
+    private const string ReservedAttributePrefix = "goog";
 
     private readonly ISecretVault _secretVault;
     private PublisherServiceApiClient? _publisher;
@@ -268,8 +270,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             message.Data.Memory,
             properties,
             attributes
-                // Pub/Sub's own dead-letter bookkeeping must not travel with a resent copy.
-                .Where(item => !item.Key.StartsWith(DeadLetterAttributePrefix, StringComparison.Ordinal))
+                // Pub/Sub's own dead-letter bookkeeping must not travel with a resent copy, nor attributes Pub/Sub adds
+                // itself (googclient_schemaname and the like): publishing a key that begins with "goog" is refused.
+                .Where(item => !item.Key.StartsWith(DeadLetterAttributePrefix, StringComparison.Ordinal) &&
+                               !item.Key.StartsWith(ReservedAttributePrefix, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(item => item.Key, StringComparer.Ordinal)
                 .Select(item => new MessageApplicationProperty(item.Key, ApplicationPropertyType.String, item.Value)),
             ServiceBusMessageState.Active,

@@ -68,7 +68,11 @@ public sealed partial class MessageSearchQuery
             properties.ContentType);
     }
 
-    /// <summary>Matches the message's text fields, its properties (name and value) and its body.</summary>
+    /// <summary>
+    /// Matches the message's text fields, its properties (name and value) and its body. A regular expression that runs
+    /// out of time decides nothing: when no other field matches, the <see cref="RegexMatchTimeoutException"/> reaches
+    /// the caller, so the message is reported as not searched rather than as not matching.
+    /// </summary>
     public bool Matches(IEnumerable<string?> fields, IEnumerable<KeyValuePair<string, string?>> properties, ReadOnlyMemory<byte> body,
         string? contentType = null)
     {
@@ -79,24 +83,29 @@ public sealed partial class MessageSearchQuery
             return MatchesJson(body, contentType);
         }
 
+        RegexMatchTimeoutException? timedOut = null;
         foreach (var field in fields)
         {
-            if (IsTextMatch(field))
+            if (IsTextMatch(field, ref timedOut))
             {
                 return true;
             }
         }
         foreach (var (name, value) in properties)
         {
-            if (IsTextMatch(name) || IsTextMatch(value))
+            if (IsTextMatch(name, ref timedOut) || IsTextMatch(value, ref timedOut))
             {
                 return true;
             }
         }
-        return body.Length > 0 && IsTextMatch(Encoding.UTF8.GetString(body.Span));
+        if (body.Length > 0 && IsTextMatch(Encoding.UTF8.GetString(body.Span), ref timedOut))
+        {
+            return true;
+        }
+        return timedOut is null ? false : throw timedOut;
     }
 
-    private bool IsTextMatch(string? value)
+    private bool IsTextMatch(string? value, ref RegexMatchTimeoutException? timedOut)
     {
         if (string.IsNullOrEmpty(value))
         {
@@ -110,8 +119,9 @@ public sealed partial class MessageSearchQuery
         {
             return _regex.IsMatch(value);
         }
-        catch (RegexMatchTimeoutException)
+        catch (RegexMatchTimeoutException exception)
         {
+            timedOut ??= exception;
             return false;
         }
     }
@@ -143,7 +153,23 @@ public sealed partial class MessageSearchQuery
                 return false;
             }
             var root = document.RootElement;
-            return _json!.Any(all => all.All(condition => condition.IsTrue(root)));
+            // An OR-group whose regular expression timed out is undecided; another group can still match.
+            RegexMatchTimeoutException? timedOut = null;
+            foreach (var all in _json!)
+            {
+                try
+                {
+                    if (all.All(condition => condition.IsTrue(root)))
+                    {
+                        return true;
+                    }
+                }
+                catch (RegexMatchTimeoutException exception)
+                {
+                    timedOut ??= exception;
+                }
+            }
+            return timedOut is null ? false : throw timedOut;
         }
         catch (JsonException)
         {
@@ -236,7 +262,7 @@ public sealed partial class MessageSearchQuery
             Operator.Exists => true,
             Operator.Equal => AreEqual(value, Value!.Value),
             Operator.Matches => value.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False &&
-                                SafeMatch(Pattern!, value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText()),
+                                Pattern!.IsMatch(value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText()),
             _ => Compare(value, Value!.Value) is { } order && Op switch
             {
                 Operator.Greater => order > 0,
@@ -245,18 +271,6 @@ public sealed partial class MessageSearchQuery
                 _ => order <= 0
             }
         };
-
-        private static bool SafeMatch(Regex regex, string text)
-        {
-            try
-            {
-                return regex.IsMatch(text);
-            }
-            catch (RegexMatchTimeoutException)
-            {
-                return false;
-            }
-        }
 
         /// <summary>Same type and value; a number also equals text holding that number ("250" and 250).</summary>
         private static bool AreEqual(JsonElement value, JsonElement expected) => (value.ValueKind, expected.ValueKind) switch

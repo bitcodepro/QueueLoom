@@ -200,12 +200,19 @@ public sealed class QueueDialogViewModel : ObservableObject
             }
         }
 
-        return new QueueSettings(
+        var settings = new QueueSettings(
             timeToLive,
             ShowMaxDeliveryCount ? MaxDeliveryCount : null,
             ShowLockDuration && LockSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null,
             ShowDeadLetterOnExpiration ? DeadLetterOnExpiration : null,
             ShowPartitions ? Partitions : null);
+        // The service's own ranges: a value it would refuse, or quietly change, is refused here before anything is saved.
+        if (_capabilities.Limits?.Check(settings) is { } limitError)
+        {
+            Error = limitError;
+            return null;
+        }
+        return settings;
     }
 
     public QueueDefinition? TryBuildDefinition() =>

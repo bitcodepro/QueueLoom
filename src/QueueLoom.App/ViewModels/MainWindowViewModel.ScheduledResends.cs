@@ -136,7 +136,8 @@ public sealed partial class MainWindowViewModel
             $"{resend.Items.Count:N0} messages · {resend.DestinationDisplay}", null);
         var preparedPlan = _replayStore is null ? null : await _replayStore.CreateResendAsync(resend.ProfileId,
             resend.Items.Select(entry => entry.ToResendItem()).ToArray(), resend.Mode, resend.MessagesPerSecond,
-            _connectedProfile.EndpointDisplay, resend.ConfigurationIdentity!, "Scheduled resend", cancellationToken, deferActivation: true);
+            _connectedProfile.EndpointDisplay, resend.ConfigurationIdentity!, "Scheduled resend", cancellationToken, deferActivation: true,
+            provider: _connectedProfile.Provider);
         // Taken off the list before sending, so a crash in the middle never sends the same messages twice.
         if (_scheduledStore is not null && !RemoveScheduled(resend))
         {
