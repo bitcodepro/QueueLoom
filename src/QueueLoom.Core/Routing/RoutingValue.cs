@@ -11,31 +11,45 @@ namespace QueueLoom.Core.Routing;
 public static class RoutingValue
 {
     /// <summary>
-    /// Whole numbers that fit in a long become long, so 9007199254740993 does not compare equal to its neighbour.
-    /// A fractional number becomes double only when that double is exactly the same value (0.1, 1.5). A whole number
-    /// outside Int64, or any number double cannot hold exactly, is left unchanged so the SQL filter reports it as
-    /// unknown instead of matching a different number.
+    /// Integral types that fit in a long become long. A whole Decimal inside Int64 stays Decimal and is compared
+    /// exactly, so 9007199254740993 does not compare equal to its neighbour.
+    /// A UInt64 above long stays UInt64: folding it into a double makes long.MaxValue compare equal to 2^63.
+    /// A whole Decimal stays Decimal, so SQL division stays fractional (5m / 2 is 2.5, not 2). A fractional Decimal
+    /// becomes double only when that double is exactly the same value (0.1, 1.5). A whole number outside Int64, or
+    /// any number double cannot hold exactly, is left unchanged so the SQL filter reports it as unknown instead of
+    /// throwing or matching a different number.
     /// </summary>
     public static object? Normalize(object? value) => value switch
     {
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
         ulong number when number <= long.MaxValue => (long)number,
-        // Casting an out-of-range double back to ulong saturates at ulong.MaxValue, so that is not an exactness test.
-        ulong number when ExactDouble(number) is { } exact => exact,
         // A float is widened through its shortest text, so 0.1f becomes 0.1 and not 0.10000000149011612.
         float number => double.Parse(number.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture),
         double number => number,
-        decimal number when decimal.Truncate(number) == number && number >= long.MinValue && number <= long.MaxValue => (long)number,
-        decimal number when (decimal)(double)number == number => (double)number,
+        // Whole decimals stay decimal, including those inside Int64. 5L / 2 is 2; 5m / 2 is 2.5.
+        decimal number when decimal.Truncate(number) != number && ExactDouble(number) is { } exact => exact,
         _ => value
     };
 
-    /// <summary>The double of <paramref name="number"/> when every bit survives the conversion; otherwise null.</summary>
-    private static double? ExactDouble(ulong number)
+    /// <summary>
+    /// The double of <paramref name="number"/> when it is the same value; otherwise null.
+    /// Converting <see cref="decimal.MaxValue"/> to double rounds outside Decimal, and converting that double
+    /// back throws, so the check never attempts a conversion that cannot succeed.
+    /// </summary>
+    private static double? ExactDouble(decimal number)
     {
         var asDouble = (double)number;
-        // 2^64 is the first value double rounds ulong.MaxValue to, and it does not fit back into ulong.
-        return asDouble < 18446744073709551616d && (ulong)asDouble == number ? asDouble : null;
+        if (!double.IsFinite(asDouble))
+        {
+            return null;
+        }
+        // (double)decimal.MaxValue is already outside Decimal. Every smaller finite double converts.
+        var limit = (double)decimal.MaxValue;
+        if (asDouble >= limit || asDouble <= -limit)
+        {
+            return null;
+        }
+        return (decimal)asDouble == number ? asDouble : null;
     }
 
     /// <summary>Whether QueueLoom can compare this value faithfully (the types Service Bus accepts in correlation filters).</summary>

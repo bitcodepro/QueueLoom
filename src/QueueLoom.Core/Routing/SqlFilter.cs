@@ -71,12 +71,17 @@ public sealed class SqlFilter
         public string Display => scope == "user" ? name : $"{scope}.{name}";
 
         /// <summary>
-        /// Numbers are widened to long or double for comparison. Guid, date, time span, character, URI and binary
-        /// values are left to Service Bus: how SQL compares them with literals is not something to guess.
+        /// Numbers are widened to long or double for comparison, except a whole Decimal inside Int64, which stays
+        /// Decimal so division stays fractional. Guid, date, time span, character, URI and binary values are left
+        /// to Service Bus: how SQL compares them with literals is not something to guess.
         /// </summary>
         public override object? Evaluate(Context context)
         {
             var value = RoutingValue.Normalize(Resolve(context, out _));
+            if (value is decimal number && decimal.Truncate(number) == number && number >= long.MinValue && number <= long.MaxValue)
+            {
+                return number;
+            }
             return value is null or string or bool or long or double
                 ? value
                 : throw new SqlFilterNotSupportedException(
@@ -98,7 +103,8 @@ public sealed class SqlFilter
                 ("NOT", bool flag) => !flag,
                 ("-", long number) => number == long.MinValue ? throw Overflow() : -number,
                 ("-", double number) => -number,
-                ("+", long or double) => value,
+                ("-", decimal number) => -number,
+                ("+", long or double or decimal) => value,
                 (_, null) => null,
                 _ => null
             };
@@ -138,6 +144,25 @@ public sealed class SqlFilter
                         "*" => checked(x * y),
                         "/" => y == 0 ? null : x == long.MinValue && y == -1 ? throw Overflow() : x / y,
                         _ => y == 0 ? null : x == long.MinValue && y == -1 ? throw Overflow() : x % y
+                    };
+                }
+                catch (OverflowException)
+                {
+                    throw Overflow();
+                }
+            }
+            // Decimal promotes like C#: a Decimal and a long divide as Decimal, so 5m / 2 is 2.5 rather than 2.
+            if ((a is decimal || b is decimal) && DecimalNumber(a) is { } decA && DecimalNumber(b) is { } decB)
+            {
+                try
+                {
+                    return op switch
+                    {
+                        "+" => decA + decB,
+                        "-" => decA - decB,
+                        "*" => decA * decB,
+                        "/" => decB == 0 ? null : decA / decB,
+                        _ => decB == 0 ? null : decA % decB
                     };
                 }
                 catch (OverflowException)
@@ -323,9 +348,23 @@ public sealed class SqlFilter
                 return x == y ? 0 : 1;
             case (long x, long y):
                 return x.CompareTo(y);
+            case (decimal x, decimal y):
+                return x.CompareTo(y);
+            case (decimal x, long y):
+                return x.CompareTo((decimal)y);
+            case (long x, decimal y):
+                return ((decimal)x).CompareTo(y);
         }
         return Number(a) is { } p && Number(b) is { } q ? p.CompareTo(q) : null;
     }
+
+    /// <summary>A Decimal operand, or a long widened to Decimal. Double does not convert implicitly.</summary>
+    private static decimal? DecimalNumber(object? value) => value switch
+    {
+        decimal number => number,
+        long number => number,
+        _ => null
+    };
 
     private static double? Number(object? value) => value switch
     {

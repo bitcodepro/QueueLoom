@@ -129,6 +129,27 @@ public sealed class BrokerTimeAndExactIntegerTests
     }
 
     [Fact]
+    public void An_integral_decimal_divides_as_a_decimal()
+    {
+        var message = new RoutingMessage(EditableMessageProperties.Empty,
+            new Dictionary<string, object?> { ["amount"] = 5m });
+
+        Assert.Equal(RoutingOutcome.Receives, Check("amount / 2 > 2", message));
+    }
+
+    [Fact]
+    public void Decimal_endpoints_do_not_abort_routing()
+    {
+        Assert.Equal(decimal.MaxValue, Assert.IsType<decimal>(RoutingValue.Normalize(decimal.MaxValue)));
+        Assert.Equal(decimal.MinValue, Assert.IsType<decimal>(RoutingValue.Normalize(decimal.MinValue)));
+
+        Assert.Equal(RoutingOutcome.Unknown, Check("amount > 0", new RoutingMessage(EditableMessageProperties.Empty,
+            new Dictionary<string, object?> { ["amount"] = decimal.MaxValue })));
+        Assert.Equal(RoutingOutcome.Unknown, Check("amount > 0", new RoutingMessage(EditableMessageProperties.Empty,
+            new Dictionary<string, object?> { ["amount"] = decimal.MinValue })));
+    }
+
+    [Fact]
     public void A_whole_number_double_cannot_hold_is_left_to_Service_Bus()
     {
         var message = new RoutingMessage(EditableMessageProperties.Empty,
@@ -137,6 +158,14 @@ public sealed class BrokerTimeAndExactIntegerTests
         Assert.Equal(RoutingOutcome.Unknown, Check("id = 18446744073709551615", message));
         Assert.Equal(RoutingOutcome.Unknown, Check("id = 18446744073709551614", message));
     }
+
+    [Fact]
+    public void Ulong_2pow63_is_not_long_max() =>
+        Assert.NotEqual(RoutingOutcome.Receives, Check("id = 9223372036854775807", 9223372036854775808UL));
+
+    private static RoutingOutcome Check(string filter, object value) =>
+        TopicRouting.Check(new SubscriptionRule("r", RuleFilterKind.Sql, filter),
+            new RoutingMessage(EditableMessageProperties.Empty, new Dictionary<string, object?> { ["id"] = value })).Outcome;
 
     private static RoutingOutcome Check(string filter, RoutingMessage message) =>
         TopicRouting.Check(new SubscriptionRule("r", RuleFilterKind.Sql, filter), message).Outcome;
