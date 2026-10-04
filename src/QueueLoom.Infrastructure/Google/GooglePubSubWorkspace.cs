@@ -181,6 +181,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         {
             throw new InvalidOperationException("Google Pub/Sub cannot schedule messages. Clear the scheduled time.");
         }
+        if (QueueLoom.Core.Validation.MessageSizeLimits.Check(message, MessagingProvider.GooglePubSub) is { } tooLarge)
+        {
+            throw new DeliveryRejectedException(tooLarge + " Nothing was sent.");
+        }
 
         var pubsubMessage = new PubsubMessage { Data = ByteString.CopyFrom(message.Body.GetBytes()) };
         foreach (var (name, value) in MessageAttributeConventions.StandardAttributes(message.Properties))
@@ -198,7 +202,18 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             pubsubMessage.OrderingKey = orderingKey;
         }
 
-        await Publisher.PublishAsync(TopicResource(destination.Name), [pubsubMessage], cancellationToken)
+        // The whole serialized request (topic and framing included) must stay within Pub/Sub's ceiling; refusing here
+        // keeps an oversized message a proven non-delivery instead of an RPC failure of unknown outcome.
+        var topic = TopicResource(destination.Name);
+        var requestSize = new PublishRequest { Topic = topic.ToString(), Messages = { pubsubMessage } }.CalculateSize();
+        if (requestSize > QueueLoom.Core.Validation.MessageSizeLimits.PubSubMaximumRequestBytes)
+        {
+            throw new DeliveryRejectedException(
+                $"Google Pub/Sub accepts at most {QueueLoom.Core.Validation.MessageSizeLimits.PubSubMaximumRequestBytes:N0} bytes " +
+                $"per publish request; this one is {requestSize:N0} bytes. Nothing was sent.");
+        }
+
+        await Publisher.PublishAsync(topic, [pubsubMessage], cancellationToken)
             .ConfigureAwait(false);
     }
 

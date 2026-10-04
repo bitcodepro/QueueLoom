@@ -23,7 +23,10 @@ public sealed partial class BatchReplayStore
                 var plan = JsonSerializer.Deserialize<ReplayPlan>(File.ReadAllText(path));
                 if (plan is not null && plan.Id == id) plans.Add(plan);
             }
-            catch (JsonException) { /* Preserve damaged history, never execute it. */ }
+            // Preserve damaged history, never execute it; and never let one damaged plan (valid JSON whose destination
+            // the model refuses, or an unreadable file) hide every other operation, uncertain sends included.
+            catch (Exception exception) when (exception is JsonException or ArgumentException or NotSupportedException or
+                                                  IOException or UnauthorizedAccessException) { }
         }
         return plans.OrderByDescending(p => p.CreatedAt).ToArray();
     }

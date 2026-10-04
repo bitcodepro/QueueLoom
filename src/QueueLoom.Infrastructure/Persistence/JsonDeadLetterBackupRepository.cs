@@ -254,7 +254,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadOptionalTimeSpan(root, "timeToLive"),
             ReadOptionalDateTimeOffset(root, "scheduledEnqueueTimeUtc"),
             ReadOptionalString(root, "amqpType"),
-            ReadOptionalString(root, "amqpAppId"));
+            ReadOptionalString(root, "amqpAppId")) { NativeSubject = ReadOptionalString(root, "nativeSubject") };
         var applicationProperties = root.TryGetProperty("applicationProperties", out var values) &&
                                     values.ValueKind == JsonValueKind.Array
             ? values.EnumerateArray().Select(value => new MessageApplicationProperty(

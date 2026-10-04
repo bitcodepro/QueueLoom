@@ -343,7 +343,12 @@ public sealed partial class MainWindowViewModel
         finally
         {
             using var restoreTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            if (wasConnected && originalConnection is not null)
+            if (_isDisposed)
+            {
+                // Closing: the workspace is disposed next. Reconnecting the original environment would only delay the
+                // exit (up to the restore timeout) and could ask for a sign-in, as the global scan and search avoid too.
+            }
+            else if (wasConnected && originalConnection is not null)
             {
                 if (workspaceWasReconnected || _workspace.ConnectedProfileId != originalConnection.Id)
                 {

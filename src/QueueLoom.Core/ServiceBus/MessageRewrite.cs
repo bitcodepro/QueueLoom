@@ -39,6 +39,12 @@ public sealed record MessageRewrite(string Find, string Replacement, bool InBody
                 properties = properties with { Subject = subject };
                 changed = true;
             }
+            // The native SNS subject of an unwrapped notification is the subject the copy is published with.
+            if (Replace(properties.NativeSubject) is { } nativeSubject)
+            {
+                properties = properties with { NativeSubject = nativeSubject };
+                changed = true;
+            }
             if (Replace(properties.CorrelationId) is { } correlationId)
             {
                 properties = properties with { CorrelationId = correlationId };

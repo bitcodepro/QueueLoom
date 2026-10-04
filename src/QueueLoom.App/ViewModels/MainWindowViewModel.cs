@@ -55,6 +55,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private string _backupStatus = "Open the Backups page to inspect local purge backups.";
     private DestinationItemViewModel? _selectedDestination;
     private BrowsedMessage? _draftSourceMessage;
+    /// <summary>The properties the draft's subject was read from; kept after a move clears the original.</summary>
+    private EditableMessageProperties? _draftSubjectSource;
     private bool _draftSourceIsLocalBackup;
     private bool _isBusy;
     private string _statusText = "Ready";
@@ -406,8 +408,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     {
         await RunOperationAsync("Loading environments", async token =>
         {
-            LoadActivityHistory();
+            // Environments first: a damaged or unreadable activity journal must not leave the app without them.
             await ReloadProfilesAsync(token).ConfigureAwait(true);
+            try
+            {
+                LoadActivityHistory();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "The activity history could not be read");
+                AddActivity("Warning", "Activity history not loaded", SanitizeException(exception));
+            }
             try
             {
                 await DeleteOldBackupsAsync(automatic: true, token).ConfigureAwait(true);

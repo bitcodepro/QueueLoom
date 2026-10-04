@@ -199,16 +199,19 @@ public sealed partial class MainWindowViewModel
         StatusText = $"Removed saved search '{search.Name}'";
     }
 
-    /// <summary>Keeps only messages enqueued inside the chosen window; messages without a time are dropped too.</summary>
-    private IReadOnlyList<MessageItemViewModel> ApplySearchWindow(IReadOnlyList<MessageItemViewModel> results, out int hidden)
+    /// <summary>
+    /// Keeps only messages enqueued inside the chosen window; messages without a time are dropped too. The search
+    /// already applies the window before its result cap; this also covers a workspace that returned more.
+    /// </summary>
+    private static IReadOnlyList<MessageItemViewModel> ApplySearchWindow(
+        IReadOnlyList<MessageItemViewModel> results, DateTimeOffset? enqueuedSince, out int hidden)
     {
         hidden = 0;
-        if (SearchWindow.Minutes is not { } minutes)
+        if (enqueuedSince is not { } since)
         {
             return results;
         }
 
-        var since = DateTimeOffset.UtcNow.AddMinutes(-minutes);
         var kept = results.Where(result => result.Message.EnqueuedAt is { } enqueuedAt && enqueuedAt >= since).ToArray();
         hidden = results.Count - kept.Length;
         return kept;

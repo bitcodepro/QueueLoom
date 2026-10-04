@@ -23,12 +23,15 @@ internal static class AwsMessageMapper
         var attributes = (message.MessageAttributes ?? [])
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
         var body = message.Body ?? string.Empty;
+        string? nativeSubject = null;
         // Read through an SNS subscription without raw message delivery, the SQS body is SNS's JSON envelope. A copy
         // goes back to the topic, so it must carry the published body and attributes, not the envelope.
-        if (snsEnvelope && attributes.Count == 0 && TryReadSnsEnvelope(body, out var published, out var envelopeAttributes))
+        if (snsEnvelope && attributes.Count == 0 &&
+            TryReadSnsEnvelope(body, out var published, out var envelopeAttributes, out var envelopeSubject))
         {
             body = published;
             attributes = envelopeAttributes;
+            nativeSubject = envelopeSubject;
         }
         var standard = attributes
             .Where(item => IsStringType(item.Value.DataType) && item.Value.StringValue is not null)
@@ -36,7 +39,7 @@ internal static class AwsMessageMapper
         var properties = MessageAttributeConventions.ReadStandardAttributes(
             standard,
             message.MessageId,
-            sessionId: system.GetValueOrDefault("MessageGroupId"));
+            sessionId: system.GetValueOrDefault("MessageGroupId")) with { NativeSubject = nativeSubject };
         foreach (var name in MessageAttributeConventions.StandardAttributes(properties).Select(item => item.Key))
         {
             attributes.Remove(name);
@@ -67,8 +70,10 @@ internal static class AwsMessageMapper
     /// SNS's notification envelope: {"Type":"Notification","MessageId","TopicArn","Message","MessageAttributes":
     /// {"name":{"Type":"String|Number|Binary|String.Array","Value":"..."}},...}. Binary values are base64.
     /// </summary>
-    internal static bool TryReadSnsEnvelope(string body, out string message, out Dictionary<string, MessageAttributeValue> attributes)
+    internal static bool TryReadSnsEnvelope(string body, out string message, out Dictionary<string, MessageAttributeValue> attributes,
+        out string? subject)
     {
+        subject = null;
         message = string.Empty;
         attributes = new Dictionary<string, MessageAttributeValue>(StringComparer.Ordinal);
         if (!body.AsSpan().TrimStart().StartsWith("{", StringComparison.Ordinal))
@@ -105,6 +110,14 @@ internal static class AwsMessageMapper
                         ? new MessageAttributeValue { DataType = typeName, BinaryValue = new MemoryStream(Convert.FromBase64String(value.GetString()!)) }
                         : new MessageAttributeValue { DataType = typeName, StringValue = value.GetString() };
                 }
+            }
+
+            // The publisher's Publish Subject (the e-mail subject line) is part of the envelope, not an attribute. It is
+            // kept apart and published again as the native Subject only, so the copy has exactly the original attributes.
+            if (root.TryGetProperty("Subject", out var subjectElement) && subjectElement.ValueKind == JsonValueKind.String &&
+                subjectElement.GetString() is { Length: > 0 } subjectText)
+            {
+                subject = subjectText;
             }
 
             message = published.GetString()!;
@@ -245,25 +258,28 @@ internal static class AwsMessageMapper
     /// SQS attribute types are String, Number and Binary, each with an optional custom label. QueueLoom
     /// writes its type as the label ("Number.Int32", "String.Guid") so the type survives a round trip.
     /// </summary>
-    internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property) =>
-        // A label QueueLoom has no type for (SNS String.Array, another producer's custom label) goes back unchanged,
-        // as long as the property still has the type it was read with (a type changed in the editor wins).
-        property.WireType is { } wire &&
-        (wire.StartsWith("String.", StringComparison.Ordinal) && property.Type == ApplicationPropertyType.String ||
-         wire.StartsWith("Number.", StringComparison.Ordinal) &&
-         property.Type is ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or ApplicationPropertyType.String)
-            ? (wire, property.Value, null)
-            : property.Type switch
-        {
-            ApplicationPropertyType.String => ("String", property.Value, null),
-            ApplicationPropertyType.Binary => ("Binary", null, Convert.FromBase64String(property.Value)),
-            ApplicationPropertyType.Byte or ApplicationPropertyType.SByte or ApplicationPropertyType.Int16 or
-                ApplicationPropertyType.UInt16 or ApplicationPropertyType.Int32 or ApplicationPropertyType.UInt32 or
-                ApplicationPropertyType.Int64 or ApplicationPropertyType.UInt64 or ApplicationPropertyType.Single or
-                ApplicationPropertyType.Double or ApplicationPropertyType.Decimal =>
-                ($"Number.{property.Type}", property.Value, null),
-            _ => ($"String.{property.Type}", property.Value, null)
-        };
+    internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property)
+    {
+        // The DataType choice lives in Core, so the size check before sending counts exactly what is sent.
+        var dataType = MessageAttributeConventions.AwsDataType(property);
+        return dataType == "Binary"
+            ? (dataType, null, Convert.FromBase64String(property.Value))
+            : (dataType, property.Value, null);
+    }
+
+    /// <summary>
+    /// SNS Publish Subject: "UTF-8 text with no line breaks or control characters, and less than 100 characters long".
+    /// The native subject read from an envelope comes first; otherwise the draft's Subject, which also travels as the
+    /// Subject attribute. A subject SNS would refuse is not set.
+    /// </summary>
+    public static string? SnsSubject(MessageDraft message) =>
+        AcceptedSubject(message.Properties.NativeSubject) ?? AcceptedSubject(message.Properties.Subject);
+
+    private static string? AcceptedSubject(string? subject) =>
+        subject is { Length: > 0 and < 100 } &&
+        !string.IsNullOrWhiteSpace(subject) && !subject.Any(character => char.IsControl(character) || (int)character is 0x2028 or 0x2029)
+            ? subject
+            : null;
 
     internal static MessageApplicationProperty ToProperty(string name, string? dataType, string? stringValue, MemoryStream? binaryValue)
     {

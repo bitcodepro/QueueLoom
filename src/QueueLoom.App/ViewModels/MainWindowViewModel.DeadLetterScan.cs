@@ -45,6 +45,13 @@ public sealed partial class MainWindowViewModel
                                              _writeUnlockProfileId == connectedProfileBeforeScan.Id
             ? _writeUnlockExpiresAt
             : null;
+        // Connecting each environment in turn clears the listed messages and the draft destination of the one it
+        // leaves. The sweep ends where it started, so they are put back: re-reading them would cost another delivery
+        // on SQS, Pub/Sub and RabbitMQ, and the operator's ticks would be gone.
+        var messagesBeforeScan = Messages.ToArray();
+        var selectedMessageBeforeScan = SelectedMessage;
+        var destinationBeforeScan = SelectedDestination?.Reference;
+        var resultsGenerationBeforeScan = _messageResultsGeneration;
         _lastDlqMeasurements.Clear();
         DeadLetterSources.Clear();
         ApplyDeadLetterEnvironmentFilter();
@@ -116,6 +123,25 @@ public sealed partial class MainWindowViewModel
                                 temporaryWriteExpiryBeforeScan,
                                 restoreCancellation.Token)
                             .ConfigureAwait(true);
+                        if (_connectedProfile?.Id == connectedProfileBeforeScan.Id)
+                        {
+                            if (resultsGenerationBeforeScan == _messageResultsGeneration && Messages.Count == 0 &&
+                                messagesBeforeScan.Length > 0)
+                            {
+                                using (BatchMessageUpdates())
+                                {
+                                    foreach (var message in messagesBeforeScan)
+                                    {
+                                        Messages.Add(message);
+                                    }
+                                }
+                                SelectedMessage = selectedMessageBeforeScan;
+                            }
+                            if (destinationBeforeScan is not null && SelectedDestination is null)
+                            {
+                                SelectedDestination = Destinations.FirstOrDefault(item => item.Reference == destinationBeforeScan);
+                            }
+                        }
                     }
                     catch (Exception exception)
                     {

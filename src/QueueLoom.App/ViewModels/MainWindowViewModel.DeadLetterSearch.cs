@@ -53,6 +53,11 @@ public sealed partial class MainWindowViewModel
         var deep = DeepSearch;
         var maximumResults = deep ? 20_000 : DeadLetterSearchRequest.DefaultMaximumResults;
         var perTarget = deep ? 20_000 : DeadLetterSearchRequest.DefaultMaximumMessagesPerTarget;
+        // The "enqueued within" window goes to the search itself: matches come oldest first, so filtering only the
+        // capped results would let older matches fill the cap and hide every recent one.
+        var enqueuedSince = SearchWindow.Minutes is { } windowMinutes
+            ? DateTimeOffset.UtcNow.AddMinutes(-windowMinutes)
+            : (DateTimeOffset?)null;
         var connectedProfileBeforeSearch = _connectedProfile;
         var wasConnected = IsConnected && connectedProfileBeforeSearch is not null;
         var temporaryWriteExpiryBeforeSearch = connectedProfileBeforeSearch is not null &&
@@ -116,7 +121,8 @@ public sealed partial class MainWindowViewModel
                                     query,
                                     targets,
                                     maximumMessagesPerTarget: perTarget,
-                                    maximumResults: maximumResults - results.Count),
+                                    maximumResults: maximumResults - results.Count)
+                                { EnqueuedSince = enqueuedSince },
                                 environmentTimeout.Token)
                             .ConfigureAwait(true);
                         scannedMessages = checked(scannedMessages + search.ScannedMessageCount);
@@ -220,7 +226,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var windowed = ApplySearchWindow(results, out var outsideWindow);
+        var windowed = ApplySearchWindow(results, enqueuedSince, out var outsideWindow);
         ReplaceMessages(windowed
             .OrderBy(result => result.Message.EnqueuedAt ?? DateTimeOffset.MaxValue)
             .ThenBy(result => result.Message.HasSequenceNumber ? result.Message.SequenceNumber : 0)

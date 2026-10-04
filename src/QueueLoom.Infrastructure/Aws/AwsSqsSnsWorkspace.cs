@@ -9,6 +9,7 @@ using Amazon.SQS.Model;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Core.Validation;
 using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Persistence;
 using Sns = Amazon.SimpleNotificationService.Model;
@@ -175,6 +176,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 MessageAttributes = AwsMessageMapper.ToSqsAttributes(message)
             };
             AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: true);
+            MessageSizeLimits.EnsureWithin(MessageSizeLimits.AwsSize(message), queue.MaximumMessageSize, $"Amazon SQS queue '{queue.Name}'");
             if (queue.IsFifo)
             {
                 RejectFutureScheduling(message, "Amazon SQS FIFO queues");
@@ -200,9 +202,16 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             {
                 TopicArn = topic.Arn,
                 Message = body,
-                MessageAttributes = AwsMessageMapper.ToSnsAttributes(message)
+                MessageAttributes = AwsMessageMapper.ToSnsAttributes(message),
+                // The subject line e-mail subscribers see, also in the JSON envelope SQS subscribers get; a copy read
+                // from that envelope publishes it again.
+                Subject = AwsMessageMapper.SnsSubject(message)
             };
             AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: false);
+            // The topic's MaximumMessageSize (256 KiB unless raised, up to 1 MiB); when it could not be read, only the
+            // 1 MiB ceiling is certain.
+            MessageSizeLimits.EnsureWithin(MessageSizeLimits.AwsSize(message),
+                topic.MaximumMessageSize ?? MessageSizeLimits.AmazonMaximumBytes, $"Amazon SNS topic '{topic.Name}'");
             if (topic.IsFifo)
             {
                 request.MessageGroupId = AwsMessageMapper.GroupId(message);
@@ -324,7 +333,33 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 : item.Attributes["FilterPolicy"],
             FilterPolicyOnBody = item.Attributes.GetValueOrDefault("FilterPolicyScope") == "MessageBody",
             RawMessageDelivery = string.Equals(item.Attributes.GetValueOrDefault("RawMessageDelivery"), "true", StringComparison.OrdinalIgnoreCase)
-        }));
+        })) with
+        {
+            MaximumMessageSize = await ReadTopicMaximumMessageSizeAsync(topicArn, cancellationToken).ConfigureAwait(false)
+        };
+    }
+
+    /// <summary>
+    /// The topic's MaximumMessageSize, so an oversized publish is refused before it is sent: the attribute when the
+    /// topic has one, else SNS's documented default of 262,144 bytes. Null when sns:GetTopicAttributes is not allowed;
+    /// then only the 1 MiB ceiling is certain.
+    /// </summary>
+    private async Task<int?> ReadTopicMaximumMessageSizeAsync(string topicArn, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var attributes = (await Sns.GetTopicAttributesAsync(
+                    new Sns.GetTopicAttributesRequest { TopicArn = topicArn }, cancellationToken)
+                .ConfigureAwait(false)).Attributes ?? [];
+            return attributes.TryGetValue("MaximumMessageSize", out var value)
+                ? AwsQueueInfo.ReadMaximumMessageSize(value)
+                : MessageSizeLimits.AmazonSnsDefaultMaximumBytes;
+        }
+        catch (AmazonSimpleNotificationServiceException exception) when (
+            exception.ErrorCode is "AuthorizationError" or "AccessDenied" or "AccessDeniedException")
+        {
+            return null;
+        }
     }
 
     private sealed class SqsChannel(

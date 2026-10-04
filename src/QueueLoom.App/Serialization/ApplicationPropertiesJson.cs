@@ -33,7 +33,8 @@ internal static class ApplicationPropertiesJson
         return values.Select(pair => new MessageApplicationProperty(
                 pair.Key,
                 pair.Value.Type,
-                pair.Value.Value ?? string.Empty) { WireType = pair.Value.WireType })
+                // An emptied "wireType" means none. One that contradicts the type is refused by MessageDraftValidator.
+                pair.Value.Value ?? string.Empty) { WireType = string.IsNullOrWhiteSpace(pair.Value.WireType) ? null : pair.Value.WireType })
             .ToArray();
     }
 

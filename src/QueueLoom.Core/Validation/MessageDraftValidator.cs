@@ -46,6 +46,12 @@ public static class MessageDraftValidator
         {
             ValidateProviderAttributes(draft.Properties, draft.ApplicationProperties, errors, rules);
         }
+        // The total size, once everything it is computed from is known to be valid. Checked here, so the composer,
+        // resends, scheduled resends and replays refuse an oversized message before anything is sent or scheduled.
+        if (errors.Count == 0 && MessageSizeLimits.Check(draft, rules) is { } tooLarge)
+        {
+            errors.Add(new ValidationError("message.too_large", tooLarge, nameof(MessageDraft.Body)));
+        }
 
         return errors.Count == 0 ? ValidationResult.Valid : new ValidationResult(errors);
     }
@@ -331,7 +337,57 @@ public static class MessageDraftValidator
                     $"The value of '{property.Name}' is not a valid {property.Type}.",
                     memberName));
             }
+            else if (property.WireType is not null && WireTypeError(property) is { } wireError)
+            {
+                errors.Add(new ValidationError("message.application_property.wire_type_invalid", wireError, memberName));
+            }
         }
+    }
+
+    /// <summary>SQS and SNS: a message attribute's DataType (with its custom label) is at most 256 characters.</summary>
+    public const int MaxAwsDataTypeLength = 256;
+
+    private static readonly System.Text.RegularExpressions.Regex AwsNumber = new(
+        @"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The wire type QueueLoom keeps is an SQS/SNS custom DataType label it has no type for ("String.Array",
+    /// "Number.1"), and it is only sent while the property still has the type it was read with: "String.x" with
+    /// String, "Number.x" with Int64, Decimal or a numeric String. A label that contradicts the type (typed into the
+    /// raw editor, or kept after the type was changed there) would either be sent with a value the service refuses
+    /// or be silently dropped while the draft and the routing preview still show it, so it is refused instead.
+    /// </summary>
+    private static string? WireTypeError(MessageApplicationProperty property)
+    {
+        var wire = property.WireType!;
+        var name = property.Name.Length > 40 ? property.Name[..40] + "…" : property.Name;
+        var separator = wire.IndexOf('.', StringComparison.Ordinal);
+        var prefix = separator > 0 ? wire[..separator] : wire;
+        if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number") ||
+            wire.Length > MaxAwsDataTypeLength)
+        {
+            return $"'{name}' has wireType '{(wire.Length > 40 ? wire[..40] + "…" : wire)}', which is not an Amazon SQS/SNS " +
+                   $"custom type: use 'String.<label>' or 'Number.<label>' (up to {MaxAwsDataTypeLength} characters), " +
+                   "or remove wireType.";
+        }
+        if (prefix == "String" && property.Type != ApplicationPropertyType.String)
+        {
+            return $"'{name}' has wireType '{wire}' but type {property.Type}: a String wire type needs type String. " +
+                   $"Remove wireType to send it as {property.Type}, or set the type back to String.";
+        }
+        if (prefix == "Number" && property.Type is not (ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or
+                ApplicationPropertyType.String))
+        {
+            return $"'{name}' has wireType '{wire}' but type {property.Type}: a Number wire type needs type Int64, Decimal " +
+                   $"or String. Remove wireType to send it as {property.Type}.";
+        }
+        if (prefix == "Number" && property.Type == ApplicationPropertyType.String && !AwsNumber.IsMatch(property.Value))
+        {
+            return $"'{name}' has wireType '{wire}' but its value is not a number, which Amazon SQS and SNS refuse for " +
+                   "a Number attribute. Remove wireType to send it as text, or enter a number.";
+        }
+        return null;
     }
 
     private static bool HasValidValue(ApplicationPropertyType type, string value) => type switch

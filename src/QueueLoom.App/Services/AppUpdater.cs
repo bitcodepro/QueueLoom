@@ -50,7 +50,60 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     public const string ReleasesDownload = "https://github.com/bitcodepro/QueueLoom/releases/download";
     private const string DownloadMarker = UpdateRestart.DownloadMarker;
 
-    private readonly string _downloadRoot = downloadRoot ?? Path.Combine(Path.GetTempPath(), "QueueLoom-update");
+    private readonly string _downloadRoot = downloadRoot ?? DefaultDownloadRoot();
+
+    private const UnixFileMode PrivateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    /// <summary>
+    /// Linux shares /tmp between accounts: anyone could pre-create /tmp/QueueLoom-update and rename or replace a
+    /// verified package before Install moves it into the program folder. Windows %TEMP% and macOS $TMPDIR are per user.
+    /// </summary>
+    private static string DefaultDownloadRoot()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        {
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create);
+            if (!string.IsNullOrWhiteSpace(local))
+            {
+                return Path.Combine(local, "QueueLoom", "update-downloads");
+            }
+        }
+        return Path.Combine(Path.GetTempPath(), "QueueLoom-update");
+    }
+
+    /// <summary>
+    /// Creates the download folder for this user only. Whoever owns the root can rename or replace anything in it
+    /// between verification and installation, so a root that belongs to another account is refused: only its owner
+    /// can change its mode, which makes the mode change both the ownership check and the repair.
+    /// </summary>
+    private void CreatePrivateDownloadFolder(string folder)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(folder);
+            return;
+        }
+        if (!Directory.Exists(_downloadRoot))
+        {
+            Directory.CreateDirectory(_downloadRoot, PrivateDirectoryMode);
+        }
+        try
+        {
+            File.SetUnixFileMode(_downloadRoot, PrivateDirectoryMode);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new InvalidOperationException(
+                $"The update download folder belongs to another account and can be changed by other users ({_downloadRoot}), so the update was not downloaded.",
+                exception);
+        }
+        if ((File.GetUnixFileMode(_downloadRoot) & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0)
+        {
+            throw new InvalidOperationException(
+                $"The update download folder can be changed by other users ({_downloadRoot}), so the update was not downloaded.");
+        }
+        Directory.CreateDirectory(folder, PrivateDirectoryMode);
+    }
 
     /// <summary>The running installation, or null when QueueLoom runs from a build folder or an unknown system.</summary>
     public static UpdateTarget? CurrentTarget()
@@ -127,7 +180,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         var diagnosticOperation = _diagnostics.Begin("Update");
         try
         {
-            Directory.CreateDirectory(folder);
+            CreatePrivateDownloadFolder(folder);
             File.WriteAllText(Path.Combine(folder, DownloadMarker), id);
 
             var archive = Path.Combine(folder, PackageName(version, target.Rid));
