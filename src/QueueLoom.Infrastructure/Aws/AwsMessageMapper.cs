@@ -23,12 +23,15 @@ internal static class AwsMessageMapper
         var attributes = (message.MessageAttributes ?? [])
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
         var body = message.Body ?? string.Empty;
+        string? nativeSubject = null;
         // Read through an SNS subscription without raw message delivery, the SQS body is SNS's JSON envelope. A copy
         // goes back to the topic, so it must carry the published body and attributes, not the envelope.
-        if (snsEnvelope && attributes.Count == 0 && TryReadSnsEnvelope(body, out var published, out var envelopeAttributes))
+        if (snsEnvelope && attributes.Count == 0 &&
+            TryReadSnsEnvelope(body, out var published, out var envelopeAttributes, out var envelopeSubject))
         {
             body = published;
             attributes = envelopeAttributes;
+            nativeSubject = envelopeSubject;
         }
         var standard = attributes
             .Where(item => IsStringType(item.Value.DataType) && item.Value.StringValue is not null)
@@ -36,7 +39,7 @@ internal static class AwsMessageMapper
         var properties = MessageAttributeConventions.ReadStandardAttributes(
             standard,
             message.MessageId,
-            sessionId: system.GetValueOrDefault("MessageGroupId"));
+            sessionId: system.GetValueOrDefault("MessageGroupId")) with { NativeSubject = nativeSubject };
         foreach (var name in MessageAttributeConventions.StandardAttributes(properties).Select(item => item.Key))
         {
             attributes.Remove(name);
@@ -67,8 +70,10 @@ internal static class AwsMessageMapper
     /// SNS's notification envelope: {"Type":"Notification","MessageId","TopicArn","Message","MessageAttributes":
     /// {"name":{"Type":"String|Number|Binary|String.Array","Value":"..."}},...}. Binary values are base64.
     /// </summary>
-    internal static bool TryReadSnsEnvelope(string body, out string message, out Dictionary<string, MessageAttributeValue> attributes)
+    internal static bool TryReadSnsEnvelope(string body, out string message, out Dictionary<string, MessageAttributeValue> attributes,
+        out string? subject)
     {
+        subject = null;
         message = string.Empty;
         attributes = new Dictionary<string, MessageAttributeValue>(StringComparer.Ordinal);
         if (!body.AsSpan().TrimStart().StartsWith("{", StringComparison.Ordinal))
@@ -107,14 +112,12 @@ internal static class AwsMessageMapper
                 }
             }
 
-            // The publisher's Publish Subject (the e-mail subject line) is part of the envelope, not an attribute. It
-            // becomes the draft's subject, which a resend to the topic publishes as the Subject again; a "Subject"
-            // message attribute of the published message, when there is one, stays what it was.
-            if (root.TryGetProperty("Subject", out var subject) && subject.ValueKind == JsonValueKind.String &&
-                subject.GetString() is { Length: > 0 } subjectText &&
-                !attributes.ContainsKey(MessageAttributeConventions.Subject))
+            // The publisher's Publish Subject (the e-mail subject line) is part of the envelope, not an attribute. It is
+            // kept apart and published again as the native Subject only, so the copy has exactly the original attributes.
+            if (root.TryGetProperty("Subject", out var subjectElement) && subjectElement.ValueKind == JsonValueKind.String &&
+                subjectElement.GetString() is { Length: > 0 } subjectText)
             {
-                attributes[MessageAttributeConventions.Subject] = new MessageAttributeValue { DataType = "String", StringValue = subjectText };
+                subject = subjectText;
             }
 
             message = published.GetString()!;
@@ -266,10 +269,14 @@ internal static class AwsMessageMapper
 
     /// <summary>
     /// SNS Publish Subject: "UTF-8 text with no line breaks or control characters, and less than 100 characters long".
-    /// A subject SNS would refuse is not set (it still travels as the Subject attribute).
+    /// The native subject read from an envelope comes first; otherwise the draft's Subject, which also travels as the
+    /// Subject attribute. A subject SNS would refuse is not set.
     /// </summary>
     public static string? SnsSubject(MessageDraft message) =>
-        message.Properties.Subject is { Length: > 0 and < 100 } subject &&
+        AcceptedSubject(message.Properties.NativeSubject) ?? AcceptedSubject(message.Properties.Subject);
+
+    private static string? AcceptedSubject(string? subject) =>
+        subject is { Length: > 0 and < 100 } &&
         !string.IsNullOrWhiteSpace(subject) && !subject.Any(character => char.IsControl(character) || (int)character is 0x2028 or 0x2029)
             ? subject
             : null;

@@ -17,4 +17,12 @@ public sealed record EditableMessageProperties(
     string? AmqpAppId = null)
 {
     public static EditableMessageProperties Empty { get; } = new();
+
+    /// <summary>
+    /// The SNS Publish Subject read from an SNS notification envelope. It is published again as the native Subject
+    /// only, never as a "Subject" message attribute the original did not have (SNS drops a message with more than ten
+    /// attributes for raw SQS subscriptions). Null for every other source.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? NativeSubject { get; init; }
 }

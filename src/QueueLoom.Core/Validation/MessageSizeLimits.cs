@@ -25,10 +25,10 @@ public static class MessageSizeLimits
     public const int AmazonSnsDefaultMaximumBytes = 262_144;
 
     /// <summary>
-    /// Google Pub/Sub: a publish request is at most 10 MB (10,485,760 bytes) in total, which holds the message data,
-    /// its attributes and its ordering key; the data alone is limited to 10 MB.
+    /// Google Pub/Sub: a serialized PublishRequest is at most 10,000,000 bytes (decimal 10 MB), counting the topic, the
+    /// protobuf framing, the message data, its attributes and its ordering key (Google's clients enforce this ceiling).
     /// </summary>
-    public const int PubSubMaximumRequestBytes = 10_485_760;
+    public const int PubSubMaximumRequestBytes = 10_000_000;
 
     /// <summary>
     /// Azure Service Bus: Premium accepts up to 100 MB per message over AMQP (102,400 KB, the largest
@@ -58,7 +58,11 @@ public static class MessageSizeLimits
         return Utf8(draft.Body.Content) + attributes.Values.Sum();
     }
 
-    /// <summary>What a Pub/Sub publish request carries: the data bytes, the attributes and the ordering key.</summary>
+    /// <summary>
+    /// The serialized size of the PublishRequest's message entry: the PubsubMessage protobuf (data, attribute map entries
+    /// and ordering key, each with its tag and length prefix) plus its own framing in the request. The topic field is not
+    /// known here; the send adds it and checks the whole request.
+    /// </summary>
     public static long PubSubSize(MessageDraft draft)
     {
         ArgumentNullException.ThrowIfNull(draft);
@@ -73,7 +77,24 @@ public static class MessageSizeLimits
         }
         var orderingKey = new[] { draft.Properties.SessionId, draft.Properties.PartitionKey }
             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-        return BodyBytes(draft.Body) + attributes.Sum(pair => Utf8(pair.Key) + Utf8(pair.Value)) + Utf8(orderingKey);
+        var message = LengthDelimited(BodyBytes(draft.Body)) +
+                      attributes.Sum(pair => LengthDelimited(LengthDelimited(Utf8(pair.Key)) + LengthDelimited(Utf8(pair.Value)))) +
+                      (orderingKey is null ? 0 : LengthDelimited(Utf8(orderingKey)));
+        return LengthDelimited(message);
+    }
+
+    /// <summary>A protobuf length-delimited field: one tag byte, the varint length and the bytes (empty fields included).</summary>
+    private static long LengthDelimited(long length) => 1 + VarintSize(length) + length;
+
+    private static int VarintSize(long value)
+    {
+        var size = 1;
+        while (value >= 0x80)
+        {
+            value >>= 7;
+            size++;
+        }
+        return size;
     }
 
     /// <summary>The payload plus the text of the system and application properties Service Bus carries in the header.</summary>
@@ -103,7 +124,7 @@ public static class MessageSizeLimits
                 $"attribute's name, type and value; this message is {Bytes(size)}.",
             MessagingProvider.GooglePubSub when PubSubSize(draft) is var size && size > PubSubMaximumRequestBytes =>
                 $"Google Pub/Sub accepts at most 10 MB ({Bytes(PubSubMaximumRequestBytes)}) per publish request, counting the " +
-                $"data, attributes and ordering key; this message is {Bytes(size)}.",
+                $"data, attributes, ordering key and their framing; this message needs {Bytes(size)}.",
             MessagingProvider.AzureServiceBus when AzureSize(draft) is var size && size > AzureMaximumBytes =>
                 $"Azure Service Bus accepts at most 100 MB ({Bytes(AzureMaximumBytes)}) per message even on the Premium tier " +
                 $"(Basic and Standard accept 256 KB), counting the body and properties; this message is {Bytes(size)}.",

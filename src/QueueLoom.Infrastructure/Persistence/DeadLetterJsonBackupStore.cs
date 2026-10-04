@@ -211,6 +211,11 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "transactionPartitionKey", properties.TransactionPartitionKey);
             WriteString(writer, "amqpType", properties.AmqpType);
             WriteString(writer, "amqpAppId", properties.AmqpAppId);
+            if (properties.NativeSubject is not null)
+            {
+                // The SNS Publish Subject of an unwrapped notification, restored apart from the attributes.
+                writer.WriteString("nativeSubject", properties.NativeSubject);
+            }
             WriteDate(writer, "scheduledEnqueueTimeUtc", properties.ScheduledEnqueueTime);
             WriteDate(writer, "enqueuedTimeUtc", message.EnqueuedAt);
             WriteDate(writer, "expiresAtUtc", message.ExpiresAt);

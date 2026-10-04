@@ -44,17 +44,68 @@ public sealed class LeftoverGapRegressionTests
         }
     }
 
-    // Pub/Sub: a publish request is at most 10 MB (10,485,760 bytes) with the data, attributes and ordering key.
+    // Pub/Sub: a serialized PublishRequest is at most 10,000,000 bytes (decimal), framing included.
     [Fact]
     public void PubSubDraft_OverTheTenMegabytePublishRequestIsRefusedByTheValidator()
     {
-        var draft = new MessageDraft(new EditableMessageBody(new string('a', 10_485_700), MessageBodyFormat.Text),
-            new EditableMessageProperties(SessionId: new string('k', 100)), []);
+        // The review's example: a 10,200,000-byte ASCII body without attributes is too large.
+        var draft = new MessageDraft(new EditableMessageBody(new string('a', 10_200_000), MessageBodyFormat.Text),
+            EditableMessageProperties.Empty, []);
 
         var result = MessageDraftValidator.Validate(draft, MessagingProvider.GooglePubSub);
 
         Assert.False(result.IsValid);
-        Assert.Contains("10 MB (10,485,760 bytes)", Assert.Single(result.Errors).Message, StringComparison.Ordinal);
+        Assert.Contains("10 MB (10,000,000 bytes)", Assert.Single(result.Errors).Message, StringComparison.Ordinal);
+    }
+
+    // The message entry of the request: data field (1 tag byte + 4 length bytes) inside the message entry
+    // (1 + 4 more). 9,999,990 bytes of data serialize to exactly 10,000,000 bytes; one more is over.
+    [Theory]
+    [InlineData(9_999_990, true)]
+    [InlineData(9_999_991, false)]
+    public void PubSubDraft_SerializedSizeBoundaryCountsTheProtobufFraming(int dataBytes, bool valid)
+    {
+        var draft = new MessageDraft(new EditableMessageBody(new string('a', dataBytes), MessageBodyFormat.Text),
+            EditableMessageProperties.Empty, []);
+        var message = new Google.Cloud.PubSub.V1.PubsubMessage { Data = Google.Protobuf.ByteString.CopyFromUtf8(new string('a', dataBytes)) };
+        var entry = new Google.Cloud.PubSub.V1.PublishRequest { Messages = { message } }.CalculateSize();
+
+        Assert.Equal(entry, MessageSizeLimits.PubSubSize(draft));
+        Assert.Equal(valid, MessageDraftValidator.Validate(draft, MessagingProvider.GooglePubSub).IsValid);
+    }
+
+    // The send checks the whole serialized request, topic included: a message that fits on its own but not with the
+    // topic name is refused before the RPC, as a proven non-delivery.
+    [Fact]
+    public async Task PubSubSend_WholeRequestWithTheTopicIsCheckedBeforePublishing()
+    {
+        await using var workspace = new QueueLoom.Infrastructure.Google.GooglePubSubWorkspace(new DeepAuditCloudTests.EmptyVault());
+        var publisher = new CountingPublisher();
+        typeof(QueueLoom.Infrastructure.Google.GooglePubSubWorkspace).GetField("_publisher", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(workspace, publisher);
+        typeof(QueueLoom.Infrastructure.Google.GooglePubSubWorkspace).GetField("_projectId", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(workspace, "project-a");
+        var draft = new MessageDraft(new EditableMessageBody(new string('a', 9_999_990), MessageBodyFormat.Text),
+            EditableMessageProperties.Empty, []);
+        Assert.True(MessageDraftValidator.Validate(draft, MessagingProvider.GooglePubSub).IsValid);
+
+        var send = (Task)typeof(QueueLoom.Infrastructure.Google.GooglePubSubWorkspace)
+            .GetMethod("SendCoreAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(workspace, [new ServiceBusTopology(DateTimeOffset.UtcNow), ServiceBusEntityReference.Topic("orders"), draft, CancellationToken.None])!;
+
+        await Assert.ThrowsAsync<DeliveryRejectedException>(() => send);
+        Assert.Equal(0, publisher.Calls);
+    }
+
+    private sealed class CountingPublisher : Google.Cloud.PubSub.V1.PublisherServiceApiClient
+    {
+        public int Calls { get; private set; }
+        public override Task<Google.Cloud.PubSub.V1.PublishResponse> PublishAsync(Google.Cloud.PubSub.V1.PublishRequest request,
+            Google.Api.Gax.Grpc.CallSettings? callSettings = null)
+        {
+            Calls++;
+            return Task.FromResult(new Google.Cloud.PubSub.V1.PublishResponse());
+        }
     }
 
     [Fact]
@@ -255,12 +306,57 @@ public sealed class LeftoverGapRegressionTests
         var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"),
             ServiceBusSubQueue.DeadLetter, snsEnvelope: true);
 
-        Assert.Equal("Order 7 shipped", browsed.Properties.Subject);
+        // The native subject is kept apart from the attributes: it is not a "Subject" attribute of the copy.
+        Assert.Equal("Order 7 shipped", browsed.Properties.NativeSubject);
+        Assert.Null(browsed.Properties.Subject);
         Assert.Equal("tenant", Assert.Single(browsed.ApplicationProperties).Name);
 
         using var fixture = new AwsSendFixture();
         await fixture.Send(ServiceBusEntityReference.Topic("events"), browsed.CreateDraft());
-        Assert.Equal("Order 7 shipped", Assert.Single(fixture.Sns.Sends).Subject);
+        var request = Assert.Single(fixture.Sns.Sends);
+        Assert.Equal("Order 7 shipped", request.Subject);
+        Assert.False(request.MessageAttributes.ContainsKey(MessageAttributeConventions.Subject));
+    }
+
+    // A native Subject plus ten attributes must resend as exactly ten attributes: SNS drops a message with more than
+    // ten attributes for raw SQS subscriptions even though Publish succeeds.
+    [Fact]
+    public async Task SnsEnvelopeSubject_WithTenAttributesResendsTenAttributes()
+    {
+        var attributes = string.Join(",", Enumerable.Range(1, 10).Select(i => $"\"a{i}\": {{ \"Type\": \"String\", \"Value\": \"v{i}\" }}"));
+        var body = EnvelopeWithSubject.Replace("\"tenant\": { \"Type\": \"String\", \"Value\": \"contoso\" }", attributes, StringComparison.Ordinal);
+        var message = new Message { MessageId = "sqs-1", ReceiptHandle = "r-1", Body = body };
+        var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"),
+            ServiceBusSubQueue.Active, snsEnvelope: true);
+        Assert.Equal(10, browsed.ApplicationProperties.Count);
+
+        using var fixture = new AwsSendFixture();
+        await fixture.Send(ServiceBusEntityReference.Topic("events"), browsed.CreateDraft());
+
+        var request = Assert.Single(fixture.Sns.Sends);
+        Assert.Equal(10, request.MessageAttributes.Count);
+        Assert.Equal("Order 7 shipped", request.Subject);
+    }
+
+    [Fact]
+    public async Task SnsEnvelopeSubject_SurvivesABackupAndRestore()
+    {
+        var message = new Message { MessageId = "sqs-1", ReceiptHandle = "r-1", Body = EnvelopeWithSubject };
+        var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"),
+            ServiceBusSubQueue.DeadLetter, snsEnvelope: true);
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        var paths = QueueLoom.Infrastructure.Persistence.QueueLoomPaths.ForRoot(directory.Path);
+        var profile = ServiceBusProfile.CreateNew("aws", EnvironmentKind.Development, new(AuthenticationKind.AwsDefaultCredentials))
+            with { Provider = MessagingProvider.AmazonSqsSns };
+
+        var session = await new QueueLoom.Infrastructure.Persistence.DeadLetterJsonBackupStore(paths)
+            .CreateSessionAsync(profile, DateTimeOffset.UtcNow, CancellationToken.None);
+        await session.BackupAsync(browsed, CancellationToken.None);
+        var repository = new QueueLoom.Infrastructure.Persistence.JsonDeadLetterBackupRepository(paths);
+        var restored = await repository.LoadAsync(Assert.Single(await repository.ListAsync()));
+
+        Assert.Equal("Order 7 shipped", restored.Properties.NativeSubject);
+        Assert.Null(restored.Properties.Subject);
     }
 
     [Fact]
@@ -275,6 +371,7 @@ public sealed class LeftoverGapRegressionTests
             ServiceBusSubQueue.Active, snsEnvelope: true);
 
         Assert.Equal("from attribute", browsed.Properties.Subject);
+        Assert.Equal("Order 7 shipped", browsed.Properties.NativeSubject);
     }
 
     // Publish Subject: "UTF-8 text with no line breaks or control characters, and less than 100 characters long".
