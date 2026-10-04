@@ -175,7 +175,8 @@ internal static class McpMapping
         reference.Kind == ServiceBusEntityKind.Subscription ? $"{reference.TopicName}/{reference.Name}" : reference.Name;
 
     public static DeadLetterSourceInfo ToInfo(DeadLetterEntitySnapshot snapshot) =>
-        new(EntityName(snapshot.Entity), SubQueueName(snapshot.SubQueue), snapshot.Count, snapshot.Error);
+        new(EntityName(snapshot.Entity), SubQueueName(snapshot.SubQueue), snapshot.Count,
+            snapshot.Error is null ? null : QueueLoom.Core.Diagnostics.SensitiveDataRedactor.Redact(snapshot.Error));
 
     public static MessageInfo ToInfo(BrowsedMessage message)
     {

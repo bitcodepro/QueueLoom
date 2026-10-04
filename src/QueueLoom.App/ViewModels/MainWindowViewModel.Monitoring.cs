@@ -187,9 +187,11 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    private async Task StopMonitorForConfigurationChangeAsync()
+    private async Task StopMonitorForConfigurationChangeAsync(Guid changedProfileId)
     {
-        if (!IsMonitoring)
+        // A monitor pinned to another environment is unaffected; stopping it would silently end its alerts.
+        if (!IsMonitoring ||
+            _activeMonitorScope != AllEnvironmentsMonitorScope && _monitoredProfileId != changedProfileId)
         {
             return;
         }

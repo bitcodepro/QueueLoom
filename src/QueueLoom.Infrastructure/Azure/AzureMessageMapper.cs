@@ -56,7 +56,7 @@ internal static class AzureMessageMapper
     public static ServiceBusMessage ToAzure(MessageDraft draft)
     {
         ArgumentNullException.ThrowIfNull(draft);
-        var validation = MessageDraftValidator.Validate(draft);
+        var validation = MessageDraftValidator.Validate(draft, QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus);
         if (!validation.IsValid)
         {
             throw new ArgumentException(

@@ -49,14 +49,30 @@ public sealed partial class RabbitMqWorkspace
             {
                 arguments["x-delivery-limit"] = limit;
             }
+            string? createdDeadLetter = null;
             if (definition.CreateDeadLetterQueue)
             {
                 var deadLetter = definition.Name + ".dlq";
+                // Refuse a taken name before anything is created, so a refusal leaves nothing behind.
+                await EnsureQueueMissingAsync(definition.Name, token).ConfigureAwait(false);
                 await PutQueueAsync(deadLetter, new Dictionary<string, object> { ["x-queue-type"] = "quorum" }, token).ConfigureAwait(false);
+                createdDeadLetter = deadLetter;
                 arguments["x-dead-letter-exchange"] = string.Empty;
                 arguments["x-dead-letter-routing-key"] = deadLetter;
             }
-            await PutQueueAsync(definition.Name, arguments, token).ConfigureAwait(false);
+            try
+            {
+                await PutQueueAsync(definition.Name, arguments, token).ConfigureAwait(false);
+            }
+            catch when (createdDeadLetter is not null)
+            {
+                // The new, still empty dead-letter queue would otherwise block every retry with "already exists".
+                var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
+                using var _ = await management.DeleteAsync(
+                        $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(createdDeadLetter)}?if-empty=true", CancellationToken.None)
+                    .ConfigureAwait(false);
+                throw;
+            }
         }, cancellationToken);
 
     public override Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default) =>
@@ -71,17 +87,22 @@ public sealed partial class RabbitMqWorkspace
             await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
         }, cancellationToken);
 
+    private async Task EnsureQueueMissingAsync(string name, CancellationToken cancellationToken)
+    {
+        var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
+        using var existing = await management.GetAsync($"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(name)}", cancellationToken)
+            .ConfigureAwait(false);
+        if (existing.StatusCode != HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException($"A queue named '{name}' already exists.");
+        }
+    }
+
     private async Task PutQueueAsync(string name, Dictionary<string, object> arguments, CancellationToken cancellationToken)
     {
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
         var path = $"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(name)}";
-        using (var existing = await management.GetAsync(path, cancellationToken).ConfigureAwait(false))
-        {
-            if (existing.StatusCode != HttpStatusCode.NotFound)
-            {
-                throw new InvalidOperationException($"A queue named '{name}' already exists.");
-            }
-        }
+        await EnsureQueueMissingAsync(name, cancellationToken).ConfigureAwait(false);
 
         var body = JsonSerializer.Serialize(new { durable = true, auto_delete = false, arguments });
         using var response = await management.PutAsync(path, new StringContent(body, Encoding.UTF8, "application/json"), cancellationToken)

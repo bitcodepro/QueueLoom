@@ -289,6 +289,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
             .Where(target => target.SubQueue == ServiceBusSubQueue.DeadLetter)
             .Select(target => (Target: target, Channel: OpenChannel(topology, target.Source, target.SubQueue)))
             .ToArray();
+        // Transfer targets are skipped (the default request names both kinds); a request for nothing else must not look done.
+        if (targets.Length == 0)
+            throw new NotSupportedException($"{Provider.DisplayName()} has no transfer dead-letter queues.");
         foreach (var target in targets)
             if (target.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)

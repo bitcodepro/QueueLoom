@@ -388,7 +388,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     }
                     catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or TimeoutException)
                     {
-                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, 0, note, exception.Message));
+                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, 0, note,
+                            QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(exception)));
                     }
                 }
                 return (summaries, read);

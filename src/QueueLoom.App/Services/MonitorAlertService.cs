@@ -94,7 +94,9 @@ public sealed class MonitorAlertService(
         if (Uri.TryCreate(webhookUrl, UriKind.Absolute, out var uri) &&
             uri.Host.EndsWith("slack.com", StringComparison.OrdinalIgnoreCase))
         {
-            return new JsonObject { ["text"] = text };
+            // Slack parses <!channel>, <@user> and <url|label> in text; broker names must stay literal.
+            return new JsonObject { ["text"] = text.Replace("&", "&amp;", StringComparison.Ordinal)
+                .Replace("<", "&lt;", StringComparison.Ordinal).Replace(">", "&gt;", StringComparison.Ordinal) };
         }
 
         return new JsonObject

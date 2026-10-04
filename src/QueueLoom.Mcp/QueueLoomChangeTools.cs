@@ -4,6 +4,7 @@ using System.Text;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Core.Validation;
@@ -93,7 +94,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             return new ChangeResult(profile.Name, true, summary, result.BackupDirectory,
                 result.Messages.Select(message =>
                     $"{McpMapping.EntityName(message.Message.Source)} #{message.Message.SequenceNumber}: {message.Outcome}" +
-                    (message.Detail is null ? string.Empty : $" ({message.Detail})")).ToArray());
+                    (message.Detail is null ? string.Empty : $" ({SensitiveDataRedactor.Redact(message.Detail)})")).ToArray());
         });
 
     [McpServerTool(Name = "purge_dead_letters", Title = "Back up and purge a dead-letter queue",
@@ -126,6 +127,10 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                     (workspace, token) => workspace.GetTopologyAsync(forceRefresh: true, token), cancellationToken)
                 .ConfigureAwait(false);
             var source = EntityResolver.Resolve(topology, entity, requireMessageSource: true);
+            if (queue == ServiceBusSubQueue.TransferDeadLetter && !topology.SupportsTransferDeadLetter)
+            {
+                throw new McpException($"{profile.Provider.DisplayName()} has no transfer dead-letter queues. Use subQueue 'dlq'.");
+            }
             var decision = await RequestApprovalAsync(server, profile, "Purge a dead-letter queue",
                 $"Up to {maxMessages:N0} message(s) from {McpMapping.EntityName(source)} ({McpMapping.SubQueueName(queue)}) " +
                 "will be backed up locally and then permanently deleted, oldest first. New arrivals can be included up to the limit.",
@@ -139,9 +144,13 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                     new DeadLetterPurgeRequest([new DeadLetterPurgeTarget(source, queue)], batchSize: 20, maximumMessagesPerSubQueue: maxMessages),
                     token), cancellationToken)
                 .ConfigureAwait(false);
+            var problem = result.Sources.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Error))?.Error;
             var summary = $"{result.DeletedCount:N0} message(s) backed up and deleted" +
-                          (result.HasFailures ? $"; {result.Sources.First(item => !item.IsSuccessful).Error}" : ".");
-            session.Record(result.HasFailures ? "Error" : "Warning", "Purged dead letters",
+                          (problem is not null ? $"; {SensitiveDataRedactor.Redact(problem)}"
+                              : result.Sources.Any(item => item.LimitReached) ? $"; the limit of {maxMessages:N0} was reached, so more may remain."
+                              : ".");
+            // Reaching the requested limit is the normal end of "purge up to N", not an error.
+            session.Record(problem is not null ? "Error" : "Warning", "Purged dead letters",
                 $"{McpMapping.EntityName(source)}: {summary} Reason: {reason}. Backup: {result.BackupDirectory}", profile, source);
             return new ChangeResult(profile.Name, true, summary, result.BackupDirectory, []);
         });
@@ -288,13 +297,21 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                             McpMapping.ParseSubQueue(message.SubQueue),
                             message.SequenceNumber,
                             string.IsNullOrWhiteSpace(message.MessageId) ? null : message.MessageId))
-                        .Distinct()
                         .ToArray();
                 }
                 catch (ArgumentException exception)
                 {
                     throw new McpException(exception.Message);
                 }
+                // One key per message, as delete_dead_letter_messages does; a listed Message ID wins over none.
+                var bySequence = keys.GroupBy(key => (key.Source, key.SubQueue, key.SequenceNumber)).ToArray();
+                if (bySequence.FirstOrDefault(group =>
+                        group.Select(key => key.MessageId).OfType<string>().Distinct(StringComparer.Ordinal).Count() > 1) is { } conflict)
+                {
+                    throw new McpException(
+                        $"#{conflict.Key.SequenceNumber} in {McpMapping.EntityName(conflict.Key.Source)} is listed with different Message IDs. List each message once.");
+                }
+                keys = bySequence.Select(group => group.FirstOrDefault(key => key.MessageId is not null) ?? group.First()).ToArray();
                 if (keys.Any(key => key.SubQueue == ServiceBusSubQueue.Active))
                 {
                     throw new McpException("Only dead-lettered messages ('dlq' or 'transfer-dlq') can be resent with this tool.");
@@ -364,7 +381,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 result.Items.Select(item =>
                         $"{McpMapping.EntityName(item.Item.Original.Source)} #{item.Item.Original.SequenceNumber} → " +
                         $"{McpMapping.EntityName(item.Item.Destination)}: {item.Outcome}" +
-                        (item.Detail is null ? string.Empty : $" ({item.Detail})"))
+                        (item.Detail is null ? string.Empty : $" ({SensitiveDataRedactor.Redact(item.Detail)})"))
                     .Concat(missing.Select(key => $"{McpMapping.EntityName(key.Source)} #{key.SequenceNumber}: NotFound"))
                     .ToArray());
         });
@@ -425,6 +442,9 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             throw new McpException("Explain the change in 'reason'; it is shown to the person who approves it.");
         }
 
+        // The reason is written by the model: one bounded line, so it cannot imitate or push away the real details.
+        var oneLine = string.Join(' ', reason.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        reason = oneLine.Length > 500 ? oneLine[..500] + "…" : oneLine;
         var client = server.ClientInfo is { } info ? $"{info.Name} {info.Version}".Trim() : "an MCP client";
         return approver.RequestAsync(
             new ApprovalRequest(

@@ -133,7 +133,7 @@ public sealed partial class MainWindowViewModel
         result = result with { Profile = result.Profile with { ConfigurationRevision = Guid.NewGuid() } };
         await SaveProfileAsync(result, cancellationToken, selected.Profile).ConfigureAwait(true);
 
-        await StopMonitorForConfigurationChangeAsync().ConfigureAwait(true);
+        await StopMonitorForConfigurationChangeAsync(result.Profile.Id).ConfigureAwait(true);
         InvalidateProfileArtifacts(result.Profile.Id, "Environment configuration changed; the previous draft is no longer sendable.");
 
         if (_workspace.ConnectedProfileId == result.Profile.Id)
@@ -368,7 +368,7 @@ public sealed partial class MainWindowViewModel
         {
             await StopWriteUnlockTimerAsync().ConfigureAwait(true);
         }
-        await StopMonitorForConfigurationChangeAsync().ConfigureAwait(true);
+        await StopMonitorForConfigurationChangeAsync(selected.Id).ConfigureAwait(true);
         InvalidateProfileArtifacts(selected.Id, "Its environment was removed; the previous draft is no longer sendable.");
         AddActivity("Warning", "Environment removed", selected.Name);
         await ReloadProfilesAsync(cancellationToken).ConfigureAwait(true);

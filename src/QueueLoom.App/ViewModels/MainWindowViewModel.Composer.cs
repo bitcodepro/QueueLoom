@@ -374,7 +374,10 @@ public sealed partial class MainWindowViewModel
         TimeSpan? timeToLive = null;
         if (!string.IsNullOrWhiteSpace(DraftTimeToLiveSeconds))
         {
-            if (!double.TryParse(DraftTimeToLiveSeconds, out var seconds) || seconds <= 0)
+            // No thousands separators: "1.5" or "1,5" must never become 15 seconds.
+            if (!(double.TryParse(DraftTimeToLiveSeconds, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ||
+                  double.TryParse(DraftTimeToLiveSeconds, NumberStyles.Float, CultureInfo.CurrentCulture, out seconds)) ||
+                !double.IsFinite(seconds) || seconds <= 0)
             {
                 throw new InvalidOperationException("TTL must be a positive number of seconds.");
             }

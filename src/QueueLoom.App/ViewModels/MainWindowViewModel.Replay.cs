@@ -58,7 +58,13 @@ public sealed partial class MainWindowViewModel
         long totalBytes = 0;
         if (backups)
         {
-            foreach (var item in FilteredBackupMessages.ToArray())
+            // A failed settlement retried later leaves two backups of one message; restore it once.
+            var unique = FilteredBackupMessages
+                .DistinctBy(item => string.IsNullOrEmpty(item.Summary.MessageId)
+                    ? (object)item.Summary.FilePath
+                    : (item.Summary.ProfileId, item.Summary.Source, item.Summary.SubQueue, item.Summary.SequenceNumber, item.Summary.MessageId))
+                .ToArray();
+            foreach (var item in unique)
             {
                 var message = await _backupRepository!.LoadAsync(item.Summary, token).ConfigureAwait(true);
                 totalBytes += message.Body.Length;

@@ -39,10 +39,12 @@ public static class EnvironmentTransfer
                 throw new InvalidOperationException("Remove credentials, query and fragment from the Schema Registry URL before exporting environments.");
             }
             var node = JsonSerializer.SerializeToNode(profile, Options)!.AsObject();
-            // The id belongs to this computer (and its vault entries); write access is a local decision.
+            // The id belongs to this computer (and its vault entries); write access and permission to delete
+            // queues are local decisions.
             node.Remove("id");
             node.Remove("configurationRevision");
             node.Remove("accessMode");
+            node.Remove("allowQueueManagement");
             environments.Add(node);
         }
         var document = new JsonObject
@@ -111,6 +113,8 @@ public static class EnvironmentTransfer
             {
                 Id = Guid.NewGuid(),
                 AccessMode = ProfileAccessMode.ReadOnly,
+                // Creating, changing and deleting queues is turned on per computer, never by a file from elsewhere.
+                AllowQueueManagement = false,
                 ConfigurationRevision = Guid.Empty,
                 Name = UniqueName(profile.Name, names)
             };

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Core.Validation;
@@ -8,7 +9,8 @@ public static class MessageDraftValidator
 {
     public const int MaxMessageIdentifierLength = 128;
 
-    public static ValidationResult Validate(MessageDraft? draft)
+    /// <param name="provider">The service the draft is sent to. Without it, a draft read from Kafka follows Kafka rules.</param>
+    public static ValidationResult Validate(MessageDraft? draft, MessagingProvider? provider = null)
     {
         if (draft is null)
         {
@@ -18,7 +20,9 @@ public static class MessageDraftValidator
 
         var errors = new List<ValidationError>();
         ValidateBody(draft.Body, errors);
-        ValidateBrokerProperties(draft.Properties, errors);
+        // Azure caps identifiers at 128 characters; a Kafka key (PartitionKey) and MessageId header are arbitrary.
+        var limitIdentifiers = provider is null ? draft.KafkaEnvelope is null : provider != MessagingProvider.Kafka;
+        ValidateBrokerProperties(draft.Properties, errors, limitIdentifiers);
         ValidateApplicationProperties(draft.ApplicationProperties, errors);
 
         return errors.Count == 0 ? ValidationResult.Valid : new ValidationResult(errors);
@@ -81,7 +85,8 @@ public static class MessageDraftValidator
 
     private static void ValidateBrokerProperties(
         EditableMessageProperties? properties,
-        ICollection<ValidationError> errors)
+        ICollection<ValidationError> errors,
+        bool limitIdentifiers)
     {
         if (properties is null)
         {
@@ -92,11 +97,14 @@ public static class MessageDraftValidator
             return;
         }
 
-        ValidateLength(properties.MessageId, nameof(properties.MessageId), errors);
-        ValidateLength(properties.SessionId, nameof(properties.SessionId), errors);
-        ValidateLength(properties.ReplyToSessionId, nameof(properties.ReplyToSessionId), errors);
-        ValidateLength(properties.PartitionKey, nameof(properties.PartitionKey), errors);
-        ValidateLength(properties.TransactionPartitionKey, nameof(properties.TransactionPartitionKey), errors);
+        if (limitIdentifiers)
+        {
+            ValidateLength(properties.MessageId, nameof(properties.MessageId), errors);
+            ValidateLength(properties.SessionId, nameof(properties.SessionId), errors);
+            ValidateLength(properties.ReplyToSessionId, nameof(properties.ReplyToSessionId), errors);
+            ValidateLength(properties.PartitionKey, nameof(properties.PartitionKey), errors);
+            ValidateLength(properties.TransactionPartitionKey, nameof(properties.TransactionPartitionKey), errors);
+        }
 
         if (properties.TimeToLive is { } timeToLive && timeToLive <= TimeSpan.Zero)
         {
