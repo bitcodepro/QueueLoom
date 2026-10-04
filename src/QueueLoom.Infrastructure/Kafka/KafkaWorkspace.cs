@@ -92,7 +92,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             {
                 throw new InvalidOperationException($"No Kafka broker answered at {settings.BootstrapServers}.");
             }
-            _producer = new ProducerBuilder<byte[]?, byte[]?>(CreateProducerConfig(config)).Build();
+            _producer = new ProducerBuilder<byte[]?, byte[]?>(CreateProducerConfig(config, settings.JavaCompatiblePartitioner)).Build();
         }
         catch (KafkaException exception)
         {
@@ -300,12 +300,19 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         or ErrorCode.UnknownTopicOrPart or ErrorCode.Local_UnknownPartition or ErrorCode.Local_UnknownTopic;
 
     /// <summary>
-    /// librdkafka partitions keys with CRC32 by default; Java and Spring producers use murmur2. A record resent from
-    /// QueueLoom must reach the partition other producers use for its key, or per-key order breaks and a compacted
-    /// topic keeps the replaced value in another partition.
+    /// librdkafka partitions keys with CRC32 by default and Java and Spring producers use murmur2. The profile says
+    /// which one the topic's other producers use, so a resent record reaches the partition they use for its key:
+    /// changing it for an existing profile would move keys and break per-key order and compaction.
     /// </summary>
-    internal static ProducerConfig CreateProducerConfig(ClientConfig config) =>
-        new(config) { Acks = Acks.All, MessageTimeoutMs = 30_000, Partitioner = Partitioner.Murmur2Random };
+    internal static ProducerConfig CreateProducerConfig(ClientConfig config, bool javaCompatiblePartitioner)
+    {
+        var producer = new ProducerConfig(config) { Acks = Acks.All, MessageTimeoutMs = 30_000 };
+        if (javaCompatiblePartitioner)
+        {
+            producer.Partitioner = Partitioner.Murmur2Random;
+        }
+        return producer;
+    }
 
     private IConsumer<byte[]?, byte[]?> CreateConsumer() =>
         new ConsumerBuilder<byte[]?, byte[]?>(new ConsumerConfig(Config)

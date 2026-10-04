@@ -15,8 +15,17 @@ public sealed class RoutingMessage
         foreach (var property in applicationProperties)
         {
             _text[property.Name] = property.Value;
+            if (property.WireType is { } wire)
+            {
+                _wireTypes[property.Name] = wire;
+            }
         }
     }
+
+    private readonly Dictionary<string, string> _wireTypes = new(StringComparer.Ordinal);
+
+    /// <summary>The service's own type label of an application property (for example SNS "String.Array"), if any.</summary>
+    public string? WireTypeOf(string name) => _wireTypes.GetValueOrDefault(name);
 
     /// <summary>A message whose application properties are already typed values (text, numbers, Guid, dates…).</summary>
     public RoutingMessage(EditableMessageProperties properties, IEnumerable<KeyValuePair<string, object?>> applicationProperties)

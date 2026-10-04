@@ -84,6 +84,9 @@ internal sealed record AwsSubscriptionInfo(
     /// <summary>True when the policy looks at the JSON body (FilterPolicyScope MessageBody) instead of the attributes.</summary>
     public bool FilterPolicyOnBody { get; init; }
 
+    /// <summary>SNS delivers the published body as it is (RawMessageDelivery); otherwise it wraps it in its JSON envelope.</summary>
+    public bool RawMessageDelivery { get; init; }
+
     public bool IsConfirmed => Arn.StartsWith("arn:", StringComparison.Ordinal);
 
     /// <summary>"sqs:orders-billing", "lambda:resize-image", "https:hooks.example.com" and so on.</summary>

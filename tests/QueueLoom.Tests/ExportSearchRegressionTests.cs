@@ -67,6 +67,26 @@ public sealed class ExportSearchRegressionTests
         Assert.Throws<RegexMatchTimeoutException>(() => query.Matches(message));
     }
 
+    // A value whose regular expression times out does not stop the next [*] value from matching, and a condition
+    // that is certainly false decides its AND group even when another condition timed out.
+    [Fact]
+    public void Search_TimeoutOnOneWildcardValueStillChecksTheNextOne()
+    {
+        var query = MessageSearchQuery.Parse("$.items[*] =~ /(a|aa)+$|needle/");
+        var body = System.Text.Json.JsonSerializer.Serialize(new { items = new[] { new string('a', 80) + "!", "needle" } });
+
+        Assert.True(query.Matches(Message(body: Encoding.UTF8.GetBytes(body))));
+    }
+
+    [Fact]
+    public void Search_ACertainlyFalseConditionDecidesItsGroupDespiteATimeout()
+    {
+        var query = MessageSearchQuery.Parse("$.text =~ /(a|aa)+$/ and $.region == 'EU'");
+        var body = System.Text.Json.JsonSerializer.Serialize(new { text = new string('a', 80) + "!", region = "US" });
+
+        Assert.False(query.Matches(Message(body: Encoding.UTF8.GetBytes(body))));
+    }
+
     [Fact]
     public async Task Search_AzureSourceWithUndecidableMessagesIsIncomplete()
     {

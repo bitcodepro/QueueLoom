@@ -21,6 +21,33 @@ namespace QueueLoom.Tests;
 /// <summary>Provider limits the app applied wrongly or not at all (cycle 4).</summary>
 public sealed class ProviderLimitRegressionTests
 {
+    // Pub/Sub publishes standard attributes first and lets an application property of the same name replace one, so
+    // the quotas are checked on that merged map, not on the two lists added together.
+    [Fact]
+    public void PubSubQuotasAreCheckedOnTheMergedAttributeMap()
+    {
+        var properties = new EditableMessageProperties(CorrelationId: "c-1");
+        var application = Enumerable.Range(1, 99)
+            .Select(i => new MessageApplicationProperty($"p{i}", ApplicationPropertyType.String, "v"))
+            .Append(new MessageApplicationProperty("CorrelationId", ApplicationPropertyType.String, "c-2"))
+            .ToArray();
+        var draft = new MessageDraft(new EditableMessageBody("{}", MessageBodyFormat.Json), properties, application);
+
+        var validation = QueueLoom.Core.Validation.MessageDraftValidator.Validate(draft, MessagingProvider.GooglePubSub);
+
+        Assert.True(validation.IsValid, string.Join(" ", validation.Errors.Select(error => error.Message)));
+    }
+
+    [Fact]
+    public void PubSubOversizedStandardValueReplacedByAValidPropertyIsAccepted()
+    {
+        var properties = new EditableMessageProperties(CorrelationId: new string('c', 2_000));
+        var draft = new MessageDraft(new EditableMessageBody("{}", MessageBodyFormat.Json), properties,
+            [new MessageApplicationProperty("CorrelationId", ApplicationPropertyType.String, "short")]);
+
+        Assert.True(QueueLoom.Core.Validation.MessageDraftValidator.Validate(draft, MessagingProvider.GooglePubSub).IsValid);
+    }
+
     // Finding 1: SetQueueAttributes accepts MessageRetentionPeriod 60 to 1,209,600 seconds and VisibilityTimeout 0 to
     // 43,200; a redrive policy's maxReceiveCount is 1 to 1,000. The settings dialog accepted any positive TTL and up to
     // 2,000 deliveries, and AwsSqsSnsWorkspace.Management clamped what it accepted: asking for 30 days quietly saved

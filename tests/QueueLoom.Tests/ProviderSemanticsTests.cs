@@ -30,7 +30,8 @@ public sealed class ProviderSemanticsTests
             "tenant": { "Type": "String", "Value": "contoso" },
             "CorrelationId": { "Type": "String", "Value": "c-1" },
             "count": { "Type": "Number", "Value": "5" },
-            "blob": { "Type": "Binary", "Value": "AQID" }
+            "blob": { "Type": "Binary", "Value": "AQID" },
+            "tags": { "Type": "String.Array", "Value": "[\"blue\",\"green\"]" }
           }
         }
         """;
@@ -48,7 +49,8 @@ public sealed class ProviderSemanticsTests
             Attributes = new() { ["SentTimestamp"] = "1790000000000" }
         };
 
-        var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"), ServiceBusSubQueue.Active);
+        var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"), ServiceBusSubQueue.Active,
+            snsEnvelope: true);
         var draft = browsed.CreateDraft();
 
         Assert.Equal("{\"orderId\":7}", AwsMessageMapper.BodyText(draft));
@@ -74,6 +76,46 @@ public sealed class ProviderSemanticsTests
         Assert.Empty(browsed.ApplicationProperties);
     }
 
+    // With RawMessageDelivery the body is the application's own payload, even when it looks exactly like an SNS
+    // envelope (a forwarded notification) and carries no attributes: it must be left as it is.
+    [Fact]
+    public void ACompleteSnsShapedPayloadOnARawDeliverySubscriptionIsLeftAsItIs()
+    {
+        var message = new Message { MessageId = "sqs-3", ReceiptHandle = "r-3", Body = Envelope };
+
+        var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"), ServiceBusSubQueue.Active,
+            snsEnvelope: false);
+
+        Assert.Equal(Envelope, Encoding.UTF8.GetString(browsed.Body.Span));
+        Assert.Empty(browsed.ApplicationProperties);
+    }
+
+    // An SNS String.Array attribute keeps its type through a resend (and a durable replay snapshot), so a filter
+    // policy {"tags": ["blue"]} still matches the copy; the routing preview reads it as an array too.
+    [Fact]
+    public void SnsStringArrayAttributeKeepsItsTypeThroughAResendAndMatchesArrayFilters()
+    {
+        var message = new Message { MessageId = "sqs-1", ReceiptHandle = "r-1", Body = Envelope };
+        var browsed = AwsMessageMapper.FromSqs(message, ServiceBusEntityReference.Subscription("events", "billing"), ServiceBusSubQueue.Active,
+            snsEnvelope: true);
+        var tags = Assert.Single(browsed.ApplicationProperties, property => property.Name == "tags");
+        Assert.Equal("String.Array", tags.WireType);
+
+        // A durable resend stores the draft as JSON and reads it back before sending.
+        var replayed = System.Text.Json.JsonSerializer.Deserialize<MessageApplicationProperty[]>(
+            System.Text.Json.JsonSerializer.Serialize(browsed.CreateDraft().ApplicationProperties.ToArray()))!;
+        var draft = new MessageDraft(browsed.CreateDraft().Body, browsed.Properties, replayed);
+        var published = AwsMessageMapper.ToSnsAttributes(draft);
+        Assert.Equal("String.Array", published["tags"].DataType);
+        Assert.Equal("[\"blue\",\"green\"]", published["tags"].StringValue);
+
+        var routing = new QueueLoom.Core.Routing.RoutingMessage(draft.Properties, draft.ApplicationProperties);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Receives,
+            QueueLoom.Core.Routing.SnsFilterPolicy.Evaluate("""{"tags": ["blue"]}""", false, routing).Outcome);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Skips,
+            QueueLoom.Core.Routing.SnsFilterPolicy.Evaluate("""{"tags": ["red"]}""", false, routing).Outcome);
+    }
+
     [Fact]
     public void RawDeliveryThroughASubscriptionIsNotMistakenForAnEnvelope()
     {
@@ -90,17 +132,27 @@ public sealed class ProviderSemanticsTests
         Assert.Equal("tenant", Assert.Single(browsed.ApplicationProperties).Name);
     }
 
-    // librdkafka's default partitioner is consistent_random (CRC32), Java's is murmur2. Records resent from
-    // QueueLoom must land in the partition Java/Spring producers use for the same key, or per-key order breaks
-    // and a compacted topic keeps both the stale and the replayed value (compaction is per partition).
-    [Fact]
-    public void KafkaResendsUseTheJavaCompatiblePartitionerForKeyedRecords()
+    // librdkafka's default partitioner is consistent_random (CRC32), Java's is murmur2. Which one a topic's other
+    // producers use is a property of the environment: an existing profile keeps librdkafka's default, so replayed
+    // keys stay where they were, and a profile marked Java-compatible resends with murmur2.
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(true, Partitioner.Murmur2Random)]
+    public void KafkaResendsUseThePartitionerTheProfileNames(bool javaCompatible, Partitioner? expected)
     {
-        var config = KafkaWorkspace.CreateProducerConfig(new ClientConfig { BootstrapServers = "localhost:9092" });
+        var config = KafkaWorkspace.CreateProducerConfig(new ClientConfig { BootstrapServers = "localhost:9092" }, javaCompatible);
 
-        Assert.Equal(Partitioner.Murmur2Random, config.Partitioner);
+        Assert.Equal(expected, config.Partitioner);
         Assert.Equal(Acks.All, config.Acks);
         Assert.Equal("localhost:9092", config.BootstrapServers);
+    }
+
+    [Fact]
+    public void AnExistingKafkaProfileKeepsLibrdkafkasDefaultPartitioner()
+    {
+        var settings = System.Text.Json.JsonSerializer.Deserialize<KafkaSettings>("""{"BootstrapServers":"broker:9092"}""")!;
+
+        Assert.False(settings.JavaCompatiblePartitioner);
     }
 
     // Pub/Sub adds googclient_* attributes itself (schema name, encoding and revision on topics with a

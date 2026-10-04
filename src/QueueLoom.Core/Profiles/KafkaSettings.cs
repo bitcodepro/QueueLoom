@@ -20,6 +20,10 @@ public enum KafkaSaslMechanism
 /// then decoded with their Avro, Protobuf or JSON schema.
 /// </param>
 /// <param name="SchemaRegistryUserName">The API key or user for the registry; its secret is kept in the vault.</param>
+/// <param name="JavaCompatiblePartitioner">
+/// Send keyed records with murmur2, the partitioner of Java and Spring producers, instead of librdkafka's default
+/// (CRC32). Turn it on when the topic's other producers are Java-based, so a resent record reaches the same partition.
+/// </param>
 public sealed record KafkaSettings(
     string BootstrapServers,
     bool UseTls = false,
@@ -27,7 +31,8 @@ public sealed record KafkaSettings(
     string? UserName = null,
     IReadOnlyList<string>? DeadLetterSuffixes = null,
     string? SchemaRegistryUrl = null,
-    string? SchemaRegistryUserName = null)
+    string? SchemaRegistryUserName = null,
+    bool JavaCompatiblePartitioner = false)
 {
     public static readonly IReadOnlyList<string> DefaultDeadLetterSuffixes = [".DLT", "-dlt", ".dlq", "-dlq", "_dlq", ".DLQ"];
 

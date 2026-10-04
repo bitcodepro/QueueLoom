@@ -12,7 +12,12 @@ internal static class AwsMessageMapper
 {
     private const int MaximumDelaySeconds = 900;
 
-    public static BrowsedMessage FromSqs(Message message, ServiceBusEntityReference source, ServiceBusSubQueue subQueue)
+    /// <param name="snsEnvelope">
+    /// The messages come through an SNS subscription without raw message delivery, so each body is SNS's JSON envelope.
+    /// With raw delivery, an SNS-shaped body is the application's own payload and is left alone.
+    /// </param>
+    public static BrowsedMessage FromSqs(Message message, ServiceBusEntityReference source, ServiceBusSubQueue subQueue,
+        bool snsEnvelope = false)
     {
         var system = message.Attributes ?? [];
         var attributes = (message.MessageAttributes ?? [])
@@ -20,8 +25,7 @@ internal static class AwsMessageMapper
         var body = message.Body ?? string.Empty;
         // Read through an SNS subscription without raw message delivery, the SQS body is SNS's JSON envelope. A copy
         // goes back to the topic, so it must carry the published body and attributes, not the envelope.
-        if (source.Kind == ServiceBusEntityKind.Subscription && attributes.Count == 0 &&
-            TryReadSnsEnvelope(body, out var published, out var envelopeAttributes))
+        if (snsEnvelope && attributes.Count == 0 && TryReadSnsEnvelope(body, out var published, out var envelopeAttributes))
         {
             body = published;
             attributes = envelopeAttributes;
@@ -242,7 +246,11 @@ internal static class AwsMessageMapper
     /// writes its type as the label ("Number.Int32", "String.Guid") so the type survives a round trip.
     /// </summary>
     internal static (string DataType, string? StringValue, byte[]? BinaryValue) ToAttribute(MessageApplicationProperty property) =>
-        property.Type switch
+        // A label QueueLoom has no type for (SNS String.Array, another producer's custom label) goes back unchanged.
+        property.WireType is { } wire && property.Type != ApplicationPropertyType.Binary &&
+        (wire.StartsWith("String.", StringComparison.Ordinal) || wire.StartsWith("Number.", StringComparison.Ordinal))
+            ? (wire, property.Value, null)
+            : property.Type switch
         {
             ApplicationPropertyType.String => ("String", property.Value, null),
             ApplicationPropertyType.Binary => ("Binary", null, Convert.FromBase64String(property.Value)),
@@ -273,6 +281,8 @@ internal static class AwsMessageMapper
             return new MessageApplicationProperty(name, labelled, value);
         }
 
+        // A label QueueLoom has no type for is remembered, so a resent copy carries the same type again.
+        var wireType = label is { Length: > 0 } ? dataType : null;
         if (parts[0] == "Number")
         {
             var type = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
@@ -280,10 +290,10 @@ internal static class AwsMessageMapper
                 : decimal.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
                     ? ApplicationPropertyType.Decimal
                     : ApplicationPropertyType.String;
-            return new MessageApplicationProperty(name, type, value);
+            return new MessageApplicationProperty(name, type, value) { WireType = wireType };
         }
 
-        return new MessageApplicationProperty(name, ApplicationPropertyType.String, value);
+        return new MessageApplicationProperty(name, ApplicationPropertyType.String, value) { WireType = wireType };
     }
 
     private static bool IsStringType(string? dataType) =>

@@ -231,11 +231,17 @@ public static class MessageDraftValidator
         }
         else if (rules == MessagingProvider.GooglePubSub)
         {
-            var attributes = MessageAttributeConventions.StandardAttributes(properties)
-                .Concat(applicationProperties
-                    .Where(property => property?.Name is not null)
-                    .Select(property => new KeyValuePair<string, string>(property.Name, property.Value ?? string.Empty)))
-                .ToList();
+            // The same map the publish builds: standard attributes first, then application properties, which replace a
+            // standard attribute of the same name (ordinal names).
+            var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (name, value) in MessageAttributeConventions.StandardAttributes(properties))
+            {
+                attributes[name] = value;
+            }
+            foreach (var property in applicationProperties.Where(property => property?.Name is not null))
+            {
+                attributes[property.Name] = property.Value ?? string.Empty;
+            }
             if (attributes.Count > MaxPubSubAttributes)
             {
                 errors.Add(new ValidationError(

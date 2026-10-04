@@ -157,16 +157,32 @@ public sealed partial class MessageSearchQuery
             RegexMatchTimeoutException? timedOut = null;
             foreach (var all in _json!)
             {
-                try
+                // Every condition of the group is checked: one that is certainly false decides the group even when
+                // another one timed out.
+                RegexMatchTimeoutException? groupTimedOut = null;
+                var failed = false;
+                foreach (var condition in all)
                 {
-                    if (all.All(condition => condition.IsTrue(root)))
+                    try
                     {
-                        return true;
+                        if (!condition.IsTrue(root))
+                        {
+                            failed = true;
+                            break;
+                        }
+                    }
+                    catch (RegexMatchTimeoutException exception)
+                    {
+                        groupTimedOut ??= exception;
                     }
                 }
-                catch (RegexMatchTimeoutException exception)
+                if (!failed && groupTimedOut is null)
                 {
-                    timedOut ??= exception;
+                    return true;
+                }
+                if (!failed)
+                {
+                    timedOut ??= groupTimedOut;
                 }
             }
             return timedOut is null ? false : throw timedOut;
@@ -234,9 +250,28 @@ public sealed partial class MessageSearchQuery
         public bool IsTrue(JsonElement root)
         {
             var values = Resolve(root).ToArray();
-            return Op == Operator.NotEqual
-                ? values.Length > 0 && values.All(value => !AreEqual(value, Value!.Value))
-                : values.Any(Satisfies);
+            if (Op == Operator.NotEqual)
+            {
+                return values.Length > 0 && values.All(value => !AreEqual(value, Value!.Value));
+            }
+            // Any one value is enough: a value whose regular expression timed out does not stop the next ones from
+            // being checked, and decides nothing unless no value matches.
+            RegexMatchTimeoutException? timedOut = null;
+            foreach (var value in values)
+            {
+                try
+                {
+                    if (Satisfies(value))
+                    {
+                        return true;
+                    }
+                }
+                catch (RegexMatchTimeoutException exception)
+                {
+                    timedOut ??= exception;
+                }
+            }
+            return timedOut is null ? false : throw timedOut;
         }
 
         private IEnumerable<JsonElement> Resolve(JsonElement root)
