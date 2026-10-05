@@ -314,7 +314,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         return producer;
     }
 
-    private IConsumer<byte[]?, byte[]?> CreateConsumer() =>
+    /// <summary>Test seam: replaces the SDK consumer of this workspace when set.</summary>
+    internal Func<IConsumer<byte[]?, byte[]?>>? ConsumerFactory { get; set; }
+
+    private IConsumer<byte[]?, byte[]?> CreateConsumer() => ConsumerFactory?.Invoke() ??
         new ConsumerBuilder<byte[]?, byte[]?>(new ConsumerConfig(Config)
         {
             // Partitions are assigned by hand and nothing is committed, so the group never appears on the cluster.
@@ -573,9 +576,27 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 
         public void Dispose()
         {
-            _consumer?.Close();
-            _consumer?.Dispose();
+            var consumer = _consumer;
             _consumer = null;
+            if (consumer is null)
+            {
+                return;
+            }
+            try
+            {
+                consumer.Close();
+            }
+            catch (KafkaException)
+            {
+                // Nothing is committed, so a failed close loses nothing; the native handle is still released below.
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                consumer.Dispose();
+            }
         }
 
         private IConsumer<byte[]?, byte[]?> Open()
@@ -585,9 +606,29 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 return _consumer;
             }
 
-            _consumer = owner.CreateConsumer();
+            var consumer = owner.CreateConsumer();
+            try
+            {
+                AssignStart(consumer);
+            }
+            catch
+            {
+                // A half-positioned consumer would make the next read look like an empty topic; start over next time.
+                consumer.Dispose();
+                _end.Clear();
+                _finished.Clear();
+                _deletableFrom.Clear();
+                _lastRead.Clear();
+                throw;
+            }
+            _consumer = consumer;
+            return consumer;
+        }
+
+        private void AssignStart(IConsumer<byte[]?, byte[]?> consumer)
+        {
             var byTime = _start is { Kind: BrowseStartKind.FromTime, Time: { } time }
-                ? _consumer.OffsetsForTimes(
+                ? consumer.OffsetsForTimes(
                         topic.Partitions.Select(partition => new TopicPartitionTimestamp(topic.Name, partition, new Timestamp(time.UtcDateTime))),
                         RequestTimeout)
                     .ToDictionary(offset => offset.Partition.Value, offset => offset.Offset.Value)
@@ -595,7 +636,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             var assignments = new List<TopicPartitionOffset>();
             foreach (var partition in topic.Partitions)
             {
-                var marks = _consumer.QueryWatermarkOffsets(new TopicPartition(topic.Name, partition), RequestTimeout);
+                var marks = consumer.QueryWatermarkOffsets(new TopicPartition(topic.Name, partition), RequestTimeout);
                 var (from, to) = Range(partition, marks.Low.Value, marks.High.Value, byTime);
                 _end[partition] = to;
                 _deletableFrom[partition] = marks.Low.Value;
@@ -609,8 +650,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     _finished.Add(partition);
                 }
             }
-            _consumer.Assign(assignments);
-            return _consumer;
+            consumer.Assign(assignments);
         }
 
         /// <summary>The offsets [from, to) to read in one partition.</summary>

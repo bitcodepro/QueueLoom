@@ -125,6 +125,35 @@ public sealed partial class ViewModelStateTests
         if (sends != 0) await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default));
     }
 
+    // A Failed settlement may have been accepted before its response was lost: the item stays DeleteUncertain and the
+    // three-day cleanup keeps its evidence, through the real executor rather than a hand-written state.
+    [Fact]
+    public async Task FailedSettlementInAMoveIsUncertainAndSurvivesRetention()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new BatchReplayStore(directory.Path);
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var workspace = new FakeWorkspace(); await workspace.ConnectAsync(profile);
+        workspace.FailedSequenceNumbers.Add(0);
+        var plan = await PrepareOperation(store, profile, ResendMode.Move, 1);
+
+        await store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default);
+        Assert.Equal("DeleteUncertain", store.ReadHistory(plan).Items[0].State);
+
+        var folder = Directory.GetDirectories(directory.Path).Single();
+        foreach (var file in Directory.GetFiles(folder)) File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays(-10));
+        Assert.Equal(0, store.DeleteExpired(DateTimeOffset.UtcNow.AddDays(-3)));
+        Assert.True(File.Exists(Path.Combine(folder, "plan.json")));
+    }
+
+    // SentOriginalKept was written by earlier versions for a failed settlement too, so it is not treated as finished.
+    [Fact]
+    public void LegacySentOriginalKeptIsNotAFinishedMove()
+    {
+        Assert.False(BatchReplayStore.IsFinishedState(ResendMode.Move, "SentOriginalKept"));
+        Assert.True(BatchReplayStore.IsFinishedState(ResendMode.Move, "OriginalKept"));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -139,7 +168,7 @@ public sealed partial class ViewModelStateTests
         var plan = await PrepareOperation(store, profile, ResendMode.Move, 1);
         var result = await store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default);
         Assert.Equal(1, result.SentCount); Assert.Equal(1, result.OriginalsKeptCount);
-        Assert.Equal(lostAck ? "DeleteUncertain" : "SentOriginalKept", store.ReadHistory(plan).Items[0].State);
+        Assert.Equal(lostAck ? "DeleteUncertain" : "OriginalKept", store.ReadHistory(plan).Items[0].State);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], true, workspace, () => true, null, default));
         Assert.Single(workspace.SentMessages); Assert.Single(workspace.DeleteRequests);
     }

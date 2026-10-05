@@ -10,6 +10,8 @@
         CanResize="False">
   <StackPanel Margin="26" Spacing="14">
     <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+    <TextBlock Text="{Binding Notice}" Classes="warning" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasNotice}"
+               AutomationProperties.Name="Rule notice" />
 
     <Grid ColumnDefinitions="*,12,*" IsVisible="{Binding IsServiceBus}">
       <StackPanel Spacing="7">

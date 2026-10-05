@@ -213,6 +213,7 @@ public sealed partial class MainWindowViewModel
         ResendMarkedMessagesCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanCompareMarkedMessages));
         CompareMarkedMessagesCommand?.NotifyCanExecuteChanged();
+        ReplayLoadedMessagesCommand?.NotifyCanExecuteChanged();
     }
 
     private async Task DeleteMarkedMessagesAsync(CancellationToken cancellationToken)

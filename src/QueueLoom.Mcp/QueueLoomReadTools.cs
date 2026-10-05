@@ -177,7 +177,9 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                         result?.Outcome.ToString(),
                         result?.Summary)
                     {
-                        Note = subscription.Note,
+                        // A 1=1 rule that makes the others moot, or a filter QueueLoom cannot read, is said along with the note.
+                        Note = string.Join(" · ", new[] { subscription.Note, subscription.Unreadable, subscription.CatchAllNotice }.OfType<string>()) is { Length: > 0 } note
+                            ? note : null,
                         IsExchange = service == QueueLoom.Core.Routing.RoutingService.RabbitMq ? subscription.IsExchange : null
                     };
                 }).ToArray());
@@ -185,7 +187,9 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
 
     [McpServerTool(Name = "peek_messages", Title = "Peek messages", ReadOnly = true, Idempotent = true)]
     [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
-                 "SQS and Pub/Sub receive the messages and release them at once (paging is not available there). " +
+                 "SQS, Pub/Sub and RabbitMQ receive the messages and release them at once (paging is not available there). " +
+                 "That read counts as a delivery: it raises the SQS receive count, the Pub/Sub delivery attempts (with a dead-letter policy) and, up to RabbitMQ 4.2, " +
+                 "a quorum queue's delivery count, so a redrive or dead-letter policy can move a message that is read often. " +
                  "Bodies longer than 4,000 characters are truncated, as are property values over 1,000 characters (at most 50 properties) " +
                  "and dead-letter reasons or descriptions over 4,000; the *Truncated fields say when. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
                  "unpacked in decodedBody. Use fromSequenceNumber to page on Azure.")]
@@ -211,14 +215,20 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             }, cancellationToken).ConfigureAwait(false);
             return new MessageListInfo(
                 profile.Name,
-                $"{messages.Count} message(s) from {entity} ({McpMapping.SubQueueName(queue)}); nothing was locked or removed.",
+                $"{messages.Count} message(s) from {entity} ({McpMapping.SubQueueName(queue)}); nothing was removed" +
+                (profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.Kafka
+                    ? "."
+                    // These services have no peek: messages are received, held briefly and released, which counts as a
+                    // receive (SQS), a delivery attempt (Pub/Sub with a dead-letter policy) or a requeue (RabbitMQ).
+                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue."),
                 messages.Select(McpMapping.ToInfo).ToArray());
         });
 
     [McpServerTool(Name = "search_dead_letters", Title = "Search dead letters", ReadOnly = true, Idempotent = true)]
     [Description("Searches every dead-letter queue of the environment: text in the Message ID, Correlation ID, subject, " +
                  "application properties or body (first 1 MiB), a /regular expression/, or a condition on a field of the JSON body. " +
-                 "Results are capped like peek_messages (the *Truncated fields say when) and can be passed to delete_dead_letter_messages.")]
+                 "Results are capped like peek_messages (the *Truncated fields say when) and can be passed to delete_dead_letter_messages. " +
+                 "Like peek_messages, it reads every scanned message, which counts as a delivery on SQS, on Pub/Sub with a dead-letter policy and on RabbitMQ quorum queues up to 4.2.")]
     public Task<MessageListInfo> SearchDeadLettersAsync(
         [Description(QueryDescription)] string query,
         [Description(EnvironmentDescription)] string? environment = null,

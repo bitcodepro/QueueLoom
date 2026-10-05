@@ -27,5 +27,21 @@ public sealed record ServiceBusQueue(
     /// <summary>Azure Service Bus: where dead letters are forwarded instead of staying in the dead-letter queue, or null.</summary>
     public string? ForwardDeadLettersTo { get; init; }
 
+    /// <summary>
+    /// How many deliveries the service allows a message of this queue before it dead-letters it, where reading counts as
+    /// a delivery: the SQS redrive policy's maxReceiveCount or a RabbitMQ quorum queue's own delivery limit. Null when
+    /// the queue has none or the service does not say.
+    /// </summary>
+    public int? MaxDeliveryCount { get; init; }
+
+    /// <summary>
+    /// RabbitMQ: a quorum queue with a delivery limit (its own, or the default of 20 since RabbitMQ 4.0). Up to RabbitMQ
+    /// 4.2 every requeue counts toward that limit, including the basic.nack with requeue that ends QueueLoom's read.
+    /// </summary>
+    public bool CountsRequeues { get; init; }
+
+    /// <summary>The queue of this topology its dead letters are read from (SQS, RabbitMQ), or null.</summary>
+    public string? DeadLetterQueueName { get; init; }
+
     public ServiceBusEntityReference Reference => ServiceBusEntityReference.Queue(Name);
 }

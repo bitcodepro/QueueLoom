@@ -13,6 +13,7 @@ public sealed partial class MainWindowViewModel
             if (SetProperty(ref _selectedEntity, value))
             {
                 OnPropertyChanged(nameof(HasSelectedEntity));
+                NotifyBrowseDeliveryNotes();
                 OnPropertyChanged(nameof(MonitorTargetPreview));
                 NotifyCommandStates();
             }
@@ -62,6 +63,7 @@ public sealed partial class MainWindowViewModel
     {
         var previousDestination = preserveDestination ? SelectedDestination?.Reference : null;
         _topology = topology;
+        NotifyBrowseDeliveryNotes();
         OnPropertyChanged(nameof(CanDeleteSelectedMessages));
         OnPropertyChanged(nameof(ShowDeleteMarkedMessages));
         DeleteMarkedMessagesCommand?.NotifyCanExecuteChanged();

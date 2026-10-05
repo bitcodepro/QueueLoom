@@ -107,6 +107,8 @@
                     </Border>
                   </Grid>
                   <TextBlock Text="{Binding Warning}" Classes="warning" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasWarning}" />
+                  <TextBlock Text="{Binding CatchAllNotice}" Classes="warning" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasCatchAllNotice}"
+                             AutomationProperties.Name="Catch-all rule notice" />
                   <TextBlock Text="{Binding ResultText}" FontSize="12" TextWrapping="Wrap" IsVisible="{Binding HasResultText}"
                              Classes.muted="{Binding Receives}" />
                   <ItemsControl ItemsSource="{Binding Rules}">

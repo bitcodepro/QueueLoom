@@ -319,6 +319,10 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             foreach (var tag in Tags(messages))
             {
                 if (!_held.Contains(tag)) continue;
+                // The message comes back with redelivered set. Quorum queues count this requeue toward their
+                // delivery-limit up to RabbitMQ 4.2 ("every requeued message incremented its delivery-count by 1,
+                // regardless of the reason"); from 4.3 basic.nack raises only acquired-count, which the limit ignores
+                // (RabbitMQ blog, "RabbitMQ 4.3 release"; docs, Quorum Queues, poison message handling).
                 await _channel.BasicNackAsync(tag, multiple: false, requeue: true, cancellationToken).ConfigureAwait(false);
                 _held.Remove(tag);
             }

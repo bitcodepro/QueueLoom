@@ -33,7 +33,7 @@ public sealed class MonitorAlertTests
         var teams = JsonNode.Parse(handler.Bodies[1])!;
         Assert.Equal("message", teams["type"]!.GetValue<string>());
         Assert.Equal("AdaptiveCard", teams["attachments"]![0]!["content"]!["type"]!.GetValue<string>());
-        Assert.Equal(Alert.Text, teams["attachments"]![0]!["content"]!["body"]![1]!["text"]!.GetValue<string>());
+        Assert.Equal(Alert.Text, teams["attachments"]![0]!["content"]!["body"]![1]!["inlines"]![0]!["text"]!.GetValue<string>());
     }
 
     [Fact]

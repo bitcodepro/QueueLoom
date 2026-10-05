@@ -413,6 +413,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
         public async Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
+            // A 0 deadline is a NACK; with a dead-letter policy each one is a delivery attempt (see MaxDeliveryAttempts).
             foreach (var chunk in messages.Chunk(1_000))
             {
                 await owner.Subscriber.ModifyAckDeadlineAsync(
@@ -433,18 +434,21 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                 return [];
             }
 
+            // Chunks acknowledged before a failure are gone; only the rest are reported as not settled.
+            var acknowledged = 0;
             try
             {
                 foreach (var chunk in messages.Chunk(1_000))
                 {
                     await owner.Subscriber.AcknowledgeAsync(subscription, chunk.Select(message => message.LeaseHandle), cancellationToken)
                         .ConfigureAwait(false);
+                    acknowledged += chunk.Length;
                 }
                 return [];
             }
             catch (RpcException)
             {
-                return messages;
+                return messages.Skip(acknowledged).ToList();
             }
         }
 
@@ -542,6 +546,7 @@ internal sealed record GooglePubSubTopology(
                         : ServiceBusEntityStatus.Unknown)
                 {
                     HasDeadLetterQueue = hasDeadLetters,
+                    MaxDeliveryCount = MaxDeliveryAttempts(subscription),
                     Note = note
                 };
             }).ToArray();
@@ -587,6 +592,18 @@ internal sealed record GooglePubSubTopology(
             };
         }
     }
+
+    /// <summary>
+    /// The dead-letter policy's maxDeliveryAttempts, or null without a dead-letter topic. Pub/Sub only counts delivery
+    /// attempts then, and a NACK (ModifyAckDeadline with a 0 deadline, which is how QueueLoom releases what it read)
+    /// adds one: deliveryAttempt is "1 + (number of NACKs) + (number of ack_deadline exceeds)" (Pub/Sub REST reference,
+    /// ReceivedMessage.deliveryAttempt; "Handle message failures", dead-letter topics). An unset value (0) means the
+    /// documented default of 5.
+    /// </summary>
+    internal static int? MaxDeliveryAttempts(Subscription subscription) =>
+        string.IsNullOrEmpty(subscription.DeadLetterPolicy?.DeadLetterTopic)
+            ? null
+            : subscription.DeadLetterPolicy.MaxDeliveryAttempts > 0 ? subscription.DeadLetterPolicy.MaxDeliveryAttempts : 5;
 
     /// <summary>
     /// The topic ID of "projects/p/topics/id". Subscriptions whose topic was deleted point at "_deleted-topic_",

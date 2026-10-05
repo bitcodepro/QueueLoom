@@ -1174,13 +1174,16 @@ public sealed partial class ViewModelStateTests
 
         public List<IReadOnlyList<BrowsedMessage>> PendingRemovals { get; } = [];
 
+        /// <summary>The outcome the fake reports for each pending message; removed when not set (e.g. Cancelled for a stopped run).</summary>
+        public Func<BrowsedMessage, DeadLetterMessageDeletionOutcome>? PendingOutcome { get; set; }
+
         public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
             IReadOnlyList<BrowsedMessage> messages,
             CancellationToken cancellationToken = default)
         {
             PendingRemovals.Add(messages);
             return Task.FromResult(new RemovePendingMessagesResult(
-                messages.Select(message => new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
+                messages.Select(message => new PendingMessageRemovalResult(message, PendingOutcome?.Invoke(message) ?? DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 
@@ -1188,6 +1191,8 @@ public sealed partial class ViewModelStateTests
 
         /// <summary>Sequence numbers reported as not found by the fake deletion.</summary>
         public HashSet<long> MissingSequenceNumbers { get; } = [];
+        /// <summary>Settlement fails for these (it may have been accepted before the response was lost).</summary>
+        public HashSet<long> FailedSequenceNumbers { get; } = [];
 
         public Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
             DeleteDeadLetterMessagesRequest request,
@@ -1203,10 +1208,13 @@ public sealed partial class ViewModelStateTests
                 now,
                 request.Messages.Select(key => new DeadLetterMessageDeletionResult(
                     key,
-                    MissingSequenceNumbers.Contains(key.SequenceNumber)
-                        ? DeadLetterMessageDeletionOutcome.NotFound
-                        : DeadLetterMessageDeletionOutcome.Deleted,
-                    MissingSequenceNumbers.Contains(key.SequenceNumber) ? "Already gone." : null)),
+                    FailedSequenceNumbers.Contains(key.SequenceNumber)
+                        ? DeadLetterMessageDeletionOutcome.Failed
+                        : MissingSequenceNumbers.Contains(key.SequenceNumber)
+                            ? DeadLetterMessageDeletionOutcome.NotFound
+                            : DeadLetterMessageDeletionOutcome.Deleted,
+                    FailedSequenceNumbers.Contains(key.SequenceNumber) ? "Settlement response lost."
+                        : MissingSequenceNumbers.Contains(key.SequenceNumber) ? "Already gone." : null)),
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
         }
 
