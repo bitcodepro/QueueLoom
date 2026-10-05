@@ -434,18 +434,21 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                 return [];
             }
 
+            // Chunks acknowledged before a failure are gone; only the rest are reported as not settled.
+            var acknowledged = 0;
             try
             {
                 foreach (var chunk in messages.Chunk(1_000))
                 {
                     await owner.Subscriber.AcknowledgeAsync(subscription, chunk.Select(message => message.LeaseHandle), cancellationToken)
                         .ConfigureAwait(false);
+                    acknowledged += chunk.Length;
                 }
                 return [];
             }
             catch (RpcException)
             {
-                return messages;
+                return messages.Skip(acknowledged).ToList();
             }
         }
 
