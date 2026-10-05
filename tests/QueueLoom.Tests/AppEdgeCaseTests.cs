@@ -120,6 +120,38 @@ public sealed partial class ViewModelStateTests
 
 public sealed class ProfileExtraFieldTests
 {
+    // A profiles file saved with a UTF-8 byte order mark, an environment whose id is spelled "ID", and an unknown field
+    // that appears twice (hand edited): the file loads as before, the environment's unknown field is kept with its last
+    // value, and saving works.
+    [Fact]
+    public async Task HandEditedProfilesFilesStillLoadAndKeepTheirExtras()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        var paths = QueueLoom.Infrastructure.Persistence.QueueLoomPaths.ForRoot(directory.Path);
+        paths.EnsureCreated();
+        var existing = ViewModelStateTests.CreateProfile("dev", QueueLoom.Core.Profiles.EnvironmentKind.Development);
+        using (var repository = new QueueLoom.Infrastructure.Persistence.JsonProfileRepository(paths))
+        {
+            await repository.UpsertAsync(existing);
+        }
+        var json = await File.ReadAllTextAsync(paths.ProfilesFile);
+        var idText = $"\"id\": \"{existing.Id}\"";
+        Assert.Contains(idText, json, StringComparison.Ordinal);
+        json = json.Replace(idText, $"\"ID\": \"{existing.Id}\", \"futureFolder\": \"old\", \"futureFolder\": \"payments/ops\"", StringComparison.Ordinal);
+        await File.WriteAllBytesAsync(paths.ProfilesFile, [0xEF, 0xBB, 0xBF, .. System.Text.Encoding.UTF8.GetBytes(json)]);
+
+        using (var repository = new QueueLoom.Infrastructure.Persistence.JsonProfileRepository(paths))
+        {
+            Assert.Equal(existing.Id, Assert.Single(await repository.ListAsync()).Id);
+            await repository.UpsertAsync(existing with { Name = "dev renamed" });
+        }
+
+        var saved = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(paths.ProfilesFile))!;
+        var profile = Assert.Single(saved["profiles"]!.AsArray())!;
+        Assert.Equal("dev renamed", profile["name"]!.GetValue<string>());
+        Assert.Equal("payments/ops", profile["futureFolder"]!.GetValue<string>());
+    }
+
     // An environment written by a newer QueueLoom carries a field this version does not know. Saving any environment
     // (here: adding another one, then editing that one) keeps the field on its environment instead of stripping it.
     [Fact]

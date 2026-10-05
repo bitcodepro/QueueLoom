@@ -222,8 +222,13 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
             using var buffer = new MemoryStream();
             await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-            var bytes = buffer.ToArray();
-            var document = JsonSerializer.Deserialize<ProfileDocument>(bytes, SerializerOptions) ?? new ProfileDocument();
+            // A UTF-8 byte order mark is accepted, as reading from the stream did; the span readers below would refuse it.
+            var bytes = buffer.ToArray().AsMemory();
+            if (bytes.Span.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]))
+            {
+                bytes = bytes[3..];
+            }
+            var document = JsonSerializer.Deserialize<ProfileDocument>(bytes.Span, SerializerOptions) ?? new ProfileDocument();
             document.ProfileExtras = ReadProfileExtras(bytes);
 
             if (document.SchemaVersion != 1 || document.Profiles is null)
@@ -309,7 +314,11 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
             StringComparer.OrdinalIgnoreCase);
     });
 
-    private static Dictionary<Guid, Dictionary<string, JsonElement>> ReadProfileExtras(byte[] json)
+    /// <summary>
+    /// Matches the serializer: property names in any case ("id", "Id", "ID"), and a repeated property counts with its
+    /// last occurrence, so a hand-edited file it accepts is read the same way here.
+    /// </summary>
+    private static Dictionary<Guid, Dictionary<string, JsonElement>> ReadProfileExtras(ReadOnlyMemory<byte> json)
     {
         var extras = new Dictionary<Guid, Dictionary<string, JsonElement>>();
         using var parsed = JsonDocument.Parse(json);
@@ -326,14 +335,18 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
             foreach (var profile in property.Value.EnumerateArray())
             {
                 if (profile.ValueKind != JsonValueKind.Object ||
-                    !profile.TryGetProperty("id", out var id) || !id.TryGetGuid(out var profileId))
+                    profile.EnumerateObject().LastOrDefault(field => string.Equals(field.Name, "id", StringComparison.OrdinalIgnoreCase))
+                        is not { Value.ValueKind: JsonValueKind.String } id ||
+                    !id.Value.TryGetGuid(out var profileId))
                 {
                     continue;
                 }
-                var unknown = profile.EnumerateObject()
-                    .Where(field => !KnownProfileFields.Value.Contains(field.Name))
-                    // Cloned: the parsed document is disposed when this returns.
-                    .ToDictionary(field => field.Name, field => field.Value.Clone(), StringComparer.Ordinal);
+                var unknown = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+                foreach (var field in profile.EnumerateObject().Where(field => !KnownProfileFields.Value.Contains(field.Name)))
+                {
+                    // Cloned: the parsed document is disposed when this returns. A repeated field keeps its last value.
+                    unknown[field.Name] = field.Value.Clone();
+                }
                 if (unknown.Count > 0)
                 {
                     extras[profileId] = unknown;
