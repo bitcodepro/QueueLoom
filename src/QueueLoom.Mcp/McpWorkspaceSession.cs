@@ -104,8 +104,19 @@ public sealed class McpWorkspaceSession(
                 }
                 catch (Exception exception)
                 {
+                    // The connection may still carry write access: the next tool call must not reuse it, whatever
+                    // happens below. A failure here is logged, not thrown, so it cannot replace the write's own result.
+                    _connectedConfigurationIdentity = null;
                     logger.LogWarning(exception, "Could not return the MCP connection to read-only; disconnecting");
-                    await workspace.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+                    try
+                    {
+                        await workspace.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception disconnect)
+                    {
+                        logger.LogError(disconnect,
+                            "Could not disconnect the MCP connection either; the next tool call reconnects read-only");
+                    }
                 }
             }
         }

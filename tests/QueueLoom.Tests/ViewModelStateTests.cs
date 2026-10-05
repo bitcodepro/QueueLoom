@@ -1026,9 +1026,13 @@ public sealed partial class ViewModelStateTests
             ConnectedAccessMode = profile.AccessMode;
         }
 
+        public bool FailReadOnlyRevert { get; set; }
+        public bool FailDisconnect { get; set; }
+
         public Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
             DisconnectCalls++;
+            if (FailDisconnect) return Task.FromException(new IOException("disconnect failed"));
             ConnectionState = WorkspaceConnectionState.Disconnected;
             ConnectedProfileId = null;
             ConnectedAccessMode = null;
@@ -1040,6 +1044,8 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             AccessModeChanges.Add(accessMode);
+            if (FailReadOnlyRevert && accessMode == ProfileAccessMode.ReadOnly)
+                return Task.FromException(new IOException("revert failed"));
             ConnectedAccessMode = accessMode;
             return Task.CompletedTask;
         }

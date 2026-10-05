@@ -32,6 +32,51 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("could not be written", vm.ErrorText, StringComparison.Ordinal);
     }
 
+    // Windows: the export's replacement fails half-way and the original cannot be put back either. The error the
+    // operator sees and the activity entry give both retained files' complete paths, even for a 200-character export
+    // path, although the visible summary is cut at 600 characters.
+    [Fact]
+    public async Task AFailedExportReplacementTellsWhereBothVersionsAre()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var directory = new TemporaryDirectory();
+        var name = new string('e', 200 - directory.Path.Length - 1 - ".json".Length) + ".json";
+        var file = Path.Combine(directory.Path, name);
+        Assert.Equal(200, file.Length);
+        await File.WriteAllTextAsync(file, "previous export");
+        var repository = new FakeProfileRepository([CreateProfile("Alpha", EnvironmentKind.Development)], null);
+        var dialogs = new FakeDialogService { SaveFilePath = file };
+        await using var vm = CreateViewModel(repository, new FakeWorkspace(), dialogs);
+        await vm.InitializeAsync();
+        string? temporary = null, previous = null;
+        QueueLoom.App.Services.SafeFileWriter.ReplaceOverride.Value = (replacement, destination, backup) =>
+        {
+            (temporary, previous) = (replacement, backup);
+            File.Move(destination, backup);
+            Directory.CreateDirectory(destination);
+            throw new IOException("Unable to move the replacement file to the file to be replaced.", unchecked((int)0x80070498));
+        };
+        try
+        {
+            await vm.ExportEnvironmentsCommand.ExecuteAsync();
+        }
+        finally
+        {
+            QueueLoom.App.Services.SafeFileWriter.ReplaceOverride.Value = null;
+        }
+
+        Assert.NotNull(temporary);
+        Assert.NotNull(previous);
+        Assert.True(File.Exists(temporary));
+        Assert.True(File.Exists(previous));
+        var activity = vm.Activity.First(item => item.Level == "Error");
+        foreach (var shown in new[] { vm.ErrorText, activity.Details })
+        {
+            Assert.Contains($"'{previous}'", shown, StringComparison.Ordinal);
+            Assert.Contains($"'{temporary}'", shown, StringComparison.Ordinal);
+        }
+    }
+
     // The same storage problem also stops the list from being refreshed: the summary still says one environment was
     // imported, with the original cause, not the refresh error.
     [Fact]
