@@ -47,22 +47,54 @@ public sealed class MonitorAlertService(
             return false;
         }
 
+        return await RunNotificationAsync(start, NotificationTimeout, _logger).ConfigureAwait(false);
+    }
+
+    private static readonly TimeSpan NotificationTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Runs the notification command and waits for it at most <paramref name="timeout"/>. A command still running then
+    /// (a hung notification daemon, a blocked PowerShell) is killed with its children, so alerts cannot pile up one
+    /// stuck process each.
+    /// </summary>
+    internal static async Task<bool> RunNotificationAsync(ProcessStartInfo start, TimeSpan timeout, ILogger logger)
+    {
+        Process? process = null;
         try
         {
-            using var process = Process.Start(start);
+            process = Process.Start(start);
             if (process is null)
             {
                 return false;
             }
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            using var deadline = new CancellationTokenSource(timeout);
+            await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
             return process.ExitCode == 0;
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
         {
             // No notification tool on this system (for example notify-send missing); the in-app list still has the alert.
-            _logger.LogInformation("System notification not shown: {Reason}", exception.Message);
+            logger.LogInformation("System notification not shown: {Reason}", exception.Message);
+            if (process is not null)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch (Exception kill) when (kill is InvalidOperationException or System.ComponentModel.Win32Exception
+                                                 or NotSupportedException)
+                {
+                    // It exited meanwhile, or cannot be stopped from here.
+                }
+            }
             return false;
+        }
+        finally
+        {
+            process?.Dispose();
         }
     }
 
@@ -160,6 +192,8 @@ public sealed class MonitorAlertService(
         {
             start = new ProcessStartInfo("notify-send");
             start.ArgumentList.Add("--app-name=QueueLoom");
+            // The text starts with the environment's name; one like "-prod" must not be read as an option.
+            start.ArgumentList.Add("--");
             start.ArgumentList.Add(title);
             start.ArgumentList.Add(text);
         }

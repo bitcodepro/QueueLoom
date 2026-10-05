@@ -845,6 +845,8 @@ public sealed partial class ViewModelStateTests
         private Guid? _selectedProfileId = selectedProfileId;
 
         public bool FailNextSetSelected { get; set; }
+        /// <summary>Upserts after this many succeed fail (null: never).</summary>
+        public int? FailUpsertsAfter { get; set; }
         public Func<CancellationToken, Task>? ListGate { get; set; }
 
         public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default)
@@ -858,6 +860,11 @@ public sealed partial class ViewModelStateTests
 
         public Task UpsertAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
+            if (FailUpsertsAfter is { } remaining)
+            {
+                if (remaining <= 0) return Task.FromException(new IOException("The profiles file could not be written."));
+                FailUpsertsAfter = remaining - 1;
+            }
             _profiles.RemoveAll(item => item.Id == profile.Id);
             _profiles.Add(profile);
             return Task.CompletedTask;
@@ -1287,6 +1294,15 @@ public sealed partial class ViewModelStateTests
             bool isError = false,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        /// <summary>The file the operator picks in an open dialog; null cancels.</summary>
+        public string? OpenFilePath { get; set; }
+
+        public Task<string?> ChooseOpenFileAsync(
+            string title,
+            IReadOnlyList<(string Name, string Pattern)> fileTypes,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(OpenFilePath);
 
         /// <summary>The file the operator picks in a save dialog; null cancels.</summary>
         public string? SaveFilePath { get; set; }
