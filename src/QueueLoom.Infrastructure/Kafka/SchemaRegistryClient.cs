@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -39,6 +40,7 @@ internal sealed class SchemaRegistryClient : IDisposable
         }
 
         MessageSchema? schema = null;
+        var definitive = false;
         try
         {
             using var response = await _http.GetAsync($"schemas/ids/{id.ToString(CultureInfo.InvariantCulture)}", cancellationToken)
@@ -48,6 +50,12 @@ internal sealed class SchemaRegistryClient : IDisposable
                 await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
                 schema = Parse(id, document.RootElement);
+                definitive = true;
+            }
+            else
+            {
+                // Only a 404 is a lasting answer; 5xx, 401/403 and 429 can change, so they are asked again later.
+                definitive = response.StatusCode == HttpStatusCode.NotFound;
             }
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException
@@ -56,7 +64,10 @@ internal sealed class SchemaRegistryClient : IDisposable
             // The body is then shown without its schema; the registry being down must not stop reading messages.
         }
 
-        _schemas[id] = schema;
+        if (definitive)
+        {
+            _schemas[id] = schema;
+        }
         return schema;
     }
 

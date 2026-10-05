@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using QueueLoom.Core.Settings;
 
 namespace QueueLoom.Infrastructure.Persistence;
@@ -49,7 +50,7 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         {
             await using var transaction = await CrossProcessFileLock.AcquireAsync(paths.SettingsFile + ".lock", cancellationToken)
                 .ConfigureAwait(false);
-            var (current, state) = await ReadAsync(cancellationToken).ConfigureAwait(false);
+            var (current, state, additionalFields) = await ReadAsync(cancellationToken).ConfigureAwait(false);
             if (state == FileState.Newer)
             {
                 // A file from a newer QueueLoom is left as it is; rewriting it here would drop what this version cannot read.
@@ -66,7 +67,9 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     KeepInTray = updated.KeepInTray,
                     AlertWebhookUrl = updated.AlertWebhookUrl,
                     ProtobufSchemaPath = updated.ProtobufSchemaPath,
-                    BackupRetentionDays = updated.BackupRetentionDays
+                    BackupRetentionDays = updated.BackupRetentionDays,
+                    // Preferences written by another version are kept instead of being dropped on every save.
+                    AdditionalFields = additionalFields
                 },
                 SerializerOptions);
             paths.EnsureCreated();
@@ -104,11 +107,11 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
     private enum FileState { Read, Damaged, Newer }
 
     /// <summary>Reads the file; a missing, corrupt or newer file yields defaults, an unreadable one throws.</summary>
-    private async Task<(AppSettings Settings, FileState State)> ReadAsync(CancellationToken cancellationToken)
+    private async Task<(AppSettings Settings, FileState State, Dictionary<string, JsonElement>? AdditionalFields)> ReadAsync(CancellationToken cancellationToken)
     {
         if (!File.Exists(paths.SettingsFile))
         {
-            return (AppSettings.Default, FileState.Read);
+            return (AppSettings.Default, FileState.Read, null);
         }
 
         try
@@ -126,12 +129,12 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 json.RootElement.TryGetProperty(nameof(SettingsDocument.SchemaVersion), out var version) &&
                 version.ValueKind == JsonValueKind.Number && version.TryGetInt32(out var number) && number > 1)
             {
-                return (AppSettings.Default, FileState.Newer);
+                return (AppSettings.Default, FileState.Newer, null);
             }
             var document = json.RootElement.Deserialize<SettingsDocument>(SerializerOptions);
             if (document is not { SchemaVersion: 1 })
             {
-                return (AppSettings.Default, FileState.Damaged);
+                return (AppSettings.Default, FileState.Damaged, null);
             }
 
             // Unknown theme names (for example from a newer version) keep the default theme
@@ -148,11 +151,13 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 AlertWebhookUrl = document.AlertWebhookUrl,
                 ProtobufSchemaPath = document.ProtobufSchemaPath,
                 BackupRetentionDays = document.BackupRetentionDays
-            }.Normalize(), FileState.Read);
+            }.Normalize(), FileState.Read,
+                // Cloned: the parsed document is disposed when this method returns.
+                document.AdditionalFields?.ToDictionary(field => field.Key, field => field.Value.Clone()));
         }
         catch (JsonException)
         {
-            return (AppSettings.Default, FileState.Damaged);
+            return (AppSettings.Default, FileState.Damaged, null);
         }
     }
 
@@ -167,5 +172,8 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         public string? AlertWebhookUrl { get; set; }
         public string? ProtobufSchemaPath { get; set; }
         public int BackupRetentionDays { get; set; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalFields { get; set; }
     }
 }

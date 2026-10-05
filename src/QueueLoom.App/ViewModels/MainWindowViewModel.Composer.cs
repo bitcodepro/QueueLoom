@@ -221,7 +221,7 @@ public sealed partial class MainWindowViewModel
         DraftTransactionPartitionKey = draft.Properties.TransactionPartitionKey ?? string.Empty;
         DraftScheduledEnqueueTime = draft.Properties.ScheduledEnqueueTime?.ToString("O", CultureInfo.InvariantCulture)
             ?? string.Empty;
-        DraftTimeToLiveSeconds = draft.Properties.TimeToLive?.TotalSeconds.ToString("0.###") ?? string.Empty;
+        DraftTimeToLiveSeconds = FormatTimeToLiveSeconds(draft.Properties.TimeToLive);
         DraftApplicationProperties = ApplicationPropertiesJson.Serialize(draft.ApplicationProperties);
 
         var destination = selected.Source.Kind == ServiceBusEntityKind.Subscription
@@ -314,7 +314,7 @@ public sealed partial class MainWindowViewModel
         }
 
         if (profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns)
-            _composerSendAttempts[attemptKey] = (operationFingerprint, isMove);
+            RecordComposerSendAttempt(attemptKey, operationFingerprint, isMove);
 
         if (_draftSourceMessage is not null && _draftSourceMessage.IsDeadLetter && !_draftSourceIsLocalBackup)
         {
@@ -375,6 +375,33 @@ public sealed partial class MainWindowViewModel
                 "Message send accepted",
                 $"{profile.Name} · {destination.Reference.DisplayName}",
                 destination.Reference);
+        }
+    }
+
+    /// <summary>
+    /// Shows a TTL as seconds that parse back to the same positive value; rounding to milliseconds turned a
+    /// sub-millisecond TTL into "0", which the composer then refused to send.
+    /// </summary>
+    internal static string FormatTimeToLiveSeconds(TimeSpan? timeToLive) =>
+        timeToLive?.TotalSeconds.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty;
+
+    /// <summary>Remembered send attempts per MessageId; older ones are forgotten so the map cannot grow without bound.</summary>
+    internal const int MaximumComposerSendAttempts = 256;
+
+    private readonly Queue<(Guid ProfileId, string MessageId)> _composerSendAttemptOrder = new();
+
+    internal int ComposerSendAttemptCount => _composerSendAttempts.Count;
+
+    internal void RecordComposerSendAttempt((Guid ProfileId, string MessageId) key, string fingerprint, bool isMove)
+    {
+        if (!_composerSendAttempts.ContainsKey(key))
+        {
+            _composerSendAttemptOrder.Enqueue(key);
+        }
+        _composerSendAttempts[key] = (fingerprint, isMove);
+        while (_composerSendAttempts.Count > MaximumComposerSendAttempts && _composerSendAttemptOrder.TryDequeue(out var oldest))
+        {
+            _composerSendAttempts.Remove(oldest);
         }
     }
 

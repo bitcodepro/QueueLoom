@@ -112,21 +112,34 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
 
     protected override async ValueTask CloseAsync()
     {
-        if (_connection is not null)
-        {
-            try
-            {
-                await _connection.CloseAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is AlreadyClosedException or OperationInterruptedException or IOException)
-            {
-            }
-            _connection.Dispose();
-            _connection = null;
-        }
-        _management?.Dispose();
+        var connection = _connection;
+        var management = _management;
+        _connection = null;
         _management = null;
         _index = RabbitMqTopologyIndex.Empty;
+        try
+        {
+            if (connection is not null)
+            {
+                try
+                {
+                    await connection.CloseAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    // Closing is best effort (timeouts, socket errors, ...); the connection is disposed regardless.
+                }
+                finally
+                {
+                    try { connection.Dispose(); }
+                    catch (Exception exception) when (exception is not OutOfMemoryException) { }
+                }
+            }
+        }
+        finally
+        {
+            management?.Dispose();
+        }
     }
 
     protected override async Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken cancellationToken)
@@ -351,7 +364,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             finally
             {
                 _held.Clear();
-                channel.Dispose();
+                try { channel.Dispose(); }
+                catch (Exception exception) when (exception is not OutOfMemoryException) { }
             }
         }
     }

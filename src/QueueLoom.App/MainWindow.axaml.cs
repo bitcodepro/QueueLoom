@@ -161,9 +161,9 @@ public sealed partial class MainWindow : Window
                     _settingsStore.UpdateAsync(settings => settings with { BackupRetentionDays = retention }));
                 break;
             case nameof(MainWindowViewModel.SavedSearches):
-                var searches = _viewModel.SavedSearches.ToArray();
+                var mergeSearches = _viewModel.CaptureSavedSearchChanges();
                 _ = SavePreferenceBestEffortAsync(() =>
-                    _settingsStore.UpdateAsync(settings => settings with { SavedSearches = searches }));
+                    _settingsStore.UpdateAsync(settings => settings with { SavedSearches = mergeSearches(settings.SavedSearches) }));
                 break;
         }
     }

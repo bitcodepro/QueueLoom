@@ -119,6 +119,7 @@ public sealed partial class MainWindowViewModel
             {
                 SavedSearches.Add(search);
             }
+            _savedSearchBaseline = [.. SavedSearches];
         }
         finally
         {
@@ -127,6 +128,37 @@ public sealed partial class MainWindowViewModel
     }
 
     private bool _loadingSavedSearches;
+
+    /// <summary>The saved searches as last loaded or saved by this window.</summary>
+    private SavedSearch[] _savedSearchBaseline = [];
+
+    /// <summary>
+    /// Captures this window's saved-search changes as an update to apply to the stored list. Only what this window
+    /// added or removed is applied, so a search saved meanwhile by another window is kept instead of overwritten.
+    /// </summary>
+    public Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>> CaptureSavedSearchChanges()
+    {
+        var baseline = _savedSearchBaseline;
+        var local = SavedSearches.ToArray();
+        _savedSearchBaseline = local;
+        return stored => MergeSavedSearches(baseline, local, stored);
+    }
+
+    internal static IReadOnlyList<SavedSearch> MergeSavedSearches(
+        IReadOnlyList<SavedSearch> baseline, IReadOnlyList<SavedSearch> local, IReadOnlyList<SavedSearch> stored)
+    {
+        var merged = local.ToList();
+        foreach (var search in stored)
+        {
+            // Added elsewhere: neither known to this window before nor present now. Removed here: in the baseline only.
+            if (!baseline.Contains(search) && !merged.Contains(search) &&
+                !merged.Any(item => string.Equals(item.Name, search.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                merged.Add(search);
+            }
+        }
+        return merged.Take(AppSettings.MaximumSavedSearches).ToArray();
+    }
 
     /// <summary>True while settings are being applied; the shell skips saving then.</summary>
     public bool IsLoadingSavedSearches => _loadingSavedSearches;
