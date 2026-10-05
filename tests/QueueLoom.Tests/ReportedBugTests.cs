@@ -53,6 +53,40 @@ public sealed partial class ViewModelStateTests
         Assert.Empty(new JsonScheduledResendStore(paths).Load());
     }
 
+    // Review: the schedule store starts failing after the window loaded (also with no cached jobs). Deleting the
+    // environment still removes it from the list, and the warning says its scheduled resends could not all be checked.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeletingAnEnvironmentRefreshesTheListWhenSchedulesCannotBeRead(bool cachedJob)
+    {
+        var profile = CreateProfile("Doomed", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var repository = new FakeProfileRepository([profile], profile.Id);
+        var store = new FailingScheduleStore(cachedJob ? [DueJob(profile)] : []);
+        await using var vm = new MainWindowViewModel(repository, new FakeSecretVault(), new FakeWorkspace(),
+            new FakeDialogService { ConfirmResult = true }, scheduledResends: store);
+        await vm.InitializeAsync();
+        store.Fail = true;
+
+        vm.SelectedProfile = Assert.Single(vm.Profiles);
+        await vm.DeleteEnvironmentCommand.ExecuteAsync();
+
+        Assert.Empty(vm.Profiles);
+        Assert.Empty(await repository.ListAsync());
+        var removed = vm.Activity.First(item => item.Action == "Environment removed");
+        Assert.Contains("could not all be checked or cancelled", removed.Details, StringComparison.Ordinal);
+    }
+
+    private sealed class FailingScheduleStore(IReadOnlyList<ScheduledResend> jobs) : IScheduledResendStore
+    {
+        private readonly List<ScheduledResend> _jobs = [.. jobs];
+        public bool Fail { get; set; }
+        public IReadOnlyList<ScheduledResend> Load() => Fail ? throw new IOException("The schedules file is locked.") : _jobs.ToArray();
+        public void Save(IReadOnlyList<ScheduledResend> resends) { if (Fail) throw new IOException("The schedules file is locked."); _jobs.Clear(); _jobs.AddRange(resends); }
+        public void Add(ScheduledResend resend) { if (Fail) throw new IOException("The schedules file is locked."); _jobs.Add(resend); }
+        public bool TryRemove(ScheduledResend expected) => Fail ? throw new IOException("The schedules file is locked.") : _jobs.RemoveAll(job => job.Id == expected.Id) > 0;
+    }
+
     private static ScheduledResendItemViewModel CreateOrphanItem(MainWindowViewModel vm, ScheduledResend job) =>
         new(job, vm.RunScheduledResendCommand, vm.CancelScheduledResendCommand);
 }

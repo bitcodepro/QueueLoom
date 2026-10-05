@@ -130,11 +130,16 @@ public sealed record MessageInfo(
     string? DecodedBody = null,
     bool DecodedBodyTruncated = false,
     bool ApplicationPropertiesTruncated = false,
-    bool DeadLetterTextTruncated = false);
+    bool DeadLetterTextTruncated = false,
+    string? Fingerprint = null);
 
 public sealed record MessageListInfo(string Environment, string Summary, IReadOnlyList<MessageInfo> Messages);
 
-public sealed record MessageSelection(string Entity, string SubQueue, long SequenceNumber, string? MessageId);
+/// <param name="Fingerprint">
+/// Returned with messages of services without real sequence numbers (RabbitMQ, SQS, Pub/Sub); it must be passed back
+/// so the message read again is proven to be the one chosen.
+/// </param>
+public sealed record MessageSelection(string Entity, string SubQueue, long SequenceNumber, string? MessageId, string? Fingerprint = null);
 
 /// <param name="Path">Full path of the file that was written.</param>
 public sealed record ExportInfo(string Environment, string Path, int Count, string Format, string Summary);
@@ -235,7 +240,8 @@ internal static class McpMapping
             decodedText is null ? null : decodedTruncated ? decodedText[..MaximumBodyCharacters] : decodedText,
             decodedTruncated,
             propertiesTruncated,
-            deadLetterTruncated);
+            deadLetterTruncated,
+            message.HasSequenceNumber ? null : MessageFingerprint.Of(message));
     }
 
     private static string? Cap(string? value, int maximum, ref bool truncated)

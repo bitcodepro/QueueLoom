@@ -282,33 +282,91 @@ public sealed class McpServerTests
     }
 
     // Bug 3. Two different deliveries share a Message ID (so, on RabbitMQ, SQS and Pub/Sub, one derived sequence
-    // number). Choosing B through MCP must never send A: an ambiguous choice is refused and nothing is sent. Also for
-    // both listed at once, and for two messages without an ID whose content key collides (same body, other headers).
+    // number). A pick is bound to the content listed through its fingerprint: choosing B sends B and never A, listing
+    // both sends each once, and a pick without its fingerprint is refused with nothing sent.
+    private static BrowsedMessage Delivery(string? id, string body, string header) => new(
+        Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, System.Text.Encoding.UTF8.GetBytes(body),
+        new EditableMessageProperties(MessageId: id),
+        [new MessageApplicationProperty("tenant", ApplicationPropertyType.String, header)]) { HasSequenceNumber = false };
+
+    private static object Pick(BrowsedMessage message, bool withFingerprint = true) => new
+    {
+        entity = "orders", subQueue = "dlq", sequenceNumber = 77L, messageId = message.Properties.MessageId,
+        fingerprint = withFingerprint ? MessageFingerprint.Of(message) : null
+    };
+
     [Theory]
-    [InlineData("B")]
-    [InlineData("both")]
-    [InlineData("no-id")]
-    public async Task ResendCopy_NeverSendsAnotherMessageThatSharesTheChosenKey(string choice)
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResendCopy_SendsExactlyTheChosenOneOfMessagesSharingAKey(bool withoutId)
     {
         await using var server = await McpTestServer.StartAsync(approve: true);
-        var id = choice == "no-id" ? null : "repeated-id";
-        BrowsedMessage Delivery(string body, string header) => new(
-            Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, System.Text.Encoding.UTF8.GetBytes(body),
-            new EditableMessageProperties(MessageId: id),
-            [new MessageApplicationProperty("tenant", ApplicationPropertyType.String, header)]) { HasSequenceNumber = false };
-        server.Workspace.BrowseMessages = choice == "no-id"
-            ? [Delivery("same", "A"), Delivery("same", "B")]
-            : [Delivery("A", "x"), Delivery("B", "x")];
-        var chosen = new { entity = "orders", subQueue = "dlq", sequenceNumber = 77L, messageId = id };
+        var id = withoutId ? null : "repeated-id";
+        var a = withoutId ? Delivery(id, "same", "A") : Delivery(id, "A", "x");
+        var b = withoutId ? Delivery(id, "same", "B") : Delivery(id, "B", "x");
+        server.Workspace.BrowseMessages = [a, b];
+
+        await server.CallAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { Pick(b) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+
+        var sent = Assert.Single(server.Workspace.SentMessages);
+        Assert.Equal(b.Body.ToArray(), System.Text.Encoding.UTF8.GetBytes(sent.Message.Body.Content));
+        Assert.Equal(b.ApplicationProperties[0].Value, Assert.Single(sent.Message.ApplicationProperties).Value);
+    }
+
+    [Fact]
+    public async Task ResendCopy_ListingBothSendsEachOnce()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var a = Delivery("repeated-id", "A", "x");
+        var b = Delivery("repeated-id", "B", "x");
+        server.Workspace.BrowseMessages = [a, b];
 
         var error = await server.CallForErrorAsync("resend_dead_letters", new()
         {
-            ["messages"] = choice == "both" ? new[] { chosen, chosen } : new[] { chosen },
-            ["mode"] = "copy",
-            ["reason"] = "retry after the fix"
+            ["messages"] = new[] { Pick(a), Pick(b) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
         });
 
-        Assert.Contains("cannot be told apart", error, StringComparison.Ordinal);
+        // Both share one key; the tool lists each message once, so two fingerprints for one key are refused.
+        Assert.Contains("different fingerprints", error, StringComparison.Ordinal);
+        Assert.Empty(server.Workspace.SentMessages);
+    }
+
+    // The chosen B is gone (or held by another consumer) when the tool reads again; only A, with the same key, is
+    // there. Nothing is approved or sent.
+    [Fact]
+    public async Task ResendCopy_NeverSendsAnotherMessageWhenTheChosenOneIsGone()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var a = Delivery("repeated-id", "A", "x");
+        var b = Delivery("repeated-id", "B", "x");
+        server.Workspace.BrowseMessages = [a];
+
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { Pick(b) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+
+        Assert.Contains("None of the listed messages", error, StringComparison.Ordinal);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.Empty(server.Approver.Requests);
+    }
+
+    [Fact]
+    public async Task ResendCopy_RefusesAPickWithoutItsFingerprint()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var a = Delivery("repeated-id", "A", "x");
+        server.Workspace.BrowseMessages = [a, Delivery("repeated-id", "B", "x")];
+
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { Pick(a, withFingerprint: false) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+
+        Assert.Contains("Nothing was sent", error, StringComparison.Ordinal);
         Assert.Empty(server.Workspace.SentMessages);
         Assert.Empty(server.Approver.Requests);
     }
@@ -318,18 +376,28 @@ public sealed class McpServerTests
     public async Task ResendCopy_AllowsExactDuplicatesOfTheChosenMessage()
     {
         await using var server = await McpTestServer.StartAsync(approve: true);
-        BrowsedMessage Delivery() => new(Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, "same"u8.ToArray(),
-            new EditableMessageProperties(MessageId: "repeated-id")) { HasSequenceNumber = false };
-        server.Workspace.BrowseMessages = [Delivery(), Delivery()];
+        var duplicate = Delivery("repeated-id", "same", "x");
+        server.Workspace.BrowseMessages = [duplicate, Delivery("repeated-id", "same", "x")];
 
         await server.CallAsync("resend_dead_letters", new()
         {
-            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 77L, messageId = "repeated-id" } },
-            ["mode"] = "copy",
-            ["reason"] = "retry after the fix"
+            ["messages"] = new[] { Pick(duplicate) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
         });
 
         Assert.Equal("same", Assert.Single(server.Workspace.SentMessages).Message.Body.Content);
+    }
+
+    // Peek returns the fingerprint for messages of services without real sequence numbers.
+    [Fact]
+    public async Task Peek_ReturnsTheFingerprintWhereSequenceNumbersAreDerived()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        var b = Delivery("repeated-id", "B", "x");
+        server.Workspace.BrowseMessages = [b];
+
+        var peeked = await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "dlq" });
+
+        Assert.Equal(MessageFingerprint.Of(b), peeked.GetProperty("messages")[0].GetProperty("fingerprint").GetString());
     }
 
     [Fact]
@@ -427,6 +495,27 @@ public sealed class McpServerTests
 
         Assert.Contains("'copy' or 'move'", error, StringComparison.Ordinal);
         Assert.Empty(server.Approver.Requests);
+    }
+
+    // Bug 4 / review: the export's reserved name is claimed private, so the completed export (JSON and CSV) is
+    // owner-only even in a folder others can read, and whatever the umask.
+    [Theory]
+    [InlineData("json")]
+    [InlineData("csv")]
+    public async Task Export_ThroughMcpIsPrivate(string format)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        await using var server = await McpTestServer.StartAsync();
+        Directory.CreateDirectory(server.ExportDirectory);
+#pragma warning disable CA1416 // not Windows: returned above
+        File.SetUnixFileMode(server.ExportDirectory, (UnixFileMode)0b111_101_101);
+
+        var result = await server.CallAsync("export_messages", new() { ["entity"] = "orders", ["format"] = format });
+
+        var path = result.GetProperty("path").GetString()!;
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+#pragma warning restore CA1416
+        Assert.Equal(2, result.GetProperty("count").GetInt32());
     }
 
     [Fact]

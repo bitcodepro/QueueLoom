@@ -148,7 +148,7 @@ internal static class RabbitMqMessageMapper
         decimal number => new MessageApplicationProperty(name, ApplicationPropertyType.Decimal, number.ToString(CultureInfo.InvariantCulture)),
         AmqpTimestamp timestamp when BrokerClock.FromUnixSeconds(timestamp.UnixTime) is { } at =>
             new MessageApplicationProperty(name, ApplicationPropertyType.DateTimeOffset, at.ToString("O", CultureInfo.InvariantCulture)),
-        _ => new MessageApplicationProperty(name, ApplicationPropertyType.String, ToTyped(value).ToJsonString()) { WireType = AmqpTypedValue.WireType }
+        _ => new MessageApplicationProperty(name, ApplicationPropertyType.String, ToTyped(value).ToJsonString(AmqpTypedValue.WriteOptions)) { WireType = AmqpTypedValue.WireType }
     };
 
     private static MessageApplicationProperty ByteProperty(string name, byte[] bytes)
@@ -200,7 +200,7 @@ internal static class RabbitMqMessageMapper
         {
             throw new InvalidOperationException($"The header '{name}' is not a valid typed AMQP value: {problem}.");
         }
-        return FromTyped(System.Text.Json.Nodes.JsonNode.Parse(text)!.AsObject());
+        return FromTyped(System.Text.Json.Nodes.JsonNode.Parse(text, documentOptions: AmqpTypedValue.ReadOptions)!.AsObject());
     }
 
     /// <summary>The CLR value RabbitMQ.Client writes with the same AMQP field type.</summary>

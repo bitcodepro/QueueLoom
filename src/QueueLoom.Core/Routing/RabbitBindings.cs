@@ -109,6 +109,11 @@ public static class RabbitBindings
         {
             return false;
         }
+        if (message.WireTypeOf(name) == AmqpTypedValue.WireType && message.TryGetText(name, out var typedText))
+        {
+            value = FromTyped(typedText);
+            return true;
+        }
         // A Single or Double given as text is sent as the double that text names, exactly as the mapper parses it.
         value = typed is float or double && message.TryGetText(name, out var text)
                 && double.TryParse(text, CultureInfo.InvariantCulture, out var sent)
@@ -132,6 +137,39 @@ public static class RabbitBindings
         _ => Encoding.UTF8.GetBytes(ApplicationPropertyValues.FromObject(string.Empty, value).Value)
     };
 
+    /// <summary>A header value QueueLoom does not compare (a table, an array, an 'x' byte array…): RabbitMQ decides.</summary>
+    private sealed class Uncomparable
+    {
+        public static readonly Uncomparable Value = new();
+    }
+
+    /// <summary>
+    /// A typed AMQP header (see <see cref="AmqpTypedValue"/>) as the broker's headers matcher sees it: it compares values,
+    /// not field types, so every integer is a whole number and a 32-bit float the double with the same value.
+    /// </summary>
+    private static object? FromTyped(string text)
+    {
+        if (AmqpTypedValue.Problem(text) is not null)
+        {
+            return Uncomparable.Value;
+        }
+        using var document = System.Text.Json.JsonDocument.Parse(text, AmqpTypedValue.ReadOptions);
+        var root = document.RootElement;
+        var tag = root.GetProperty("t").GetString();
+        string Text() => root.GetProperty("v").GetString()!;
+        return tag switch
+        {
+            "void" => null,
+            "bool" => root.GetProperty("v").GetBoolean(),
+            "i8" or "u8" or "i16" or "u16" or "i32" or "u32" or "i64" => long.Parse(Text(), CultureInfo.InvariantCulture),
+            "f32" => (double)float.Parse(Text(), CultureInfo.InvariantCulture),
+            "f64" => double.Parse(Text(), CultureInfo.InvariantCulture),
+            "dec" => decimal.Parse(Text(), NumberStyles.Number, CultureInfo.InvariantCulture),
+            "longstr" => Convert.FromBase64String(Text()),
+            _ => Uncomparable.Value
+        };
+    }
+
     /// <summary>True or false when RabbitMQ's answer is certain, null when QueueLoom cannot tell.</summary>
     private static bool? Compare(object? expected, object? header)
     {
@@ -139,7 +177,7 @@ public static class RabbitBindings
         {
             return true;
         }
-        if (header is DateTime or DateTimeOffset or decimal || expected is not (string or long or int or double or bool))
+        if (header is Uncomparable or DateTime or DateTimeOffset or decimal || expected is not (string or long or int or double or bool))
         {
             return null;
         }

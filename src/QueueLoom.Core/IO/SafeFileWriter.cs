@@ -104,6 +104,15 @@ public static class SafeFileWriter
         return (UnixFileMode)(((int)existing & ~0b111_111) | (both << 3) | both);
     }
 
+    /// <summary>
+    /// Claims a new, empty file only the current user can open (failing when the name is taken), for example to reserve
+    /// a name that an export later replaces: the export then keeps that private access.
+    /// </summary>
+    public static void CreateEmptyPrivate(string path)
+    {
+        using var stream = CreatePrivate(path, FileOptions.None, restrictOnWindows: true);
+    }
+
     /// <summary>A new file only the current user can open, restricted before anything is written to it.</summary>
     private static FileStream CreatePrivate(string temporary, FileOptions options, bool restrictOnWindows)
     {

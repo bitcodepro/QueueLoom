@@ -517,6 +517,46 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         }
     }
 
+    // The routing preview of typed headers agrees with the broker: a float 1.5 and a short 7, read and copied unchanged,
+    // match a headers binding on the double 1.5 and the integer 7 (RabbitMQ compares values, not field types), and a
+    // binding on 2.5 does not take the message.
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task TypedHeaders_RoutingPreviewMatchesBrokerDelivery()
+    {
+        await _setup.ExchangeDeclareAsync("typed-headers", ExchangeType.Headers, durable: true);
+        await _setup.QueueDeclareAsync("typed-match", durable: true, exclusive: false, autoDelete: false);
+        await _setup.QueueDeclareAsync("typed-miss", durable: true, exclusive: false, autoDelete: false);
+        var matching = new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 1.5, ["count"] = 7L };
+        var missing = new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 2.5 };
+        await _setup.QueueBindAsync("typed-match", "typed-headers", string.Empty, matching);
+        await _setup.QueueBindAsync("typed-miss", "typed-headers", string.Empty, missing);
+        await _setup.BasicPublishAsync(string.Empty, "orders", true, new BasicProperties
+        {
+            MessageId = "typed-routing",
+            Headers = new Dictionary<string, object?> { ["ratio"] = 1.5f, ["count"] = (short)7 }
+        }, "fixture"u8.ToArray());
+        var original = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"))));
+        var draft = original.CreateDraft();
+        var preview = QueueLoom.Core.Routing.RoutingMessage.From(draft);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Receives, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(matching, preview).Outcome);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Skips, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(missing, preview).Outcome);
+
+        await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Topic("typed-headers"), draft));
+
+        Assert.NotNull(await WaitForMessageAsync("typed-match"));
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("typed-miss")).MessageCount);
+    }
+
+    private async Task<BasicGetResult?> WaitForMessageAsync(string queue)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            if (await _setup.BasicGetAsync(queue, autoAck: true) is { } message) return message;
+            await Task.Delay(100);
+        }
+        return null;
+    }
+
     /// <summary>Rejects messages the way a failing consumer does, so RabbitMQ dead-letters them.</summary>
     private async Task RejectAsync(string queue, int count)
     {

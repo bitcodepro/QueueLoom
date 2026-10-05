@@ -362,9 +362,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var path = Path.Combine(directory, copy == 1 ? safe + extension : $"{safe} ({copy}){extension}");
             try
             {
-                using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                {
-                }
+                // Claimed private (owner-only), so the export written over it stays private as well.
+                QueueLoom.Core.IO.SafeFileWriter.CreateEmptyPrivate(path);
                 return path;
             }
             catch (IOException) when (File.Exists(path) || Directory.Exists(path))

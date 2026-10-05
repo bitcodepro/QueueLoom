@@ -236,7 +236,8 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
     public Task<ChangeResult> ResendDeadLettersAsync(
         McpServer server,
         [Description("Messages to resend: entity ('queue' or 'topic/subscription'), subQueue ('dlq' or 'transfer-dlq'), " +
-                     "sequenceNumber and messageId exactly as returned by search_dead_letters or peek_messages.")]
+                     "sequenceNumber, messageId and fingerprint exactly as returned by search_dead_letters or peek_messages " +
+                     "(fingerprint is returned for services without real sequence numbers and is required for them).")]
         MessageSelection[] messages,
         [Description("'copy' (the originals stay in the dead-letter queue) or 'move' (the originals are backed up and removed after sending).")]
         string mode,
@@ -303,6 +304,17 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 {
                     throw new McpException(exception.Message);
                 }
+                var fingerprints = new Dictionary<DeadLetterMessageKey, string>();
+                for (var index = 0; index < keys.Length; index++)
+                {
+                    if (!string.IsNullOrWhiteSpace(messages[index].Fingerprint) &&
+                        !fingerprints.TryAdd(keys[index], messages[index].Fingerprint!.Trim()) &&
+                        fingerprints[keys[index]] != messages[index].Fingerprint!.Trim())
+                    {
+                        throw new McpException(
+                            $"#{keys[index].SequenceNumber} in {McpMapping.EntityName(keys[index].Source)} is listed with different fingerprints. List each message once.");
+                    }
+                }
                 // One key per message, as delete_dead_letter_messages does; a listed Message ID wins over none.
                 var bySequence = keys.GroupBy(key => (key.Source, key.SubQueue, key.SequenceNumber)).ToArray();
                 if (bySequence.FirstOrDefault(group =>
@@ -317,7 +329,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                     throw new McpException("Only dead-lettered messages ('dlq' or 'transfer-dlq') can be resent with this tool.");
                 }
 
-                var (found, notFound) = await FindMessagesAsync(workspace, keys, token).ConfigureAwait(false);
+                var (found, notFound) = await FindMessagesAsync(workspace, keys, fingerprints, token).ConfigureAwait(false);
                 return (to, found, notFound);
             }, cancellationToken).ConfigureAwait(false);
 
@@ -393,9 +405,11 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
     private static async Task<(IReadOnlyList<BrowsedMessage> Found, IReadOnlyList<DeadLetterMessageKey> Missing)> FindMessagesAsync(
         IServiceBusWorkspace workspace,
         IReadOnlyList<DeadLetterMessageKey> keys,
+        IReadOnlyDictionary<DeadLetterMessageKey, string> fingerprints,
         CancellationToken cancellationToken)
     {
         const int MaximumPages = 20;
+        var unproven = new List<DeadLetterMessageKey>();
         var found = new Dictionary<DeadLetterMessageKey, BrowsedMessage>();
         var ambiguous = new List<DeadLetterMessageKey>();
         foreach (var group in keys.GroupBy(key => (key.Source, key.SubQueue)))
@@ -411,14 +425,31 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 // Services without real sequence numbers (RabbitMQ, SQS, Pub/Sub) derive them from the Message ID (or the
                 // content), so different deliveries can share one: a key that matches messages which differ does not
                 // say which one was chosen, and none of them is taken.
+                // A derived sequence number only says "a message with this Message ID": the fingerprint returned when it
+                // was listed must match too, or a different message (the chosen one being held or gone meanwhile) could
+                // be sent in its place.
                 foreach (var matches in batch
                              .Where(message => wanted.TryGetValue(message.SequenceNumber, out var key) &&
                                                (key.MessageId is null || string.Equals(key.MessageId, message.Properties.MessageId, StringComparison.Ordinal)))
                              .GroupBy(message => message.SequenceNumber))
                 {
                     var key = wanted[matches.Key];
-                    wanted.Remove(matches.Key);
                     var candidates = matches.ToArray();
+                    if (!candidates[0].HasSequenceNumber)
+                    {
+                        if (!fingerprints.TryGetValue(key, out var fingerprint))
+                        {
+                            wanted.Remove(matches.Key);
+                            unproven.Add(key);
+                            continue;
+                        }
+                        candidates = candidates.Where(message => MessageFingerprint.Of(message) == fingerprint).ToArray();
+                        if (candidates.Length == 0)
+                        {
+                            continue; // not this page: the chosen message may still be further on
+                        }
+                    }
+                    wanted.Remove(matches.Key);
                     if (candidates.Skip(1).Any(other => !SameMessage(candidates[0], other)))
                     {
                         ambiguous.Add(key);
@@ -435,6 +466,14 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             }
         }
 
+        if (unproven.Count > 0)
+        {
+            throw new McpException(
+                $"{unproven.Count} listed message(s) come from a service without real sequence numbers (for example " +
+                $"#{unproven[0].SequenceNumber} in {McpMapping.EntityName(unproven[0].Source)}) and were listed without their " +
+                "fingerprint, so the message read again cannot be proven to be the one chosen. Nothing was sent. Pass " +
+                "fingerprint exactly as search_dead_letters or peek_messages returned it.");
+        }
         if (ambiguous.Count > 0)
         {
             throw new McpException(

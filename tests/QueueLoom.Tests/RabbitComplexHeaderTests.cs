@@ -79,6 +79,87 @@ public sealed class RabbitComplexHeaderTests
         Assert.Contains(result.Errors, error => error.Code == "message.application_property.wire_type_invalid");
     }
 
+    // Deep nesting: 22 tables (66 JSON levels in the typed form) and 32 arrays survive an unchanged copy and a backup
+    // restore; the default 64-level JSON reader limit would have refused the draft.
+    [Fact]
+    public async Task DeeplyNestedHeadersSurviveCopyAndBackup()
+    {
+        object? tables = "leaf"u8.ToArray();
+        for (var level = 0; level < 22; level++) tables = new Dictionary<string, object?> { ["level"] = tables };
+        object? arrays = 7;
+        for (var level = 0; level < 32; level++) arrays = new List<object?> { arrays };
+        var headers = new Dictionary<string, object?> { ["tables"] = tables, ["arrays"] = arrays };
+        var browsed = RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(), new BasicProperties { MessageId = "deep", Headers = headers },
+            "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter);
+
+        var copy = browsed.CreateDraft();
+        Assert.True(MessageDraftValidator.Validate(copy, MessagingProvider.RabbitMq).IsValid);
+        AssertSameAmqp(headers, RabbitMqMessageMapper.ToAmqp(copy).Headers!);
+
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Development, new(AuthenticationKind.RabbitMqPassword))
+            with { Provider = MessagingProvider.RabbitMq };
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UtcNow, default);
+        await session.BackupAsync(browsed, default);
+        var repository = new JsonDeadLetterBackupRepository(paths);
+        var restored = (await repository.LoadAsync(Assert.Single(await repository.ListAsync()))).CreateDraft();
+        Assert.True(MessageDraftValidator.Validate(restored, MessagingProvider.RabbitMq).IsValid);
+        AssertSameAmqp(headers, RabbitMqMessageMapper.ToAmqp(restored).Headers!);
+    }
+
+    // Values that cannot be sent as described are refused before the broker is called; the boundaries are accepted.
+    [Theory]
+    [InlineData("""{"t":"i16","v":"40000"}""", false)]
+    [InlineData("""{"t":"i16","v":"-32768"}""", true)]
+    [InlineData("""{"t":"i16","v":"32767"}""", true)]
+    [InlineData("""{"t":"u32","v":"4294967295"}""", true)]
+    [InlineData("""{"t":"u32","v":"-1"}""", false)]
+    [InlineData("""{"t":"i32","v":"abc"}""", false)]
+    [InlineData("""{"t":"ts","v":"99999999999999999999"}""", false)]
+    [InlineData("""{"t":"dec","v":"12.5"}""", true)]
+    [InlineData("""{"t":"dec","v":"99999999999.5"}""", false)]
+    [InlineData("""{"t":"f32","v":"x"}""", false)]
+    [InlineData("""{"t":"table","v":[["a",{"t":"void"}],["a",{"t":"void"}]]}""", false)]
+    public void TypedValuesAreCheckedAgainstWhatTheWireCarries(string value, bool valid)
+    {
+        Assert.Equal(valid, AmqpTypedValue.Problem(value) is null);
+        if (valid)
+        {
+            RabbitMqMessageMapper.FromTyped(System.Text.Json.Nodes.JsonNode.Parse(value)!.AsObject());
+        }
+    }
+
+    [Theory]
+    [InlineData(255, true)]
+    [InlineData(256, false)]
+    public void TableFieldNamesAreAtMost255Bytes(int length, bool valid)
+    {
+        var name = new string('n', length);
+        var json = "{\"t\":\"table\",\"v\":[[\"" + name + "\",{\"t\":\"void\"}]]}";
+        Assert.Equal(valid, AmqpTypedValue.Problem(json) is null);
+    }
+
+    // Routing preview: the broker's headers matcher compares values, not field types. A browsed float 1.5 and short 7
+    // match a binding on the double 1.5 and the integer 7; a table header is left to RabbitMQ.
+    [Fact]
+    public void TypedHeadersArePredictedAsTheBrokerMatchesThem()
+    {
+        var browsed = RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(), new BasicProperties
+        {
+            MessageId = "routing",
+            Headers = new Dictionary<string, object?> { ["ratio"] = 1.5f, ["count"] = (short)7, ["meta"] = new Dictionary<string, object?> { ["a"] = 1 } }
+        }, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter);
+        var message = QueueLoom.Core.Routing.RoutingMessage.From(browsed.CreateDraft());
+
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Receives, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(
+            new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 1.5, ["count"] = 7L }, message).Outcome);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Skips, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(
+            new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 2.5 }, message).Outcome);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Unknown, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(
+            new Dictionary<string, object?> { ["x-match"] = "all", ["meta"] = "x" }, message).Outcome);
+    }
+
     /// <summary>Same keys, values, CLR types (which decide the AMQP field types RabbitMQ.Client writes) and bytes.</summary>
     private static void AssertSameAmqp(object? expected, object? actual)
     {
