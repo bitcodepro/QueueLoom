@@ -284,9 +284,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         }
     }
 
-    /// <summary>Client errors raised before the record is handed to any broker, so no attempt can have written it.</summary>
-    internal static bool IsDefiniteRefusal(ErrorCode code) => code is
-        ErrorCode.Local_QueueFull or ErrorCode.Local_UnknownTopic or ErrorCode.Local_UnknownPartition or ErrorCode.Local_InvalidArg;
+    /// <summary>
+    /// Client errors raised only when the record is put in the send queue, so no attempt can have written it. Unknown
+    /// topic or partition are not among them: librdkafka also fails records already sent and queued for a retry with
+    /// them, when stale metadata drops the partition.
+    /// </summary>
+    internal static bool IsDefiniteRefusal(ErrorCode code) => code is ErrorCode.Local_QueueFull or ErrorCode.Local_InvalidArg;
 
     /// <summary>
     /// Watermarks of one partition. A topic that was just created, or is being deleted or moved, can briefly have no

@@ -23,7 +23,11 @@ public sealed class BrokerOutcomeTests
     [InlineData(PersistenceStatus.NotPersisted, ErrorCode.MsgSizeTooLarge, "unknown", false)]
     [InlineData(PersistenceStatus.PossiblyPersisted, ErrorCode.Local_QueueFull, "unknown", false)]
     [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_QueueFull, "did not accept", true)]
-    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_UnknownTopic, "did not accept", true)]
+    // Unknown topic or partition can also fail a record already sent and waiting to be retried (stale metadata
+    // removed its partition); the wrapper's default status hides that, so they stay uncertain.
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_UnknownPartition, "unknown", false)]
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_UnknownTopic, "unknown", false)]
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_InvalidArg, "did not accept", true)]
     [InlineData(PersistenceStatus.Persisted, ErrorCode.Local_MsgTimedOut, "stored the message", false)]
     public async Task KafkaSendFailuresSayWhetherTheRecordMayHaveBeenWritten(PersistenceStatus status, ErrorCode code, string expected, bool rejected)
     {
