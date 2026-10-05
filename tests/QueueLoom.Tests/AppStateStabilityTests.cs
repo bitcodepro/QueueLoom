@@ -165,6 +165,81 @@ public sealed partial class ViewModelStateTests
         Assert.Equal("orders", stored[0].Query);
     }
 
+    // c1 (+A) and c2 (+B) are both captured before c1 is written; c1 is written, another window then deletes or edits
+    // A, and only then c2 runs: it must not replay +A over the remote change.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AppStability_QueuedSaveDoesNotReplayAWrittenChangeOverARemoteOne(bool remoteEdit)
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        var editedA = new SavedSearch("A", "a edited");
+        var b = new SavedSearch("B", "b");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+
+        vm.SavedSearches.Insert(0, a);
+        var first = vm.CaptureSavedSearchChanges();
+        vm.SavedSearches.Insert(0, b);
+        var second = vm.CaptureSavedSearchChanges();
+
+        IReadOnlyList<SavedSearch> stored = first.Merge([]);
+        first.Acknowledge();
+        Assert.Equal([a], stored);
+        stored = remoteEdit ? [editedA] : [];
+        stored = second.Merge(stored);
+        second.Acknowledge();
+
+        Assert.Equal(remoteEdit ? [b, editedA] : [b], stored);
+    }
+
+    // Same queue, but c2 runs after c1 was written and before c1's acknowledgement arrived: still no replay.
+    [Fact]
+    public async Task AppStability_QueuedSaveSkipsAChangeAnotherSaveIsWriting()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        var b = new SavedSearch("B", "b");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+
+        vm.SavedSearches.Insert(0, a);
+        var first = vm.CaptureSavedSearchChanges();
+        vm.SavedSearches.Insert(0, b);
+        var second = vm.CaptureSavedSearchChanges();
+
+        _ = first.Merge([]);
+        IReadOnlyList<SavedSearch> stored = second.Merge([]); // A was deleted remotely after c1's write
+        first.Acknowledge();
+        second.Acknowledge();
+
+        Assert.Equal([b], stored);
+    }
+
+    // c1's write fails after c2 already ran without it: c1's change goes with the next save instead of being lost.
+    [Fact]
+    public async Task AppStability_AFailedQueuedSaveIsCarriedByTheNextSave()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        var b = new SavedSearch("B", "b");
+        var c = new SavedSearch("C", "c");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+
+        vm.SavedSearches.Insert(0, a);
+        var first = vm.CaptureSavedSearchChanges();
+        vm.SavedSearches.Insert(0, b);
+        var second = vm.CaptureSavedSearchChanges();
+        _ = first.Merge([]);
+        IReadOnlyList<SavedSearch> stored = second.Merge([]);
+        second.Acknowledge();
+        first.Fail();
+
+        vm.SavedSearches.Insert(0, c);
+        stored = vm.CaptureSavedSearchChanges().Merge(stored);
+
+        Assert.Equal([c, a, b], stored);
+    }
+
     // Saves that finish out of order: the older acknowledgement must not move the baseline back.
     [Fact]
     public async Task AppStability_OutOfOrderSavedSearchAcknowledgementsKeepTheNewest()

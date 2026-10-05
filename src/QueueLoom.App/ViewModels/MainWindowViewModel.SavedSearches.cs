@@ -120,7 +120,10 @@ public sealed partial class MainWindowViewModel
                 SavedSearches.Add(search);
             }
             _savedSearchLastCaptured = [.. SavedSearches];
-            _pendingSavedSearchChanges.Clear();
+            lock (_pendingSavedSearchChanges)
+            {
+                _pendingSavedSearchChanges.Clear();
+            }
         }
         finally
         {
@@ -134,14 +137,23 @@ public sealed partial class MainWindowViewModel
     private SavedSearch[] _savedSearchLastCaptured = [];
     private long _savedSearchCaptures;
 
-    /// <summary>This window's changes, in order, that no save has confirmed written yet.</summary>
-    private readonly List<(long Capture, SavedSearch[] Added, SavedSearch[] Removed)> _pendingSavedSearchChanges = [];
+    /// <summary>One change made in this window, and the save currently writing it (0 when none is).</summary>
+    private sealed class SavedSearchChange(long capture, SavedSearch[] added, SavedSearch[] removed)
+    {
+        public long Capture { get; } = capture;
+        public SavedSearch[] Added { get; } = added;
+        public SavedSearch[] Removed { get; } = removed;
+        public long WrittenBy { get; set; }
+    }
+
+    /// <summary>This window's changes, in order, that no save has confirmed written yet. Guarded by itself.</summary>
+    private readonly List<SavedSearchChange> _pendingSavedSearchChanges = [];
 
     /// <summary>
-    /// Captures this window's saved-search change since the previous capture, and returns an update that applies
-    /// every change not yet confirmed written, in order, to the stored list, plus the acknowledgement to call once that
-    /// update was written. A failed write leaves its change pending for the next save; saves queued before an earlier
-    /// one completes still replay that earlier change first, so add-then-remove or remove-then-reinsert end right.
+    /// Captures this window's saved-search change since the previous capture. The returned update decides when it
+    /// actually runs which changes still need writing: earlier changes no save has taken, in order, plus its own. A
+    /// change another save is writing or has written is not replayed, so a remote edit or deletion made after that
+    /// write survives. <see cref="SavedSearchSave.Fail"/> hands a failed save's changes back to the next save.
     /// </summary>
     public SavedSearchSave CaptureSavedSearchChanges()
     {
@@ -149,21 +161,46 @@ public sealed partial class MainWindowViewModel
         var local = SavedSearches.ToArray();
         _savedSearchLastCaptured = local;
         var capture = ++_savedSearchCaptures;
-        _pendingSavedSearchChanges.Add((capture,
-            local.Where(search => !previous.Contains(search)).ToArray(),
-            previous.Where(search => !local.Contains(search)).ToArray()));
-        var changes = _pendingSavedSearchChanges.ToArray();
+        lock (_pendingSavedSearchChanges)
+        {
+            _pendingSavedSearchChanges.Add(new SavedSearchChange(capture,
+                local.Where(search => !previous.Contains(search)).ToArray(),
+                previous.Where(search => !local.Contains(search)).ToArray()));
+        }
         return new SavedSearchSave(
             stored =>
             {
-                foreach (var change in changes)
+                lock (_pendingSavedSearchChanges)
                 {
-                    stored = ApplySavedSearchChange(change.Added, change.Removed, stored);
+                    foreach (var change in _pendingSavedSearchChanges)
+                    {
+                        if (change.Capture > capture || change.WrittenBy != 0 && change.WrittenBy != capture)
+                        {
+                            continue;
+                        }
+                        change.WrittenBy = capture;
+                        stored = ApplySavedSearchChange(change.Added, change.Removed, stored);
+                    }
                 }
                 return stored;
             },
-            // Written: this change and every earlier one are on disk, and later saves no longer replay them.
-            () => _pendingSavedSearchChanges.RemoveAll(change => change.Capture <= capture));
+            () =>
+            {
+                lock (_pendingSavedSearchChanges)
+                {
+                    _pendingSavedSearchChanges.RemoveAll(change => change.WrittenBy == capture);
+                }
+            },
+            () =>
+            {
+                lock (_pendingSavedSearchChanges)
+                {
+                    foreach (var change in _pendingSavedSearchChanges.Where(change => change.WrittenBy == capture))
+                    {
+                        change.WrittenBy = 0;
+                    }
+                }
+            });
     }
 
     /// <summary>
@@ -275,7 +312,11 @@ public sealed partial class MainWindowViewModel
     }
 }
 
-/// <summary>A captured saved-search change: the update to apply to the stored list, and the call to make once written.</summary>
+/// <summary>
+/// A captured saved-search change: the update to apply to the stored list, the call to make once it was written,
+/// and the call to make when the write failed (its changes then go with the next save).
+/// </summary>
 public sealed record SavedSearchSave(
     Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>> Merge,
-    Action Acknowledge);
+    Action Acknowledge,
+    Action Fail);
