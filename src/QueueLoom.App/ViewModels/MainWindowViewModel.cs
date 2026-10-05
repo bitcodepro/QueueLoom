@@ -713,14 +713,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         {
             pending.Add(_writeUnlockTask);
         }
-        try
+        var drained = Task.WhenAll(pending);
+        // A broker call that ignores cancellation must not keep the window from closing forever.
+        var finished = await Task.WhenAny(drained, Task.Delay(ShutdownDrainTimeout, Clock)).ConfigureAwait(true);
+        var allDrained = ReferenceEquals(finished, drained);
+        if (!allDrained)
         {
-            await Task.WhenAll(pending).ConfigureAwait(true);
+            _logger.LogWarning("Background operations did not stop within {Timeout}; closing anyway", ShutdownDrainTimeout);
+            _ = drained.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
-        catch (Exception exception)
+        else
         {
-            // Shutdown continues after all tasks have reached a terminal state.
-            _logger.LogWarning(exception, "A background operation failed during shutdown");
+            try
+            {
+                await drained.ConfigureAwait(true);
+            }
+            catch (Exception exception)
+            {
+                // Shutdown continues after all tasks have reached a terminal state.
+                _logger.LogWarning(exception, "A background operation failed during shutdown");
+            }
         }
 
         _monitorCancellation?.Dispose();
@@ -731,7 +744,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _writeUnlockTask = null;
 
         await _workspace.DisposeAsync().ConfigureAwait(true);
-        _workspaceGate.Dispose();
-        _shutdownCancellation.Dispose();
+        if (allDrained)
+        {
+            // A still-running operation releases the gate and reads the token when it finally returns.
+            _workspaceGate.Dispose();
+            _shutdownCancellation.Dispose();
+        }
     }
+
+    /// <summary>How long closing waits for background work to honour cancellation before releasing resources anyway.</summary>
+    internal TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(10);
 }

@@ -215,6 +215,7 @@ public static class BodyDecoder
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ProtoSchemaSet?> RegistryProtos = new(StringComparer.Ordinal);
+    private const int MaximumRegistryProtos = 128;
 
     /// <summary>
     /// The message type a Confluent-framed body names: its message indexes walk the .proto's top-level messages and
@@ -223,6 +224,11 @@ public static class BodyDecoder
     /// </summary>
     private static (ProtoMessageType Type, ProtoSchemaSet Schemas)? RegistryProtoType(MessageSchema schema, IReadOnlyList<int> indexes)
     {
+        if (RegistryProtos.Count >= MaximumRegistryProtos && !RegistryProtos.ContainsKey(schema.Text))
+        {
+            // Without a bound every distinct registry schema text stayed for the life of the process.
+            RegistryProtos.Clear();
+        }
         var schemas = RegistryProtos.GetOrAdd(schema.Text, text =>
         {
             try
