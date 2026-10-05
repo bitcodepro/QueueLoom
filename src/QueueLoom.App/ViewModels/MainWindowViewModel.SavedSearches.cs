@@ -129,34 +129,47 @@ public sealed partial class MainWindowViewModel
 
     private bool _loadingSavedSearches;
 
-    /// <summary>The saved searches as last loaded or saved by this window.</summary>
+    /// <summary>The saved searches as last loaded, or as last confirmed written, by this window.</summary>
     private SavedSearch[] _savedSearchBaseline = [];
+    private long _savedSearchCaptures;
+    private long _savedSearchAcknowledged;
 
     /// <summary>
-    /// Captures this window's saved-search changes as an update to apply to the stored list. Only what this window
-    /// added or removed is applied, so a search saved meanwhile by another window is kept instead of overwritten.
+    /// Captures this window's saved-search changes (everything added or removed since the last confirmed write) as an
+    /// update to the stored list, plus the acknowledgement to call once that update was written. Until then the
+    /// changes stay pending, so a failed write is carried by the next save instead of being lost.
     /// </summary>
-    public Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>> CaptureSavedSearchChanges()
+    public SavedSearchSave CaptureSavedSearchChanges()
     {
         var baseline = _savedSearchBaseline;
         var local = SavedSearches.ToArray();
-        _savedSearchBaseline = local;
-        return stored => MergeSavedSearches(baseline, local, stored);
+        var capture = ++_savedSearchCaptures;
+        return new SavedSearchSave(
+            stored => MergeSavedSearches(baseline, local, stored),
+            () =>
+            {
+                // Saves can finish out of order; an older one must not move the baseline back.
+                if (capture > _savedSearchAcknowledged)
+                {
+                    _savedSearchAcknowledged = capture;
+                    _savedSearchBaseline = local;
+                }
+            });
     }
 
+    /// <summary>
+    /// Applies this window's additions and removals (local against baseline) to the stored list. Everything else in
+    /// the stored list, including searches another window added, edited or deleted, is kept as stored.
+    /// </summary>
     internal static IReadOnlyList<SavedSearch> MergeSavedSearches(
         IReadOnlyList<SavedSearch> baseline, IReadOnlyList<SavedSearch> local, IReadOnlyList<SavedSearch> stored)
     {
-        var merged = local.ToList();
-        foreach (var search in stored)
-        {
-            // Added elsewhere: neither known to this window before nor present now. Removed here: in the baseline only.
-            if (!baseline.Contains(search) && !merged.Contains(search) &&
-                !merged.Any(item => string.Equals(item.Name, search.Name, StringComparison.OrdinalIgnoreCase)))
-            {
-                merged.Add(search);
-            }
-        }
+        var added = local.Where(search => !baseline.Contains(search)).ToArray();
+        var removed = baseline.Where(search => !local.Contains(search)).ToArray();
+        var merged = stored.Where(search => !removed.Contains(search)
+            // A search added here replaces a stored one with the same name (names are shown case-insensitively).
+            && !added.Any(item => string.Equals(item.Name, search.Name, StringComparison.OrdinalIgnoreCase))).ToList();
+        merged.InsertRange(0, added);
         return merged.Take(AppSettings.MaximumSavedSearches).ToArray();
     }
 
@@ -249,3 +262,8 @@ public sealed partial class MainWindowViewModel
         return kept;
     }
 }
+
+/// <summary>A captured saved-search change: the update to apply to the stored list, and the call to make once written.</summary>
+public sealed record SavedSearchSave(
+    Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>> Merge,
+    Action Acknowledge);

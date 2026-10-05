@@ -385,25 +385,15 @@ public sealed partial class MainWindowViewModel
     internal static string FormatTimeToLiveSeconds(TimeSpan? timeToLive) =>
         timeToLive?.TotalSeconds.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty;
 
-    /// <summary>Remembered send attempts per MessageId; older ones are forgotten so the map cannot grow without bound.</summary>
-    internal const int MaximumComposerSendAttempts = 256;
-
-    private readonly Queue<(Guid ProfileId, string MessageId)> _composerSendAttemptOrder = new();
-
     internal int ComposerSendAttemptCount => _composerSendAttempts.Count;
 
-    internal void RecordComposerSendAttempt((Guid ProfileId, string MessageId) key, string fingerprint, bool isMove)
-    {
-        if (!_composerSendAttempts.ContainsKey(key))
-        {
-            _composerSendAttemptOrder.Enqueue(key);
-        }
+    /// <summary>
+    /// Remembers a send attempt for the rest of the session. Entries are never evicted: they are safety evidence for
+    /// broker duplicate detection (up to 7 days on Azure), so a forgotten MessageId would let an edited move reuse it,
+    /// be acknowledged but discarded as a duplicate, and delete the original. One small entry per manual send is cheap.
+    /// </summary>
+    internal void RecordComposerSendAttempt((Guid ProfileId, string MessageId) key, string fingerprint, bool isMove) =>
         _composerSendAttempts[key] = (fingerprint, isMove);
-        while (_composerSendAttempts.Count > MaximumComposerSendAttempts && _composerSendAttemptOrder.TryDequeue(out var oldest))
-        {
-            _composerSendAttempts.Remove(oldest);
-        }
-    }
 
     private MessageDraft BuildDraft()
     {
