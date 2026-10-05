@@ -283,6 +283,74 @@ public sealed partial class ViewModelStateTests
         Assert.Equal([c], stored);
     }
 
+    // Re-saving A queues remove-A and reinsert-A; the first write is held. Draining for close completes only after both
+    // were written and settled, and A is stored exactly once.
+    [Fact]
+    public async Task AppStability_ClosingDrainsAdmittedSavedSearchSaves()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [a] });
+        IReadOnlyList<SavedSearch> stored = [a];
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        vm.SavedSearches.Remove(a);
+        var first = vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), async merge =>
+        {
+            await release.Task;
+            stored = merge(stored);
+        });
+        vm.SavedSearches.Insert(0, a);
+        var second = vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), merge =>
+        {
+            stored = merge(stored);
+            return Task.CompletedTask;
+        });
+
+        var drained = vm.DrainSavedSearchSavesAsync();
+        Assert.False(drained.IsCompleted);
+        release.SetResult();
+        await drained.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(first.IsCompleted && second.IsCompleted);
+        Assert.Equal([a], stored);
+    }
+
+    // A failed first write followed by close: draining still completes (without throwing) after both saves settled.
+    [Fact]
+    public async Task AppStability_ClosingDrainsSavesAfterAFailedWrite()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        var b = new SavedSearch("B", "b");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+        IReadOnlyList<SavedSearch> stored = [];
+        var fail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        vm.SavedSearches.Insert(0, a);
+        var first = vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), async merge =>
+        {
+            _ = merge(stored);
+            await fail.Task;
+            throw new IOException("disk full");
+        });
+        vm.SavedSearches.Insert(0, b);
+        var second = vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), merge =>
+        {
+            stored = merge(stored);
+            return Task.CompletedTask;
+        });
+
+        var drained = vm.DrainSavedSearchSavesAsync();
+        Assert.False(drained.IsCompleted);
+        fail.SetResult();
+        await drained.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await Assert.ThrowsAsync<IOException>(() => first);
+        Assert.True(second.IsCompletedSuccessfully);
+        Assert.Equal([b, a], stored); // the failed +A was handed back and written by the queued save
+    }
+
     // Saves that finish out of order: the older acknowledgement must not move the baseline back.
     [Fact]
     public async Task AppStability_OutOfOrderSavedSearchAcknowledgementsKeepTheNewest()

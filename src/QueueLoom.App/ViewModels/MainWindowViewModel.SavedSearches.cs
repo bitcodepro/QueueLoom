@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Collections.ObjectModel;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Settings;
@@ -209,11 +210,54 @@ public sealed partial class MainWindowViewModel
     /// Writes one captured save and settles it (acknowledged or failed) before the next save of this window may run,
     /// so a later save never skips a change whose failed write has not yet been handed back.
     /// </summary>
-    public async Task PersistSavedSearchesAsync(
+    public Task PersistSavedSearchesAsync(
         SavedSearchSave save, Func<Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>>, Task> write)
     {
         ArgumentNullException.ThrowIfNull(save);
         ArgumentNullException.ThrowIfNull(write);
+        // Registered as soon as it is admitted, before it waits for the gate, so closing can drain it.
+        var task = PersistSavedSearchesCoreAsync(save, write);
+        lock (_savedSearchSaves)
+        {
+            _savedSearchSaves.Add(task);
+        }
+        _ = task.ContinueWith(finished =>
+        {
+            lock (_savedSearchSaves)
+            {
+                _savedSearchSaves.Remove(finished);
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return task;
+    }
+
+    private readonly List<Task> _savedSearchSaves = [];
+
+    /// <summary>
+    /// Completes once every saved-search save admitted so far has been written and settled (successfully or not), so
+    /// closing can write its final settings and release the settings store only after them. Failures were already
+    /// reported by the saves themselves; they are observed here, not rethrown.
+    /// </summary>
+    public async Task DrainSavedSearchSavesAsync()
+    {
+        Task[] pending;
+        lock (_savedSearchSaves)
+        {
+            pending = [.. _savedSearchSaves];
+        }
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogDebug(exception, "A saved-search save failed before closing");
+        }
+    }
+
+    private async Task PersistSavedSearchesCoreAsync(
+        SavedSearchSave save, Func<Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>>, Task> write)
+    {
         await _savedSearchSaveGate.WaitAsync().ConfigureAwait(true);
         try
         {

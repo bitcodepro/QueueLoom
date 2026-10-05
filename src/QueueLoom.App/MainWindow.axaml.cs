@@ -287,6 +287,10 @@ public sealed partial class MainWindow : Window
                     _logger?.LogDebug(exception, "Startup had failed before shutdown");
                 }
             }
+            // Saved-search saves already admitted are written before the final settings write and before the settings
+            // store is released, so a queued reinsert cannot be overtaken or abandoned (bounded like the rest of closing).
+            await ShutdownWait.WithinAsync(() => new ValueTask(_viewModel.DrainSavedSearchSavesAsync()),
+                _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
             if (_settingsStore is not null)
             {
                 // A settings file that cannot be rewritten (damaged or from a newer version) must not skip disposal.
