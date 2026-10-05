@@ -101,14 +101,15 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 }
                 if (File.Exists(path) && new FileInfo(path).Length > MaximumFileBytes)
                 {
-                    // Once per file: say why the log stops here, so a gap in it is not mistaken for silence.
+                    // Once per file: say why the log stops here, so a gap in it is not mistaken for silence. The marker
+                    // is created first: if it cannot be, nothing is appended, so the capped file never keeps growing.
                     if (!File.Exists(path + ".full"))
                     {
+                        using (new FileStream(path + ".full", FileMode.CreateNew, FileAccess.Write)) { }
                         File.AppendAllText(path,
                             $"{timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture)} [WRN] QueueLoom: " +
                             $"this log reached {MaximumFileBytes / (1024 * 1024)} MB; nothing more is written to it today.{Environment.NewLine}",
                             Encoding.UTF8);
-                        File.WriteAllText(path + ".full", string.Empty);
                     }
                     return;
                 }

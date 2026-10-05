@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using QueueLoom.App.ViewModels;
+using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Tests.Infrastructure;
 
@@ -71,6 +72,25 @@ public sealed class LogLimitTests
         Assert.Equal(1, tail.Split("nothing more is written to it today").Length - 1);
         Assert.DoesNotContain("dropped line", tail, StringComparison.Ordinal);
     }
+
+    // If the marker cannot be created, nothing is appended either: the capped log stays capped.
+    [Fact]
+    public void AFullLogStaysCappedWhenItsMarkerCannotBeCreated()
+    {
+        using var directory = new TemporaryDirectory();
+        var now = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
+        using var provider = new QueueLoom.Infrastructure.Logging.FileLoggerProvider(directory.Path, clock: () => now);
+        File.WriteAllBytes(provider.CurrentFilePath, new byte[10 * 1024 * 1024 + 1]);
+        Directory.CreateDirectory(provider.CurrentFilePath + ".full");
+        var logger = provider.CreateLogger("app");
+
+        for (var i = 0; i < 5; i++)
+        {
+            Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, "dropped line");
+        }
+
+        Assert.Equal(10 * 1024 * 1024 + 1, new FileInfo(provider.CurrentFilePath).Length);
+    }
 }
 
 public sealed partial class ViewModelStateTests
@@ -92,5 +112,30 @@ public sealed partial class ViewModelStateTests
         Assert.Equal("Warning", warning.Level);
         Assert.Contains(".damaged-", warning.Details, StringComparison.Ordinal);
         Assert.Empty(vm.ScheduledResends);
+    }
+
+    // The list can also be found damaged later, when a job is cancelled: the jobs it held leave the window's list
+    // too (they will not run) and the operator is told once.
+    [Fact]
+    public async Task AScheduleListDamagedLaterIsReportedWhenAJobIsCancelled()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        paths.EnsureCreated();
+        var store = new JsonScheduledResendStore(paths);
+        var due = DateTimeOffset.UtcNow.AddDays(1);
+        store.Save([
+            new ScheduledResend(Guid.NewGuid(), Guid.NewGuid(), "dev", DateTimeOffset.UtcNow, due, ResendMode.Copy, 0, "x", []),
+            new ScheduledResend(Guid.NewGuid(), Guid.NewGuid(), "dev", DateTimeOffset.UtcNow, due, ResendMode.Copy, 0, "x", [])]);
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace(), scheduledResends: store);
+        Assert.Equal(2, vm.ScheduledResends.Count);
+        await File.WriteAllTextAsync(store.FilePath, "[ { broken");
+
+        vm.CancelScheduledResendCommand.Execute(vm.ScheduledResends[0]);
+
+        var warning = Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
+        Assert.Contains(".damaged-", warning.Details, StringComparison.Ordinal);
+        Assert.Empty(vm.ScheduledResends);
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(store.FilePath)!, "*.damaged-*"));
     }
 }

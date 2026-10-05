@@ -40,13 +40,36 @@ public sealed partial class MainWindowViewModel
         {
             ScheduledResends.Add(CreateScheduledItem(resend));
         }
-        if (store?.TakeSetAsideFile() is { } aside)
-        {
-            AddActivity("Warning", "Scheduled resends not loaded",
-                $"The list of scheduled resends was damaged and could not be read, so none of its resends will run. It was " +
-                $"kept as {aside}; schedule them again from their dead-letter queues.");
-        }
+        ReportSetAsideSchedules();
         UpdateScheduledStatuses();
+    }
+
+    // The store sets a damaged list aside whenever it reads one: at start, but also when a job is added or removed
+    // later. Its jobs will not run, so they leave the list here too and the operator is told.
+    private void ReportSetAsideSchedules()
+    {
+        if (_scheduledStore?.TakeSetAsideFile() is not { } aside)
+        {
+            return;
+        }
+        HashSet<Guid>? pending;
+        try
+        {
+            pending = _scheduledStore.Load().Select(resend => resend.Id).ToHashSet();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            pending = null;
+        }
+        var lost = pending is null ? [] : ScheduledResends.Where(item => !pending.Contains(item.Resend.Id)).ToArray();
+        foreach (var item in lost)
+        {
+            ScheduledResends.Remove(item);
+        }
+        AddActivity("Warning", "Scheduled resends not loaded",
+            $"The list of scheduled resends was damaged and could not be read, so none of its resends will run" +
+            (lost.Length > 0 ? $" ({lost.Length:N0} removed from this list)" : string.Empty) +
+            $". It was kept as {aside}; schedule them again from their dead-letter queues.");
     }
 
     /// <summary>Starts checking for due resends; called once the window is up.</summary>
@@ -115,6 +138,7 @@ public sealed partial class MainWindowViewModel
         { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
         _scheduledStore?.Add(resend);
         ScheduledResends.Add(CreateScheduledItem(resend));
+        ReportSetAsideSchedules();
         UpdateScheduledStatuses();
         StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {ScheduledResends[^1].Title}. It is listed on Activity.";
         AddActivity("Info", "Resend scheduled", $"{profile.Name} · {ScheduledResends[^1].Title} · {sendAt.ToLocalTime():g}", options.Destination);
@@ -264,6 +288,10 @@ public sealed partial class MainWindowViewModel
         {
             ErrorText = $"Scheduled resends could not be saved: {exception.Message}";
             throw new IOException(ErrorText, exception);
+        }
+        finally
+        {
+            ReportSetAsideSchedules();
         }
     }
 
