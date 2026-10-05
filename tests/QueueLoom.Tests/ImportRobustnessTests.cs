@@ -31,4 +31,36 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("Imported 1 environment(s)", vm.ErrorText, StringComparison.Ordinal);
         Assert.Contains("could not be written", vm.ErrorText, StringComparison.Ordinal);
     }
+
+    // The same storage problem also stops the list from being refreshed: the summary still says one environment was
+    // imported, with the original cause, not the refresh error.
+    [Fact]
+    public async Task APartialImportIsReportedEvenWhenTheListCannotBeRefreshed()
+    {
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(file, EnvironmentTransfer.Export(
+        [
+            CreateProfile("Alpha", EnvironmentKind.Development),
+            CreateProfile("Beta", EnvironmentKind.Test),
+            CreateProfile("Gamma", EnvironmentKind.Test)
+        ]));
+        var repository = new FakeProfileRepository([], null);
+        var dialogs = new FakeDialogService { OpenFilePath = file };
+        await using var vm = CreateViewModel(repository, new FakeWorkspace(), dialogs);
+        await vm.InitializeAsync();
+        repository.FailUpsertsAfter = 1;
+        var listings = 0;
+        repository.ListGate = _ => ++listings > 1
+            ? Task.FromException(new IOException("The profiles folder is unavailable."))
+            : Task.CompletedTask;
+
+        await vm.ImportEnvironmentsCommand.ExecuteAsync();
+
+        repository.ListGate = null;
+        Assert.Single(await repository.ListAsync());
+        Assert.Contains("Imported 1 environment(s)", vm.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("could not be written", vm.ErrorText, StringComparison.Ordinal);
+        Assert.DoesNotContain("folder is unavailable", vm.ErrorText, StringComparison.Ordinal);
+    }
 }
