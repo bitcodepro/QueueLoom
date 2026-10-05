@@ -296,8 +296,21 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         var moves = new List<(string Current, string Old)>();
         var added = new List<string>();
         // A previous unfinished update must be recovered, not overwritten.
-        using (var stream = new FileStream(receiptPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            JsonSerializer.Serialize(stream, receipt);
+        // Written whole and then renamed, so a crash cannot leave a partial receipt; the rename fails if one exists.
+        var receiptTemporary = receiptPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(receiptTemporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream, receipt);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(receiptTemporary, receiptPath, overwrite: false);
+        }
+        finally
+        {
+            if (File.Exists(receiptTemporary)) File.Delete(receiptTemporary);
+        }
         try
         {
             if (target.Bundle is { } bundle)
@@ -365,7 +378,8 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
             UpdateRestart.Read(path, receipt.Id);
             UpdateRestart.Restore(receipt);
-            File.WriteAllText(path, JsonSerializer.Serialize(receipt with { Recovered = true }));
+            File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(receipt with { Recovered = true }));
+            File.Move(path + ".tmp", path, overwrite: true);
             throw new IOException("The restart helper could not start. The previous version was restored and is still running.", exception);
         }
     }
@@ -382,7 +396,16 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             catch (IOException) { return; }
             using var retainedOwnership = ownership;
             if (!File.Exists(path)) return;
-            var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!;
+            UpdateRestart.Receipt? receipt;
+            try { receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path)); }
+            catch (JsonException) { receipt = null; }
+            if (receipt is null)
+            {
+                // Cut short by a crash while it was written: it names nothing to restore or clean, and left in place
+                // it would block every later update. This version started, so keep it aside as evidence.
+                File.Move(path, path + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}");
+                return;
+            }
             UpdateRestart.Read(path, receipt.Id);
             // Protect the installed-but-not-yet-accepted handoff between Install and StartInstalled.
             if (UpdateRestart.InstallerIsAlive(receipt)) return;
