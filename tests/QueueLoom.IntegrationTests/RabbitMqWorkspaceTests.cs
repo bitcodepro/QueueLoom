@@ -560,8 +560,8 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         var second = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
         var third = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
 
-        Assert.Equal(MessageFingerprint.Of(first), MessageFingerprint.Of(second));
-        Assert.Equal(MessageFingerprint.Of(first), MessageFingerprint.Of(third));
+        Assert.Same(second, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(first), [second], out _)));
+        Assert.Same(third, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(first), [third], out _)));
     }
 
     private async Task<BasicGetResult?> WaitForMessageAsync(string queue)

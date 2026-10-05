@@ -443,7 +443,13 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                             unproven.Add(key);
                             continue;
                         }
-                        candidates = candidates.Where(message => MessageFingerprint.Of(message) == fingerprint).ToArray();
+                        candidates = MessageFingerprint.Find(fingerprint, candidates, out var unclear).ToArray();
+                        if (unclear)
+                        {
+                            wanted.Remove(matches.Key);
+                            ambiguous.Add(key);
+                            continue;
+                        }
                         if (candidates.Length == 0)
                         {
                             continue; // not this page: the chosen message may still be further on
@@ -486,9 +492,9 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             keys.Where(key => !found.ContainsKey(key)).ToArray());
     }
 
-    /// <summary>The same message content, by the same stable projection as the fingerprint (broker counters left out).</summary>
+    /// <summary>The same message content, everything included (a producer's own counter header too).</summary>
     private static bool SameMessage(BrowsedMessage first, BrowsedMessage second) =>
-        MessageFingerprint.Of(first) == MessageFingerprint.Of(second);
+        MessageFingerprint.Full(first) == MessageFingerprint.Full(second);
 
     private Task<ApprovalDecision> RequestApprovalAsync(
         McpServer server,

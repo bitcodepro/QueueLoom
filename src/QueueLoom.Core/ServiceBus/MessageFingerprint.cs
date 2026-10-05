@@ -11,15 +11,51 @@ namespace QueueLoom.Core.ServiceBus;
 public static class MessageFingerprint
 {
     /// <summary>
-    /// Headers the broker itself changes while a message waits: a RabbitMQ quorum queue counts every acquisition
-    /// (reading it to show it is one), so they are not part of what the message is.
+    /// Headers a broker may change while a message waits: a RabbitMQ quorum queue counts every acquisition (reading it
+    /// to show it is one) in x-delivery-count, and RabbitMQ 4.3 in x-acquired-count.
     /// </summary>
     public static readonly IReadOnlySet<string> VolatileHeaders = new HashSet<string>(StringComparer.Ordinal)
     {
         "x-delivery-count", "x-acquired-count"
     };
 
-    public static string Of(BrowsedMessage message)
+    /// <summary>
+    /// The fingerprint to hand out: the hash of everything the message carries, followed by the hash without the
+    /// headers in <see cref="VolatileHeaders"/>. A producer may set such a header itself (RabbitMQ 4.2 classic queues
+    /// keep an incoming x-acquired-count), so the full part decides first; the second part only recognizes the same
+    /// message after the broker changed its counter (see <see cref="Find"/>).
+    /// </summary>
+    public static string Of(BrowsedMessage message) => Full(message) + Stable(message);
+
+    /// <summary>The hash of everything the message carries.</summary>
+    public static string Full(BrowsedMessage message) => Hash(message, skipVolatile: false);
+
+    /// <summary>The hash without the headers a broker may change while the message waits.</summary>
+    public static string Stable(BrowsedMessage message) => Hash(message, skipVolatile: true);
+
+    /// <summary>
+    /// The messages that are the one <paramref name="fingerprint"/> was handed out for: those identical to it, or
+    /// otherwise the single message that differs from it only in broker counters. Several such messages would be a
+    /// guess, so <paramref name="ambiguous"/> is then set and nothing is returned.
+    /// </summary>
+    public static IReadOnlyList<BrowsedMessage> Find(string fingerprint, IEnumerable<BrowsedMessage> candidates, out bool ambiguous)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprint);
+        ArgumentNullException.ThrowIfNull(candidates);
+        ambiguous = false;
+        var all = candidates.ToArray();
+        var full = fingerprint.Length == 32 ? fingerprint[..16] : fingerprint;
+        var exact = all.Where(message => Full(message) == full).ToArray();
+        if (exact.Length > 0 || fingerprint.Length != 32)
+        {
+            return exact;
+        }
+        var stable = all.Where(message => Stable(message) == fingerprint[16..]).ToArray();
+        ambiguous = stable.Length > 1;
+        return stable.Length == 1 ? stable : [];
+    }
+
+    private static string Hash(BrowsedMessage message, bool skipVolatile)
     {
         ArgumentNullException.ThrowIfNull(message);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -43,7 +79,7 @@ public static class MessageFingerprint
         {
             Add(value);
         }
-        foreach (var property in message.ApplicationProperties.Where(property => !VolatileHeaders.Contains(property.Name)))
+        foreach (var property in message.ApplicationProperties.Where(property => !skipVolatile || !VolatileHeaders.Contains(property.Name)))
         {
             Add(property.Name);
             Add(property.Type.ToString());

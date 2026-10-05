@@ -184,8 +184,19 @@ public sealed class RabbitComplexHeaderTests
             }
         }, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter);
 
-        Assert.Equal(MessageFingerprint.Of(Read(1, "acme")), MessageFingerprint.Of(Read(5, "acme")));
-        Assert.NotEqual(MessageFingerprint.Of(Read(1, "acme")), MessageFingerprint.Of(Read(1, "other")));
+        // The counter changed (the broker's doing): the same message is still found by its fingerprint.
+        Assert.Equal(MessageFingerprint.Stable(Read(1, "acme")), MessageFingerprint.Stable(Read(5, "acme")));
+        var later = Read(5, "acme");
+        Assert.Same(later, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(Read(1, "acme")), [later], out _)));
+        // A different user header is a different message.
+        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(1, "acme")), [Read(1, "other")], out _));
+        // Two messages that differ only in such a header (set by their producer): the full fingerprint picks one.
+        var one = Read(1, "acme");
+        var two = Read(2, "acme");
+        Assert.Same(two, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(Read(2, "acme")), [one, two], out _)));
+        // If neither matches exactly and both differ only in counters, which one was meant is unknown.
+        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(3, "acme")), [one, two], out var ambiguous));
+        Assert.True(ambiguous);
     }
 
     /// <summary>Same keys, values, CLR types (which decide the AMQP field types RabbitMQ.Client writes) and bytes.</summary>
