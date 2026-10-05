@@ -268,7 +268,18 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         }
         catch (ProduceException<byte[]?, byte[]?> exception)
         {
-            throw new InvalidOperationException($"Kafka did not accept the message: {exception.Error.Reason}", exception);
+            // librdkafka says whether the record may have been written. Only "not persisted" is a refusal; a timeout
+            // after the request left (possibly persisted) must not read as one, or sending it again could duplicate it.
+            throw exception.DeliveryResult?.Status switch
+            {
+                PersistenceStatus.NotPersisted => new DeliveryRejectedException(
+                    $"Kafka did not accept the message: {exception.Error.Reason}", exception),
+                PersistenceStatus.Persisted => new InvalidOperationException(
+                    $"Kafka stored the message but reported an error: {exception.Error.Reason}", exception),
+                _ => new InvalidOperationException(
+                    $"Whether Kafka stored the message is unknown ({exception.Error.Reason}). Check '{destination.Name}' " +
+                    "before sending it again.", exception)
+            };
         }
     }
 
