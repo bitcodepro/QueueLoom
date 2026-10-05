@@ -114,6 +114,48 @@ public sealed class MonitorAlertTests
     }
 }
 
+public sealed class ProtoSchemaLoadBoundsTests
+{
+    // A large file with a schema extension (a dump named .pb) is refused before it is read into memory.
+    [Fact]
+    public void AnOversizedSchemaFileIsRefusedBeforeItIsRead()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        File.WriteAllText(Path.Combine(directory.Path, "a.proto"), "syntax = \"proto3\"; message A { string x = 1; }");
+        using (var big = File.Create(Path.Combine(directory.Path, "dump.pb")))
+        {
+            big.SetLength(16L * 1024 * 1024 + 1);
+        }
+
+        var refused = Assert.Throws<ProtoSchemaException>(() => ProtoSchemaSet.Load(directory.Path));
+        Assert.Contains("dump.pb", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("are not read", refused.Message, StringComparison.Ordinal);
+    }
+
+    // A folder picked by mistake (a home folder) is not walked to its end: the walk stops and says why.
+    [Fact]
+    public void AHugeFolderIsNotWalkedToItsEnd()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        for (var index = 0; index < 30; index++)
+        {
+            File.WriteAllText(Path.Combine(directory.Path, $"note-{index}.txt"), "x");
+        }
+        File.WriteAllText(Path.Combine(directory.Path, "a.proto"), "syntax = \"proto3\"; message A { string x = 1; }");
+        ProtoSchemaSet.EntriesVisitedOverride.Value = 10;
+        try
+        {
+            var refused = Assert.Throws<ProtoSchemaException>(() => ProtoSchemaSet.Load(directory.Path));
+            Assert.Contains("more than 10 files", refused.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ProtoSchemaSet.EntriesVisitedOverride.Value = null;
+        }
+        Assert.NotNull(ProtoSchemaSet.Load(directory.Path).Resolve("A"));
+    }
+}
+
 public sealed partial class ViewModelStateTests
 {
     [Fact]
@@ -141,6 +183,40 @@ public sealed partial class ViewModelStateTests
 
         viewModel.AlertWebhookUrl = "not a url";
         Assert.True(viewModel.HasAlertWebhookError);
+    }
+
+    // One check that finds dead letters in many queues (a downstream outage) sends one notification and one webhook
+    // post naming the first few, instead of one per queue that the in-flight limit then drops and lists as errors.
+    [Fact]
+    public async Task Monitor_SendsOneAlertForEverythingOneCheckFinds()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace
+        {
+            Snapshots =
+            {
+                [dev.Id] = Snapshot(dev.Id, Enumerable.Range(1, 12)
+                    .Select(index => new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue($"orders-{index:00}"), index)).ToArray())
+            }
+        };
+        var alerts = new RecordingAlerts();
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace, alerts: alerts);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.AlertWebhookUrl = "https://hooks.slack.com/services/T/B/X";
+
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await WaitUntilAsync(() => alerts.Webhooks.Count >= 1);
+        await viewModel.ToggleMonitorCommand.ExecuteAsync();
+        await WaitUntilAsync(() => viewModel.AlertsInFlight == 0);
+
+        var alert = Assert.Single(alerts.Webhooks).Alert;
+        Assert.Single(alerts.System);
+        Assert.Equal(78, alert.Count);
+        Assert.StartsWith("Development: dead letters in 12 sources · ", alert.Text, StringComparison.Ordinal);
+        Assert.EndsWith("; and 7 more", alert.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(viewModel.Activity, item => item.Action == "Alert not delivered");
+        Assert.Equal(12, viewModel.MonitorNotifications.Count);
     }
 
     private sealed class RecordingAlerts : IMonitorAlertService

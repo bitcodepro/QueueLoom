@@ -120,12 +120,7 @@ public sealed class ProtoSchemaSet
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var files = Directory.Exists(path)
-            // One unreadable subfolder (a database volume, another account's cache) must not discard every schema beside it.
-            ? Directory.EnumerateFiles(path, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 })
-                .Where(file => Path.GetExtension(file).ToLowerInvariant() is ".proto" or ".desc" or ".pb" or ".protoset" or ".binpb")
-                .Order(StringComparer.Ordinal)
-                .Take(2_000)
-                .ToArray()
+            ? FindSchemaFiles(path)
             : File.Exists(path)
                 ? [path]
                 : throw new ProtoSchemaException($"'{path}' is neither a file nor a folder.");
@@ -136,8 +131,22 @@ public sealed class ProtoSchemaSet
 
         var texts = new List<(string Name, string Text)>();
         var sets = new List<ProtoSchemaSet>();
+        long total = 0;
         foreach (var file in files)
         {
+            // Schemas are small; a huge file picked by mistake (a database dump named .pb) is refused before it is read.
+            var length = new FileInfo(file).Length;
+            if (length > MaximumFileBytes)
+            {
+                throw new ProtoSchemaException($"{Path.GetFileName(file)} is {length / (1024 * 1024):N0} MB; schema files over " +
+                                               $"{MaximumFileBytes / (1024 * 1024)} MB are not read.");
+            }
+            total += length;
+            if (total > MaximumTotalBytes)
+            {
+                throw new ProtoSchemaException($"The schema files of '{path}' add up to more than {MaximumTotalBytes / (1024 * 1024)} MB; " +
+                                               "choose the folder that holds only your schemas.");
+            }
             if (Path.GetExtension(file).Equals(".proto", StringComparison.OrdinalIgnoreCase))
             {
                 texts.Add((file, File.ReadAllText(file)));
@@ -152,6 +161,37 @@ public sealed class ProtoSchemaSet
             parsed._messages.Values.Concat(sets.SelectMany(set => set._messages.Values)),
             parsed._enums.Values.Concat(sets.SelectMany(set => set._enums.Values)),
             files);
+    }
+
+    internal const int MaximumFiles = 2_000;
+    internal const int MaximumEntriesVisited = 100_000;
+
+    /// <summary>Tests lower the walk limit without creating a hundred thousand files.</summary>
+    internal static readonly AsyncLocal<int?> EntriesVisitedOverride = new();
+    internal const long MaximumFileBytes = 16L * 1024 * 1024;
+    internal const long MaximumTotalBytes = 64L * 1024 * 1024;
+
+    // A folder picked by mistake (a home folder, a drive root) is not walked to its end: the walk stops after
+    // MaximumEntriesVisited entries and says so. Of the schema files found, the first MaximumFiles by path are read.
+    private static string[] FindSchemaFiles(string folder)
+    {
+        var found = new List<string>();
+        var visited = 0;
+        var limit = EntriesVisitedOverride.Value ?? MaximumEntriesVisited;
+        // One unreadable subfolder (a database volume, another account's cache) must not discard every schema beside it.
+        foreach (var file in Directory.EnumerateFiles(folder, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 }))
+        {
+            if (++visited > limit)
+            {
+                throw new ProtoSchemaException($"'{folder}' holds more than {limit:N0} files; choose the folder that holds your schemas.");
+            }
+            if (Path.GetExtension(file).ToLowerInvariant() is ".proto" or ".desc" or ".pb" or ".protoset" or ".binpb")
+            {
+                found.Add(file);
+            }
+        }
+        found.Sort(StringComparer.Ordinal);
+        return [.. found.Take(MaximumFiles)];
     }
 
     /// <summary>Reads .proto source files (proto2 or proto3).</summary>
