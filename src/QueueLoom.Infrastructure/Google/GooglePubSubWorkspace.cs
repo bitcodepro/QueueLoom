@@ -414,40 +414,47 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         /// </summary>
         private async Task HoldAsync(string[] ackIds, CancellationToken cancellationToken)
         {
-            for (var attempt = 1; ; attempt++)
+            // One cleanup scope covers every attempt and every back-off: a cancellation during a delay must release the
+            // batch too, since the caller never received these ack IDs and cannot release them itself.
+            try
             {
-                try
-                {
-                    await owner.Subscriber.ModifyAckDeadlineAsync(subscription, ackIds, HoldSeconds, cancellationToken)
-                        .ConfigureAwait(false);
-                    return;
-                }
-                catch (RpcException exception) when (attempt < HoldAttempts && IsTransient(exception.StatusCode)
-                                                     && !cancellationToken.IsCancellationRequested)
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception exception) when (exception is RpcException or OperationCanceledException)
+                for (var attempt = 1; ; attempt++)
                 {
                     try
                     {
-                        // Returned now instead of after the ack deadline; with a dead-letter policy this is the same
-                        // one delivery attempt the pull already counted.
-                        await owner.Subscriber.ModifyAckDeadlineAsync(subscription, ackIds, 0, CancellationToken.None)
+                        await owner.Subscriber.ModifyAckDeadlineAsync(subscription, ackIds, HoldSeconds, cancellationToken)
                             .ConfigureAwait(false);
+                        return;
                     }
-                    catch (RpcException)
+                    catch (RpcException exception) when (attempt < HoldAttempts && IsTransient(exception.StatusCode)
+                                                         && !cancellationToken.IsCancellationRequested)
                     {
-                        // They return by themselves when the subscription's ack deadline passes.
+                        await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
                     }
-                    if (exception is OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    throw new InvalidOperationException(
-                        $"Pub/Sub did not hold the {ackIds.Length:N0} message(s) just read on '{subscription.SubscriptionId}' " +
-                        $"({((RpcException)exception).Status.Detail}); they were returned to the subscription unchanged.", exception);
                 }
+            }
+            catch (Exception exception) when (exception is RpcException or OperationCanceledException)
+            {
+                try
+                {
+                    // Returned now instead of after the ack deadline; with a dead-letter policy this is the same
+                    // one delivery attempt the pull already counted.
+                    await owner.Subscriber.ModifyAckDeadlineAsync(subscription, ackIds, 0, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (RpcException)
+                {
+                    // They return by themselves when the subscription's ack deadline passes.
+                }
+                if (exception is OperationCanceledException)
+                {
+                    throw;
+                }
+                // Cancelled while the hold was failing: the caller asked to stop, so that is what it is told.
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new InvalidOperationException(
+                    $"Pub/Sub did not hold the {ackIds.Length:N0} message(s) just read on '{subscription.SubscriptionId}' " +
+                    $"({((RpcException)exception).Status.Detail}); they were returned to the subscription unchanged.", exception);
             }
         }
 

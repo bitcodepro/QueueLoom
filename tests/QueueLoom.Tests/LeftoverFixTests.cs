@@ -71,6 +71,38 @@ public sealed class LeftoverFixTests
         Assert.Equal([path], Directory.GetFiles(directory.Path));
     }
 
+    // A deliberately restricted file (0600) stays 0600 after being replaced, under the usual umask 022, with both
+    // writers; the new content is written meanwhile into a file no more readable than that.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SafeFileWriter_KeepsTheExistingFileMode(bool synchronous)
+    {
+        if (OperatingSystem.IsWindows()) return; // Windows keeps the access rules instead; covered by the code path only
+        await KeepsTheExistingFileModeOnUnix(synchronous);
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static async Task KeepsTheExistingFileModeOnUnix(bool synchronous)
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(path, "previous export");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        UnixFileMode? seenWhileWriting = null;
+
+        if (synchronous) SafeFileWriter.WriteText(path, "new export");
+        else await SafeFileWriter.WriteAsync(path, async (stream, token) =>
+        {
+            seenWhileWriting = File.GetUnixFileMode(((FileStream)stream).Name);
+            await stream.WriteAsync("new export"u8.ToArray(), token);
+        }, CancellationToken.None);
+
+        Assert.Equal("new export", await File.ReadAllTextAsync(path));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        if (!synchronous) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, seenWhileWriting);
+    }
+
     // ---- Pub/Sub: holding messages just pulled ---------------------------------------------------------------------
 
     // A transient failure to extend the hold is retried: the pulled batch is returned instead of dropped (dropping it
@@ -114,6 +146,25 @@ public sealed class LeftoverFixTests
         Assert.Equal([GooglePubSubWorkspace.HoldSeconds, 0], subscriber.Deadlines);
     }
 
+    // Cancelled while waiting to retry the hold (after the first or the second transient failure): the cancellation
+    // propagates and both pulled messages are released exactly once.
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task PubSub_CancellationDuringHoldBackoffReleasesTheBatch(int failuresBeforeCancel)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var subscriber = new HoldSubscriber { HoldFailures = int.MaxValue };
+        subscriber.OnHoldFailure = count => { if (count == failuresBeforeCancel) cancellation.CancelAfter(TimeSpan.FromMilliseconds(50)); }; // lands inside the 200 ms+ back-off
+        var channel = PubSubChannel(subscriber, out _);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => channel.ReceiveAsync(10, cancellation.Token));
+
+        Assert.Equal(["a1", "a2"], subscriber.ReleasedAckIds);
+        Assert.Equal(1, subscriber.Deadlines.Count(deadline => deadline == 0));
+        Assert.Equal(failuresBeforeCancel, subscriber.Deadlines.Count(deadline => deadline == GooglePubSubWorkspace.HoldSeconds));
+    }
+
     private static ILeasedMessageChannel PubSubChannel(HoldSubscriber subscriber, out GooglePubSubWorkspace workspace)
     {
         workspace = new GooglePubSubWorkspace(new EmptyVault());
@@ -129,6 +180,8 @@ public sealed class LeftoverFixTests
         public StatusCode HoldStatus { get; init; } = StatusCode.Unavailable;
         public List<int> Deadlines { get; } = [];
         public List<string> ReleasedAckIds { get; } = [];
+        public Action<int>? OnHoldFailure { get; set; }
+        private int _holdFailures;
 
         public override Task<PullResponse> PullAsync(PullRequest request, CallSettings? callSettings = null) =>
             Task.FromResult(new PullResponse
@@ -150,6 +203,7 @@ public sealed class LeftoverFixTests
             }
             if (HoldFailures-- > 0)
             {
+                OnHoldFailure?.Invoke(++_holdFailures);
                 return Task.FromException(new RpcException(new Status(HoldStatus, "hold failed")));
             }
             return Task.CompletedTask;
