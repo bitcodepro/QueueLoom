@@ -396,6 +396,25 @@ public sealed class LeftoverFixTests
         Assert.Equal(failuresBeforeCancel, subscriber.Deadlines.Count(deadline => deadline == GooglePubSubWorkspace.HoldSeconds));
     }
 
+    // Releasing 2,500 messages in chunks of 1,000: the first chunk fails. The other two are still released, and the
+    // failure is reported (those messages come back when their deadline ends) instead of stopping at the first chunk.
+    [Fact]
+    public async Task PubSub_AFailedReleaseChunkDoesNotStopTheOthers()
+    {
+        var subscriber = new HoldSubscriber { FailFirstRelease = true };
+        var channel = PubSubChannel(subscriber, out _);
+        var source = ServiceBusEntityReference.Subscription("t", "s");
+        var messages = Enumerable.Range(0, 2_500).Select(index => new LeasedMessage(
+            new BrowsedMessage(source, ServiceBusSubQueue.Active, index, "x"u8.ToArray(), new EditableMessageProperties(MessageId: $"m{index}")),
+            $"a{index}", true)).ToList();
+
+        var error = await Assert.ThrowsAsync<IOException>(() => channel.ReleaseAsync(messages, CancellationToken.None));
+
+        Assert.Equal(1_500, subscriber.ReleasedAckIds.Count);
+        Assert.Contains("1,000 message(s)", error.Message, StringComparison.Ordinal);
+        Assert.Contains("release unavailable", error.Message, StringComparison.Ordinal);
+    }
+
     private static ILeasedMessageChannel PubSubChannel(HoldSubscriber subscriber, out GooglePubSubWorkspace workspace)
     {
         workspace = new GooglePubSubWorkspace(new EmptyVault());
@@ -411,6 +430,8 @@ public sealed class LeftoverFixTests
         public StatusCode HoldStatus { get; init; } = StatusCode.Unavailable;
         public List<int> Deadlines { get; } = [];
         public List<string> ReleasedAckIds { get; } = [];
+        public bool FailFirstRelease { get; init; }
+        private bool _releaseFailed;
         public Action<int>? OnHoldFailure { get; set; }
         private int _holdFailures;
 
@@ -429,6 +450,11 @@ public sealed class LeftoverFixTests
             Deadlines.Add(request.AckDeadlineSeconds);
             if (request.AckDeadlineSeconds == 0)
             {
+                if (FailFirstRelease && !_releaseFailed)
+                {
+                    _releaseFailed = true;
+                    return Task.FromException(new RpcException(new Status(StatusCode.Unavailable, "release unavailable")));
+                }
                 ReleasedAckIds.AddRange(request.AckIds);
                 return Task.CompletedTask;
             }
