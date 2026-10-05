@@ -82,13 +82,15 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 return Declined(profile, "Delete dead-letter messages", decision);
             }
 
+            var cleanup = new List<string>();
             var result = await session.WriteAsync(profile,
-                    (workspace, token) => workspace.DeleteDeadLetterMessagesAsync(request, token), cancellationToken)
+                    (workspace, token) => workspace.DeleteDeadLetterMessagesAsync(request, token), cancellationToken, cleanup)
                 .ConfigureAwait(false);
             var summary = $"{result.DeletedCount} of {request.Messages.Count} deleted" +
                           (result.NotFoundCount > 0 ? $", {result.NotFoundCount} not found" : string.Empty) +
                           (result.FailedCount > 0 ? $", {result.FailedCount} failed" : string.Empty) +
-                          (result.CancelledCount > 0 ? $", {result.CancelledCount} not processed" : string.Empty) + ".";
+                          (result.CancelledCount > 0 ? $", {result.CancelledCount} not processed" : string.Empty) + "." +
+                          McpMapping.CleanupNote(cleanup);
             session.Record(result.FailedCount == 0 ? "Warning" : "Error", "Deleted dead-letter messages",
                 $"{summary} Reason: {reason}. Backup: {result.BackupDirectory}", profile);
             return new ChangeResult(profile.Name, true, summary, result.BackupDirectory,
@@ -382,7 +384,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var summary = $"{result.SentCount} of {items.Length} sent" +
                           (resendMode == ResendMode.Move ? $", {result.MovedCount} original(s) removed" : string.Empty) +
                           (result.OriginalsKeptCount > 0 ? $", {result.OriginalsKeptCount} original(s) kept" : string.Empty) +
-                          (result.FailedCount > 0 ? $", {result.FailedCount} failed" : string.Empty) +
+                          (result.FailedCount > 0 ? $", {result.FailedCount} failed or uncertain (see details; do not resend those blindly)" : string.Empty) +
                           (result.CancelledCount > 0 ? $", {result.CancelledCount} not sent" : string.Empty) +
                           (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + ".";
             session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 ? "Success" : "Warning",

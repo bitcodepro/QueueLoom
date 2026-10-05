@@ -257,8 +257,14 @@ internal sealed class InMemoryProfileRepository(params ServiceBusProfile[] profi
     private readonly List<ServiceBusProfile> _profiles = [.. profiles];
     private Guid? _selected = profiles.FirstOrDefault()?.Id;
 
-    public Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<ServiceBusProfile>>(_profiles.ToArray());
+    /// <summary>Holds listing (and so the window's start-up) until the task completes.</summary>
+    public Task? ListGate { get; set; }
+
+    public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default)
+    {
+        if (ListGate is { } gate) await gate;
+        return _profiles.ToArray();
+    }
 
     public Task<ServiceBusProfile?> GetAsync(Guid profileId, CancellationToken cancellationToken = default) =>
         Task.FromResult(_profiles.FirstOrDefault(profile => profile.Id == profileId));

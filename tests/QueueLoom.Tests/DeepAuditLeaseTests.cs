@@ -26,8 +26,8 @@ public sealed class DeepAuditLeaseTests
         var backup = await store.CreateSessionAsync(CreateProfile("Test", EnvironmentKind.Test), DateTimeOffset.UtcNow, default);
         var key = new DeadLetterMessageKey(source, ServiceBusSubQueue.DeadLetter, 1, "m-1");
         var task = (Task<IReadOnlyList<DeadLetterMessageDeletionResult>>)typeof(LeasedMessagingWorkspace)
-            .GetMethod("DeleteFromChannelAsync", BindingFlags.Static | BindingFlags.NonPublic)!
-            .Invoke(null, [source, ServiceBusSubQueue.DeadLetter, new[] { key }, channel, 100, backup, 1, 1, null, cancellation.Token])!;
+            .GetMethod("DeleteFromChannelAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(new QueueLoom.Infrastructure.Aws.AwsSqsSnsWorkspace(new DeepAuditCloudTests.EmptyVault()), [source, ServiceBusSubQueue.DeadLetter, new[] { key }, channel, 100, backup, 1, 1, null, cancellation.Token])!;
         var result = Assert.Single(await task);
         Assert.Equal(cancel ? DeadLetterMessageDeletionOutcome.Cancelled : DeadLetterMessageDeletionOutcome.Failed, result.Outcome);
         Assert.Equal(["lease-1", "lease-2"], channel.Released.Select(m => m.LeaseHandle).Order());

@@ -137,6 +137,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _profileRepository = profileRepository;
         _secretVault = secretVault;
         _workspace = workspace;
+        if (workspace is ICleanupWarningSource cleanup)
+        {
+            // Raised on the operation's thread; shown once the operation ends (see RunOperationAsync).
+            cleanup.CleanupWarning += (_, warning) => _cleanupWarnings.Enqueue(warning);
+        }
         _dialogs = dialogs;
         _backupRepository = backupRepository;
         _activityJournal = activityJournal;
@@ -522,6 +527,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         }
         finally
         {
+            ShowCleanupWarnings();
             if (ReferenceEquals(_currentOperationCancellation, operationCancellation))
             {
                 _currentOperationCancellation = null;
@@ -662,6 +668,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         while (Activity.Count > 500)
         {
             Activity.RemoveAt(Activity.Count - 1);
+        }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _cleanupWarnings = new();
+
+    /// <summary>
+    /// Messages read by the operation that could not all be returned to their queue (for example SQS kept some
+    /// invisible): the operation's result stands, and the operator learns why messages may be missing for a while.
+    /// </summary>
+    private void ShowCleanupWarnings()
+    {
+        while (_cleanupWarnings.TryDequeue(out var warning))
+        {
+            AddActivity("Warning", "Messages not returned to their queue yet", warning);
         }
     }
 

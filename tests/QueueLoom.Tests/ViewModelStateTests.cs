@@ -941,7 +941,7 @@ public sealed partial class ViewModelStateTests
         }
     }
 
-    internal sealed class FakeWorkspace : IServiceBusWorkspace
+    internal sealed class FakeWorkspace : IServiceBusWorkspace, ICleanupWarningSource
     {
         public Dictionary<Guid, DeadLetterSnapshot> Snapshots { get; } = [];
 
@@ -956,6 +956,8 @@ public sealed partial class ViewModelStateTests
         public IReadOnlyList<BrowsedMessage> BrowseMessages { get; set; } = [];
         public List<SendMessageRequest> SentMessages { get; } = [];
         public Action? OnSend { get; set; }
+        public string? BrowseCleanupWarning { get; set; }
+        public event EventHandler<string>? CleanupWarning;
         public Func<Task>? SendGate { get; set; }
         public Action? OnDelete { get; set; }
         public Func<CancellationToken, Task>? CleanupOperationGate { get; set; }
@@ -1063,6 +1065,7 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             BrowseRequests.Add(request);
+            if (BrowseCleanupWarning is { } warning) CleanupWarning?.Invoke(this, warning);
             if (CleanupOperationGate is not null) await CleanupOperationGate(cancellationToken);
             return BrowseMessages
                 .Where(m => m.SequenceNumber >= (request.FromSequenceNumber ?? 0))
@@ -1074,6 +1077,7 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             SearchRequests.Add(request);
+            if (BrowseCleanupWarning is { } searchWarning) CleanupWarning?.Invoke(this, searchWarning);
             if (SearchGate is not null) await SearchGate(cancellationToken);
             var now = DateTimeOffset.UtcNow;
             var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
@@ -1213,6 +1217,7 @@ public sealed partial class ViewModelStateTests
             IProgress<DeadLetterMessageDeletionProgress>? progress = null)
         {
             DeleteRequests.Add(request);
+            if (BrowseCleanupWarning is { } deleteWarning) CleanupWarning?.Invoke(this, deleteWarning);
             OnDelete?.Invoke();
             var now = DateTimeOffset.UtcNow;
             return Task.FromResult(new DeleteDeadLetterMessagesResult(

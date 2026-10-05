@@ -137,8 +137,9 @@ internal sealed class WindowFixture : IAsyncDisposable
         var accessor = new TopLevelAccessor();
         OperationStore = new BatchReplayStore(Path.Combine(_dataDirectory, "operations"));
         ActivityJournal = new FileActivityJournal(Path.Combine(_dataDirectory, "activity"));
+        ProfileRepository = new InMemoryProfileRepository(profiles);
         ViewModel = new MainWindowViewModel(
-            new InMemoryProfileRepository(profiles),
+            ProfileRepository,
             secretVault,
             workspace,
             new WindowDialogService(accessor),
@@ -167,6 +168,18 @@ internal sealed class WindowFixture : IAsyncDisposable
     }
 
     public MainWindowViewModel ViewModel { get; }
+    public InMemoryProfileRepository ProfileRepository { get; }
+    public string DataDirectory => _dataDirectory;
+
+    /// <summary>Shows the window while loading environments is held by <paramref name="gate"/>.</summary>
+    public static async Task<WindowFixture> OpenHeldAsync(Task gate)
+    {
+        var fixture = new WindowFixture(DemoData.Development);
+        fixture.ProfileRepository.ListGate = gate;
+        fixture.Window.Show();
+        await fixture.SettleAsync();
+        return fixture;
+    }
     public BatchReplayStore OperationStore { get; }
     public FileActivityJournal ActivityJournal { get; }
 

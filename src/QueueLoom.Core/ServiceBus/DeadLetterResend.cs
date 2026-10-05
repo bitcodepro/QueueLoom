@@ -118,20 +118,31 @@ public static class DeadLetterResender
                 continue;
             }
 
+            var attempted = false;
             try
             {
                 if (index > 0 && delay > TimeSpan.Zero)
                 {
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 }
+                attempted = true;
                 await workspace.SendMessageAsync(new SendMessageRequest(items[index].Destination, items[index].Message), cancellationToken)
                     .ConfigureAwait(false);
                 results[index] = new ResendItemResult(items[index], ResendOutcome.Sent);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !attempted)
+            {
+                // Cancelled while waiting for the rate limit: this message was never offered to the service.
+                results[index] = new ResendItemResult(items[index], ResendOutcome.Cancelled);
+            }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // A send interrupted by cancellation may or may not have reached the service: keep the original.
-                results[index] = new ResendItemResult(items[index], ResendOutcome.Cancelled);
+                // Cancelled while the send was under way: the service may have accepted it before the answer was lost.
+                // That is not "not sent": the original is kept, and sending it again blindly could duplicate it.
+                failed++;
+                results[index] = new ResendItemResult(items[index], ResendOutcome.Failed,
+                    $"Cancelled while sending: whether {items[index].Destination.DisplayName} received it is unknown. The original " +
+                    "was kept; check the destination before sending it again.");
             }
             catch (Exception exception)
             {

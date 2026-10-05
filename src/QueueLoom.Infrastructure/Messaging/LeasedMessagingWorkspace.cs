@@ -15,7 +15,7 @@ namespace QueueLoom.Infrastructure.Messaging;
 /// backing a held message up to disk first and only then settling it, the same guarantee QueueLoom gives
 /// for Azure Service Bus.
 /// </summary>
-public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
+public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupWarningSource
 {
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(1);
     internal const int EmptyReceiveConfirmations = 2;
@@ -718,7 +718,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         };
     }
 
-    private static async Task<IReadOnlyList<DeadLetterMessageDeletionResult>> DeleteFromChannelAsync(
+    private async Task<IReadOnlyList<DeadLetterMessageDeletionResult>> DeleteFromChannelAsync(
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
         IReadOnlyList<DeadLetterMessageKey> keys,
@@ -818,12 +818,38 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
                 : key.SequenceNumber == message.SequenceNumber;
     }
 
-    private static async Task<string?> ReleaseQuietlyAsync(ILeasedMessageChannel channel, List<LeasedMessage> held)
+    /// <inheritdoc />
+    public event EventHandler<string>? CleanupWarning;
+
+    /// <summary>Releases what is still held; a cleanup failure is returned and announced, never thrown.</summary>
+    private async Task<string?> ReleaseQuietlyAsync(ILeasedMessageChannel channel, List<LeasedMessage> held)
+    {
+        var error = await ReleaseQuietlyCoreAsync(channel, held).ConfigureAwait(false);
+        if (error is not null)
+        {
+            try
+            {
+                CleanupWarning?.Invoke(this, error);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // A listener's failure must not turn the operation's result into an error.
+            }
+        }
+        return error;
+    }
+
+    private static async Task<string?> ReleaseQuietlyCoreAsync(ILeasedMessageChannel channel, List<LeasedMessage> held)
     {
         string? error = null;
         try
         {
             if (held.Count > 0) await channel.ReleaseAsync(held, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (IOException exception)
+        {
+            // The channel says what it could not release and what that means (for example SQS: visible again later).
+            error = exception.Message;
         }
         catch
         {

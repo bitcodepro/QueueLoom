@@ -94,6 +94,46 @@ public sealed class SharedSqsDeadLetterAuditTests
         Assert.Equal(LeasedMessagingWorkspace.MaximumHeldDuringPurge, broker.Released.Count);
     }
 
+    // Review: a browse whose messages cannot all be made visible again still returns them, and the workspace tells
+    // (CleanupWarning) that some stay hidden until their visibility timeout ends.
+    [Fact]
+    public async Task ABrowseWhoseReleaseFailsReturnsTheMessagesAndWarns()
+    {
+        using var directory = new TemporaryDirectory();
+        var broker = new StuckReleaseClient();
+        await using var workspace = CreateWorkspace(directory.Path, broker, 2);
+        var warnings = new List<string>();
+        ((ICleanupWarningSource)workspace).CleanupWarning += (_, warning) => warnings.Add(warning);
+
+        var messages = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("q"), ServiceBusSubQueue.DeadLetter));
+
+        Assert.Equal(["a", "b"], messages.Select(message => message.Properties.MessageId));
+        var warning = Assert.Single(warnings);
+        Assert.Contains("could not be made visible again", warning, StringComparison.Ordinal);
+    }
+
+    private sealed class StuckReleaseClient() : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost" })
+    {
+        private bool _received;
+        public override Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default)
+        {
+            if (_received) return Task.FromResult(new ReceiveMessageResponse { Messages = [] });
+            _received = true;
+            return Task.FromResult(new ReceiveMessageResponse
+            {
+                Messages = new[] { "a", "b" }.Select(id => new Message
+                {
+                    MessageId = id, ReceiptHandle = id, Body = id, Attributes = new() { ["DeadLetterQueueSourceArn"] = QueueArn }
+                }).ToList()
+            });
+        }
+        public override Task<ChangeMessageVisibilityBatchResponse> ChangeMessageVisibilityBatchAsync(ChangeMessageVisibilityBatchRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChangeMessageVisibilityBatchResponse
+            {
+                Failed = [new BatchResultErrorEntry { Id = request.Entries[0].Id, Code = "InternalError", SenderFault = false, Message = "busy" }]
+            });
+    }
+
     private static AwsSqsSnsWorkspace CreateWorkspace(string root, MixedSqsClient broker) => CreateWorkspace(root, broker, broker.Ids.Length);
 
     private static AwsSqsSnsWorkspace CreateWorkspace(string root, AmazonSQSClient broker, int sharedCount)

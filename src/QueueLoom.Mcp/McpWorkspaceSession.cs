@@ -18,6 +18,30 @@ public sealed class McpWorkspaceSession(
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _connectedConfigurationIdentity;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _cleanupWarnings = Subscribe(workspace);
+
+    private static System.Collections.Concurrent.ConcurrentQueue<string> Subscribe(IServiceBusWorkspace workspace)
+    {
+        var queue = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        if (workspace is ICleanupWarningSource source)
+        {
+            source.CleanupWarning += (_, warning) => queue.Enqueue(warning);
+        }
+        return queue;
+    }
+
+    /// <summary>
+    /// Messages a tool read that could not all be returned to their queue: recorded in Activity and handed to the tool
+    /// (which adds them to its reply). The tool's own result stands.
+    /// </summary>
+    private void TakeCleanupWarnings(ServiceBusProfile profile, List<string>? into)
+    {
+        while (_cleanupWarnings.TryDequeue(out var warning))
+        {
+            into?.Add(warning);
+            Record("Warning", "Messages not returned to their queue yet", warning, profile);
+        }
+    }
 
     public IServiceBusWorkspace Workspace => workspace;
 
@@ -67,7 +91,8 @@ public sealed class McpWorkspaceSession(
     public async Task<T> ReadAsync<T>(
         ServiceBusProfile profile,
         Func<IServiceBusWorkspace, CancellationToken, Task<T>> read,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        List<string>? cleanupWarnings = null)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -77,6 +102,7 @@ public sealed class McpWorkspaceSession(
         }
         finally
         {
+            TakeCleanupWarnings(profile, cleanupWarnings);
             _gate.Release();
         }
     }
@@ -85,7 +111,8 @@ public sealed class McpWorkspaceSession(
     public async Task<T> WriteAsync<T>(
         ServiceBusProfile profile,
         Func<IServiceBusWorkspace, CancellationToken, Task<T>> write,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        List<string>? cleanupWarnings = null)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -122,6 +149,7 @@ public sealed class McpWorkspaceSession(
         }
         finally
         {
+            TakeCleanupWarnings(profile, cleanupWarnings);
             _gate.Release();
         }
     }
