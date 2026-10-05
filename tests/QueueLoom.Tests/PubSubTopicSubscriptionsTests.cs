@@ -132,6 +132,48 @@ public sealed class PubSubTopicSubscriptionsTests
         Assert.Empty(subscriber.Deleted);
     }
 
+    // The same name was created meanwhile on the same topic but without our settings, and our request then failed
+    // ambiguously: that subscription is not the one requested, so creation is not reported as done.
+    [Fact]
+    public async Task Create_TimedOutWhileAnIncompatibleSameTopicSubscriptionAppearedIsNotSuccess()
+    {
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber
+        {
+            UnavailableOn = "projects/project-a/subscriptions/orders",
+            AppearOnFailure = new Subscription { Name = "projects/project-a/subscriptions/orders", Topic = "projects/project-a/topics/events", AckDeadlineSeconds = 10 }
+        };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(new QueueDefinition("orders",
+            new QueueSettings(LockDuration: TimeSpan.FromSeconds(60)), CreateDeadLetterQueue: true, TopicName: "events")));
+
+        Assert.Contains("someone else", error.Message, StringComparison.Ordinal);
+        Assert.Equal(10, subscriber.Existing["projects/project-a/subscriptions/orders"].AckDeadlineSeconds);
+        Assert.Empty(subscriber.Deleted);
+    }
+
+    // Dead-letter setup failed before the subscription itself was requested; a same-topic subscription created by someone
+    // else meanwhile must not be taken as ours.
+    [Fact]
+    public async Task Create_FailingInDeadLetterSetupIsNotSuccessEvenIfTheNameAppeared()
+    {
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber
+        {
+            UnavailableOn = "projects/project-a/subscriptions/orders-dead-letter",
+            AppearOnFailure = new Subscription { Name = "projects/project-a/subscriptions/orders", Topic = "projects/project-a/topics/events" }
+        };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events")));
+
+        Assert.Contains("did not create", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("projects/project-a/subscriptions/orders", subscriber.Created);
+        Assert.Empty(subscriber.Deleted);
+    }
+
     // A timeout whose outcome cannot be read back is reported as uncertain: the dead-letter resources may already serve
     // the subscription, so the message must not present them as safe to delete.
     [Fact]
@@ -225,6 +267,9 @@ public sealed class PubSubTopicSubscriptionsTests
         /// <summary>Created on the server, then DEADLINE_EXCEEDED before the response arrives.</summary>
         public string? LoseResponseOf { get; init; }
         public bool DenyReadsAfterLoss { get; init; }
+        /// <summary>Creating this name fails with Unavailable after <see cref="AppearOnFailure"/> was created by someone else.</summary>
+        public string? UnavailableOn { get; init; }
+        public Subscription? AppearOnFailure { get; init; }
         private bool _lost;
         public List<string> Created { get; } = [];
         public List<string> Deleted { get; } = [];
@@ -239,6 +284,11 @@ public sealed class PubSubTopicSubscriptionsTests
         {
             if (Refuse is { } refuse && refuse.Name == request.Name)
                 return Task.FromException<Subscription>(new RpcException(new Status(refuse.Status, "refused by the fake")));
+            if (request.Name == UnavailableOn)
+            {
+                if (AppearOnFailure is { } other) Existing[other.Name] = other;
+                return Task.FromException<Subscription>(new RpcException(new Status(StatusCode.Unavailable, "unavailable")));
+            }
             if (Existing.ContainsKey(request.Name))
                 return Task.FromException<Subscription>(new RpcException(new Status(StatusCode.AlreadyExists, "exists")));
             Created.Add(request.Name);

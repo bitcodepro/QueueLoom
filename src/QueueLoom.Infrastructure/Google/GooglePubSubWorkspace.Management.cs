@@ -70,6 +70,7 @@ public sealed partial class GooglePubSubWorkspace
             // topic and subscription would have been made. A taken name is refused here, before anything is created.
             await EnsureSubscriptionMissingAsync(subscription.SubscriptionName, token).ConfigureAwait(false);
             var created = new List<string>();
+            var mainAttempted = false;
             try
             {
                 if (definition.CreateDeadLetterQueue)
@@ -97,7 +98,18 @@ public sealed partial class GooglePubSubWorkspace
                     };
                 }
 
+                mainAttempted = true;
                 await Subscriber.CreateSubscriptionAsync(subscription, token).ConfigureAwait(false);
+            }
+            catch (RpcException exception) when (!mainAttempted && !IsDefiniteRejection(exception.StatusCode))
+            {
+                // The dead-letter setup failed before the subscription itself was requested, so this call did not create
+                // it, whatever a read-back would find (another operator may be creating the same name meanwhile).
+                var leftovers = created.Count == 0 ? string.Empty : $" Created before that: {string.Join(" and ", created)}.";
+                throw new InvalidOperationException(
+                    $"Pub/Sub did not create the subscription '{definition.Name}': setting up its dead-letter topic failed " +
+                    $"({exception.Status.Detail}), and whether that step took effect is unknown.{leftovers} Check the " +
+                    $"'{definition.Name}{DeadLetterEnding}' topic and subscription in Google Cloud before retrying.", exception);
             }
             catch (RpcException exception) when (!IsDefiniteRejection(exception.StatusCode))
             {
@@ -116,9 +128,18 @@ public sealed partial class GooglePubSubWorkspace
                 {
                     known = false;
                 }
-                if (existing is not null && existing.Topic == subscription.Topic)
+                if (existing is not null)
                 {
-                    return;
+                    if (HasRequestedConfiguration(existing, subscription))
+                    {
+                        return;
+                    }
+                    // Someone else created the same name meanwhile with other settings: it is theirs, not changed here.
+                    throw new InvalidOperationException(
+                        $"Whether Pub/Sub created the subscription '{definition.Name}' is unknown ({exception.Status.Detail}): a " +
+                        "subscription with that name exists now, but not with the requested topic, dead-letter policy, " +
+                        "retention or acknowledgement deadline, so it was probably created by someone else. It was left " +
+                        "unchanged; check it in Google Cloud before deleting anything.", exception);
                 }
                 var leftovers = created.Count == 0 ? string.Empty : $" Created before that: {string.Join(" and ", created)}.";
                 throw new InvalidOperationException(known
@@ -142,6 +163,16 @@ public sealed partial class GooglePubSubWorkspace
                       "Delete them in Google Cloud if nothing else uses them.", exception);
             }
         }, cancellationToken);
+
+    /// <summary>Whether a read-back subscription carries everything this request asked for.</summary>
+    private static bool HasRequestedConfiguration(Subscription existing, Subscription requested) =>
+        existing.Topic == requested.Topic
+        && (requested.AckDeadlineSeconds == 0 || existing.AckDeadlineSeconds == requested.AckDeadlineSeconds)
+        && (requested.MessageRetentionDuration is null || Equals(existing.MessageRetentionDuration, requested.MessageRetentionDuration))
+        && (requested.DeadLetterPolicy is null
+            ? existing.DeadLetterPolicy is null
+            : existing.DeadLetterPolicy is { } policy && policy.DeadLetterTopic == requested.DeadLetterPolicy.DeadLetterTopic
+              && policy.MaxDeliveryAttempts == requested.DeadLetterPolicy.MaxDeliveryAttempts);
 
     /// <summary>Pub/Sub answered and refused the request, so nothing was created by it.</summary>
     private static bool IsDefiniteRejection(StatusCode code) => code is StatusCode.AlreadyExists or StatusCode.InvalidArgument
