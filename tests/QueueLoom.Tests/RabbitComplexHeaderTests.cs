@@ -170,32 +170,38 @@ public sealed class RabbitComplexHeaderTests
             new Dictionary<string, object?> { ["x-match"] = "all", ["meta"] = "x" }, message).Outcome);
     }
 
-    // A quorum queue counts every acquisition in x-delivery-count / x-acquired-count; reading a message again must not
-    // change its fingerprint, while a different user header does.
+    // Headers named like broker counters are left out of a message's stable identity only where its reader established
+    // that the broker writes them (a quorum queue's x-delivery-count, RabbitMQ 4.3's x-acquired-count). Elsewhere they
+    // are the producer's and keep messages apart, even when the chosen one is gone and only a counter twin remains.
     [Fact]
-    public void BrokerDeliveryCountersAreNotPartOfTheFingerprint()
+    public void OnlyBrokerOwnedCountersAreLeftOutOfTheIdentity()
     {
-        BrowsedMessage Read(long deliveries, string tenant) => RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(), new BasicProperties
+        var brokerOwned = new HashSet<string>(StringComparer.Ordinal) { "x-delivery-count", "x-acquired-count" };
+        BrowsedMessage Read(long count, string tenant, bool owned) => RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(), new BasicProperties
         {
             MessageId = "same",
             Headers = new Dictionary<string, object?>
             {
-                ["x-delivery-count"] = deliveries, ["x-acquired-count"] = deliveries, ["tenant"] = System.Text.Encoding.UTF8.GetBytes(tenant)
+                ["x-delivery-count"] = count, ["x-acquired-count"] = count, ["tenant"] = System.Text.Encoding.UTF8.GetBytes(tenant)
             }
-        }, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter);
+        }, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter) with
+        {
+            BrokerOwnedHeaders = owned ? brokerOwned : new HashSet<string>()
+        };
 
-        // The counter changed (the broker's doing): the same message is still found by its fingerprint.
-        Assert.Equal(MessageFingerprint.Stable(Read(1, "acme")), MessageFingerprint.Stable(Read(5, "acme")));
-        var later = Read(5, "acme");
-        Assert.Same(later, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(Read(1, "acme")), [later], out _)));
-        // A different user header is a different message.
-        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(1, "acme")), [Read(1, "other")], out _));
-        // Two messages that differ only in such a header (set by their producer): the full fingerprint picks one.
-        var one = Read(1, "acme");
-        var two = Read(2, "acme");
-        Assert.Same(two, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(Read(2, "acme")), [one, two], out _)));
-        // If neither matches exactly and both differ only in counters, which one was meant is unknown.
-        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(3, "acme")), [one, two], out var ambiguous));
+        // Broker-owned (quorum): the broker raised the counter; the same message is still found.
+        var later = Read(5, "acme", owned: true);
+        Assert.Same(later, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(Read(1, "acme", owned: true)), [later], out _)));
+        // Producer-owned (RabbitMQ 4.2 classic): a different counter value is a different message, also when it is alone.
+        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(2, "acme", owned: false)), [Read(1, "acme", owned: false)], out var ambiguous));
+        Assert.False(ambiguous);
+        // A different user header is always a different message.
+        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(1, "acme", owned: true)), [Read(1, "other", owned: true)], out _));
+        // Two broker-owned counter twins, neither matching exactly: which one was meant is unknown.
+        var one = Read(1, "acme", owned: true);
+        var two = Read(2, "acme", owned: true);
+        Assert.Same(two, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(Read(2, "acme", owned: true)), [one, two], out _)));
+        Assert.Empty(MessageFingerprint.Find(MessageFingerprint.Of(Read(3, "acme", owned: true)), [one, two], out ambiguous));
         Assert.True(ambiguous);
     }
 

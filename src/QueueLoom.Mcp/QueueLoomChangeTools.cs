@@ -492,7 +492,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             keys.Where(key => !found.ContainsKey(key)).ToArray());
     }
 
-    /// <summary>The same message content, everything included (a producer's own counter header too).</summary>
+    /// <summary>The same message content, everything included (a header named like a broker counter too).</summary>
     private static bool SameMessage(BrowsedMessage first, BrowsedMessage second) =>
         MessageFingerprint.Full(first) == MessageFingerprint.Full(second);
 

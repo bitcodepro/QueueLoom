@@ -11,32 +11,25 @@ namespace QueueLoom.Core.ServiceBus;
 public static class MessageFingerprint
 {
     /// <summary>
-    /// Headers a broker may change while a message waits: a RabbitMQ quorum queue counts every acquisition (reading it
-    /// to show it is one) in x-delivery-count, and RabbitMQ 4.3 in x-acquired-count.
-    /// </summary>
-    public static readonly IReadOnlySet<string> VolatileHeaders = new HashSet<string>(StringComparer.Ordinal)
-    {
-        "x-delivery-count", "x-acquired-count"
-    };
-
-    /// <summary>
     /// The fingerprint to hand out: the hash of everything the message carries, followed by the hash without the
-    /// headers in <see cref="VolatileHeaders"/>. A producer may set such a header itself (RabbitMQ 4.2 classic queues
-    /// keep an incoming x-acquired-count), so the full part decides first; the second part only recognizes the same
-    /// message after the broker changed its counter (see <see cref="Find"/>).
+    /// headers its reader established as broker-owned (<see cref="BrowsedMessage.BrokerOwnedHeaders"/>). A producer may
+    /// set a header of the same name itself (RabbitMQ 4.2 classic queues keep an incoming x-acquired-count), so names
+    /// alone prove nothing; the second part only recognizes the same message after the broker changed such a header
+    /// (see <see cref="Find"/>).
     /// </summary>
     public static string Of(BrowsedMessage message) => Full(message) + Stable(message);
 
     /// <summary>The hash of everything the message carries.</summary>
     public static string Full(BrowsedMessage message) => Hash(message, skipVolatile: false);
 
-    /// <summary>The hash without the headers a broker may change while the message waits.</summary>
+    /// <summary>The hash without the headers the broker owns where the message was read.</summary>
     public static string Stable(BrowsedMessage message) => Hash(message, skipVolatile: true);
 
     /// <summary>
     /// The messages that are the one <paramref name="fingerprint"/> was handed out for: those identical to it, or
-    /// otherwise the single message that differs from it only in broker counters. Several such messages would be a
-    /// guess, so <paramref name="ambiguous"/> is then set and nothing is returned.
+    /// otherwise the single message that differs from it only in headers its reader established as broker-owned (where
+    /// nothing is, the second part equals the first and nothing else matches). Several such messages would be a guess,
+    /// so <paramref name="ambiguous"/> is then set and nothing is returned.
     /// </summary>
     public static IReadOnlyList<BrowsedMessage> Find(string fingerprint, IEnumerable<BrowsedMessage> candidates, out bool ambiguous)
     {
@@ -79,7 +72,7 @@ public static class MessageFingerprint
         {
             Add(value);
         }
-        foreach (var property in message.ApplicationProperties.Where(property => !skipVolatile || !VolatileHeaders.Contains(property.Name)))
+        foreach (var property in message.ApplicationProperties.Where(property => !skipVolatile || !message.BrokerOwnedHeaders.Contains(property.Name)))
         {
             Add(property.Name);
             Add(property.Type.ToString());

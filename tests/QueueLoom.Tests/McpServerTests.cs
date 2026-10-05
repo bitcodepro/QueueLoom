@@ -373,6 +373,27 @@ public sealed class McpServerTests
 
     // Review: on RabbitMQ 4.2 classic queues a producer may set x-acquired-count itself. Two messages that differ only
     // in that header: choosing B sends B, with B's value.
+    // ...and when the chosen B is gone and only A (counter 1) remains, A is not sent in its place.
+    [Fact]
+    public async Task ResendCopy_DoesNotSubstituteAProducerCounterTwin()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        BrowsedMessage Counted(string count) => new(Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, "same"u8.ToArray(),
+            new EditableMessageProperties(MessageId: "repeated-id"),
+            [new MessageApplicationProperty("x-acquired-count", ApplicationPropertyType.Int64, count)]) { HasSequenceNumber = false };
+        var b = Counted("2");
+        server.Workspace.BrowseMessages = [Counted("1")];
+
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { Pick(b) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+
+        Assert.Contains("None of the listed messages", error, StringComparison.Ordinal);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.Empty(server.Approver.Requests);
+    }
+
     [Fact]
     public async Task ResendCopy_KeepsAProducerSetCounterHeaderApart()
     {
