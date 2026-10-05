@@ -14,6 +14,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
 {
     private const long MaximumFileBytes = 10 * 1024 * 1024;
     private const string WriteLockName = ".queueloom-log.lock";
+    private const int LockWaitMilliseconds = 250;
 
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new(StringComparer.Ordinal);
     private readonly object _sync = new();
@@ -100,6 +101,15 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 }
                 if (File.Exists(path) && new FileInfo(path).Length > MaximumFileBytes)
                 {
+                    // Once per file: say why the log stops here, so a gap in it is not mistaken for silence.
+                    if (!File.Exists(path + ".full"))
+                    {
+                        File.AppendAllText(path,
+                            $"{timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture)} [WRN] QueueLoom: " +
+                            $"this log reached {MaximumFileBytes / (1024 * 1024)} MB; nothing more is written to it today.{Environment.NewLine}",
+                            Encoding.UTF8);
+                        File.WriteAllText(path + ".full", string.Empty);
+                    }
                     return;
                 }
                 File.AppendAllText(path, line.ToString(), Encoding.UTF8);
@@ -121,7 +131,8 @@ public sealed class FileLoggerProvider : ILoggerProvider
             {
                 return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
             }
-            catch (IOException) when (Environment.TickCount64 - started < 2_000)
+            // Logging runs on the caller's thread (often the window's): wait briefly, never long enough to stall it.
+            catch (IOException) when (Environment.TickCount64 - started < LockWaitMilliseconds)
             {
                 Thread.Sleep(1);
             }
@@ -146,6 +157,14 @@ public sealed class FileLoggerProvider : ILoggerProvider
             }
 
             var cutoff = now.AddDays(-_retainedDays).Date;
+            foreach (var marker in System.IO.Directory.EnumerateFiles(_directory, "queueloom-*.log.full"))
+            {
+                var stamp = Path.GetFileName(marker)["queueloom-".Length..^".log.full".Length];
+                if (DateTime.TryParseExact(stamp, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day) && day < cutoff)
+                {
+                    File.Delete(marker);
+                }
+            }
             foreach (var file in System.IO.Directory.EnumerateFiles(_directory, "queueloom-*.log"))
             {
                 var stamp = Path.GetFileNameWithoutExtension(file)["queueloom-".Length..];

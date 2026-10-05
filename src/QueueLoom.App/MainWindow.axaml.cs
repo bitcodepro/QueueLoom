@@ -93,6 +93,10 @@ public sealed partial class MainWindow : Window
     private async Task InitializeAsync(MainWindowViewModel viewModel, JsonAppSettingsStore settingsStore)
     {
         var settings = await settingsStore.LoadAsync();
+        if (settingsStore.LoadProblem is { } problem)
+        {
+            viewModel.ReportLocalDataProblem("Settings not loaded", problem);
+        }
         _theme?.Apply(settings.Theme);
         viewModel.ApplyPreferences(settings);
         // From here on every preference change is saved when it is made, including one made while environments are

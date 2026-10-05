@@ -67,4 +67,10 @@ public interface IScheduledResendStore
 
     /// <summary>Atomically consume this exact pending job, before sending or cancelling it.</summary>
     bool TryRemove(ScheduledResend expected);
+
+    /// <summary>
+    /// Once: where a damaged list of scheduled resends was set aside (its jobs will not run), or null. The window
+    /// tells the operator, who would otherwise expect those resends to happen.
+    /// </summary>
+    string? TakeSetAsideFile() => null;
 }

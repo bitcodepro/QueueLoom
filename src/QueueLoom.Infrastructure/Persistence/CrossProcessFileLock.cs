@@ -4,6 +4,9 @@ internal sealed class CrossProcessFileLock : IAsyncDisposable, IDisposable
 {
     private readonly FileStream _stream;
 
+    /// <summary>Test seam: replaces restricting the lock file's permissions.</summary>
+    internal static readonly AsyncLocal<Action<string>?> RestrictOverride = new();
+
     private CrossProcessFileLock(FileStream stream)
     {
         _stream = stream;
@@ -30,7 +33,17 @@ internal sealed class CrossProcessFileLock : IAsyncDisposable, IDisposable
                     FileShare.None,
                     bufferSize: 1,
                     FileOptions.Asynchronous | FileOptions.WriteThrough);
-                AtomicFile.RestrictToCurrentUser(path);
+                try
+                {
+                    (RestrictOverride.Value ?? AtomicFile.RestrictToCurrentUser)(path);
+                }
+                catch
+                {
+                    // Not handed out, so it must be released here: a stream left open would hold the lock for the
+                    // rest of the process, and every later acquire would wait out its deadline and fail.
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
                 return new CrossProcessFileLock(stream);
             }
             catch (IOException) when (DateTimeOffset.UtcNow < deadline)

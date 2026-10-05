@@ -40,6 +40,12 @@ public sealed partial class MainWindowViewModel
         {
             ScheduledResends.Add(CreateScheduledItem(resend));
         }
+        if (store?.TakeSetAsideFile() is { } aside)
+        {
+            AddActivity("Warning", "Scheduled resends not loaded",
+                $"The list of scheduled resends was damaged and could not be read, so none of its resends will run. It was " +
+                $"kept as {aside}; schedule them again from their dead-letter queues.");
+        }
         UpdateScheduledStatuses();
     }
 
