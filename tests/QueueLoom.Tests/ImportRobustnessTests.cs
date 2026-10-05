@@ -32,6 +32,39 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("could not be written", vm.ErrorText, StringComparison.Ordinal);
     }
 
+    // Windows: the export's replacement fails half-way and the original cannot be put back either. The error the
+    // operator sees (and the activity entry) says where both versions are, rather than only the innermost cause.
+    [Fact]
+    public async Task AFailedExportReplacementTellsWhereBothVersionsAre()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(file, "previous export");
+        var repository = new FakeProfileRepository([CreateProfile("Alpha", EnvironmentKind.Development)], null);
+        var dialogs = new FakeDialogService { SaveFilePath = file };
+        await using var vm = CreateViewModel(repository, new FakeWorkspace(), dialogs);
+        await vm.InitializeAsync();
+        QueueLoom.App.Services.SafeFileWriter.ReplaceOverride.Value = (_, destination, backup) =>
+        {
+            File.Move(destination, backup);
+            Directory.CreateDirectory(destination);
+            throw new IOException("Unable to move the replacement file to the file to be replaced.", unchecked((int)0x80070498));
+        };
+        try
+        {
+            await vm.ExportEnvironmentsCommand.ExecuteAsync();
+        }
+        finally
+        {
+            QueueLoom.App.Services.SafeFileWriter.ReplaceOverride.Value = null;
+        }
+
+        Assert.Contains("could not be put back", vm.ErrorText, StringComparison.Ordinal);
+        Assert.Contains(".previous", vm.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("the new version is at", vm.ErrorText, StringComparison.Ordinal);
+    }
+
     // The same storage problem also stops the list from being refreshed: the summary still says one environment was
     // imported, with the original cause, not the refresh error.
     [Fact]

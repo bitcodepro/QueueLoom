@@ -14,8 +14,8 @@ namespace QueueLoom.App.Services;
 /// access: on Windows, <see cref="File.Replace(string, string, string?, bool)"/> gives the result the replaced file's
 /// security descriptor (with a backup that restores the original if the replacement fails half-way); on Unix the file
 /// is renamed over with the existing mode. A rename gives the file the process's group, so when the existing file's
-/// group had more access than everyone else, that extra access is not carried over (it could otherwise reach another
-/// group): access only ever narrows, and the caller is told so it can say so.
+/// group and everyone else had different access, both get only what they had in common (see
+/// <see cref="ReplacementMode"/>): access only ever narrows, and the caller is told so it can say so.
 /// </para>
 /// </summary>
 internal static class SafeFileWriter
@@ -84,15 +84,22 @@ internal static class SafeFileWriter
     }
 
     /// <summary>
-    /// The mode for the replaced file: the existing one, except group access beyond what everyone else has, which the
-    /// new file's group (the process's) must not receive.
+    /// The mode for the replaced file, whose group becomes the process's. Who falls in the group class and who in the
+    /// "others" class then changes both ways: members of the old group become "others", members of the new group stop
+    /// being "others". Each class therefore gets only what both had before (group AND others), so nobody gains access;
+    /// the owner's bits are kept. Nothing changes when group and others had the same access (such as 0644).
     /// </summary>
     internal static UnixFileMode ReplacementMode(UnixFileMode existing, out bool narrowed)
     {
         var group = ((int)existing >> 3) & 7;
         var others = (int)existing & 7;
-        narrowed = (group & ~others) != 0;
-        return narrowed ? (UnixFileMode)(((int)existing & ~(7 << 3)) | ((group & others) << 3)) : existing;
+        narrowed = group != others;
+        if (!narrowed)
+        {
+            return existing;
+        }
+        var both = group & others;
+        return (UnixFileMode)(((int)existing & ~0b111_111) | (both << 3) | both);
     }
 
     /// <summary>A new file only the current user can open, restricted before anything is written to it.</summary>
@@ -177,9 +184,12 @@ internal static class SafeFileWriter
                 catch (Exception restore) when (restore is IOException or UnauthorizedAccessException)
                 {
                     keepTemporary = File.Exists(temporary);
+                    // No inner exception: the operator sees an exception's innermost message, and this one says where
+                    // the two versions are (the causes are in it too).
                     throw new IOException(
-                        $"'{path}' could not be replaced, and the previous version could not be put back. It is at " +
-                        $"'{backup}'" + (keepTemporary ? $"; the new version is at '{temporary}'." : "."), exception);
+                        $"'{path}' could not be replaced ({exception.Message}), and the previous version could not be " +
+                        $"put back ({restore.Message}). It is at '{backup}'" +
+                        (keepTemporary ? $"; the new version is at '{temporary}'." : "."));
                 }
             }
             throw;

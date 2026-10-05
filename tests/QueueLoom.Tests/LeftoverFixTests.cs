@@ -141,6 +141,8 @@ public sealed class LeftoverFixTests
     [Theory]
     [InlineData(0b110_100_000, 0b110_000_000, true)]  // 0640 -> 0600
     [InlineData(0b110_110_100, 0b110_100_100, true)]  // 0664 -> 0644
+    [InlineData(0b110_010_100, 0b110_000_000, true)]  // 0624 -> 0600: the old group could not read, so "others" may not
+    [InlineData(0b110_000_100, 0b110_000_000, true)]  // 0604 -> 0600: the old group was denied what others had
     [InlineData(0b110_100_100, 0b110_100_100, false)] // 0644 stays
     [InlineData(0b110_000_000, 0b110_000_000, false)] // 0600 stays
     [InlineData(0b111_101_101, 0b111_101_101, false)] // 0755 stays
@@ -148,6 +150,25 @@ public sealed class LeftoverFixTests
     {
         Assert.Equal((UnixFileMode)expected, SafeFileWriter.ReplacementMode((UnixFileMode)existing, out var wasNarrowed));
         Assert.Equal(narrowed, wasNarrowed);
+    }
+
+    // Effective access, class by class (Linux: owner, else group, else others), for every mode and for readers in the
+    // old group, the new group, both or neither: after the group changes, nobody may gain any permission.
+    [Fact]
+    public void SafeFileWriter_ReplacementModeNeverGrantsAnyoneMoreAfterTheGroupChanges()
+    {
+        for (var bits = 0; bits < 0b1_000_000_000; bits++)
+        {
+            var before = (UnixFileMode)bits;
+            var after = SafeFileWriter.ReplacementMode(before, out _);
+            foreach (var (inOld, inNew) in new[] { (false, false), (true, false), (false, true), (true, true) })
+            {
+                var had = inOld ? ((int)before >> 3) & 7 : (int)before & 7;
+                var has = inNew ? ((int)after >> 3) & 7 : (int)after & 7;
+                Assert.True((has & ~had) == 0, $"mode {bits:B9}, old group member {inOld}, new group member {inNew}");
+            }
+            Assert.Equal((int)before & 0b111_000_000, (int)after & 0b111_000_000);
+        }
     }
 
     // An ordinary 0644 file (group access no wider than everyone's) is replaced atomically and keeps its mode.
