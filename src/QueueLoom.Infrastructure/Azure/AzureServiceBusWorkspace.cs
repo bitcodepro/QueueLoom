@@ -296,22 +296,40 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
 
     private async Task DisposeClientsAsync()
     {
-        foreach (var sender in _senders.Values)
-        {
-            await sender.DisposeAsync().ConfigureAwait(false);
-        }
+        // Release everything even when one link fails to close; a faulted sender must not leak the client.
+        var senders = _senders.Values.ToArray();
         _senders.Clear();
-
-        if (_client is not null)
-        {
-            await _client.DisposeAsync().ConfigureAwait(false);
-        }
-
+        var client = _client;
         _client = null;
         _administration = null;
         _profile = null;
         _cachedTopology = null;
         _previousDeadLetterCounts.Clear();
+
+        foreach (var sender in senders)
+        {
+            try
+            {
+                await sender.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Closing a link that already failed is not actionable; disconnect, reconnect and dispose must go on.
+            }
+        }
+
+        if (client is not null)
+        {
+            try
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Closing a link that already failed is not actionable; disconnect, reconnect and dispose must go on.
+            }
+        }
+
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

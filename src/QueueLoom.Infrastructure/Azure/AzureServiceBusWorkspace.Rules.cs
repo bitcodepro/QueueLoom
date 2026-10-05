@@ -64,6 +64,8 @@ public sealed partial class AzureServiceBusWorkspace
     {
         ArgumentNullException.ThrowIfNull(rule);
         ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
         var administration = GetAdministrationClient();
         if (replace)
@@ -85,6 +87,8 @@ public sealed partial class AzureServiceBusWorkspace
 
     public async Task DeleteSubscriptionRuleAsync(string topic, string subscription, string rule, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
         await Administer(() => GetAdministrationClient().DeleteRuleAsync(topic, subscription, rule, cancellationToken)).ConfigureAwait(false);

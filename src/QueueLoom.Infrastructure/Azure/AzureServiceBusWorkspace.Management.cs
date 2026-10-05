@@ -40,6 +40,8 @@ public sealed partial class AzureServiceBusWorkspace
     {
         ArgumentNullException.ThrowIfNull(definition);
         ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
         RefuseOutOfRange(definition.Settings);
         var options = new CreateQueueOptions(definition.Name);
@@ -51,6 +53,8 @@ public sealed partial class AzureServiceBusWorkspace
     public async Task UpdateQueueSettingsAsync(string queue, QueueSettings settings, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
         RefuseOutOfRange(settings);
@@ -78,6 +82,8 @@ public sealed partial class AzureServiceBusWorkspace
 
     public async Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
         GetConnectedProfile().EnsureQueueManagementAllowed();
         await Administer(() => GetAdministrationClient().DeleteQueueAsync(queue, cancellationToken)).ConfigureAwait(false);
