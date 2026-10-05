@@ -17,6 +17,9 @@ public static class MessageDraftValidator
     /// <summary>AMQP 0-9-1 short string (RabbitMQ message-id, correlation-id, content-type, reply-to, type, app-id).</summary>
     public const int MaxAmqpShortStringBytes = 255;
 
+    /// <summary>RabbitMQ's largest per-message expiration (MAX_EXPIRY_TIMER), in milliseconds.</summary>
+    public const long MaxRabbitMqExpirationMilliseconds = 315_360_000_000;
+
     /// <summary>Google Pub/Sub quotas: 100 attributes per message, keys up to 256 bytes, values up to 1,024 bytes.</summary>
     public const int MaxPubSubAttributes = 100;
     public const int MaxPubSubAttributeKeyBytes = 256;
@@ -154,6 +157,15 @@ public static class MessageDraftValidator
                 ValidateBytes(properties.ReplyTo, nameof(properties.ReplyTo), errors, MaxAmqpShortStringBytes, shortString);
                 ValidateBytes(properties.AmqpType, nameof(properties.AmqpType), errors, MaxAmqpShortStringBytes, shortString);
                 ValidateBytes(properties.AmqpAppId, nameof(properties.AmqpAppId), errors, MaxAmqpShortStringBytes, shortString);
+                // RabbitMQ refuses a per-message expiration above 10 years (rabbit_misc:check_expiry) and closes the channel.
+                if (properties.TimeToLive is { } rabbitTtl && (long)rabbitTtl.TotalMilliseconds > MaxRabbitMqExpirationMilliseconds)
+                {
+                    errors.Add(new ValidationError(
+                        "message.ttl.too_long",
+                        $"RabbitMQ accepts a time to live of at most {MaxRabbitMqExpirationMilliseconds:N0} ms (10 years); " +
+                        "shorten it or clear it.",
+                        nameof(properties.TimeToLive)));
+                }
                 break;
         }
 
@@ -224,6 +236,19 @@ public static class MessageDraftValidator
         {
             for (var index = 0; index < applicationProperties.Count; index++)
             {
+                // A numeric property travels as an SQS/SNS Number attribute, which only takes a plain decimal number:
+                // "1,000", "100-", "NaN" and "Infinity" are valid .NET values the service refuses.
+                if (applicationProperties[index] is { Value: { } numberValue } numeric && numeric.Type != ApplicationPropertyType.String &&
+                    MessageAttributeConventions.AwsDataType(numeric).StartsWith("Number", StringComparison.Ordinal) &&
+                    !AwsNumber.IsMatch(numberValue))
+                {
+                    var label = numeric.Name is { Length: > 40 } longName ? longName[..40] + "…" : numeric.Name;
+                    errors.Add(new ValidationError(
+                        "message.application_property.aws_number_invalid",
+                        $"Amazon SQS and SNS send '{label}' as a Number attribute, which only accepts a plain decimal number " +
+                        $"such as 1500 or -2.5e3; '{numberValue}' is refused. Enter it without separators, or send it as a String.",
+                        $"{nameof(MessageDraft.ApplicationProperties)}[{index}]"));
+                }
                 if (applicationProperties[index]?.Name is not { Length: > 0 } name || IsAwsAttributeName(name))
                 {
                     continue;

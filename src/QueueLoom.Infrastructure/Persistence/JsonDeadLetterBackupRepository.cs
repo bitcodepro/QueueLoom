@@ -251,8 +251,11 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadOptionalString(root, "replyToSessionId"),
             ReadOptionalString(root, "partitionKey"),
             ReadOptionalString(root, "transactionPartitionKey"),
-            ReadOptionalTimeSpan(root, "timeToLive"),
-            ReadOptionalDateTimeOffset(root, "scheduledEnqueueTimeUtc"),
+            // Azure backups store the SDK's defaults as values: TimeSpan.MaxValue for "no TTL" and 0001-01-01 for "not
+            // scheduled". A live browse shows both as absent, so a restored message must too; otherwise a resend
+            // carries a TTL no editor or other broker can take and a schedule in year 1.
+            ReadOptionalTimeSpan(root, "timeToLive") is { } ttl && ttl != TimeSpan.MaxValue ? ttl : null,
+            ReadOptionalDateTimeOffset(root, "scheduledEnqueueTimeUtc") is { } scheduled && scheduled != default ? scheduled : null,
             ReadOptionalString(root, "amqpType"),
             ReadOptionalString(root, "amqpAppId")) { NativeSubject = ReadOptionalString(root, "nativeSubject") };
         var applicationProperties = root.TryGetProperty("applicationProperties", out var values) &&
