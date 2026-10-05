@@ -1,3 +1,4 @@
+using QueueLoom.App.Services;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.Abstractions;
@@ -37,7 +38,8 @@ public sealed partial class MainWindowViewModel
         }
 
         var profiles = Profiles.Select(profile => profile.Profile).ToArray();
-        await File.WriteAllTextAsync(path, EnvironmentTransfer.Export(profiles), cancellationToken).ConfigureAwait(true);
+        // The user may pick an existing export: it is replaced only once the new one is complete.
+        await SafeFileWriter.WriteTextAsync(path, EnvironmentTransfer.Export(profiles), cancellationToken).ConfigureAwait(true);
         StatusText = $"Exported {profiles.Length:N0} environment(s) to {Path.GetFileName(path)}, without passwords, keys or connection strings";
         AddActivity("Info", "Environments exported", $"{profiles.Length:N0} environments · {path}");
     }

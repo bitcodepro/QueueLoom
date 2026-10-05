@@ -169,7 +169,8 @@ public static class UpdateRestart
             }
             TryWriteError(path, "Updated application failed; restoring the previous version: " + exception.Message);
             Restore(receipt);
-            File.WriteAllText(path, JsonSerializer.Serialize(receipt with { Recovered = true }));
+            // Written through a temporary file: a crash here must not leave the receipt empty or cut short.
+            SafeFileWriter.WriteText(path, JsonSerializer.Serialize(receipt with { Recovered = true }));
             // The helper may still map the failed executable on Windows. Keep it as evidence, never delete the backup first.
             using var recovered = Process.Start(new ProcessStartInfo(receipt.Target.Executable)
                 { UseShellExecute = false, WorkingDirectory = receipt.Target.InstallDirectory });

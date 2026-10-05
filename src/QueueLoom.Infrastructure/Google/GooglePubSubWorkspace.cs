@@ -396,11 +396,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             }
 
             // The subscription's own ack deadline can be as short as 10 seconds; hold messages longer.
-            await owner.Subscriber.ModifyAckDeadlineAsync(
-                    subscription,
-                    response.ReceivedMessages.Select(message => message.AckId),
-                    HoldSeconds,
-                    cancellationToken)
+            await HoldAsync(response.ReceivedMessages.Select(message => message.AckId).ToArray(), cancellationToken)
                 .ConfigureAwait(false);
 
             return response.ReceivedMessages
@@ -410,6 +406,55 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                     BelongsToSource(message.Message)))
                 .ToArray();
         }
+
+        /// <summary>
+        /// Extends the hold on messages just pulled. Pulling already counted a delivery attempt, so a transient failure is
+        /// retried rather than dropping the batch: dropped, the messages would come back only after the subscription's
+        /// ack deadline, and be pulled (and counted) again. If the hold cannot be set, they are released at once.
+        /// </summary>
+        private async Task HoldAsync(string[] ackIds, CancellationToken cancellationToken)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await owner.Subscriber.ModifyAckDeadlineAsync(subscription, ackIds, HoldSeconds, cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+                catch (RpcException exception) when (attempt < HoldAttempts && IsTransient(exception.StatusCode)
+                                                     && !cancellationToken.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is RpcException or OperationCanceledException)
+                {
+                    try
+                    {
+                        // Returned now instead of after the ack deadline; with a dead-letter policy this is the same
+                        // one delivery attempt the pull already counted.
+                        await owner.Subscriber.ModifyAckDeadlineAsync(subscription, ackIds, 0, CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (RpcException)
+                    {
+                        // They return by themselves when the subscription's ack deadline passes.
+                    }
+                    if (exception is OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    throw new InvalidOperationException(
+                        $"Pub/Sub did not hold the {ackIds.Length:N0} message(s) just read on '{subscription.SubscriptionId}' " +
+                        $"({((RpcException)exception).Status.Detail}); they were returned to the subscription unchanged.", exception);
+                }
+            }
+        }
+
+        private const int HoldAttempts = 3;
+
+        private static bool IsTransient(StatusCode code) =>
+            code is StatusCode.Unavailable or StatusCode.DeadlineExceeded or StatusCode.Internal or StatusCode.Aborted;
 
         public async Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
