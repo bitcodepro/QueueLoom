@@ -46,7 +46,9 @@ public sealed class AsyncRelayCommand(
 
     public async void Execute(object? parameter)
     {
-        await ExecuteAsync(parameter).ConfigureAwait(true);
+        // Avalonia invokes this from a click; a fault escaping async void terminates the process.
+        try { await ExecuteAsync(parameter).ConfigureAwait(true); }
+        catch (Exception error) { AsyncCommandFailures.Report(error); }
     }
 
     public Task ExecuteAsync(object? parameter = null)
@@ -152,7 +154,11 @@ public sealed class AsyncRelayCommand<T>(
         lock (_sync) return !_isDisposed && !_isRunning && (canExecute?.Invoke(parameter is T value ? value : default) ?? true);
     }
 
-    public async void Execute(object? parameter) => await ExecuteAsync(parameter is T value ? value : default).ConfigureAwait(true);
+    public async void Execute(object? parameter)
+    {
+        try { await ExecuteAsync(parameter is T value ? value : default).ConfigureAwait(true); }
+        catch (Exception error) { AsyncCommandFailures.Report(error); }
+    }
 
     public Task ExecuteAsync(T? parameter)
     {
@@ -206,4 +212,17 @@ public sealed class AsyncRelayCommand<T>(
     }
 
     public void NotifyCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+}
+
+/// <summary>Faults of commands started from the UI; they stay observable on <c>Completion</c> but never crash the app.</summary>
+public static class AsyncCommandFailures
+{
+    public static event Action<Exception>? Failed;
+
+    internal static void Report(Exception error)
+    {
+        try { Failed?.Invoke(error); }
+        catch (Exception) { }
+        System.Diagnostics.Trace.TraceError("Command failed: {0}", error.GetType().FullName);
+    }
 }

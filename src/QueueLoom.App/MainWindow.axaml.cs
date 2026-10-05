@@ -306,16 +306,11 @@ public sealed partial class MainWindow : Window
             _viewModel.PropertyChanged -= OnTrayRelevantPropertyChanged;
             RemoveTray();
             Opened -= OnOpened;
-            try
+            if (ShutdownCompleted is { } shutdownCompleted)
             {
-                if (ShutdownCompleted is { } shutdownCompleted)
-                {
-                    await shutdownCompleted();
-                }
-            }
-            catch (Exception exception)
-            {
-                _logger?.LogWarning(exception, "Releasing application services failed");
+                // Disposing the services waits for the workspace's running operations; a stuck one must not keep
+                // the window open, so this wait is bounded like the view model's.
+                await ShutdownWait.WithinAsync(shutdownCompleted, _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
             }
             _shutdownComplete = true;
             _shutdownInProgress = false;
