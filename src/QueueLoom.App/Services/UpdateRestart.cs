@@ -95,8 +95,8 @@ public static class UpdateRestart
     {
         if (_startupReceipt is null || _startupId is null) return false;
         var ready = _startupReceipt + "." + _startupId + ".ready";
-        File.WriteAllText(ready + ".tmp", _startupId);
-        File.Move(ready + ".tmp", ready, overwrite: true);
+        // Flushed before it is renamed into place: a power cut must not leave an empty acknowledgement behind.
+        SafeFileWriter.WriteText(ready, _startupId, narrowGroup: false);
         _startupReceipt = null;
         _startupId = null;
         RecordRecovery(RecordedRecovery.StartupAcknowledged);
@@ -109,8 +109,8 @@ public static class UpdateRestart
         var receipt = Read(path, id);
         var ready = path + "." + id + ".ready";
         using var handoff = OwnTransaction(path);
-        File.WriteAllText(path + ".helper.tmp", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        File.Move(path + ".helper.tmp", path + ".helper", overwrite: true);
+        SafeFileWriter.WriteText(path + ".helper", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            narrowGroup: false);
         try
         {
             try

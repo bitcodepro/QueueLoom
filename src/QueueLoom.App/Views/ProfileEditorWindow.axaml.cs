@@ -34,6 +34,7 @@ public sealed partial class ProfileEditorWindow : Window
 
     private async void LoadKeyFileClick(object? sender, RoutedEventArgs args)
     {
+        // async void: nothing may escape, or the application ends. The picker itself can fail too.
         try
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -46,18 +47,11 @@ public sealed partial class ProfileEditorWindow : Window
             {
                 return;
             }
-
-            await using var stream = await files[0].OpenReadAsync();
-            if (stream.Length > 64 * 1024)
-            {
-                return;
-            }
-            using var reader = new StreamReader(stream);
-            _viewModel.GoogleServiceAccountKey = await reader.ReadToEndAsync();
+            await _viewModel.LoadGoogleServiceAccountKeyAsync(() => files[0].OpenReadAsync());
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // The summary under the box keeps explaining what is expected.
+            _viewModel.ReportKeyFileProblem(exception);
         }
     }
 }

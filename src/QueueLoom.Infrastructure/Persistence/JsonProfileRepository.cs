@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using QueueLoom.Core.Abstractions;
@@ -219,12 +220,11 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
                 FileShare.Read,
                 bufferSize: 16 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var document = await JsonSerializer.DeserializeAsync<ProfileDocument>(
-                    stream,
-                    SerializerOptions,
-                    cancellationToken)
-                .ConfigureAwait(false)
-                ?? new ProfileDocument();
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+            var bytes = buffer.ToArray();
+            var document = JsonSerializer.Deserialize<ProfileDocument>(bytes, SerializerOptions) ?? new ProfileDocument();
+            document.ProfileExtras = ReadProfileExtras(bytes);
 
             if (document.SchemaVersion != 1 || document.Profiles is null)
             {
@@ -277,8 +277,70 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
     private Task SaveAsync(ProfileDocument document, CancellationToken cancellationToken)
     {
         document.SchemaVersion = 1;
-        var json = JsonSerializer.Serialize(document, SerializerOptions);
-        return AtomicFile.WriteTextAsync(_paths.ProfilesFile, json, cancellationToken);
+        var node = JsonSerializer.SerializeToNode(document, SerializerOptions)!;
+        // Fields of an environment that this version does not know (written by a newer QueueLoom) are put back on it,
+        // so editing any environment here does not strip them.
+        if (document.ProfileExtras.Count > 0 && node["profiles"] is JsonArray profiles)
+        {
+            foreach (var profile in profiles.OfType<JsonObject>())
+            {
+                if (profile["id"]?.GetValue<Guid>() is { } id && document.ProfileExtras.TryGetValue(id, out var extras))
+                {
+                    foreach (var (name, value) in extras)
+                    {
+                        if (!profile.ContainsKey(name))
+                        {
+                            profile[name] = JsonNode.Parse(value.GetRawText());
+                        }
+                    }
+                }
+            }
+        }
+        return AtomicFile.WriteTextAsync(_paths.ProfilesFile, node.ToJsonString(SerializerOptions), cancellationToken);
+    }
+
+    /// <summary>The names this version writes for an environment; anything else on one is kept as an extra.</summary>
+    private static readonly Lazy<HashSet<string>> KnownProfileFields = new(() =>
+    {
+        // The options get their default resolver (as serializing would give them) before their metadata is read.
+        SerializerOptions.MakeReadOnly(populateMissingResolver: true);
+        return new HashSet<string>(
+            SerializerOptions.GetTypeInfo(typeof(ServiceBusProfile)).Properties.Select(property => property.Name),
+            StringComparer.OrdinalIgnoreCase);
+    });
+
+    private static Dictionary<Guid, Dictionary<string, JsonElement>> ReadProfileExtras(byte[] json)
+    {
+        var extras = new Dictionary<Guid, Dictionary<string, JsonElement>>();
+        using var parsed = JsonDocument.Parse(json);
+        if (parsed.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return extras;
+        }
+        foreach (var property in parsed.RootElement.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, "profiles", StringComparison.OrdinalIgnoreCase) || property.Value.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+            foreach (var profile in property.Value.EnumerateArray())
+            {
+                if (profile.ValueKind != JsonValueKind.Object ||
+                    !profile.TryGetProperty("id", out var id) || !id.TryGetGuid(out var profileId))
+                {
+                    continue;
+                }
+                var unknown = profile.EnumerateObject()
+                    .Where(field => !KnownProfileFields.Value.Contains(field.Name))
+                    // Cloned: the parsed document is disposed when this returns.
+                    .ToDictionary(field => field.Name, field => field.Value.Clone(), StringComparer.Ordinal);
+                if (unknown.Count > 0)
+                {
+                    extras[profileId] = unknown;
+                }
+            }
+        }
+        return extras;
     }
 
     public void Dispose() => _gate.Dispose();
@@ -294,5 +356,9 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
         /// <summary>Fields this version does not know (for example from a newer QueueLoom), written back unchanged.</summary>
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalFields { get; set; }
+
+        /// <summary>Per environment, the fields this version does not know; written back onto that environment.</summary>
+        [JsonIgnore]
+        public Dictionary<Guid, Dictionary<string, JsonElement>> ProfileExtras { get; set; } = [];
     }
 }

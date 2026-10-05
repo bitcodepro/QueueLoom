@@ -26,6 +26,7 @@ public static class ProtoDecoder
     {
         ArgumentNullException.ThrowIfNull(type);
         ArgumentNullException.ThrowIfNull(schemas);
+        DecodeAttempts++;
         var stats = new Stats();
         object? tree;
         try
@@ -62,8 +63,19 @@ public static class ProtoDecoder
 
         (ProtoMessageType Type, string Json, int Fields)? best = null;
         var copy = body.ToArray();
+        // One pass over the top-level fields: a type that does not declare one of them with a matching wire type
+        // cannot fit exactly, so it is not decoded at all. With hundreds of types this keeps browsing fast; the result
+        // is the same, since a full decode would reject those types anyway.
+        if (TopLevelFields(copy) is not { } present)
+        {
+            return null;
+        }
         foreach (var type in schemas.Messages)
         {
+            if (!present.All(field => type.FieldsByNumber.TryGetValue(field.Number, out var declared) && Fits(declared, field.WireType)))
+            {
+                continue;
+            }
             if (Decode(copy, type, schemas) is not { Fit: >= 1 } candidate)
             {
                 continue;
@@ -75,6 +87,26 @@ public static class ProtoDecoder
             }
         }
         return best is { } found ? (found.Type, found.Json) : null;
+    }
+
+    /// <summary>Full decodes attempted on this thread; tests read it.</summary>
+    [ThreadStatic]
+    internal static int DecodeAttempts;
+
+    /// <summary>The distinct top-level field numbers and wire types; null when the bytes are not Protobuf.</summary>
+    private static HashSet<(int Number, int WireType)>? TopLevelFields(byte[] body)
+    {
+        var fields = new HashSet<(int, int)>();
+        var position = 0;
+        while (position < body.Length)
+        {
+            if (!TryReadTag(body, ref position, out var number, out var wireType) || number <= 0 || !Skip(body, ref position, wireType))
+            {
+                return null;
+            }
+            fields.Add((number, wireType));
+        }
+        return fields;
     }
 
     /// <summary>How many declared fields a fitting body sets, to prefer the type that explains the most of it.</summary>

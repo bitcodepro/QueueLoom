@@ -39,7 +39,7 @@ internal static class SafeFileWriter
         var keepTemporary = false;
         try
         {
-            await using (var stream = CreatePrivate(temporary, FileOptions.Asynchronous))
+            await using (var stream = CreatePrivate(temporary, FileOptions.Asynchronous, restrictOnWindows: true))
             {
                 await write(stream, cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
@@ -57,8 +57,10 @@ internal static class SafeFileWriter
     }
 
     /// <summary>
-    /// Synchronous variant. <paramref name="narrowGroup"/> false is for QueueLoom's own files (such as update receipts),
-    /// whose group grants nobody anything that matters: their mode is kept as it is.
+    /// Synchronous variant. <paramref name="narrowGroup"/> false is for QueueLoom's own files (such as update receipts
+    /// and startup acknowledgements), whose group grants nobody anything that matters: their mode is kept as it is, and
+    /// on Windows they keep the folder's inherited access instead of a private one (whose setting could fail on a
+    /// file system without access lists, which must not stop an update from acknowledging or recovering).
     /// </summary>
     /// <returns>True when group access had to be narrowed.</returns>
     public static bool WriteText(string path, string contents, bool narrowGroup = true)
@@ -67,7 +69,7 @@ internal static class SafeFileWriter
         var keepTemporary = false;
         try
         {
-            using (var stream = CreatePrivate(temporary, FileOptions.None))
+            using (var stream = CreatePrivate(temporary, FileOptions.None, restrictOnWindows: narrowGroup))
             {
                 stream.Write(new UTF8Encoding(false).GetBytes(contents));
                 stream.Flush(flushToDisk: true);
@@ -103,7 +105,7 @@ internal static class SafeFileWriter
     }
 
     /// <summary>A new file only the current user can open, restricted before anything is written to it.</summary>
-    private static FileStream CreatePrivate(string temporary, FileOptions options)
+    private static FileStream CreatePrivate(string temporary, FileOptions options, bool restrictOnWindows)
     {
         var settings = new FileStreamOptions
         {
@@ -116,7 +118,7 @@ internal static class SafeFileWriter
         var stream = new FileStream(temporary, settings);
         try
         {
-            if (OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows() && restrictOnWindows)
             {
                 RestrictToCurrentUser(temporary);
             }

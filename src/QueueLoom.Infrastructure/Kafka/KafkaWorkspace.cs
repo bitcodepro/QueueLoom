@@ -385,8 +385,22 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             for (var index = 0; index < messages.Count; index++)
             {
                 var message = messages[index].Message;
-                if (BodyDecoder.TryReadSchemaId(message.Body.Span, out var schemaId) &&
-                    await registry.GetAsync(schemaId, cancellationToken).ConfigureAwait(false) is { } schema)
+                if (!BodyDecoder.TryReadSchemaId(message.Body.Span, out var schemaId))
+                {
+                    continue;
+                }
+                MessageSchema? schema;
+                try
+                {
+                    schema = await registry.GetAsync(schemaId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // These records are read already (the channel has moved past them): they are handed over as they
+                    // are, without their schemas, rather than dropped, so a later page does not silently skip them.
+                    break;
+                }
+                if (schema is not null)
                 {
                     messages[index] = messages[index] with { Message = message with { Schema = schema } };
                 }

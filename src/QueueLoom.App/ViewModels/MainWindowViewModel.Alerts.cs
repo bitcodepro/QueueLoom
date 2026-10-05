@@ -88,8 +88,23 @@ public sealed partial class MainWindowViewModel
         };
     }
 
-    /// <summary>Sends a monitor alert without blocking the monitor; failures only go to the activity log.</summary>
-    private void RaiseMonitorAlert(string environment, string source, long count, long? previousCount)
+    /// <summary>At most this many alerts are delivered at once; a slow webhook cannot pile up deliveries.</summary>
+    internal const int MaximumAlertsInFlight = 4;
+
+    /// <summary>How long one alert may take to post to the webhook.</summary>
+    internal static readonly TimeSpan AlertDeliveryTimeout = TimeSpan.FromSeconds(30);
+
+    private int _alertsInFlight;
+
+    /// <summary>Alerts currently being delivered; tests wait on it.</summary>
+    internal int AlertsInFlight => Volatile.Read(ref _alertsInFlight);
+
+    /// <summary>
+    /// Sends a monitor alert without blocking the monitor; failures only go to the activity log. While
+    /// <see cref="MaximumAlertsInFlight"/> earlier alerts are still being delivered (a slow or hanging webhook), a new
+    /// one is skipped and noted instead of starting yet another delivery; each delivery is bounded in time.
+    /// </summary>
+    internal void RaiseMonitorAlert(string environment, string source, long count, long? previousCount)
     {
         if (_alerts is not { } alerts)
         {
@@ -97,6 +112,13 @@ public sealed partial class MainWindowViewModel
         }
 
         var alert = new MonitorAlert(environment, source, count, previousCount);
+        if (Interlocked.Increment(ref _alertsInFlight) > MaximumAlertsInFlight)
+        {
+            Interlocked.Decrement(ref _alertsInFlight);
+            AddActivity("Warning", "Alert not delivered",
+                $"{alert.Text}. {MaximumAlertsInFlight} earlier alerts are still being delivered, so this one was skipped; it is listed here.");
+            return;
+        }
         var webhook = HasValidAlertWebhook ? AlertWebhookUrl.Trim() : null;
         var system = SystemNotifications;
         _ = Task.Run(async () =>
@@ -109,13 +131,20 @@ public sealed partial class MainWindowViewModel
                 }
                 if (webhook is not null)
                 {
-                    await alerts.PostWebhookAsync(webhook, alert).ConfigureAwait(false);
+                    using var timeout = new CancellationTokenSource(AlertDeliveryTimeout);
+                    await alerts.PostWebhookAsync(webhook, alert, timeout.Token).ConfigureAwait(false);
                 }
             }
             catch (Exception exception)
             {
-                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-                    AddActivity("Error", "Alert not delivered", SanitizeException(exception)));
+                var text = exception is OperationCanceledException
+                    ? $"The webhook did not answer within {AlertDeliveryTimeout.TotalSeconds:0} seconds."
+                    : SanitizeException(exception);
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => AddActivity("Error", "Alert not delivered", text));
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _alertsInFlight);
             }
         });
     }
