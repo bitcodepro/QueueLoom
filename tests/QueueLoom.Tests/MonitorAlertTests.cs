@@ -201,6 +201,31 @@ public sealed class ProtoSchemaLoadBoundsTests
         Assert.Contains("are not read", refused.Message, StringComparison.Ordinal);
     }
 
+    // Exactly filling the total budget is allowed, and an empty file after it too; one more byte is not.
+    [Theory]
+    [InlineData("", true)]
+    [InlineData(" ", false)]
+    public void TheTotalBudgetCanBeFilledExactly(string last, bool accepted)
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        foreach (var name in new[] { "a", "b", "c", "d" })
+        {
+            var text = $"syntax = \"proto3\"; message {name.ToUpperInvariant()} {{ string x = 1; }}";
+            File.WriteAllText(Path.Combine(directory.Path, name + ".proto"), text.PadRight(16 * 1024 * 1024));
+        }
+        File.WriteAllText(Path.Combine(directory.Path, "z.proto"), last);
+
+        if (accepted)
+        {
+            Assert.NotNull(ProtoSchemaSet.Load(directory.Path).Resolve("D"));
+        }
+        else
+        {
+            Assert.Contains("more than 64 MB", Assert.Throws<ProtoSchemaException>(() => ProtoSchemaSet.Load(directory.Path)).Message,
+                StringComparison.Ordinal);
+        }
+    }
+
     // A stream of unknown length is read only up to the budget.
     [Fact]
     public void ReadingStopsAtTheBudget()
@@ -209,6 +234,8 @@ public sealed class ProtoSchemaLoadBoundsTests
         Assert.Null(ProtoSchemaSet.ReadBounded(source, 50));
         Assert.True(source.Position <= 51, $"Read {source.Position} bytes.");
         Assert.Equal(100, ProtoSchemaSet.ReadBounded(new MemoryStream(new byte[100]), 100)!.Length);
+        Assert.Empty(ProtoSchemaSet.ReadBounded(new MemoryStream(), 0)!);
+        Assert.Null(ProtoSchemaSet.ReadBounded(new MemoryStream(new byte[1]), 0));
     }
 }
 

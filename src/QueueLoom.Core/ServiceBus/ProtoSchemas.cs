@@ -136,10 +136,6 @@ public sealed class ProtoSchemaSet
         {
             // Schemas are small; a huge file picked by mistake (a database dump named .pb, or a link to one) is
             // refused. The limits apply to the bytes actually read, not to what the file's metadata says.
-            if (MaximumTotalBytes - total <= 0)
-            {
-                throw TooMuch(path);
-            }
             byte[] data;
             using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
