@@ -466,14 +466,32 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         public async Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
             // A 0 deadline is a NACK; with a dead-letter policy each one is a delivery attempt (see MaxDeliveryAttempts).
+            // A chunk that fails does not stop the others: they would stay held until their deadline (up to 180 s).
+            var unreleased = 0;
+            var reasons = new List<string>();
             foreach (var chunk in messages.Chunk(1_000))
             {
-                await owner.Subscriber.ModifyAckDeadlineAsync(
-                        subscription,
-                        chunk.Select(message => message.LeaseHandle),
-                        0,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                try
+                {
+                    await owner.Subscriber.ModifyAckDeadlineAsync(
+                            subscription,
+                            chunk.Select(message => message.LeaseHandle),
+                            0,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (RpcException exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    unreleased += chunk.Length;
+                    reasons.Add(exception.Status.Detail);
+                }
+            }
+            if (unreleased > 0)
+            {
+                throw new IOException(
+                    $"{unreleased:N0} message(s) read from '{subscription.SubscriptionId}' could not be returned to the subscription " +
+                    $"({string.Join(", ", reasons.Distinct().Take(3))}); they become available again when their acknowledgement " +
+                    $"deadline ({HoldSeconds} s) ends. Nothing was lost.");
             }
         }
 
