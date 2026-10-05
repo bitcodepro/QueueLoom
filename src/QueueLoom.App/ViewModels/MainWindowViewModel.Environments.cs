@@ -390,6 +390,12 @@ public sealed partial class MainWindowViewModel
         {
             saved = _scheduledStore?.Load().Where(resend => resend.ProfileId == selected.Id).ToArray()
                     ?? ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
+            // Listed here but no longer saved: another window ran or cancelled it. Nothing of it is left to cancel.
+            if (_scheduledStore is not null)
+            {
+                removedIds.UnionWith(ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id)
+                    .Select(item => item.Resend.Id).Except(saved.Select(resend => resend.Id)));
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
         {

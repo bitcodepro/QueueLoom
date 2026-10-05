@@ -10,6 +10,15 @@ namespace QueueLoom.Core.ServiceBus;
 /// </summary>
 public static class MessageFingerprint
 {
+    /// <summary>
+    /// Headers the broker itself changes while a message waits: a RabbitMQ quorum queue counts every acquisition
+    /// (reading it to show it is one), so they are not part of what the message is.
+    /// </summary>
+    public static readonly IReadOnlySet<string> VolatileHeaders = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "x-delivery-count", "x-acquired-count"
+    };
+
     public static string Of(BrowsedMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -34,7 +43,7 @@ public static class MessageFingerprint
         {
             Add(value);
         }
-        foreach (var property in message.ApplicationProperties)
+        foreach (var property in message.ApplicationProperties.Where(property => !VolatileHeaders.Contains(property.Name)))
         {
             Add(property.Name);
             Add(property.Type.ToString());

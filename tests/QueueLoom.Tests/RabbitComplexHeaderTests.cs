@@ -121,6 +121,16 @@ public sealed class RabbitComplexHeaderTests
     [InlineData("""{"t":"dec","v":"99999999999.5"}""", false)]
     [InlineData("""{"t":"f32","v":"x"}""", false)]
     [InlineData("""{"t":"table","v":[["a",{"t":"void"}],["a",{"t":"void"}]]}""", false)]
+    [InlineData("""{"t":"f32","v":"1e100"}""", false)]
+    [InlineData("""{"t":"f32","v":"NaN"}""", false)]
+    [InlineData("""{"t":"f32","v":"Infinity"}""", false)]
+    [InlineData("""{"t":"f32","v":"3.4028235E+38"}""", true)]
+    [InlineData("""{"t":"f64","v":"1e400"}""", false)]
+    [InlineData("""{"t":"f64","v":"-Infinity"}""", false)]
+    [InlineData("""{"t":"f64","v":"1.7976931348623157E+308"}""", true)]
+    [InlineData("""{"t":"i32","v":"1","v":"2"}""", false)]
+    [InlineData("""{"t":"i32","t":"i64","v":"1"}""", false)]
+    [InlineData("""{"t":"array","v":[{"t":"bool","v":true,"v":false}]}""", false)]
     public void TypedValuesAreCheckedAgainstWhatTheWireCarries(string value, bool valid)
     {
         Assert.Equal(valid, AmqpTypedValue.Problem(value) is null);
@@ -158,6 +168,24 @@ public sealed class RabbitComplexHeaderTests
             new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 2.5 }, message).Outcome);
         Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Unknown, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(
             new Dictionary<string, object?> { ["x-match"] = "all", ["meta"] = "x" }, message).Outcome);
+    }
+
+    // A quorum queue counts every acquisition in x-delivery-count / x-acquired-count; reading a message again must not
+    // change its fingerprint, while a different user header does.
+    [Fact]
+    public void BrokerDeliveryCountersAreNotPartOfTheFingerprint()
+    {
+        BrowsedMessage Read(long deliveries, string tenant) => RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(), new BasicProperties
+        {
+            MessageId = "same",
+            Headers = new Dictionary<string, object?>
+            {
+                ["x-delivery-count"] = deliveries, ["x-acquired-count"] = deliveries, ["tenant"] = System.Text.Encoding.UTF8.GetBytes(tenant)
+            }
+        }, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter);
+
+        Assert.Equal(MessageFingerprint.Of(Read(1, "acme")), MessageFingerprint.Of(Read(5, "acme")));
+        Assert.NotEqual(MessageFingerprint.Of(Read(1, "acme")), MessageFingerprint.Of(Read(1, "other")));
     }
 
     /// <summary>Same keys, values, CLR types (which decide the AMQP field types RabbitMQ.Client writes) and bytes.</summary>

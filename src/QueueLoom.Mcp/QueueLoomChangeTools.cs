@@ -486,11 +486,9 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             keys.Where(key => !found.ContainsKey(key)).ToArray());
     }
 
-    /// <summary>The same message content: body, standard properties and application properties.</summary>
+    /// <summary>The same message content, by the same stable projection as the fingerprint (broker counters left out).</summary>
     private static bool SameMessage(BrowsedMessage first, BrowsedMessage second) =>
-        first.Body.Span.SequenceEqual(second.Body.Span) &&
-        first.Properties == second.Properties &&
-        first.ApplicationProperties.SequenceEqual(second.ApplicationProperties);
+        MessageFingerprint.Of(first) == MessageFingerprint.Of(second);
 
     private Task<ApprovalDecision> RequestApprovalAsync(
         McpServer server,

@@ -70,6 +70,11 @@ public static class AmqpTypedValue
         {
             return $"tables and arrays are nested more than {MaximumNesting} levels deep";
         }
+        if (value.ValueKind == JsonValueKind.Object &&
+            value.EnumerateObject().GroupBy(member => member.Name, StringComparer.Ordinal).FirstOrDefault(group => group.Count() > 1) is { } repeated)
+        {
+            return $"a field repeats its \"{repeated.Key}\" member";
+        }
         if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("t", out var tag) ||
             tag.ValueKind != JsonValueKind.String || !Tags.Contains(tag.GetString()!))
         {
@@ -90,8 +95,11 @@ public static class AmqpTypedValue
             "i32" => Integer(number, int.MinValue, int.MaxValue, type),
             "u32" => Integer(number, uint.MinValue, uint.MaxValue, type),
             "i64" or "ts" => Integer(number, long.MinValue, long.MaxValue, type),
-            "f32" => number is not null && float.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ? null : "an f32 value is not a number",
-            "f64" => number is not null && double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ? null : "an f64 value is not a number",
+            // RabbitMQ (Erlang) has no NaN or infinity: a value that is not finite, or overflows the type, cannot be sent.
+            "f32" => number is not null && float.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out var single) &&
+                     float.IsFinite(single) ? null : "an f32 value is not a finite 32-bit number",
+            "f64" => number is not null && double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out var @double) &&
+                     double.IsFinite(@double) ? null : "an f64 value is not a finite number",
             "dec" => Decimal(number),
             "longstr" or "bytes" => number is not null && IsBase64(number) ? null : $"a {type} value is not base64",
             "array" => !hasValue || inner.ValueKind != JsonValueKind.Array

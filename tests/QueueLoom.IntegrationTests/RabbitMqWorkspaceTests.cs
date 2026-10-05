@@ -547,6 +547,23 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("typed-miss")).MessageCount);
     }
 
+    // A quorum queue counts each acquisition (peek/search reads acquire and release the message). Read twice, the
+    // message keeps its fingerprint, so an MCP resend of what was listed still finds it.
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task QuorumReads_KeepTheMessageFingerprint()
+    {
+        await PublishAsync("invoices", "fingerprinted");
+        var invoices = ServiceBusEntityReference.Queue("invoices");
+
+        var first = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+        await Task.Delay(500);
+        var second = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+        var third = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+
+        Assert.Equal(MessageFingerprint.Of(first), MessageFingerprint.Of(second));
+        Assert.Equal(MessageFingerprint.Of(first), MessageFingerprint.Of(third));
+    }
+
     private async Task<BasicGetResult?> WaitForMessageAsync(string queue)
     {
         for (var attempt = 0; attempt < 50; attempt++)

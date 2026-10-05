@@ -87,6 +87,41 @@ public sealed partial class ViewModelStateTests
         public bool TryRemove(ScheduledResend expected) => Fail ? throw new IOException("The schedules file is locked.") : _jobs.RemoveAll(job => job.Id == expected.Id) > 0;
     }
 
+    // Review: window B cached job J; window A cancels it; then B deletes the environment. The saved list no longer has
+    // J, so B drops its stale row too, along with the environment.
+    [Fact]
+    public async Task DeletingAnEnvironmentDropsScheduleRowsAnotherWindowAlreadyCancelled()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        paths.EnsureCreated();
+        var profile = CreateProfile("Shared", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        using (var seed = new JsonProfileRepository(paths))
+        {
+            await seed.UpsertAsync(profile);
+            await seed.SetSelectedProfileIdAsync(profile.Id);
+        }
+        var store = new JsonScheduledResendStore(paths);
+        store.Add(DueJob(profile));
+        using var profilesA = new JsonProfileRepository(paths);
+        using var profilesB = new JsonProfileRepository(paths);
+        await using var windowA = new MainWindowViewModel(profilesA, new FakeSecretVault(), new FakeWorkspace(),
+            new FakeDialogService(), scheduledResends: new JsonScheduledResendStore(paths));
+        await using var windowB = new MainWindowViewModel(profilesB, new FakeSecretVault(), new FakeWorkspace(),
+            new FakeDialogService { ConfirmResult = true }, scheduledResends: new JsonScheduledResendStore(paths));
+        await windowA.InitializeAsync();
+        await windowB.InitializeAsync();
+        Assert.Single(windowB.ScheduledResends);
+
+        windowA.CancelScheduledResendCommand.Execute(Assert.Single(windowA.ScheduledResends));
+        windowB.SelectedProfile = Assert.Single(windowB.Profiles);
+        await windowB.DeleteEnvironmentCommand.ExecuteAsync();
+
+        Assert.Empty(windowB.Profiles);
+        Assert.Empty(windowB.ScheduledResends);
+        Assert.Empty(new JsonScheduledResendStore(paths).Load());
+    }
+
     private static ScheduledResendItemViewModel CreateOrphanItem(MainWindowViewModel vm, ScheduledResend job) =>
         new(job, vm.RunScheduledResendCommand, vm.CancelScheduledResendCommand);
 }
