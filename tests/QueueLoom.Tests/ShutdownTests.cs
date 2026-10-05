@@ -1,3 +1,8 @@
+using QueueLoom.Core.ServiceBus;
+using Microsoft.Extensions.DependencyInjection;
+using QueueLoom.App.Services;
+using QueueLoom.Core.Abstractions;
+using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Core.Profiles;
 
 namespace QueueLoom.Tests;
@@ -115,5 +120,38 @@ public sealed partial class ViewModelStateTests
         // A late disposal fault is observed, not left unobserved.
         release.SetException(new InvalidOperationException("dispose failed"));
         await Task.Delay(100);
+    }
+
+    // The real close path: the window awaits the service provider's disposal, which disposes the DI-owned
+    // MultiProviderWorkspace, which waits for an operation that ignores cancellation. Closing must still finish, and
+    // the provider workspace must not be disposed under the running call.
+    [Fact]
+    public async Task ReleasingTheServicesIsBoundedWhileAWorkspaceOperationIsStuck()
+    {
+        var inner = new FakeWorkspace();
+        var services = new ServiceCollection();
+        services.AddSingleton<IServiceBusWorkspace>(_ => new MultiProviderWorkspace(_ => inner));
+        var provider = services.BuildServiceProvider();
+        var workspace = provider.GetRequiredService<IServiceBusWorkspace>();
+        await workspace.ConnectAsync(ServiceBusProfile.CreateNew("Stuck", EnvironmentKind.Development,
+            new AuthenticationSettings(AuthenticationKind.KafkaNone)));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        inner.SearchGate = _ => { started.TrySetResult(); return never.Task; };
+        var search = workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("x", [new DeadLetterSearchTarget(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, KnownMessageCount: 0)], maximumMessagesPerTarget: 1));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var time = new SteppedTime();
+        var closing = ShutdownWait.WithinAsync(() => provider.DisposeAsync(), TimeSpan.FromSeconds(10), time, null);
+        await AdvanceUntilAsync(time, closing);
+
+        Assert.True(closing.IsCompleted);
+        Assert.False(await closing);
+        Assert.Equal(0, inner.DisposeCalls);
+
+        never.TrySetResult();
+        await search.WaitAsync(TimeSpan.FromSeconds(10));
+        for (var i = 0; i < 100 && inner.DisposeCalls == 0; i++) await Task.Delay(50);
+        Assert.Equal(1, inner.DisposeCalls);
     }
 }
