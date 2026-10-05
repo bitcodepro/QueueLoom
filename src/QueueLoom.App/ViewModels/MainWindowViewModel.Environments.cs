@@ -402,6 +402,7 @@ public sealed partial class MainWindowViewModel
             cleanupProblem = exception.Message;
             saved = ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
         }
+        ReportSetAsideSchedules();
         foreach (var resend in saved)
         {
             try

@@ -40,7 +40,37 @@ public sealed partial class MainWindowViewModel
         {
             ScheduledResends.Add(CreateScheduledItem(resend));
         }
+        ReportSetAsideSchedules();
         UpdateScheduledStatuses();
+    }
+
+    // The store sets a damaged list aside whenever it reads one: at start, when a job is added or removed, when an
+    // environment is deleted, or in a background read. Its jobs will not run, so they leave the list here too and
+    // the operator is told.
+    private void ReportSetAsideSchedules()
+    {
+        if (_scheduledStore?.TakeSetAsideFile() is not { } aside)
+        {
+            return;
+        }
+        HashSet<Guid>? pending;
+        try
+        {
+            pending = _scheduledStore.Load().Select(resend => resend.Id).ToHashSet();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            pending = null;
+        }
+        var lost = pending is null ? [] : ScheduledResends.Where(item => !pending.Contains(item.Resend.Id)).ToArray();
+        foreach (var item in lost)
+        {
+            ScheduledResends.Remove(item);
+        }
+        AddActivity("Warning", "Scheduled resends not loaded",
+            $"The list of scheduled resends was damaged and could not be read, so none of its resends will run" +
+            (lost.Length > 0 ? $" ({lost.Length:N0} removed from this list)" : string.Empty) +
+            $". It was kept as {aside}; schedule them again from their dead-letter queues.");
     }
 
     /// <summary>Starts checking for due resends; called once the window is up.</summary>
@@ -72,6 +102,9 @@ public sealed partial class MainWindowViewModel
     /// <summary>Runs every due resend whose environment is connected with write access, one at a time.</summary>
     public async Task RunDueScheduledResendsAsync(CancellationToken cancellationToken = default)
     {
+        // A damaged list can be found by a read elsewhere (the background history cleanup); it is reported here at
+        // the latest.
+        ReportSetAsideSchedules();
         UpdateScheduledStatuses();
         var now = Clock.GetUtcNow();
         foreach (var item in ScheduledResends.ToArray())
@@ -107,7 +140,15 @@ public sealed partial class MainWindowViewModel
             options.Destination?.DisplayName ?? "their sources",
             items.Select(ScheduledResendItem.From).ToArray())
         { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
-        _scheduledStore?.Add(resend);
+        try
+        {
+            _scheduledStore?.Add(resend);
+        }
+        finally
+        {
+            // Also when saving failed after the old list was found damaged and set aside.
+            ReportSetAsideSchedules();
+        }
         ScheduledResends.Add(CreateScheduledItem(resend));
         UpdateScheduledStatuses();
         StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {ScheduledResends[^1].Title}. It is listed on Activity.";
@@ -258,6 +299,10 @@ public sealed partial class MainWindowViewModel
         {
             ErrorText = $"Scheduled resends could not be saved: {exception.Message}";
             throw new IOException(ErrorText, exception);
+        }
+        finally
+        {
+            ReportSetAsideSchedules();
         }
     }
 

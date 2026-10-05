@@ -673,6 +673,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _cleanupWarnings = new();
 
+    /// <summary>Tells the operator that local data (settings, for example) could not be used as saved.</summary>
+    public void ReportLocalDataProblem(string action, string details) => AddActivity("Warning", action, details);
+
     /// <summary>
     /// Messages read by the operation that could not all be returned to their queue (for example SQS kept some
     /// invisible): the operation's result stands, and the operator learns why messages may be missing for a while.
