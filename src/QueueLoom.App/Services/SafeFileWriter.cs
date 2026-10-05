@@ -158,7 +158,7 @@ internal static class SafeFileWriter
     /// </summary>
     private static void ReplaceOnWindows(string temporary, string path, ref bool keepTemporary)
     {
-        var backup = TemporaryPathFor(path) + ".previous";
+        var backup = TemporaryPathFor(path, ".previous");
         try
         {
             if (ReplaceOverride.Value is { } replace)
@@ -186,10 +186,12 @@ internal static class SafeFileWriter
                     keepTemporary = File.Exists(temporary);
                     // No inner exception: the operator sees an exception's innermost message, and this one says where
                     // the two versions are (the causes are in it too).
+                    // The locations come first: the visible summary is bounded (600 characters), and with paths up to
+                    // the usual 260-character limit both still fit in full; the causes may be cut, the log has them.
                     throw new IOException(
-                        $"'{path}' could not be replaced ({exception.Message}), and the previous version could not be " +
-                        $"put back ({restore.Message}). It is at '{backup}'" +
-                        (keepTemporary ? $"; the new version is at '{temporary}'." : "."));
+                        $"Previous version kept at '{backup}'" +
+                        (keepTemporary ? $"; new version at '{temporary}'" : string.Empty) +
+                        $". '{Path.GetFileName(path)}' could not be replaced ({exception.Message}) nor put back ({restore.Message}).");
                 }
             }
             throw;
@@ -208,11 +210,12 @@ internal static class SafeFileWriter
         new FileInfo(path).SetAccessControl(security);
     }
 
-    private static string TemporaryPathFor(string path)
+    /// <summary>A hidden name next to the file, short (8 random hex digits) so error messages can show it in full.</summary>
+    private static string TemporaryPathFor(string path, string suffix = ".tmp")
     {
         var full = Path.GetFullPath(path);
         var directory = Path.GetDirectoryName(full) ?? throw new ArgumentException("The file must have a parent folder.", nameof(path));
-        return Path.Combine(directory, $".{Path.GetFileName(full)}.{Guid.NewGuid():N}.tmp");
+        return Path.Combine(directory, $".{Path.GetFileName(full)}.{Guid.NewGuid().ToString("N")[..8]}{suffix}");
     }
 
     private static void TryDelete(string path)

@@ -275,7 +275,7 @@ public sealed class LeftoverFixTests
         var files = Directory.GetFiles(directory.Path).Select(File.ReadAllText).ToArray();
         Assert.Contains("previous export", files);
         Assert.Contains("new export", files);
-        Assert.Contains("could not be put back", error.Message, StringComparison.Ordinal);
+        Assert.Contains("nor put back", error.Message, StringComparison.Ordinal);
     }
 
     // Windows: an export restricted to the current user (protected DACL) stays so after being replaced, although its
