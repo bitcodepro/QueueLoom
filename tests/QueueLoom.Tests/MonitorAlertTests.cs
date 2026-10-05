@@ -58,12 +58,48 @@ public sealed class MonitorAlertTests
         if (OperatingSystem.IsLinux())
         {
             Assert.Equal("notify-send", start.FileName);
-            Assert.Equal(["--app-name=QueueLoom", "QueueLoom", "orders\"; rm -rf ~ #"], start.ArgumentList);
+            Assert.Equal(["--app-name=QueueLoom", "--", "QueueLoom", "orders\"; rm -rf ~ #"], start.ArgumentList);
         }
         else
         {
             Assert.DoesNotContain(start.ArgumentList, argument => argument.Contains("rm -rf", StringComparison.Ordinal));
         }
+    }
+
+    // An environment named "-prod" starts the notification text: notify-send must not read it as an option.
+    [Fact]
+    public void A_notification_text_starting_with_a_dash_is_not_an_option()
+    {
+        var start = MonitorAlertService.BuildNotificationCommand("QueueLoom: dead letters", "-prod · orders: 3 dead-lettered messages");
+
+        Assert.NotNull(start);
+        if (OperatingSystem.IsLinux())
+        {
+            var separator = start.ArgumentList.IndexOf("--");
+            Assert.True(separator >= 0 && separator < start.ArgumentList.IndexOf("-prod · orders: 3 dead-lettered messages"));
+        }
+    }
+
+    // A notification command that hangs is stopped after the timeout instead of being left running.
+    [Fact]
+    public async Task A_hung_notification_command_is_killed_after_the_timeout()
+    {
+        if (!OperatingSystem.IsLinux()) return; // checks /proc
+        var marker = $"{30 + Random.Shared.Next(1, 999) / 1000.0:0.000}";
+        var start = new System.Diagnostics.ProcessStartInfo("sleep") { UseShellExecute = false };
+        start.ArgumentList.Add(marker);
+
+        var shown = await MonitorAlertService.RunNotificationAsync(start, TimeSpan.FromMilliseconds(300),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+
+        Assert.False(shown);
+        await Task.Delay(300);
+        Assert.DoesNotContain(System.Diagnostics.Process.GetProcessesByName("sleep"), process =>
+        {
+            try { return File.ReadAllText($"/proc/{process.Id}/cmdline").Contains(marker, StringComparison.Ordinal); }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+        });
     }
 
     private sealed class RecordingHandler(HttpStatusCode status) : HttpMessageHandler

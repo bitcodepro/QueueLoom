@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using QueueLoom.App.Services;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Profiles;
@@ -62,6 +63,8 @@ public sealed partial class MainWindowViewModel
         }
         var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(true);
         EnvironmentImport import;
+        var saved = 0;
+        try
         {
             var coordinator = _profileRepository as IProfileMutationCoordinator;
             await using var mutation = coordinator is null ? null : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
@@ -69,7 +72,25 @@ public sealed partial class MainWindowViewModel
             foreach (var profile in import.Profiles)
             {
                 await _profileRepository.UpsertAsync(profile, cancellationToken).ConfigureAwait(true);
+                saved++;
             }
+        }
+        catch (Exception exception) when (saved > 0 && exception is not OutOfMemoryException)
+        {
+            // Environments saved before the failure stay saved: list them, and say how far the import got.
+            _logger.LogWarning(exception, "Importing environments stopped after {Saved} of them", saved);
+            try
+            {
+                await ReloadProfilesAsync(CancellationToken.None, SelectedProfile?.Id).ConfigureAwait(true);
+            }
+            catch (Exception refresh) when (refresh is not OutOfMemoryException)
+            {
+                // Best effort: the same storage problem may stop the listing too; the import summary still goes out.
+                _logger.LogWarning(refresh, "The environment list could not be refreshed after a partial import");
+            }
+            // The summary is what the operator reads, so the cause goes into it (an inner exception would replace it).
+            throw new InvalidOperationException(
+                $"Imported {saved:N0} environment(s), read-only, before the import stopped: {SanitizeException(exception)}");
         }
         await ReloadProfilesAsync(cancellationToken, import.Profiles.FirstOrDefault()?.Id ?? SelectedProfile?.Id).ConfigureAwait(true);
 
