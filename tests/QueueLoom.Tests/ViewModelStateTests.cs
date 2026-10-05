@@ -1234,7 +1234,8 @@ public sealed partial class ViewModelStateTests
                 : Snapshot(profileId);
         }
 
-        public ValueTask DisposeAsync() { DisposeCalls++; return ValueTask.CompletedTask; }
+        public Func<ValueTask>? DisposeGate { get; set; }
+        public ValueTask DisposeAsync() { DisposeCalls++; return DisposeGate?.Invoke() ?? ValueTask.CompletedTask; }
     }
 
     private sealed class FakeDialogService : IUserDialogService

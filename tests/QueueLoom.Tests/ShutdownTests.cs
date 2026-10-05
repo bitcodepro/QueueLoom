@@ -52,6 +52,15 @@ public sealed partial class ViewModelStateTests
         }
     }
 
+    private static async Task AdvanceUntilAsync(SteppedTime time, Task task)
+    {
+        for (var i = 0; i < 200 && !task.IsCompleted; i++)
+        {
+            time.Advance(TimeSpan.FromMinutes(1));
+            await Task.WhenAny(task, Task.Delay(50));
+        }
+    }
+
     [Fact]
     public async Task ClosingFinishesWhenABrokerCallIgnoresCancellation()
     {
@@ -70,18 +79,41 @@ public sealed partial class ViewModelStateTests
 
         var closing = viewModel.DisposeAsync().AsTask();
         Assert.False(closing.IsCompleted);
-        time.Advance(TimeSpan.FromMinutes(1));
+        await AdvanceUntilAsync(time, closing);
 
         try
         {
-            var finished = await Task.WhenAny(closing, Task.Delay(TimeSpan.FromSeconds(10)));
-            Assert.Same(closing, finished);
-            Assert.Equal(1, workspace.DisposeCalls);
+            Assert.True(closing.IsCompleted);
+            await closing;
+            // The workspace is still in use by the hung call, so it is not disposed under it.
+            Assert.Equal(0, workspace.DisposeCalls);
         }
         finally
         {
             never.TrySetResult();
             await Task.WhenAny(search, Task.Delay(TimeSpan.FromSeconds(10)));
         }
+        for (var i = 0; i < 100 && workspace.DisposeCalls == 0; i++) await Task.Delay(50);
+        Assert.Equal(1, workspace.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task ClosingFinishesWhenReleasingTheWorkspaceHangsOrFails()
+    {
+        var (viewModel, workspace, _) = await CreateSearchedViewModelAsync(ProfileAccessMode.ReadWrite);
+        var time = new SteppedTime();
+        viewModel.Clock = time;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        workspace.DisposeGate = () => new ValueTask(release.Task); // e.g. waiting for a gate a stuck call still holds
+
+        var closing = viewModel.DisposeAsync().AsTask();
+        await AdvanceUntilAsync(time, closing);
+        Assert.True(closing.IsCompleted);
+        await closing;
+        Assert.Equal(1, workspace.DisposeCalls);
+
+        // A late disposal fault is observed, not left unobserved.
+        release.SetException(new InvalidOperationException("dispose failed"));
+        await Task.Delay(100);
     }
 }

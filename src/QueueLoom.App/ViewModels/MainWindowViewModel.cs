@@ -717,13 +717,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         // A broker call that ignores cancellation must not keep the window from closing forever.
         var finished = await Task.WhenAny(drained, Task.Delay(ShutdownDrainTimeout, Clock)).ConfigureAwait(true);
         var allDrained = ReferenceEquals(finished, drained);
-        if (!allDrained)
-        {
-            _logger.LogWarning("Background operations did not stop within {Timeout}; closing anyway", ShutdownDrainTimeout);
-            _ = drained.ContinueWith(task => _ = task.Exception, CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-        }
-        else
+        if (allDrained)
         {
             try
             {
@@ -735,6 +729,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
                 _logger.LogWarning(exception, "A background operation failed during shutdown");
             }
         }
+        else
+        {
+            _logger.LogWarning("Background operations did not stop within {Timeout}; closing anyway", ShutdownDrainTimeout);
+        }
 
         _monitorCancellation?.Dispose();
         _monitorCancellation = null;
@@ -743,10 +741,36 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _writeUnlockCancellation = null;
         _writeUnlockTask = null;
 
-        await _workspace.DisposeAsync().ConfigureAwait(true);
-        if (allDrained)
+        // Disposal must not run under an operation that still holds the workspace, and must not hang the window
+        // either: it runs once everything has stopped, and closing waits for it only within the same time limit.
+        var released = ReleaseWhenStoppedAsync(drained);
+        var done = await Task.WhenAny(released, Task.Delay(ShutdownDrainTimeout, Clock)).ConfigureAwait(true);
+        if (!ReferenceEquals(done, released))
         {
-            // A still-running operation releases the gate and reads the token when it finally returns.
+            _logger.LogWarning("Releasing the workspace did not finish within {Timeout}; it continues in the background", ShutdownDrainTimeout);
+        }
+    }
+
+    private async Task ReleaseWhenStoppedAsync(Task drained)
+    {
+        try
+        {
+            await drained.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "A background operation failed during shutdown");
+        }
+        try
+        {
+            await _workspace.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Releasing the workspace failed during shutdown");
+        }
+        finally
+        {
             _workspaceGate.Dispose();
             _shutdownCancellation.Dispose();
         }

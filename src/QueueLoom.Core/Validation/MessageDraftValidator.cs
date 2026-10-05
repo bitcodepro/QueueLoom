@@ -18,7 +18,7 @@ public static class MessageDraftValidator
     public const int MaxAmqpShortStringBytes = 255;
 
     /// <summary>RabbitMQ's largest per-message expiration (MAX_EXPIRY_TIMER), in milliseconds.</summary>
-    public const long MaxRabbitMqExpirationMilliseconds = uint.MaxValue;
+    public const long MaxRabbitMqExpirationMilliseconds = 315_360_000_000;
 
     /// <summary>Google Pub/Sub quotas: 100 attributes per message, keys up to 256 bytes, values up to 1,024 bytes.</summary>
     public const int MaxPubSubAttributes = 100;
@@ -157,12 +157,12 @@ public static class MessageDraftValidator
                 ValidateBytes(properties.ReplyTo, nameof(properties.ReplyTo), errors, MaxAmqpShortStringBytes, shortString);
                 ValidateBytes(properties.AmqpType, nameof(properties.AmqpType), errors, MaxAmqpShortStringBytes, shortString);
                 ValidateBytes(properties.AmqpAppId, nameof(properties.AmqpAppId), errors, MaxAmqpShortStringBytes, shortString);
-                // RabbitMQ refuses a per-message expiration above 2^32-1 ms (value_too_large) and closes the channel.
+                // RabbitMQ refuses a per-message expiration above 10 years (rabbit_misc:check_expiry) and closes the channel.
                 if (properties.TimeToLive is { } rabbitTtl && (long)rabbitTtl.TotalMilliseconds > MaxRabbitMqExpirationMilliseconds)
                 {
                     errors.Add(new ValidationError(
                         "message.ttl.too_long",
-                        $"RabbitMQ accepts a time to live of at most {MaxRabbitMqExpirationMilliseconds:N0} ms (about 49.7 days); " +
+                        $"RabbitMQ accepts a time to live of at most {MaxRabbitMqExpirationMilliseconds:N0} ms (10 years); " +
                         "shorten it or clear it.",
                         nameof(properties.TimeToLive)));
                 }

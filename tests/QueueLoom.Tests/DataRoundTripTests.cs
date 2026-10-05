@@ -110,20 +110,20 @@ public sealed class DataRoundTripTests
         Assert.True(MessageDraftValidator.Validate(draft, MessagingProvider.AmazonSqsSns).IsValid);
     }
 
-    // ---- Finding 3: a TTL RabbitMQ refuses (above 2^32-1 ms) passes validation -----------------------------------------
+    // ---- Finding 3: RabbitMQ accepts a per-message expiration of at most 10 years (rabbit_misc:check_expiry) ---------
 
     [Fact]
     public void RabbitMqDraft_TtlAboveTheBrokerMaximum_IsRefused()
     {
-        var tooLong = new MessageDraft(new EditableMessageBody("x", MessageBodyFormat.Text),
-            EditableMessageProperties.Empty with { TimeToLive = TimeSpan.FromDays(90) });
-        var longest = new MessageDraft(new EditableMessageBody("x", MessageBodyFormat.Text),
-            EditableMessageProperties.Empty with { TimeToLive = TimeSpan.FromMilliseconds(uint.MaxValue) });
+        static MessageDraft WithTtl(TimeSpan ttl) => new(new EditableMessageBody("x", MessageBodyFormat.Text),
+            EditableMessageProperties.Empty with { TimeToLive = ttl });
 
+        Assert.True(MessageDraftValidator.Validate(WithTtl(TimeSpan.FromDays(90)), MessagingProvider.RabbitMq).IsValid);
+        Assert.True(MessageDraftValidator.Validate(WithTtl(TimeSpan.FromMilliseconds(315_360_000_000)), MessagingProvider.RabbitMq).IsValid);
+        var tooLong = WithTtl(TimeSpan.FromMilliseconds(315_360_000_001));
         Assert.True(MessageDraftValidator.Validate(tooLong, MessagingProvider.AzureServiceBus).IsValid);
         var result = MessageDraftValidator.Validate(tooLong, MessagingProvider.RabbitMq);
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, error => error.Code == "message.ttl.too_long");
-        Assert.True(MessageDraftValidator.Validate(longest, MessagingProvider.RabbitMq).IsValid);
     }
 }
