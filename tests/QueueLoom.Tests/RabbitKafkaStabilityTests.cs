@@ -19,13 +19,70 @@ public sealed class RabbitKafkaStabilityTests
             {
                 Content = new StringContent("""{"schema":"\"string\""}""", Encoding.UTF8, "application/json")
             });
-        using var client = new SchemaRegistryClient("http://registry.test", null, null, handler);
+        var time = new ManualTime();
+        using var client = new SchemaRegistryClient("http://registry.test", null, null, handler, time);
 
         Assert.Null(await client.GetAsync(5, CancellationToken.None));
+        time.Now += SchemaRegistryClient.FailureBackoff;
         var schema = await client.GetAsync(5, CancellationToken.None);
 
         Assert.NotNull(schema);
         Assert.Equal(2, handler.Calls);
+    }
+
+    // A sustained outage: a page of 100 records sharing one schema id asks the registry once, not 100 times.
+    [Fact]
+    public async Task SchemaRegistry_SustainedFailure_IsNotRetriedForEveryRecord()
+    {
+        var handler = new SequenceHandler(Enumerable.Range(0, 200).Select(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)).ToArray());
+        using var client = new SchemaRegistryClient("http://registry.test", null, null, handler, new ManualTime());
+
+        for (var record = 0; record < 100; record++)
+        {
+            Assert.Null(await client.GetAsync(5, CancellationToken.None));
+        }
+
+        Assert.Equal(1, handler.Calls);
+    }
+
+    // An unreachable registry (timeout, connection refused) is skipped for every id until the back-off ends, then recovers.
+    [Fact]
+    public async Task SchemaRegistry_UnreachableRegistry_IsSkippedForAllIdsThenRecovers()
+    {
+        var handler = new ThrowingThenOkHandler(failures: 1);
+        var time = new ManualTime();
+        using var client = new SchemaRegistryClient("http://registry.test", null, null, handler, time);
+
+        for (var id = 1; id <= 50; id++)
+        {
+            Assert.Null(await client.GetAsync(id, CancellationToken.None));
+        }
+        Assert.Equal(1, handler.Calls);
+
+        time.Now += SchemaRegistryClient.FailureBackoff;
+        Assert.NotNull(await client.GetAsync(7, CancellationToken.None));
+        Assert.Equal(2, handler.Calls);
+    }
+
+    private sealed class ManualTime : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class ThrowingThenOkHandler(int failures) : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            if (Calls <= failures) throw new HttpRequestException("connection refused");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"schema":"\"string\""}""", Encoding.UTF8, "application/json")
+            });
+        }
     }
 
     [Fact]
