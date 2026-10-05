@@ -38,6 +38,25 @@ public sealed class ClosingPreferencesUiTests
         Assert.Equal(120, (await settings.LoadAsync()).MonitorIntervalSeconds);
     });
 
+    // A change made while the window is still starting (environments not loaded yet) is saved too, although closing no
+    // longer writes the interval itself.
+    [Fact]
+    public Task An_interval_change_during_startup_is_saved() => UiSession.RunAsync(async () =>
+    {
+        var startup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var fixture = await WindowFixture.OpenHeldAsync(startup.Task);
+        Assert.Equal(60, fixture.ViewModel.MonitorIntervalSeconds); // preferences applied, environments still loading
+        Assert.Empty(fixture.ViewModel.Profiles);
+
+        fixture.ViewModel.MonitorIntervalSeconds = 120;
+        startup.SetResult();
+        await fixture.SettleAsync();
+        await CloseAsync(fixture);
+
+        using var settings = new JsonAppSettingsStore(QueueLoomPaths.ForRoot(fixture.DataDirectory));
+        Assert.Equal(120, (await settings.LoadAsync()).MonitorIntervalSeconds);
+    });
+
     private static async Task CloseAsync(WindowFixture fixture)
     {
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

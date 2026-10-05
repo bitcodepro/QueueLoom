@@ -30,6 +30,22 @@ public sealed partial class ViewModelStateTests
         Assert.Empty(workspace.DeleteRequests);
     }
 
+    // Review: a browse whose cleanup could not return every message shows that in Activity, while the browse itself
+    // keeps its messages and succeeds.
+    [Fact]
+    public async Task ABrowseCleanupWarningIsShownInActivity()
+    {
+        var (viewModel, workspace, _) = await CreateSearchedViewModelAsync(QueueLoom.Core.Profiles.ProfileAccessMode.ReadOnly);
+        await using var owner = viewModel;
+        workspace.BrowseCleanupWarning = "2 message(s) read from 'orders' could not be made visible again (busy); they reappear when their visibility timeout ends.";
+        viewModel.SelectedEntity = viewModel.Entities.First(entity => entity.Name == "orders");
+
+        await viewModel.BrowseSelectedDeadLettersCommand.ExecuteAsync();
+
+        Assert.False(viewModel.HasError, viewModel.ErrorText);
+        Assert.Contains(viewModel.Activity, item => item.Level == "Warning" && item.Details.Contains("could not be made visible again", StringComparison.Ordinal));
+    }
+
     // Control: cancelled while waiting for the rate limit, before the next send is attempted: "not sent" is right.
     [Fact]
     public async Task ACancelWhileWaitingForTheRateLimitIsNotSent()

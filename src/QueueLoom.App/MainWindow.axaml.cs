@@ -74,7 +74,6 @@ public sealed partial class MainWindow : Window
             // Assigned before the first await so a close during startup waits for it.
             _initializationTask = InitializeAsync(_viewModel, _settingsStore);
             await _initializationTask;
-            _viewModel.PropertyChanged += OnViewModelPropertyChanged;
             _viewModel.PropertyChanged += OnTrayRelevantPropertyChanged;
             UpdateTray();
         }
@@ -96,6 +95,9 @@ public sealed partial class MainWindow : Window
         var settings = await settingsStore.LoadAsync();
         _theme?.Apply(settings.Theme);
         viewModel.ApplyPreferences(settings);
+        // From here on every preference change is saved when it is made, including one made while environments are
+        // still loading: closing no longer writes a final value, so a change that is not saved now would be lost.
+        viewModel.PropertyChanged += OnViewModelPropertyChanged;
         await viewModel.InitializeAsync();
         viewModel.StartScheduledResends();
     }

@@ -100,7 +100,7 @@ public sealed class RabbitLifecycleAuditTests
             [new DeadLetterPurgeTarget(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter), channel, 1, 10, session, 1, 1, null, CancellationToken.None])!;
     }
     private static Task Release(ILeasedMessageChannel channel, List<LeasedMessage> held) =>
-        (Task)typeof(LeasedMessagingWorkspace).GetMethod("ReleaseQuietlyAsync", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [channel, held])!;
+        (Task)typeof(LeasedMessagingWorkspace).GetMethod("ReleaseQuietlyCoreAsync", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [channel, held])!;
     private static (RabbitMqWorkspace, ILeasedMessageChannel) Create(BrokerFake fake)
     {
         var owner = new RabbitMqWorkspace(new EmptyVault());

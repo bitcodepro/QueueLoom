@@ -44,6 +44,22 @@ public sealed class SqsReleaseTests
         Assert.Equal(11, client.Visible.Count);
     }
 
+    // Review: the retry of the failed entry itself throws (SDK retries spent). The final batch is still released, and
+    // the failure is reported with the rest.
+    [Fact]
+    public async Task ARetryThatThrowsDoesNotStopLaterBatches()
+    {
+        var client = new ReleasingClient(failFirstTimes: 1, code: "InternalError") { ThrowOnRetry = true };
+        var channel = Channel(client);
+
+        var error = await Assert.ThrowsAsync<IOException>(() => channel.ReleaseAsync(Messages(12), CancellationToken.None));
+
+        Assert.Equal(["m-10", "m-11"], client.Batches[^1]);
+        Assert.Contains("m-10", client.Visible);
+        Assert.Contains("1 message(s)", error.Message, StringComparison.Ordinal);
+        Assert.Contains("service unavailable", error.Message, StringComparison.Ordinal);
+    }
+
     // An expired receipt handle (or a message no longer in flight) does not mean the message is still hidden.
     [Theory]
     [InlineData("ReceiptHandleIsInvalid")]
@@ -77,6 +93,7 @@ public sealed class SqsReleaseTests
         : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost" })
     {
         private int _failures;
+        public bool ThrowOnRetry { get; init; }
         public List<List<string>> Batches { get; } = [];
         public HashSet<string> Visible { get; } = [];
 
@@ -84,6 +101,10 @@ public sealed class SqsReleaseTests
             ChangeMessageVisibilityBatchRequest request, CancellationToken cancellationToken = default)
         {
             Batches.Add(request.Entries.Select(entry => entry.ReceiptHandle).ToList());
+            if (ThrowOnRetry && request.Entries.Count == 1 && request.Entries[0].ReceiptHandle == "m-1")
+            {
+                throw new AmazonSQSException("service unavailable");
+            }
             var failed = new List<BatchResultErrorEntry>();
             foreach (var entry in request.Entries)
             {

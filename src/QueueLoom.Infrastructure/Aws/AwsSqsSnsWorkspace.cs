@@ -418,7 +418,10 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 var pending = chunk.ToList();
                 for (var attempt = 1; pending.Count > 0; attempt++)
                 {
-                    var response = await owner.Sqs.ChangeMessageVisibilityBatchAsync(
+                    ChangeMessageVisibilityBatchResponse response;
+                    try
+                    {
+                        response = await owner.Sqs.ChangeMessageVisibilityBatchAsync(
                             new ChangeMessageVisibilityBatchRequest
                             {
                                 QueueUrl = queue.Url,
@@ -431,6 +434,13 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                             },
                             cancellationToken)
                         .ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                    {
+                        // The SDK's own retries are spent: these stay hidden for now; later batches are still released.
+                        unreleased.AddRange(pending.Select(message => (message, exception.GetBaseException().Message)));
+                        break;
+                    }
                     var retry = new List<LeasedMessage>();
                     foreach (var failure in response.Failed ?? [])
                     {
