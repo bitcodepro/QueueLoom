@@ -12,6 +12,7 @@ public sealed class OperationItemViewModel(OperationItem item) : ObservableObjec
     public string Description => $"{Item.Index + 1}: {Item.Origin} → {Item.Destination} · {Item.MessageId}";
     public string Outcome => Item.State switch
     {
+        "OriginalKept" => $"Send confirmed; the original was not removed and is still in the source (or already gone). Never resend. {Item.Detail}",
         "SentOriginalKept" => $"Send confirmed; source removal not confirmed. Never resend. {Item.Detail}",
         "DeleteUncertain" or "Deleting" => $"Send confirmed; source deletion unknown. Manual inspection required. {Item.Detail}",
         "AwaitingScheduleClaim" => "Blocked scheduled snapshot: claim/activation was not completed. Review the scheduled job before any new operation.",
@@ -123,8 +124,16 @@ public sealed partial class MainWindowViewModel
         {
             var result = await _replayStore.RunItemsAsync(plan, indexes, retry, _workspace, () => CanWrite, null, token);
             RemoveResentOriginals(result);
-            StatusText = $"Recovery: {result.SentCount} acknowledged; {result.FailedCount} failed or uncertain. Review item outcomes.";
-            AddActivity("Info", "Operation recovery stopped", StatusText);
+            var summary = $"{result.SentCount:N0} of {indexes.Length:N0} acknowledged" +
+                          (plan.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
+                          (result.OriginalsKeptCount > 0 ? $" · {result.OriginalsKeptCount:N0} originals kept" : string.Empty) +
+                          (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain" : string.Empty) +
+                          (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
+            StatusText = $"Recovery: {summary}. Review item outcomes.";
+            var complete = result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0;
+            AddActivity(complete ? "Success" : "Warning",
+                complete ? "Operation recovery completed" : result.CancelledCount > 0 ? "Operation recovery cancelled" : "Operation recovery incomplete",
+                $"{plan.Id:N} · {summary}" + (result.BackupDirectory is null ? string.Empty : $" · backup {result.BackupDirectory}"));
         }
         finally { RefreshOperationHistory(); }
     }

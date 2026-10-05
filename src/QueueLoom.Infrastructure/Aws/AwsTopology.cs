@@ -35,8 +35,46 @@ internal sealed record AwsQueueInfo(
             ReadEpochSeconds(attributes, "LastModifiedTimestamp"))
         {
             MaximumMessageSize = ReadMaximumMessageSize(attributes.GetValueOrDefault("MaximumMessageSize"))
-                                 ?? QueueLoom.Core.Validation.MessageSizeLimits.AmazonMaximumBytes
+                                 ?? QueueLoom.Core.Validation.MessageSizeLimits.AmazonMaximumBytes,
+            MaxReceiveCount = ReadMaxReceiveCount(attributes.GetValueOrDefault("RedrivePolicy"))
         };
+    }
+
+    /// <summary>
+    /// The redrive policy's maxReceiveCount, "the number of times a consumer can receive a message from a source queue
+    /// before it is moved to a dead-letter queue" (SQS Developer Guide, "Using dead-letter queues in Amazon SQS"), or
+    /// null without one. QueueLoom's read is a ReceiveMessage too, so every browse counts toward it.
+    /// </summary>
+    public int? MaxReceiveCount { get; init; }
+
+    /// <summary>maxReceiveCount of a redrive policy (a JSON number, or a string in older policies), else null.</summary>
+    internal static int? ReadMaxReceiveCount(string? redrivePolicy)
+    {
+        if (string.IsNullOrWhiteSpace(redrivePolicy))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(redrivePolicy);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("maxReceiveCount", out var count))
+            {
+                return null;
+            }
+            return count.ValueKind switch
+            {
+                JsonValueKind.Number when count.TryGetInt32(out var number) && number > 0 => number,
+                JsonValueKind.String when int.TryParse(count.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                    out var parsed) && parsed > 0 => parsed,
+                _ => null
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -239,6 +277,8 @@ internal sealed class AwsTopologyIndex
             return new ServiceBusQueue(queue.Name, runtime, ServiceBusEntityStatus.Active)
             {
                 HasDeadLetterQueue = deadLetterQueue is not null,
+                MaxDeliveryCount = queue.MaxReceiveCount,
+                DeadLetterQueueName = deadLetterQueue?.Name,
                 Note = note,
                 // The dead-letter queue of a FIFO queue is a FIFO queue too.
                 ReadsOneBatchPerMessageGroup = queue.IsFifo
@@ -263,6 +303,8 @@ internal sealed class AwsTopologyIndex
                     subscription.IsConfirmed ? ServiceBusEntityStatus.Active : ServiceBusEntityStatus.Creating)
                 {
                     HasDeadLetterQueue = deadLetterQueue is not null,
+                    // Its messages are read through the SQS queue it delivers to, so that queue's redrive policy applies.
+                    MaxDeliveryCount = endpointQueue?.MaxReceiveCount,
                     // An SNS FIFO topic delivers to FIFO queues only, and dead-letters into a FIFO queue.
                     ReadsOneBatchPerMessageGroup = topic.IsFifo || endpointQueue?.IsFifo == true,
                     Note = subscription.IsConfirmed

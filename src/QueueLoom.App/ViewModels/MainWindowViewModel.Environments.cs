@@ -80,7 +80,7 @@ public sealed partial class MainWindowViewModel
         MessagingProvider.GooglePubSub =>
             "Pub/Sub has no peek. Messages are pulled, held for up to 3 minutes and returned unchanged; with a dead-letter policy each read counts as a delivery attempt.",
         MessagingProvider.RabbitMq =>
-            "RabbitMQ has no peek. Messages are taken with basic.get and requeued unchanged; they are marked as redelivered, and quorum queues do not count this as a delivery.",
+            "RabbitMQ has no peek. Messages are taken with basic.get and requeued unchanged; they are marked as redelivered, and quorum queues on RabbitMQ 4.2 and earlier count this as a delivery toward their delivery limit (4.3 and later do not).",
         MessagingProvider.Kafka =>
             "Kafka keeps messages after they are read. QueueLoom reads them by offset, without a consumer group, so nothing is committed or changed.",
         _ => "Messages are peeked without locking or changing them."
@@ -658,6 +658,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasSubjectHint));
         OnPropertyChanged(nameof(BrowseModeLabel));
         OnPropertyChanged(nameof(BrowseModeDescription));
+        NotifyBrowseDeliveryNotes();
         OnPropertyChanged(nameof(DeadLetterCountCaption));
         OnPropertyChanged(nameof(IsSelectedProfileConnected));
         OnPropertyChanged(nameof(EnvironmentActionLabel));

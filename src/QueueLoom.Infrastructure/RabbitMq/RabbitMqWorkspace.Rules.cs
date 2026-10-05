@@ -58,9 +58,18 @@ public sealed partial class RabbitMqWorkspace
         {
             ArgumentNullException.ThrowIfNull(rule);
             var path = BindingPath(topic, subscription, rule.ToExchange);
-            var arguments = rule.Kind is RuleFilterKind.HeadersBinding or RuleFilterKind.OtherBinding
-                ? rule.Arguments.ToDictionary(pair => pair.Key, pair => pair.Value)
-                : new Dictionary<string, object?>();
+            var arguments = rule.Kind switch
+            {
+                RuleFilterKind.HeadersBinding or RuleFilterKind.OtherBinding => rule.Arguments.ToDictionary(pair => pair.Key, pair => pair.Value),
+                // The editor of a direct or topic binding changes only its key. A binding is identified by its source,
+                // destination, routing key and arguments ("a 'name' for the binding composed of its routing key and a
+                // hash of its arguments", RabbitMQ HTTP API reference, https://www.rabbitmq.com/docs/http-api-reference),
+                // so the replacement is declared with the arguments of exactly the binding being edited (its
+                // properties_key); dropping them would silently change what the binding means to plugins and policies.
+                RuleFilterKind.DirectBinding or RuleFilterKind.TopicBinding when replace =>
+                    await CapturedArgumentsAsync(path, rule.Name, token).ConfigureAwait(false),
+                _ => new Dictionary<string, object?>()
+            };
             if (arguments.Values.Any(value => value is null))
             {
                 await SavePresenceBindingAsync(topic, subscription, path, rule, arguments, replace, token).ConfigureAwait(false);
@@ -150,6 +159,16 @@ public sealed partial class RabbitMqWorkspace
             // HTTP DELETE resolves that hash to an arbitrary binding. Unbind the captured original terms.
             await UnbindCapturedAsync(channel, topic, destination, rule.ToExchange, original, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>The arguments of the one binding with this properties key; refused when it is missing or not unique.</summary>
+    private async Task<Dictionary<string, object?>> CapturedArgumentsAsync(string path, string propertiesKey, CancellationToken cancellationToken)
+    {
+        var bindings = await GetBindingsAsync(path, cancellationToken).ConfigureAwait(false);
+        var originals = bindings.Where(binding => binding.GetProperty("properties_key").GetString() == propertiesKey).ToArray();
+        if (originals.Length != 1)
+            throw new InvalidOperationException("The previous binding identity is missing or ambiguous. Refresh the bindings before trying again.");
+        return ToRule("headers", originals[0], 0, 1).Arguments.ToDictionary(pair => pair.Key, pair => pair.Value);
     }
 
     private async Task UnbindCapturedAsync(IChannel channel, string topic, string destination, bool? toExchange,

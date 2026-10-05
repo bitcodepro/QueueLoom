@@ -36,6 +36,8 @@ public sealed partial class App : Application
                 var window = _services.GetRequiredService<MainWindow>();
                 window.ShutdownCompleted = DisposeServicesAsync;
                 desktop.MainWindow = window;
+                // Best effort on a worker thread: a slow or failing cleanup never delays or stops start-up.
+                _ = _services.GetRequiredService<LocalHistoryRetention>().Start();
             }
             catch (Exception exception)
             {

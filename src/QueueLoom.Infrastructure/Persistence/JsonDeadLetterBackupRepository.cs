@@ -180,6 +180,107 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
         return Task.CompletedTask;
     }
 
+    public Task<int> RemoveFinishedEmptySessionsAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(() => RemoveFinishedEmptySessions(cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Deleting the last message of a session younger than <see cref="SessionQuietPeriod"/> keeps its folder (a purge
+    /// may still be writing into it), and nothing else came back for it. This sweep, run at start-up and with retention,
+    /// removes such folders once the session.json and every folder in the session have been quiet for the period.
+    /// Any other file in the session (a message, a .tmp file being written, anything unknown) or a link keeps it.
+    /// </summary>
+    private int RemoveFinishedEmptySessions(CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(RootDirectory) || File.GetAttributes(RootDirectory).HasFlag(FileAttributes.ReparsePoint))
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        var sessions = Directory.EnumerateFiles(RootDirectory, "session.json", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+            MatchCasing = MatchCasing.CaseInsensitive
+        }).Select(Path.GetDirectoryName).OfType<string>().Distinct(StringComparer.Ordinal).ToArray();
+        foreach (var session in sessions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (TryRemoveQuietEmptySession(session))
+            {
+                removed++;
+                try
+                {
+                    RemoveEmptyParentDirectories(Path.GetDirectoryName(session));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // An empty date folder is only clutter; the next sweep tries again.
+                }
+            }
+        }
+        return removed;
+    }
+
+    private bool TryRemoveQuietEmptySession(string session)
+    {
+        try
+        {
+            var full = Path.GetFullPath(session);
+            if (!full.StartsWith(_rootWithSeparator, _pathComparison))
+            {
+                return false;
+            }
+            EnsureNoReparsePointParents(full);
+            var now = DateTime.UtcNow;
+            var sessionFile = new FileInfo(Path.Combine(full, "session.json"));
+            if (!sessionFile.Exists || sessionFile.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                now - sessionFile.LastWriteTimeUtc < SessionQuietPeriod)
+            {
+                return false;
+            }
+
+            // Hidden files count too: a .tmp file is how a backup is being written.
+            var everything = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 };
+            var folders = new List<DirectoryInfo> { new(full) };
+            foreach (var entry in new DirectoryInfo(full).EnumerateFileSystemInfos("*", everything))
+            {
+                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    return false;
+                }
+                if (entry is DirectoryInfo folder)
+                {
+                    folders.Add(folder);
+                }
+                else if (!string.Equals(entry.FullName, sessionFile.FullName, _pathComparison))
+                {
+                    return false;
+                }
+            }
+            if (folders.Any(folder => now - folder.LastWriteTimeUtc < SessionQuietPeriod))
+            {
+                return false;
+            }
+
+            // Empty entity folders deepest first, then session.json, then the session folder, and never recursively:
+            // anything written meanwhile makes a delete fail and keeps the rest.
+            foreach (var folder in folders.Skip(1).OrderByDescending(folder => folder.FullName.Length))
+            {
+                folder.Delete();
+            }
+            sessionFile.Delete();
+            Directory.Delete(full);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            // Left in place; the next sweep tries again.
+            return false;
+        }
+    }
+
     /// <summary>Removes cache entries of backups that are gone, for example deleted by hand or by another version.</summary>
     private void RemoveOrphanCaches(HashSet<string> listedCaches)
     {

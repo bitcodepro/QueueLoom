@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Amazon.Runtime;
 using Amazon.SQS;
@@ -12,6 +13,9 @@ public sealed partial class AwsSqsSnsWorkspace
 {
     private const QueueSettingFlags SqsSettings =
         QueueSettingFlags.MessageTimeToLive | QueueSettingFlags.MaxDeliveryCount | QueueSettingFlags.LockDuration;
+
+    /// <summary>The longest SQS retention, 14 days: dead-letter queues keep their messages as long as SQS allows.</summary>
+    private const int FullRetentionSeconds = 1_209_600;
 
     // SetQueueAttributes: MessageRetentionPeriod 60 to 1,209,600 seconds, VisibilityTimeout 0 to 43,200 seconds;
     // a redrive policy's maxReceiveCount (Maximum receives) 1 to 1,000.
@@ -67,22 +71,88 @@ public sealed partial class AwsSqsSnsWorkspace
             {
                 var deadLetterName = fifo ? definition.Name[..^5] + "-dlq.fifo" : definition.Name + "-dlq";
                 await EnsureQueueMissingAsync(deadLetterName, token).ConfigureAwait(false);
-                // Keep dead letters as long as SQS allows, so there is time to look at them.
-                var deadLetterAttributes = new Dictionary<string, string>(StringComparer.Ordinal) { ["MessageRetentionPeriod"] = "1209600" };
+                // Another operator can create "<name>-dlq" between that check and CreateQueue, and SQS then answers with
+                // the existing queue's URL when the attributes match; the queue would then dead-letter into someone else's
+                // queue. CreateQueue documents the way to tell: an existing name whose attributes differ from the request
+                // fails with QueueNameExists ("only if the request includes attributes whose values differ from those of
+                // the existing queue"). So the dead-letter queue is first created with a retention nobody else picks
+                // (14 days minus a random number of seconds below one day): SQS refuses it for any existing queue, and the
+                // retention read back right afterwards proves the queue is the one this call created (also against
+                // SQS-compatible servers that return an existing queue whatever the attributes). Tags cannot prove it:
+                // CreateQueue does not document whether tags are applied to, compared with or ignored for an existing
+                // queue, and tagging needs sqs:TagQueue as well.
+                var marker = (FullRetentionSeconds - RandomNumberGenerator.GetInt32(1, 86_400)).ToString(CultureInfo.InvariantCulture);
+                var deadLetterAttributes = new Dictionary<string, string>(StringComparer.Ordinal) { ["MessageRetentionPeriod"] = marker };
                 if (fifo)
                 {
                     deadLetterAttributes["FifoQueue"] = "true";
                 }
-                var deadLetter = await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = deadLetterName, Attributes = deadLetterAttributes },
-                    token).ConfigureAwait(false);
+                CreateQueueResponse deadLetter;
+                try
+                {
+                    deadLetter = await Sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = deadLetterName, Attributes = deadLetterAttributes },
+                        token).ConfigureAwait(false);
+                }
+                catch (QueueNameExistsException exception)
+                {
+                    throw new InvalidOperationException(
+                        $"A queue named '{deadLetterName}' was created by someone else while QueueLoom was creating '{definition.Name}'. " +
+                        $"Nothing was created; choose another name or connect '{definition.Name}' to that queue yourself.", exception);
+                }
                 createdDeadLetter = deadLetter.QueueUrl;
                 createdDeadLetterName = deadLetterName;
-                var arn = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
+                var deadLetterState = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
                 {
                     QueueUrl = deadLetter.QueueUrl,
-                    AttributeNames = ["QueueArn"]
-                }, token).ConfigureAwait(false)).Attributes["QueueArn"];
-                attributes["RedrivePolicy"] = RedrivePolicy(arn, definition.Settings.MaxDeliveryCount ?? 5);
+                    AttributeNames = ["QueueArn", "MessageRetentionPeriod"]
+                }, token).ConfigureAwait(false)).Attributes;
+                if (!string.Equals(deadLetterState.GetValueOrDefault("MessageRetentionPeriod"), marker, StringComparison.Ordinal))
+                {
+                    // Not proven to be this call's queue: it is neither used nor deleted (DeleteQueue removes a queue
+                    // whatever it holds), and the main queue is not created.
+                    throw new InvalidOperationException(
+                        $"SQS answered with a queue named '{deadLetterName}' that QueueLoom did not create; another operator " +
+                        $"probably created it meanwhile. '{definition.Name}' was not created and '{deadLetterName}' was left " +
+                        "unchanged; check who uses it before deleting it in AWS.");
+                }
+                try
+                {
+                    // Keep dead letters as long as SQS allows, so there is time to look at them.
+                    await Sqs.SetQueueAttributesAsync(new SetQueueAttributesRequest
+                    {
+                        QueueUrl = deadLetter.QueueUrl,
+                        Attributes = new Dictionary<string, string>(StringComparer.Ordinal)
+                        {
+                            ["MessageRetentionPeriod"] = FullRetentionSeconds.ToString(CultureInfo.InvariantCulture)
+                        }
+                    }, token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is AmazonServiceException or HttpRequestException or TaskCanceledException)
+                {
+                    // A dead letter keeps its original enqueue age, so a shortened retention can expire it early after
+                    // redrive. The outcome may also be unknown (a lost response): only a read-back of 14 days lets the
+                    // queue be connected; otherwise nothing more is created and the operator is told what to set.
+                    string? retention = null;
+                    try
+                    {
+                        retention = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
+                        {
+                            QueueUrl = deadLetter.QueueUrl,
+                            AttributeNames = ["MessageRetentionPeriod"]
+                        }, CancellationToken.None).ConfigureAwait(false)).Attributes.GetValueOrDefault("MessageRetentionPeriod");
+                    }
+                    catch (Exception readBack) when (readBack is AmazonServiceException or HttpRequestException or TaskCanceledException)
+                    {
+                    }
+                    if (retention != FullRetentionSeconds.ToString(CultureInfo.InvariantCulture))
+                    {
+                        throw new InvalidOperationException(
+                            $"The dead-letter queue '{deadLetterName}' was created, but its retention could not be set to 14 days " +
+                            $"({exception.Message}). '{definition.Name}' was not created. Set MessageRetentionPeriod of " +
+                            $"'{deadLetterName}' to 1209600 (or delete it) and create '{definition.Name}' again.", exception);
+                    }
+                }
+                attributes["RedrivePolicy"] = RedrivePolicy(deadLetterState["QueueArn"], definition.Settings.MaxDeliveryCount ?? 5);
             }
 
             try

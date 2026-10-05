@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Settings;
 
@@ -40,7 +41,21 @@ public sealed partial class MainWindowViewModel
     private async Task DeleteOldBackupsAsync(bool automatic, CancellationToken cancellationToken)
     {
         var repository = _backupRepository;
-        if (repository is null || BackupRetentionDays <= 0)
+        if (repository is null)
+        {
+            return;
+        }
+        // Session folders left holding only session.json (their last backup was deleted while the session was young)
+        // are swept at start-up and with every clean-up, whatever the retention; they contain no backups.
+        try
+        {
+            await repository.RemoveFinishedEmptySessionsAsync(cancellationToken).ConfigureAwait(true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(exception, "Empty backup session folders could not be removed");
+        }
+        if (BackupRetentionDays <= 0)
         {
             return;
         }
