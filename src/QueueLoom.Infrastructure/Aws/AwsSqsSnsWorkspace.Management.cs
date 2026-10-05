@@ -43,7 +43,7 @@ public sealed partial class AwsSqsSnsWorkspace
         using var operation = await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
         var url = await QueueUrlAsync(queue, cancellationToken).ConfigureAwait(false);
         var attributes = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["All"] },
-            cancellationToken).ConfigureAwait(false)).Attributes;
+            cancellationToken).ConfigureAwait(false)).Attributes ?? [];
         return new QueueSettings(
             Seconds(attributes, "MessageRetentionPeriod"),
             MaxReceiveCount(attributes.GetValueOrDefault("RedrivePolicy")),
@@ -255,15 +255,34 @@ public sealed partial class AwsSqsSnsWorkspace
             ? TimeSpan.FromSeconds(seconds)
             : null;
 
+    /// <summary>
+    /// The redrive policy's maxReceiveCount, or null when it is missing or unreadable: a policy written by another tool must not
+    /// make the queue's settings impossible to open.
+    /// </summary>
     private static int? MaxReceiveCount(string? redrivePolicy)
     {
         if (string.IsNullOrWhiteSpace(redrivePolicy))
         {
             return null;
         }
-        using var document = JsonDocument.Parse(redrivePolicy);
-        return document.RootElement.TryGetProperty("maxReceiveCount", out var count)
-            ? count.ValueKind == JsonValueKind.Number ? count.GetInt32() : int.Parse(count.GetString()!, CultureInfo.InvariantCulture)
-            : null;
+        try
+        {
+            using var document = JsonDocument.Parse(redrivePolicy);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("maxReceiveCount", out var count))
+            {
+                return null;
+            }
+            return count.ValueKind switch
+            {
+                JsonValueKind.Number when count.TryGetInt32(out var number) => number,
+                JsonValueKind.String when int.TryParse(count.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var text) => text,
+                _ => null
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }
