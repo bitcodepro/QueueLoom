@@ -9,18 +9,22 @@ namespace QueueLoom.Tests;
 
 public sealed class BrokerOutcomeTests
 {
-    // librdkafka tells whether a failed record may still have been written. A timeout after the request left
-    // (possibly persisted) is uncertain, not "did not accept"; only "not persisted" is a refusal the app may treat as
-    // certain (DeliveryRejectedException), and "persisted" says the message was stored.
+    // Confluent.Kafka's ProduceAsync rebuilds the delivery result without librdkafka's status, so a timed-out send
+    // arrives as "not persisted" (the default). It must still read as uncertain; only an error that stops a record
+    // before it is written is a refusal the app may treat as certain (DeliveryRejectedException).
     [Theory]
-    [InlineData(PersistenceStatus.PossiblyPersisted, "unknown", false)]
-    [InlineData(PersistenceStatus.NotPersisted, "did not accept", true)]
-    [InlineData(PersistenceStatus.Persisted, "stored the message", false)]
-    public async Task KafkaSendFailuresSayWhetherTheRecordMayHaveBeenWritten(PersistenceStatus status, string expected, bool rejected)
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_MsgTimedOut, "unknown", false)]
+    [InlineData(PersistenceStatus.PossiblyPersisted, ErrorCode.Local_MsgTimedOut, "unknown", false)]
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.RequestTimedOut, "unknown", false)]
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.MsgSizeTooLarge, "did not accept", true)]
+    [InlineData(PersistenceStatus.NotPersisted, ErrorCode.Local_UnknownTopic, "did not accept", true)]
+    [InlineData(PersistenceStatus.Persisted, ErrorCode.Local_MsgTimedOut, "stored the message", false)]
+    public async Task KafkaSendFailuresSayWhetherTheRecordMayHaveBeenWritten(PersistenceStatus status, ErrorCode code, string expected, bool rejected)
     {
         await using var workspace = new KafkaWorkspace(new EmptyVault());
         var producer = DispatchProxy.Create<IProducer<byte[]?, byte[]?>, FailingProducer>();
         ((FailingProducer)(object)producer).Status = status;
+        ((FailingProducer)(object)producer).Code = code;
         typeof(KafkaWorkspace).GetField("_producer", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace, producer);
         var send = typeof(KafkaWorkspace).GetMethod("SendCoreAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var draft = new MessageDraft(new EditableMessageBody("x", MessageBodyFormat.Text), EditableMessageProperties.Empty);
@@ -35,13 +39,14 @@ public sealed class BrokerOutcomeTests
     public class FailingProducer : DispatchProxy
     {
         public PersistenceStatus Status { get; set; }
+        public ErrorCode Code { get; set; }
 
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == "ProduceAsync")
             {
                 return Task.FromException<DeliveryResult<byte[]?, byte[]?>>(new ProduceException<byte[]?, byte[]?>(
-                    new Error(ErrorCode.Local_MsgTimedOut, "Message timed out"),
+                    new Error(Code, Code.ToString()),
                     new DeliveryResult<byte[]?, byte[]?> { Status = Status }));
             }
             return method.ReturnType.IsValueType && method.ReturnType != typeof(void) ? Activator.CreateInstance(method.ReturnType) : null;
@@ -86,6 +91,31 @@ public sealed class AzurePurgeReleaseTests
         Assert.Equal(1, receiver.Abandoned);
     }
 
+    // Releasing against an unreachable namespace: each abandon would spend the full retry policy. The batch shares
+    // one short budget, after which the purge ends (and the receiver is disposed) with nothing more attempted.
+    [Fact]
+    public async Task ReleasingAHungBatchIsBoundedAsAWhole()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var receiver = new ScriptedReceiver(20) { OnReceive = cancellation.Cancel, HangAbandon = true };
+        QueueLoom.Infrastructure.Azure.AzureServiceBusWorkspace.AbandonBudgetOverride.Value = TimeSpan.FromMilliseconds(300);
+        try
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var result = await PurgeAsync(receiver, cancellation.Token).WaitAsync(TimeSpan.FromSeconds(20));
+
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), $"Releasing took {watch.Elapsed}.");
+            Assert.Equal(0, result.DeletedCount);
+            Assert.Contains("Cancelled", result.Error, StringComparison.Ordinal);
+            Assert.Equal(1, receiver.Abandoned);
+            Assert.True(receiver.Disposed);
+        }
+        finally
+        {
+            QueueLoom.Infrastructure.Azure.AzureServiceBusWorkspace.AbandonBudgetOverride.Value = null;
+        }
+    }
+
     private static async Task<DeadLetterPurgeSourceResult> PurgeAsync(ScriptedReceiver receiver, CancellationToken token)
     {
         using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
@@ -111,6 +141,8 @@ public sealed class AzurePurgeReleaseTests
         public int FailCompleteOf { get; init; } = -1;
         public int Completed { get; private set; }
         public int Abandoned { get; private set; }
+        public bool HangAbandon { get; init; }
+        public bool Disposed { get; private set; }
 
         public override Task<IReadOnlyList<Azure.Messaging.ServiceBus.ServiceBusReceivedMessage>> ReceiveMessagesAsync(
             int maxMessages, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
@@ -135,9 +167,14 @@ public sealed class AzurePurgeReleaseTests
             IDictionary<string, object>? propertiesToModify = null, CancellationToken cancellationToken = default)
         {
             Abandoned++;
-            return Task.CompletedTask;
+            // A hung call that ignores its token, as a stuck connection attempt can.
+            return HangAbandon ? Task.Delay(Timeout.Infinite) : Task.CompletedTask;
         }
 
-        public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public override ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
     }
 }

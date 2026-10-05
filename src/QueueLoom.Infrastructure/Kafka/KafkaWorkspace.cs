@@ -268,20 +268,26 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         }
         catch (ProduceException<byte[]?, byte[]?> exception)
         {
-            // librdkafka says whether the record may have been written. Only "not persisted" is a refusal; a timeout
-            // after the request left (possibly persisted) must not read as one, or sending it again could duplicate it.
-            throw exception.DeliveryResult?.Status switch
-            {
-                PersistenceStatus.NotPersisted => new DeliveryRejectedException(
-                    $"Kafka did not accept the message: {exception.Error.Reason}", exception),
-                PersistenceStatus.Persisted => new InvalidOperationException(
-                    $"Kafka stored the message but reported an error: {exception.Error.Reason}", exception),
-                _ => new InvalidOperationException(
-                    $"Whether Kafka stored the message is unknown ({exception.Error.Reason}). Check '{destination.Name}' " +
-                    "before sending it again.", exception)
-            };
+            // ProduceAsync rebuilds the delivery result without librdkafka's persistence status, so "not persisted"
+            // there is only the default and proves nothing. A refusal is told by the error itself: one that stops a
+            // record before it is written. Anything else (a timeout after the request left) may have been stored, and
+            // must not read as a refusal, or sending it again could duplicate it.
+            throw exception.DeliveryResult?.Status == PersistenceStatus.Persisted
+                ? new InvalidOperationException($"Kafka stored the message but reported an error: {exception.Error.Reason}", exception)
+                : IsDefiniteRefusal(exception.Error.Code)
+                    ? new DeliveryRejectedException($"Kafka did not accept the message: {exception.Error.Reason}", exception)
+                    : new InvalidOperationException(
+                        $"Whether Kafka stored the message is unknown ({exception.Error.Reason}). Check '{destination.Name}' " +
+                        "before sending it again.", exception);
         }
     }
+
+    /// <summary>Errors that stop a record before it is written, by the client or by the broker's answer.</summary>
+    internal static bool IsDefiniteRefusal(ErrorCode code) => code is
+        ErrorCode.Local_QueueFull or ErrorCode.Local_UnknownTopic or
+        ErrorCode.Local_UnknownPartition or ErrorCode.Local_InvalidArg or ErrorCode.MsgSizeTooLarge or
+        ErrorCode.TopicAuthorizationFailed or ErrorCode.UnknownTopicOrPart or ErrorCode.InvalidMsg or
+        ErrorCode.RecordListTooLarge or ErrorCode.InvalidRecord;
 
     /// <summary>
     /// Watermarks of one partition. A topic that was just created, or is being deleted or moved, can briefly have no

@@ -359,13 +359,23 @@ public sealed partial class AzureServiceBusWorkspace
     }
 
     /// <summary>Releases messages back to their queue; a lock already lost needs nothing, so failures are ignored.</summary>
+    /// <remarks>
+    /// The whole batch shares one short budget: against an unreachable namespace each call would otherwise spend the
+    /// full retry policy, holding the cancelled purge open for minutes. What is not released in time is released by
+    /// its lock expiring.
+    /// </remarks>
     private static async Task AbandonQuietlyAsync(ServiceBusReceiver receiver, IReadOnlyList<ServiceBusReceivedMessage> messages)
     {
+        using var budget = new CancellationTokenSource(AbandonBudgetOverride.Value ?? AbandonBudget);
         foreach (var message in messages)
         {
+            if (budget.IsCancellationRequested)
+            {
+                return;
+            }
             try
             {
-                await receiver.AbandonMessageAsync(message, propertiesToModify: null, CancellationToken.None).ConfigureAwait(false);
+                await receiver.AbandonMessageAsync(message, propertiesToModify: null, budget.Token).WaitAsync(budget.Token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
@@ -373,6 +383,11 @@ public sealed partial class AzureServiceBusWorkspace
             }
         }
     }
+
+    internal static readonly TimeSpan AbandonBudget = TimeSpan.FromSeconds(10);
+
+    /// <summary>Tests shorten the release budget.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> AbandonBudgetOverride = new();
 
     internal static bool HasConfirmedEmptyPurge(int consecutiveEmptyReceives) =>
         consecutiveEmptyReceives >= PurgeEmptyReceiveConfirmations;
