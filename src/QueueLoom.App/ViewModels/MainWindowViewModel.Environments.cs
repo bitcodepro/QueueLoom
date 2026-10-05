@@ -377,23 +377,57 @@ public sealed partial class MainWindowViewModel
         }
         await StopMonitorForConfigurationChangeAsync(selected.Id).ConfigureAwait(true);
         InvalidateProfileArtifacts(selected.Id, "Its environment was removed; the previous draft is no longer sendable.");
+        // Every resend saved for this environment is cancelled, including ones another window scheduled after this
+        // window loaded its list: the saved list is what windows run from. This happens while the environment
+        // change is still held, so no window can claim one of them in between (see RunScheduledAsync).
+        // The environment is gone already: a failure to read or update the saved schedules is reported as unfinished
+        // cleanup, and the list of environments is refreshed regardless.
         var cancelledResends = 0;
-        foreach (var item in ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).ToArray())
+        var removedIds = new HashSet<Guid>();
+        string? cleanupProblem = null;
+        IReadOnlyList<ScheduledResend> saved;
+        try
+        {
+            saved = _scheduledStore?.Load().Where(resend => resend.ProfileId == selected.Id).ToArray()
+                    ?? ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
+            // Listed here but no longer saved: another window ran or cancelled it. Nothing of it is left to cancel.
+            if (_scheduledStore is not null)
+            {
+                removedIds.UnionWith(ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id)
+                    .Select(item => item.Resend.Id).Except(saved.Select(resend => resend.Id)));
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            cleanupProblem = exception.Message;
+            saved = ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
+        }
+        foreach (var resend in saved)
         {
             try
             {
-                RemoveScheduled(item.Resend);
+                if (RemoveScheduled(resend))
+                {
+                    cancelledResends++;
+                }
+                removedIds.Add(resend.Id);
             }
-            catch (IOException)
+            catch (IOException exception)
             {
-                // Left listed (RemoveScheduled reported why); it can still be cancelled on Activity.
-                continue;
+                // Left listed; it can still be cancelled on Activity.
+                cleanupProblem ??= exception.Message;
             }
+        }
+        foreach (var item in ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id && removedIds.Contains(item.Resend.Id)).ToArray())
+        {
             ScheduledResends.Remove(item);
-            cancelledResends++;
         }
         AddActivity("Warning", "Environment removed", selected.Name +
-            (cancelledResends > 0 ? $" · {cancelledResends:N0} scheduled resend(s) cancelled; nothing was sent" : string.Empty));
+            (cancelledResends > 0 ? $" · {cancelledResends:N0} scheduled resend(s) cancelled; nothing was sent" : string.Empty) +
+            (cleanupProblem is null
+                ? string.Empty
+                : $" · its scheduled resends could not all be checked or cancelled ({cleanupProblem}); any left are never sent, since " +
+                  "their environment is gone, and can be cancelled on Activity"));
         await ReloadProfilesAsync(cancellationToken).ConfigureAwait(true);
     }
 

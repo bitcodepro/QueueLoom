@@ -4,6 +4,7 @@ using Google.Cloud.PubSub.V1;
 using Grpc.Core;
 using Microsoft.Extensions.Logging.Abstractions;
 using QueueLoom.App.Services;
+using QueueLoom.Core.IO;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using QueueLoom.App.Commands;
+using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 
@@ -138,12 +139,31 @@ public sealed partial class MainWindowViewModel
             resend.Items.Select(entry => entry.ToResendItem()).ToArray(), resend.Mode, resend.MessagesPerSecond,
             _connectedProfile.EndpointDisplay, resend.ConfigurationIdentity!, "Scheduled resend", cancellationToken, deferActivation: true,
             provider: _connectedProfile.Provider);
-        // Taken off the list before sending, so a crash in the middle never sends the same messages twice.
-        if (_scheduledStore is not null && !RemoveScheduled(resend))
+        // Taken off the list before sending, so a crash in the middle never sends the same messages twice. The saved
+        // environment is checked and the job claimed while environment changes are held: an environment deleted or
+        // changed in another window (whose deletion cancels its saved jobs under the same hold) is never sent to from
+        // this window's cached connection.
+        var claimed = false;
+        var environmentGone = false;
+        {
+            var coordinator = _profileRepository as IProfileMutationCoordinator;
+            await using var mutation = coordinator is null ? null
+                : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
+            var current = await _profileRepository.GetAsync(resend.ProfileId, cancellationToken).ConfigureAwait(true);
+            environmentGone = current is null || ScheduledResend.IdentityFor(current) != resend.ConfigurationIdentity;
+            claimed = _scheduledStore is null || RemoveScheduled(resend);
+        }
+        if (!claimed || environmentGone)
         {
             ScheduledResends.Remove(item);
             RefreshOperationHistory();
-            StatusText = "The scheduled resend was cancelled, started or changed in another window; nothing was sent.";
+            StatusText = environmentGone
+                ? $"{resend.EnvironmentName} was removed or changed in another window; the scheduled resend was cancelled and nothing was sent."
+                : "The scheduled resend was cancelled, started or changed in another window; nothing was sent.";
+            if (claimed)
+            {
+                AddActivity("Warning", "Scheduled resend cancelled", $"{resend.EnvironmentName} · {item.Title} · its environment was removed or changed; nothing was sent");
+            }
             return;
         }
         ScheduledResends.Remove(item);

@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Messaging;
 using RabbitMQ.Client;
@@ -96,6 +95,15 @@ internal static class RabbitMqMessageMapper
 
         foreach (var property in message.ApplicationProperties)
         {
+            if (property.WireType == AmqpTypedValue.WireType)
+            {
+                // Written back with exactly the AMQP types and bytes it was read with (see AmqpTypedValue).
+                if (!BrokerHeaderPrefixes.Any(prefix => property.Name.StartsWith(prefix, StringComparison.Ordinal)))
+                {
+                    properties.Headers[property.Name] = FromTyped(property.Name, property.Value);
+                }
+                continue;
+            }
             // Historical persisted drafts have no separate envelope. Keep their prior interpretation,
             // including the ambiguity of a single user header with one of these names.
             if (message.LegacyAmqpMetadata && property.Name == TypeProperty) { properties.Type = property.Value; continue; }
@@ -123,6 +131,12 @@ internal static class RabbitMqMessageMapper
         _ => Encoding.UTF8.GetBytes(property.Value)
     };
 
+    /// <summary>
+    /// A header value as an editable property. Values the text types carry exactly keep their type (text and binary
+    /// byte strings, bool, 32- and 64-bit integers, double, decimal, a calendar timestamp); every other value (tables,
+    /// arrays, void, 'x' byte arrays, short and unsigned integers, floats, out-of-calendar timestamps) is kept as
+    /// typed JSON with <see cref="AmqpTypedValue.WireType"/>, so it goes back to the broker unchanged.
+    /// </summary>
     private static MessageApplicationProperty ToProperty(string name, object? value) => value switch
     {
         byte[] bytes => ByteProperty(name, bytes),
@@ -131,14 +145,10 @@ internal static class RabbitMqMessageMapper
         int number => new MessageApplicationProperty(name, ApplicationPropertyType.Int32, number.ToString(CultureInfo.InvariantCulture)),
         long number => new MessageApplicationProperty(name, ApplicationPropertyType.Int64, number.ToString(CultureInfo.InvariantCulture)),
         double number => new MessageApplicationProperty(name, ApplicationPropertyType.Double, number.ToString("R", CultureInfo.InvariantCulture)),
-        float number => new MessageApplicationProperty(name, ApplicationPropertyType.Single, number.ToString("R", CultureInfo.InvariantCulture)),
         decimal number => new MessageApplicationProperty(name, ApplicationPropertyType.Decimal, number.ToString(CultureInfo.InvariantCulture)),
-        // A timestamp outside the calendar stays the raw seconds, so one header cannot fail the whole message.
-        AmqpTimestamp timestamp => BrokerClock.FromUnixSeconds(timestamp.UnixTime) is { } at
-            ? new MessageApplicationProperty(name, ApplicationPropertyType.DateTimeOffset, at.ToString("O", CultureInfo.InvariantCulture))
-            : new MessageApplicationProperty(name, ApplicationPropertyType.Int64, timestamp.UnixTime.ToString(CultureInfo.InvariantCulture)),
-        null => new MessageApplicationProperty(name, ApplicationPropertyType.String, string.Empty),
-        _ => new MessageApplicationProperty(name, ApplicationPropertyType.String, JsonSerializer.Serialize(ToJsonValue(value)))
+        AmqpTimestamp timestamp when BrokerClock.FromUnixSeconds(timestamp.UnixTime) is { } at =>
+            new MessageApplicationProperty(name, ApplicationPropertyType.DateTimeOffset, at.ToString("O", CultureInfo.InvariantCulture)),
+        _ => new MessageApplicationProperty(name, ApplicationPropertyType.String, ToTyped(value).ToJsonString(AmqpTypedValue.WriteOptions)) { WireType = AmqpTypedValue.WireType }
     };
 
     private static MessageApplicationProperty ByteProperty(string name, byte[] bytes)
@@ -153,14 +163,78 @@ internal static class RabbitMqMessageMapper
         }
     }
 
-    private static object? ToJsonValue(object? value) => value switch
+    private static System.Text.Json.Nodes.JsonObject Typed(string tag, System.Text.Json.Nodes.JsonNode? inner = null) =>
+        inner is null ? new() { ["t"] = tag } : new() { ["t"] = tag, ["v"] = inner };
+
+    private static string Invariant(IFormattable value, string? format = null) => value.ToString(format, CultureInfo.InvariantCulture);
+
+    /// <summary>The value with its AMQP field type, for <see cref="AmqpTypedValue"/>.</summary>
+    internal static System.Text.Json.Nodes.JsonObject ToTyped(object? value) => value switch
     {
-        byte[] bytes => Encoding.UTF8.GetString(bytes),
-        AmqpTimestamp timestamp => BrokerClock.FromUnixSeconds(timestamp.UnixTime) ?? (object)timestamp.UnixTime,
-        IDictionary<string, object?> table => table.ToDictionary(pair => pair.Key, pair => ToJsonValue(pair.Value)),
-        IEnumerable<object?> list => list.Select(ToJsonValue).ToArray(),
-        _ => value
+        null => Typed("void"),
+        bool flag => Typed("bool", flag),
+        sbyte number => Typed("i8", Invariant(number)),
+        byte number => Typed("u8", Invariant(number)),
+        short number => Typed("i16", Invariant(number)),
+        ushort number => Typed("u16", Invariant(number)),
+        int number => Typed("i32", Invariant(number)),
+        uint number => Typed("u32", Invariant(number)),
+        long number => Typed("i64", Invariant(number)),
+        float number => Typed("f32", Invariant(number, "R")),
+        double number => Typed("f64", Invariant(number, "R")),
+        decimal number => Typed("dec", Invariant(number)),
+        AmqpTimestamp timestamp => Typed("ts", Invariant(timestamp.UnixTime)),
+        byte[] bytes => Typed("longstr", Convert.ToBase64String(bytes)),
+        string text => Typed("longstr", Convert.ToBase64String(Encoding.UTF8.GetBytes(text))),
+        BinaryTableValue binary => Typed("bytes", Convert.ToBase64String(binary.Bytes ?? [])),
+        IDictionary<string, object?> table => Typed("table", new System.Text.Json.Nodes.JsonArray(
+            table.Select(pair => (System.Text.Json.Nodes.JsonNode)new System.Text.Json.Nodes.JsonArray(pair.Key, ToTyped(pair.Value))).ToArray())),
+        IEnumerable<object?> list => Typed("array", new System.Text.Json.Nodes.JsonArray(
+            list.Select(item => (System.Text.Json.Nodes.JsonNode)ToTyped(item)).ToArray())),
+        _ => throw new NotSupportedException($"RabbitMQ header values of type {value.GetType().Name} are not supported.")
     };
+
+    private static object? FromTyped(string name, string text)
+    {
+        if (AmqpTypedValue.Problem(text) is { } problem)
+        {
+            throw new InvalidOperationException($"The header '{name}' is not a valid typed AMQP value: {problem}.");
+        }
+        return FromTyped(System.Text.Json.Nodes.JsonNode.Parse(text, documentOptions: AmqpTypedValue.ReadOptions)!.AsObject());
+    }
+
+    /// <summary>The CLR value RabbitMQ.Client writes with the same AMQP field type.</summary>
+    internal static object? FromTyped(System.Text.Json.Nodes.JsonObject node)
+    {
+        var tag = node["t"]!.GetValue<string>();
+        string Text() => node["v"]!.GetValue<string>();
+        return tag switch
+        {
+            "void" => null,
+            "bool" => node["v"]!.GetValue<bool>(),
+            "i8" => sbyte.Parse(Text(), CultureInfo.InvariantCulture),
+            "u8" => byte.Parse(Text(), CultureInfo.InvariantCulture),
+            "i16" => short.Parse(Text(), CultureInfo.InvariantCulture),
+            "u16" => ushort.Parse(Text(), CultureInfo.InvariantCulture),
+            "i32" => int.Parse(Text(), CultureInfo.InvariantCulture),
+            "u32" => uint.Parse(Text(), CultureInfo.InvariantCulture),
+            "i64" => long.Parse(Text(), CultureInfo.InvariantCulture),
+            "f32" => float.Parse(Text(), CultureInfo.InvariantCulture),
+            "f64" => double.Parse(Text(), CultureInfo.InvariantCulture),
+            "dec" => decimal.Parse(Text(), NumberStyles.Number, CultureInfo.InvariantCulture),
+            "ts" => new AmqpTimestamp(long.Parse(Text(), CultureInfo.InvariantCulture)),
+            "longstr" => Convert.FromBase64String(Text()),
+            "bytes" => new BinaryTableValue(Convert.FromBase64String(Text())),
+            "table" => node["v"]!.AsArray().Select(entry => entry!.AsArray())
+                .Aggregate(new Dictionary<string, object?>(StringComparer.Ordinal), (table, entry) =>
+                {
+                    table[entry[0]!.GetValue<string>()] = FromTyped(entry[1]!.AsObject());
+                    return table;
+                }),
+            "array" => node["v"]!.AsArray().Select(item => FromTyped(item!.AsObject())).ToList(),
+            _ => throw new InvalidOperationException($"Unknown AMQP field type '{tag}'.")
+        };
+    }
 
     private sealed record Death(string? Queue, string Reason, long Count, DateTimeOffset? Time, string? RoutingKey);
 

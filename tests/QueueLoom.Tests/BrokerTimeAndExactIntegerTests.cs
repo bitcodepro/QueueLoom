@@ -58,8 +58,9 @@ public sealed class BrokerTimeAndExactIntegerTests
 
         var property = Assert.Single(message.ApplicationProperties);
         Assert.Equal("when", property.Name);
-        Assert.Equal(ApplicationPropertyType.Int64, property.Type);
-        Assert.Equal("1700000000000", property.Value);
+        // Kept as an AMQP timestamp (not turned into a 64-bit integer header), so a resend writes it back as one.
+        Assert.Equal(AmqpTypedValue.WireType, property.WireType);
+        Assert.Equal("""{"t":"ts","v":"1700000000000"}""", property.Value);
     }
 
     [Fact]

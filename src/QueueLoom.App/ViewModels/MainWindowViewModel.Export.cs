@@ -41,13 +41,14 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        await MessageExport.WriteAsync(
+        var narrowed = await MessageExport.WriteAsync(
                 path,
                 selection.Select(message => new ExportedMessage(
                     $"{message.ProfileName} ({message.EnvironmentLabel})", message.Message)).ToArray(),
                 cancellationToken)
             .ConfigureAwait(true);
-        StatusText = $"Exported {selection.Length:N0} message(s) to {path}";
+        StatusText = $"Exported {selection.Length:N0} message(s) to {path}" +
+                     (narrowed ? ". The file's group no longer has the extra access it had: replacing the file safely cannot keep its group" : string.Empty);
         AddActivity("Info", "Messages exported", $"{selection.Length:N0} message(s) · {path}");
     }
 }

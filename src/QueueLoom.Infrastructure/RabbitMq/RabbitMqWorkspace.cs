@@ -198,7 +198,47 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     private RabbitChannel Readable(RabbitQueueInfo queue, ServiceBusEntityReference source, ServiceBusSubQueue subQueue, string? belongsTo) =>
         queue.IsStream
             ? throw new InvalidOperationException($"'{queue.Name}' is a stream. Streams are read by offset, which QueueLoom does not support yet.")
-            : new RabbitChannel(this, queue.Name, source, subQueue, belongsTo);
+            : new RabbitChannel(this, queue.Name, source, subQueue, belongsTo, BrokerOwnedHeaders(queue));
+
+    private IReadOnlySet<string> BrokerOwnedHeaders(RabbitQueueInfo queue) => BrokerOwnedHeaders(queue.IsQuorum, ServerVersion());
+
+    /// <summary>
+    /// The headers the broker writes itself on messages read from a queue, as far as it is established: a quorum
+    /// queue keeps its delivery count in x-delivery-count, and from RabbitMQ 4.3 its delivery path also counts
+    /// acquisitions in x-acquired-count. Classic queues (any version), and queues whose type is not known, pass a
+    /// producer's headers through unchanged, so nothing is broker-owned there and every header stays part of the
+    /// message's identity.
+    /// </summary>
+    internal static IReadOnlySet<string> BrokerOwnedHeaders(bool isQuorum, Version? serverVersion)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        if (!isQuorum)
+        {
+            return names;
+        }
+        names.Add("x-delivery-count");
+        if (serverVersion is { } version && version >= new Version(4, 3))
+        {
+            names.Add("x-acquired-count");
+        }
+        return names;
+    }
+
+    private Version? ServerVersion()
+    {
+        try
+        {
+            return _connection?.ServerProperties is { } properties && properties.TryGetValue("version", out var value) &&
+                   (value is byte[] bytes ? System.Text.Encoding.UTF8.GetString(bytes) : value as string) is { } text &&
+                   Version.TryParse(new string(text.TakeWhile(character => char.IsDigit(character) || character == '.').ToArray()), out var parsed)
+                ? parsed
+                : null;
+        }
+        catch (Exception exception) when (exception is ObjectDisposedException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     protected override async Task SendCoreAsync(
         ServiceBusTopology topology,
@@ -279,7 +319,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         string queue,
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
-        string? belongsTo) : ILeasedMessageChannel, IAsyncDisposable
+        string? belongsTo,
+        IReadOnlySet<string>? brokerOwnedHeaders = null) : ILeasedMessageChannel, IAsyncDisposable
     {
         private readonly HashSet<ulong> _held = [];
         private IChannel? _channel;
@@ -303,6 +344,10 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
 
                 _held.Add(result.DeliveryTag);
                 var message = RabbitMqMessageMapper.FromAmqp(result.Body, result.BasicProperties, result.RoutingKey, source, subQueue);
+                if (brokerOwnedHeaders is { Count: > 0 })
+                {
+                    message = message with { BrokerOwnedHeaders = brokerOwnedHeaders };
+                }
                 var belongs = belongsTo is null || RabbitMqMessageMapper.DeadLetteredFrom(result.BasicProperties) == belongsTo;
                 messages.Add(new LeasedMessage(message, result.DeliveryTag.ToString(System.Globalization.CultureInfo.InvariantCulture), belongs)
                     { DeliveryIdentity = $"{_identity}:{result.DeliveryTag}" });

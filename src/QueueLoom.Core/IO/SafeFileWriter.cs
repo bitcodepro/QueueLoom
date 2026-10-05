@@ -3,7 +3,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 
-namespace QueueLoom.App.Services;
+namespace QueueLoom.Core.IO;
 
 /// <summary>
 /// Replaces a file only once its new contents are complete and flushed to disk, and then in one step, so no failure
@@ -18,7 +18,7 @@ namespace QueueLoom.App.Services;
 /// <see cref="ReplacementMode"/>): access only ever narrows, and the caller is told so it can say so.
 /// </para>
 /// </summary>
-internal static class SafeFileWriter
+public static class SafeFileWriter
 {
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
@@ -102,6 +102,15 @@ internal static class SafeFileWriter
         }
         var both = group & others;
         return (UnixFileMode)(((int)existing & ~0b111_111) | (both << 3) | both);
+    }
+
+    /// <summary>
+    /// Claims a new, empty file only the current user can open (failing when the name is taken), for example to reserve
+    /// a name that an export later replaces: the export then keeps that private access.
+    /// </summary>
+    public static void CreateEmptyPrivate(string path)
+    {
+        using var stream = CreatePrivate(path, FileOptions.None, restrictOnWindows: true);
     }
 
     /// <summary>A new file only the current user can open, restricted before anything is written to it.</summary>

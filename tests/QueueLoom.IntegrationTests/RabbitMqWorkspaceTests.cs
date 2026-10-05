@@ -448,6 +448,132 @@ public sealed class RabbitMqWorkspaceTests : IAsyncLifetime
         }
     }
 
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task ComplexHeaders_SurviveUnchangedCopyAndBackupRestoreWithTheirAmqpTypes()
+    {
+        Dictionary<string, object?> Headers() => new(StringComparer.Ordinal)
+        {
+            ["meta"] = new Dictionary<string, object?>
+            {
+                ["opaque"] = new byte[] { 0xff },
+                ["nothing"] = null,
+                ["list"] = new List<object?> { 1, "two"u8.ToArray(), null, new BinaryTableValue([0x00, 0xfe]) },
+                ["small"] = (short)-7,
+                ["octet"] = (byte)200,
+                ["unsigned"] = 4_000_000_000u,
+                ["single"] = 1.5f
+            },
+            ["blob"] = new BinaryTableValue([0x01, 0xff, 0x80]),
+            ["void"] = null
+        };
+        await _setup.BasicPublishAsync(string.Empty, "orders", true,
+            new BasicProperties { MessageId = "complex-headers", Headers = Headers() }, "fixture"u8.ToArray());
+        var received = await _setup.BasicGetAsync("orders", autoAck: false);
+        Assert.NotNull(received);
+        var published = received.BasicProperties.Headers!;
+        await _setup.BasicNackAsync(received.DeliveryTag, multiple: false, requeue: true);
+        var original = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"))));
+
+        await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Queue("payments"), original.CreateDraft()));
+        AssertSame(published, Delivered(await _setup.BasicGetAsync("payments", autoAck: true)));
+
+        var paths = QueueLoomPaths.ForRoot(_directory.Path);
+        var profile = ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Development, new(AuthenticationKind.RabbitMqPassword))
+            with { Provider = MessagingProvider.RabbitMq };
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UtcNow, default);
+        await session.BackupAsync(original, default);
+        var repository = new JsonDeadLetterBackupRepository(paths);
+        var restored = await repository.LoadAsync(Assert.Single(await repository.ListAsync()));
+        await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Queue("payments"), restored.CreateDraft()));
+        AssertSame(published, Delivered(await _setup.BasicGetAsync("payments", autoAck: true)));
+
+        // RabbitMQ.Client adds its publisher-confirm sequence number to what QueueLoom publishes; it is not message data.
+        static IDictionary<string, object?> Delivered(BasicGetResult? result) => result!.BasicProperties.Headers!
+            .Where(header => header.Key != "x-dotnet-pub-seq-no").ToDictionary(header => header.Key, header => header.Value);
+
+        // Compares what the broker delivered: same keys, CLR types (the AMQP field types) and bytes.
+        static void AssertSame(object? expected, object? actual)
+        {
+            switch (expected)
+            {
+                case null: Assert.Null(actual); break;
+                case IDictionary<string, object?> table:
+                    var other = Assert.IsAssignableFrom<IDictionary<string, object?>>(actual);
+                    Assert.Equal(table.Keys.Order(StringComparer.Ordinal), other.Keys.Order(StringComparer.Ordinal));
+                    foreach (var (key, value) in table) AssertSame(value, other[key]);
+                    break;
+                case IList<object?> list:
+                    var items = Assert.IsAssignableFrom<IList<object?>>(actual);
+                    Assert.Equal(list.Count, items.Count);
+                    for (var index = 0; index < list.Count; index++) AssertSame(list[index], items[index]);
+                    break;
+                case BinaryTableValue binary: Assert.Equal(binary.Bytes, Assert.IsType<BinaryTableValue>(actual).Bytes); break;
+                case byte[] bytes: Assert.Equal(bytes, Assert.IsType<byte[]>(actual)); break;
+                default:
+                    Assert.Equal(expected.GetType(), actual?.GetType());
+                    Assert.Equal(expected, actual);
+                    break;
+            }
+        }
+    }
+
+    // The routing preview of typed headers agrees with the broker: a float 1.5 and a short 7, read and copied unchanged,
+    // match a headers binding on the double 1.5 and the integer 7 (RabbitMQ compares values, not field types), and a
+    // binding on 2.5 does not take the message.
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task TypedHeaders_RoutingPreviewMatchesBrokerDelivery()
+    {
+        await _setup.ExchangeDeclareAsync("typed-headers", ExchangeType.Headers, durable: true);
+        await _setup.QueueDeclareAsync("typed-match", durable: true, exclusive: false, autoDelete: false);
+        await _setup.QueueDeclareAsync("typed-miss", durable: true, exclusive: false, autoDelete: false);
+        var matching = new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 1.5, ["count"] = 7L };
+        var missing = new Dictionary<string, object?> { ["x-match"] = "all", ["ratio"] = 2.5 };
+        await _setup.QueueBindAsync("typed-match", "typed-headers", string.Empty, matching);
+        await _setup.QueueBindAsync("typed-miss", "typed-headers", string.Empty, missing);
+        await _setup.BasicPublishAsync(string.Empty, "orders", true, new BasicProperties
+        {
+            MessageId = "typed-routing",
+            Headers = new Dictionary<string, object?> { ["ratio"] = 1.5f, ["count"] = (short)7 }
+        }, "fixture"u8.ToArray());
+        var original = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"))));
+        var draft = original.CreateDraft();
+        var preview = QueueLoom.Core.Routing.RoutingMessage.From(draft);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Receives, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(matching, preview).Outcome);
+        Assert.Equal(QueueLoom.Core.Routing.RoutingOutcome.Skips, QueueLoom.Core.Routing.RabbitBindings.MatchHeaders(missing, preview).Outcome);
+
+        await _workspace.SendMessageAsync(new SendMessageRequest(ServiceBusEntityReference.Topic("typed-headers"), draft));
+
+        Assert.NotNull(await WaitForMessageAsync("typed-match"));
+        Assert.Equal(0u, (await _setup.QueueDeclarePassiveAsync("typed-miss")).MessageCount);
+    }
+
+    // A quorum queue counts each acquisition (peek/search reads acquire and release the message). Read twice, the
+    // message keeps its fingerprint, so an MCP resend of what was listed still finds it.
+    [EmulatorFact(Emulators.RabbitMq)]
+    public async Task QuorumReads_KeepTheMessageFingerprint()
+    {
+        await PublishAsync("invoices", "fingerprinted");
+        var invoices = ServiceBusEntityReference.Queue("invoices");
+
+        var first = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+        await Task.Delay(500);
+        var second = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+        var third = Assert.Single(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(invoices)));
+
+        Assert.Same(second, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(first), [second], out _)));
+        Assert.Same(third, Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(first), [third], out _)));
+    }
+
+    private async Task<BasicGetResult?> WaitForMessageAsync(string queue)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            if (await _setup.BasicGetAsync(queue, autoAck: true) is { } message) return message;
+            await Task.Delay(100);
+        }
+        return null;
+    }
+
     /// <summary>Rejects messages the way a failing consumer does, so RabbitMQ dead-letters them.</summary>
     private async Task RejectAsync(string queue, int count)
     {

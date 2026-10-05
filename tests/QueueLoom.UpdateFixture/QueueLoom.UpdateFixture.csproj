@@ -9,7 +9,6 @@
   <ItemGroup>
     <Compile Include="../../src/QueueLoom.App/Services/DiagnosticsPreview.cs" Link="DiagnosticsPreview.cs" />
     <Compile Include="../../src/QueueLoom.App/Services/UpdateRestart.cs" Link="UpdateRestart.cs" />
-    <Compile Include="../../src/QueueLoom.App/Services/SafeFileWriter.cs" Link="SafeFileWriter.cs" />
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/AtomicFile.cs" Link="AtomicFile.cs" />
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/CrossProcessFileLock.cs" Link="CrossProcessFileLock.cs" />
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/JsonScheduledResendStore.cs" Link="JsonScheduledResendStore.cs" />

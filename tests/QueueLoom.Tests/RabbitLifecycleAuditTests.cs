@@ -108,7 +108,7 @@ public sealed class RabbitLifecycleAuditTests
             Proxy<IConnection>(fake.Connection));
         var type = typeof(RabbitMqWorkspace).GetNestedType("RabbitChannel", BindingFlags.NonPublic)!;
         var channel = (ILeasedMessageChannel)Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-            null, [owner, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, null], null)!;
+            null, [owner, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, null, null], null)!;
         return (owner, channel);
     }
 

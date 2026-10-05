@@ -387,6 +387,15 @@ public static class MessageDraftValidator
     {
         var wire = property.WireType!;
         var name = property.Name.Length > 40 ? property.Name[..40] + "…" : property.Name;
+        if (wire == AmqpTypedValue.WireType)
+        {
+            // A RabbitMQ header kept with its exact AMQP types (a table, an array, a void value…): sent as it is.
+            return property.Type != ApplicationPropertyType.String
+                ? $"'{name}' has wireType '{wire}' but type {property.Type}: a typed AMQP value needs type String. Remove wireType to send it as {property.Type}."
+                : AmqpTypedValue.Problem(property.Value) is { } problem
+                    ? $"'{name}' is a typed AMQP value, but {problem}. Restore it, or remove wireType to send the text as it is."
+                    : null;
+        }
         var separator = wire.IndexOf('.', StringComparison.Ordinal);
         var prefix = separator > 0 ? wire[..separator] : wire;
         if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number") ||

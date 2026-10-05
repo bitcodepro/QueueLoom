@@ -49,7 +49,7 @@ public sealed partial class ViewModelStateTests
         await using var vm = CreateViewModel(repository, new FakeWorkspace(), dialogs);
         await vm.InitializeAsync();
         string? temporary = null, previous = null;
-        QueueLoom.App.Services.SafeFileWriter.ReplaceOverride.Value = (replacement, destination, backup) =>
+        QueueLoom.Core.IO.SafeFileWriter.ReplaceOverride.Value = (replacement, destination, backup) =>
         {
             (temporary, previous) = (replacement, backup);
             File.Move(destination, backup);
@@ -62,7 +62,7 @@ public sealed partial class ViewModelStateTests
         }
         finally
         {
-            QueueLoom.App.Services.SafeFileWriter.ReplaceOverride.Value = null;
+            QueueLoom.Core.IO.SafeFileWriter.ReplaceOverride.Value = null;
         }
 
         Assert.NotNull(temporary);

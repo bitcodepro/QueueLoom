@@ -93,6 +93,15 @@ public sealed record BrowsedMessage
     /// </summary>
     public bool HasSequenceNumber { get; init; } = true;
 
+    /// <summary>
+    /// Header names that the broker, not the producer, writes on this message where it was read, so they may change
+    /// while it waits (a RabbitMQ quorum queue's x-delivery-count, RabbitMQ 4.3's x-acquired-count). Empty when the
+    /// reader cannot establish that; a header listed here is not part of the message's stable identity.
+    /// </summary>
+    public IReadOnlySet<string> BrokerOwnedHeaders { get; init; } = EmptyNames;
+
+    private static readonly IReadOnlySet<string> EmptyNames = new HashSet<string>(StringComparer.Ordinal);
+
     /// <summary>Partition and offset of a message in a log (Kafka); null elsewhere.</summary>
     public LogPosition? Position { get; init; }
     public KafkaEnvelope? KafkaEnvelope { get; init; }

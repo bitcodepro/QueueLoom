@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using QueueLoom.App.Services;
+using QueueLoom.Core.IO;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.Abstractions;
