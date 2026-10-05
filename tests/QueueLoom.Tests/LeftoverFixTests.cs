@@ -103,6 +103,97 @@ public sealed class LeftoverFixTests
         if (!synchronous) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, seenWhileWriting);
     }
 
+    // A file whose mode grants its group access (0640) is updated in place: it stays the same file, so its group, which
+    // decides who that group access is for, cannot change; the new content waited in an owner-only temporary file.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SafeFileWriter_KeepsAGroupReadableFileItsOwnGroup(bool synchronous)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        await KeepsAGroupReadableFileOnUnix(synchronous);
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static async Task KeepsAGroupReadableFileOnUnix(bool synchronous)
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "environments.json");
+        var link = Path.Combine(directory.Path, "same-file");
+        await File.WriteAllTextAsync(path, "previous export");
+        var groupReadable = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
+        File.SetUnixFileMode(path, groupReadable);
+        using (var ln = System.Diagnostics.Process.Start("ln", [path, link])) await ln!.WaitForExitAsync();
+        UnixFileMode? seenWhileWriting = null;
+
+        if (synchronous) SafeFileWriter.WriteText(path, "new export");
+        else await SafeFileWriter.WriteAsync(path, async (stream, token) =>
+        {
+            seenWhileWriting = File.GetUnixFileMode(((FileStream)stream).Name);
+            await stream.WriteAsync("new export"u8.ToArray(), token);
+        }, CancellationToken.None);
+
+        Assert.Equal("new export", await File.ReadAllTextAsync(path));
+        Assert.Equal("new export", await File.ReadAllTextAsync(link)); // the same inode, so the same owner and group
+        Assert.Equal(groupReadable, File.GetUnixFileMode(path));
+        if (!synchronous) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, seenWhileWriting);
+    }
+
+    // Windows: an export restricted to the current user (protected DACL) stays so after being replaced, although its
+    // folder lets everyone read; the temporary file holding the new content is restricted before anything is written.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SafeFileWriter_KeepsARestrictedWindowsFileRestricted(bool synchronous)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        await KeepsARestrictedFileOnWindows(synchronous);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static async Task KeepsARestrictedFileOnWindows(bool synchronous)
+    {
+        using var directory = new TemporaryDirectory();
+        var folder = new DirectoryInfo(directory.Path);
+        var folderSecurity = folder.GetAccessControl();
+        folderSecurity.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+            new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.WorldSid, null),
+            System.Security.AccessControl.FileSystemRights.Read,
+            System.Security.AccessControl.InheritanceFlags.ObjectInherit | System.Security.AccessControl.InheritanceFlags.ContainerInherit,
+            System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+        folder.SetAccessControl(folderSecurity);
+        var path = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(path, "previous export");
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var restricted = new System.Security.AccessControl.FileSecurity();
+        restricted.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        restricted.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(user,
+            System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(restricted);
+        System.Security.AccessControl.FileSecurity? seenWhileWriting = null;
+
+        if (synchronous) SafeFileWriter.WriteText(path, "new export");
+        else await SafeFileWriter.WriteAsync(path, async (stream, token) =>
+        {
+            seenWhileWriting = new FileInfo(((FileStream)stream).Name).GetAccessControl();
+            await stream.WriteAsync("new export"u8.ToArray(), token);
+        }, CancellationToken.None);
+
+        Assert.Equal("new export", await File.ReadAllTextAsync(path));
+        AssertOnlyCurrentUser(new FileInfo(path).GetAccessControl(), user);
+        if (!synchronous) AssertOnlyCurrentUser(seenWhileWriting!, user);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void AssertOnlyCurrentUser(System.Security.AccessControl.FileSecurity security, System.Security.Principal.SecurityIdentifier user)
+    {
+        Assert.True(security.AreAccessRulesProtected);
+        var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+            .Cast<System.Security.AccessControl.FileSystemAccessRule>().ToArray();
+        Assert.NotEmpty(rules);
+        Assert.All(rules, rule => Assert.Equal(user, rule.IdentityReference));
+    }
+
     // ---- Pub/Sub: holding messages just pulled ---------------------------------------------------------------------
 
     // A transient failure to extend the hold is retried: the pulled batch is returned instead of dropped (dropping it

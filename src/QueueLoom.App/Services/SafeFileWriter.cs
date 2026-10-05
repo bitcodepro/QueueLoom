@@ -1,18 +1,27 @@
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 
 namespace QueueLoom.App.Services;
 
 /// <summary>
-/// Replaces a file only once its new contents are complete and flushed to disk: they are written to a temporary file
-/// next to it, which is then renamed over it. A failure, a cancellation or a crash part-way leaves the previous file
-/// as it was instead of empty or cut short. The temporary file is created with the existing file's access (Unix mode,
-/// or the Windows access rules), so a deliberately restricted file stays restricted and its new contents are never
-/// readable more widely, even while being written.
+/// Replaces a file only once its new contents are complete and flushed to disk, so a failure, a cancellation or a
+/// crash while producing them leaves the previous file as it was instead of empty or cut short.
+/// <para>
+/// The new contents are first written to a temporary file next to the target that only the current user can open, so
+/// they are never readable more widely than before, even while being written. The existing file's access is then kept:
+/// on Windows, <see cref="File.Replace(string, string, string?)"/> gives the result the replaced file's security
+/// descriptor; on Unix, a file whose mode grants its group anything is updated in place (its owner, group and mode stay
+/// exactly as they were, which a rename could not keep, since a new file takes the process's group), and any other
+/// file is renamed over with its mode.
+/// </para>
 /// </summary>
 internal static class SafeFileWriter
 {
+    private const UnixFileMode GroupBits = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute;
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
     public static Task WriteTextAsync(string path, string contents, CancellationToken cancellationToken) =>
         WriteAsync(path, (stream, token) => stream.WriteAsync(new UTF8Encoding(false).GetBytes(contents), token).AsTask(),
             cancellationToken);
@@ -22,13 +31,13 @@ internal static class SafeFileWriter
         var temporary = TemporaryPathFor(path);
         try
         {
-            await using (var stream = Create(path, temporary, FileOptions.Asynchronous))
+            await using (var stream = CreatePrivate(temporary, FileOptions.Asynchronous))
             {
                 await write(stream, cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporary, path, overwrite: true);
+            Publish(temporary, path);
         }
         finally
         {
@@ -41,12 +50,12 @@ internal static class SafeFileWriter
         var temporary = TemporaryPathFor(path);
         try
         {
-            using (var stream = Create(path, temporary, FileOptions.None))
+            using (var stream = CreatePrivate(temporary, FileOptions.None))
             {
                 stream.Write(new UTF8Encoding(false).GetBytes(contents));
                 stream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite: true);
+            Publish(temporary, path);
         }
         finally
         {
@@ -54,28 +63,23 @@ internal static class SafeFileWriter
         }
     }
 
-    private static FileStream Create(string path, string temporary, FileOptions options)
+    /// <summary>A new file only the current user can open, restricted before anything is written to it.</summary>
+    private static FileStream CreatePrivate(string temporary, FileOptions options)
     {
         var settings = new FileStreamOptions
         {
             Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None, BufferSize = 64 * 1024, Options = options
         };
-        if (!OperatingSystem.IsWindows() && File.Exists(path))
+        if (!OperatingSystem.IsWindows())
         {
-            // Set at creation (subject to umask, which only narrows it), so the content is never more widely readable.
-            settings.UnixCreateMode = File.GetUnixFileMode(path);
+            settings.UnixCreateMode = OwnerOnly;
         }
         var stream = new FileStream(temporary, settings);
         try
         {
-            if (OperatingSystem.IsWindows() && File.Exists(path))
+            if (OperatingSystem.IsWindows())
             {
-                CopyAccessRules(path, temporary);
-            }
-            else if (!OperatingSystem.IsWindows() && settings.UnixCreateMode is { } mode)
-            {
-                // umask may have narrowed the mode further; the replaced file keeps exactly the mode it had.
-                File.SetUnixFileMode(temporary, mode);
+                RestrictToCurrentUser(temporary);
             }
         }
         catch
@@ -86,11 +90,46 @@ internal static class SafeFileWriter
         return stream;
     }
 
-    [SupportedOSPlatform("windows")]
-    private static void CopyAccessRules(string from, string to)
+    /// <summary>Puts the complete temporary file in place of <paramref name="path"/>, keeping the existing file's access.</summary>
+    private static void Publish(string temporary, string path)
     {
-        var security = new FileInfo(from).GetAccessControl(AccessControlSections.Access);
-        new FileInfo(to).SetAccessControl(security);
+        if (!File.Exists(path))
+        {
+            File.Move(temporary, path);
+            return;
+        }
+        if (OperatingSystem.IsWindows())
+        {
+            // ReplaceFile keeps the replaced file's security descriptor (its DACL, protection and owner).
+            File.Replace(temporary, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
+            return;
+        }
+        var mode = File.GetUnixFileMode(path);
+        if ((mode & GroupBits) != 0)
+        {
+            // The file's group matters to who can read it. The contents are complete and flushed already; copying them
+            // over the file keeps it the same file (owner, group, mode), where a rename would hand it the process's group.
+            using (var source = new FileStream(temporary, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var target = new FileStream(path, FileMode.Truncate, FileAccess.Write, FileShare.None))
+            {
+                source.CopyTo(target);
+                target.Flush(flushToDisk: true);
+            }
+            return;
+        }
+        File.SetUnixFileMode(temporary, mode);
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RestrictToCurrentUser(string path)
+    {
+        var user = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("The current Windows user is unknown.");
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(security);
     }
 
     private static string TemporaryPathFor(string path)
