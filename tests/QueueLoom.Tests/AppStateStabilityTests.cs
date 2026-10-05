@@ -114,6 +114,57 @@ public sealed partial class ViewModelStateTests
         Assert.Equal([b], next.Merge(stored));
     }
 
+    // Add A then remove A, both captured before the first write completes, written in order: A ends up removed.
+    [Fact]
+    public async Task AppStability_QueuedAddThenRemoveEndsRemoved()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+
+        vm.SavedSearches.Insert(0, a);
+        var first = vm.CaptureSavedSearchChanges();
+        vm.SavedSearches.Remove(a);
+        var second = vm.CaptureSavedSearchChanges();
+
+        IReadOnlyList<SavedSearch> stored = first.Merge([]);
+        Assert.Equal([a], stored);
+        stored = second.Merge(stored);
+        first.Acknowledge();
+        second.Acknowledge();
+
+        Assert.Empty(stored);
+    }
+
+    // Re-saving an existing search removes and reinserts it synchronously (two captures before any write): it stays.
+    [Fact]
+    public async Task AppStability_ResavingAnExistingSearchKeepsItStored()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        IReadOnlyList<SavedSearch> stored = [];
+        var saves = new List<SavedSearchSave>();
+        vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(MainWindowViewModel.SavedSearches) && !vm.IsLoadingSavedSearches)
+                saves.Add(vm.CaptureSavedSearchChanges());
+        };
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+        vm.DeadLetterSearchQuery = "orders";
+        vm.SaveSearchCommand.Execute(null);
+        foreach (var save in saves) { stored = save.Merge(stored); save.Acknowledge(); }
+        saves.Clear();
+        Assert.Single(stored);
+
+        vm.SaveSearchCommand.Execute(null); // the same query again: removed, then inserted at the top
+        Assert.True(saves.Count >= 2);
+        var merges = saves.Select(save => save.Merge).ToArray();
+        foreach (var merge in merges) stored = merge(stored); // all captured before any write, written in order
+        foreach (var save in saves) save.Acknowledge();
+
+        Assert.Single(stored);
+        Assert.Equal("orders", stored[0].Query);
+    }
+
     // Saves that finish out of order: the older acknowledgement must not move the baseline back.
     [Fact]
     public async Task AppStability_OutOfOrderSavedSearchAcknowledgementsKeepTheNewest()

@@ -119,7 +119,8 @@ public sealed partial class MainWindowViewModel
             {
                 SavedSearches.Add(search);
             }
-            _savedSearchBaseline = [.. SavedSearches];
+            _savedSearchLastCaptured = [.. SavedSearches];
+            _pendingSavedSearchChanges.Clear();
         }
         finally
         {
@@ -129,32 +130,40 @@ public sealed partial class MainWindowViewModel
 
     private bool _loadingSavedSearches;
 
-    /// <summary>The saved searches as last loaded, or as last confirmed written, by this window.</summary>
-    private SavedSearch[] _savedSearchBaseline = [];
+    /// <summary>The saved searches as of the last load or capture by this window.</summary>
+    private SavedSearch[] _savedSearchLastCaptured = [];
     private long _savedSearchCaptures;
-    private long _savedSearchAcknowledged;
+
+    /// <summary>This window's changes, in order, that no save has confirmed written yet.</summary>
+    private readonly List<(long Capture, SavedSearch[] Added, SavedSearch[] Removed)> _pendingSavedSearchChanges = [];
 
     /// <summary>
-    /// Captures this window's saved-search changes (everything added or removed since the last confirmed write) as an
-    /// update to the stored list, plus the acknowledgement to call once that update was written. Until then the
-    /// changes stay pending, so a failed write is carried by the next save instead of being lost.
+    /// Captures this window's saved-search change since the previous capture, and returns an update that applies
+    /// every change not yet confirmed written, in order, to the stored list, plus the acknowledgement to call once that
+    /// update was written. A failed write leaves its change pending for the next save; saves queued before an earlier
+    /// one completes still replay that earlier change first, so add-then-remove or remove-then-reinsert end right.
     /// </summary>
     public SavedSearchSave CaptureSavedSearchChanges()
     {
-        var baseline = _savedSearchBaseline;
+        var previous = _savedSearchLastCaptured;
         var local = SavedSearches.ToArray();
+        _savedSearchLastCaptured = local;
         var capture = ++_savedSearchCaptures;
+        _pendingSavedSearchChanges.Add((capture,
+            local.Where(search => !previous.Contains(search)).ToArray(),
+            previous.Where(search => !local.Contains(search)).ToArray()));
+        var changes = _pendingSavedSearchChanges.ToArray();
         return new SavedSearchSave(
-            stored => MergeSavedSearches(baseline, local, stored),
-            () =>
+            stored =>
             {
-                // Saves can finish out of order; an older one must not move the baseline back.
-                if (capture > _savedSearchAcknowledged)
+                foreach (var change in changes)
                 {
-                    _savedSearchAcknowledged = capture;
-                    _savedSearchBaseline = local;
+                    stored = ApplySavedSearchChange(change.Added, change.Removed, stored);
                 }
-            });
+                return stored;
+            },
+            // Written: this change and every earlier one are on disk, and later saves no longer replay them.
+            () => _pendingSavedSearchChanges.RemoveAll(change => change.Capture <= capture));
     }
 
     /// <summary>
@@ -162,10 +171,13 @@ public sealed partial class MainWindowViewModel
     /// the stored list, including searches another window added, edited or deleted, is kept as stored.
     /// </summary>
     internal static IReadOnlyList<SavedSearch> MergeSavedSearches(
-        IReadOnlyList<SavedSearch> baseline, IReadOnlyList<SavedSearch> local, IReadOnlyList<SavedSearch> stored)
+        IReadOnlyList<SavedSearch> baseline, IReadOnlyList<SavedSearch> local, IReadOnlyList<SavedSearch> stored) =>
+        ApplySavedSearchChange(local.Where(search => !baseline.Contains(search)).ToArray(),
+            baseline.Where(search => !local.Contains(search)).ToArray(), stored);
+
+    private static IReadOnlyList<SavedSearch> ApplySavedSearchChange(
+        IReadOnlyList<SavedSearch> added, IReadOnlyList<SavedSearch> removed, IReadOnlyList<SavedSearch> stored)
     {
-        var added = local.Where(search => !baseline.Contains(search)).ToArray();
-        var removed = baseline.Where(search => !local.Contains(search)).ToArray();
         var merged = stored.Where(search => !removed.Contains(search)
             // A search added here replaces a stored one with the same name (names are shown case-insensitively).
             && !added.Any(item => string.Equals(item.Name, search.Name, StringComparison.OrdinalIgnoreCase))).ToList();
