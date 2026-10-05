@@ -154,6 +154,62 @@ public sealed class ProtoSchemaLoadBoundsTests
         }
         Assert.NotNull(ProtoSchemaSet.Load(directory.Path).Resolve("A"));
     }
+
+    // Folders count toward the walk limit: a tree of empty folders is not walked to its end either.
+    [Fact]
+    public void AFolderOfEmptyFoldersCountsTowardTheWalkLimit()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        File.WriteAllText(Path.Combine(directory.Path, "a.proto"), "syntax = \"proto3\"; message A { string x = 1; }");
+        for (var index = 0; index < 30; index++)
+        {
+            Directory.CreateDirectory(Path.Combine(directory.Path, $"empty-{index}"));
+        }
+        ProtoSchemaSet.EntriesVisitedOverride.Value = 10;
+        try
+        {
+            var refused = Assert.Throws<ProtoSchemaException>(() => ProtoSchemaSet.Load(directory.Path));
+            Assert.Contains("more than 10 files", refused.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ProtoSchemaSet.EntriesVisitedOverride.Value = null;
+        }
+    }
+
+    // The limits apply to what is read: a link whose own length is small but whose target is huge is still refused.
+    [Fact]
+    public void ALinkToAHugeFileIsRefusedByWhatIsRead()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        var schemas = Directory.CreateDirectory(Path.Combine(directory.Path, "schemas")).FullName;
+        var target = Path.Combine(directory.Path, "big.txt");
+        using (var big = File.Create(target))
+        {
+            big.SetLength(16L * 1024 * 1024 + 10);
+        }
+        try
+        {
+            File.CreateSymbolicLink(Path.Combine(schemas, "a.proto"), target);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return; // No permission to create links here (Windows without developer mode).
+        }
+
+        var refused = Assert.Throws<ProtoSchemaException>(() => ProtoSchemaSet.Load(schemas));
+        Assert.Contains("are not read", refused.Message, StringComparison.Ordinal);
+    }
+
+    // A stream of unknown length is read only up to the budget.
+    [Fact]
+    public void ReadingStopsAtTheBudget()
+    {
+        var source = new MemoryStream(new byte[100]);
+        Assert.Null(ProtoSchemaSet.ReadBounded(source, 50));
+        Assert.True(source.Position <= 51, $"Read {source.Position} bytes.");
+        Assert.Equal(100, ProtoSchemaSet.ReadBounded(new MemoryStream(new byte[100]), 100)!.Length);
+    }
 }
 
 public sealed partial class ViewModelStateTests

@@ -134,26 +134,30 @@ public sealed class ProtoSchemaSet
         long total = 0;
         foreach (var file in files)
         {
-            // Schemas are small; a huge file picked by mistake (a database dump named .pb) is refused before it is read.
-            var length = new FileInfo(file).Length;
-            if (length > MaximumFileBytes)
+            // Schemas are small; a huge file picked by mistake (a database dump named .pb, or a link to one) is
+            // refused. The limits apply to the bytes actually read, not to what the file's metadata says.
+            if (MaximumTotalBytes - total <= 0)
             {
-                throw new ProtoSchemaException($"{Path.GetFileName(file)} is {length / (1024 * 1024):N0} MB; schema files over " +
-                                               $"{MaximumFileBytes / (1024 * 1024)} MB are not read.");
+                throw TooMuch(path);
             }
-            total += length;
-            if (total > MaximumTotalBytes)
+            byte[] data;
+            using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                throw new ProtoSchemaException($"The schema files of '{path}' add up to more than {MaximumTotalBytes / (1024 * 1024)} MB; " +
-                                               "choose the folder that holds only your schemas.");
+                data = ReadBounded(stream, Math.Min(MaximumFileBytes, MaximumTotalBytes - total))
+                       ?? throw (MaximumTotalBytes - total < MaximumFileBytes
+                           ? TooMuch(path)
+                           : new ProtoSchemaException($"{Path.GetFileName(file)} is larger than {MaximumFileBytes / (1024 * 1024)} MB; " +
+                                                      "schema files that large are not read."));
             }
+            total += data.Length;
             if (Path.GetExtension(file).Equals(".proto", StringComparison.OrdinalIgnoreCase))
             {
-                texts.Add((file, File.ReadAllText(file)));
+                using var reader = new StreamReader(new MemoryStream(data), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                texts.Add((file, reader.ReadToEnd()));
             }
             else
             {
-                sets.Add(FromDescriptorSet(File.ReadAllBytes(file), file));
+                sets.Add(FromDescriptorSet(data, file));
             }
         }
         var parsed = texts.Count > 0 ? FromProtoFiles(texts) : Empty;
@@ -165,6 +169,26 @@ public sealed class ProtoSchemaSet
 
     internal const int MaximumFiles = 2_000;
     internal const int MaximumEntriesVisited = 100_000;
+
+    private static ProtoSchemaException TooMuch(string path) => new(
+        $"The schema files of '{path}' add up to more than {MaximumTotalBytes / (1024 * 1024)} MB; choose the folder that holds only your schemas.");
+
+    /// <summary>Reads at most <paramref name="limit"/> bytes; null when the stream holds more.</summary>
+    internal static byte[]? ReadBounded(Stream stream, long limit)
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81_920];
+        int read;
+        while ((read = stream.Read(chunk, 0, (int)Math.Min(chunk.Length, limit + 1 - buffer.Length))) > 0)
+        {
+            buffer.Write(chunk, 0, read);
+            if (buffer.Length > limit)
+            {
+                return null;
+            }
+        }
+        return buffer.ToArray();
+    }
 
     /// <summary>Tests lower the walk limit without creating a hundred thousand files.</summary>
     internal static readonly AsyncLocal<int?> EntriesVisitedOverride = new();
@@ -179,13 +203,15 @@ public sealed class ProtoSchemaSet
         var visited = 0;
         var limit = EntriesVisitedOverride.Value ?? MaximumEntriesVisited;
         // One unreadable subfolder (a database volume, another account's cache) must not discard every schema beside it.
-        foreach (var file in Directory.EnumerateFiles(folder, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 }))
+        // Folders count too: a deep tree of empty folders costs as much to walk as one of files.
+        foreach (var file in Directory.EnumerateFileSystemEntries(folder, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 }))
         {
             if (++visited > limit)
             {
                 throw new ProtoSchemaException($"'{folder}' holds more than {limit:N0} files; choose the folder that holds your schemas.");
             }
-            if (Path.GetExtension(file).ToLowerInvariant() is ".proto" or ".desc" or ".pb" or ".protoset" or ".binpb")
+            if (Path.GetExtension(file).ToLowerInvariant() is ".proto" or ".desc" or ".pb" or ".protoset" or ".binpb" &&
+                !Directory.Exists(file))
             {
                 found.Add(file);
             }
