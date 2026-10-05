@@ -132,6 +132,11 @@ public sealed partial class RuleEditorViewModel : ObservableObject
 
     public bool IsNew { get; }
 
+    /// <summary>Something the operator should know before saving, such as a 1=1 rule that makes this one filter nothing.</summary>
+    public string? Notice { get; init; }
+
+    public bool HasNotice => !string.IsNullOrEmpty(Notice);
+
     public bool IsServiceBus => Service == RoutingService.ServiceBus;
 
     public bool IsSnsPolicy => Service == RoutingService.Sns;

@@ -53,6 +53,7 @@ public sealed partial class MainWindowViewModel
                     _preferredDlqSourceSubQueue = value.Snapshot.SubQueue;
                 }
                 OnPropertyChanged(nameof(HasSelectedDlqSource));
+                NotifyBrowseDeliveryNotes();
                 OnPropertyChanged(nameof(MonitorTargetPreview));
                 OnPropertyChanged(nameof(CanPurgeTopicDeadLetters));
                 OnPropertyChanged(nameof(CanPurgeSelectedDeadLetters));
@@ -231,7 +232,7 @@ public sealed partial class MainWindowViewModel
         NavigateTo(NavigationPage.DeadLetters);
         StatusText = profile.Provider == MessagingProvider.AzureServiceBus
             ? $"Peeked {Messages.Count:N0} messages without acquiring locks"
-            : $"Read {Messages.Count:N0} messages and released them unchanged";
+            : $"Read {Messages.Count:N0} messages and released them unchanged{BrowseCountedSuffix(profile, source, subQueue)}";
         AddActivity(
             "Info",
             "Peek",

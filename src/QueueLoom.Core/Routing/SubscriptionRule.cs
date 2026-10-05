@@ -117,6 +117,19 @@ public sealed record SubscriptionRule(
     /// </summary>
     public bool? ToExchange { get; init; }
 
+    /// <summary>
+    /// The rule as it was read when the operator started changing it, or null. Service Bus has no ETag or version for
+    /// rules, so a replace or delete compares this with the live rule first and refuses when someone else changed it.
+    /// </summary>
+    public SubscriptionRule? Original { get; init; }
+
+    /// <summary>
+    /// Service Bus: a filter that takes every message (the <c>$Default</c> rule's TrueFilter, or SQL <c>1=1</c>) and has
+    /// no action. Rules without actions are OR'ed into one copy, so next to it they narrow nothing.
+    /// </summary>
+    public bool IsCatchAll => string.IsNullOrWhiteSpace(Action) && (Kind == RuleFilterKind.True ||
+        (Kind == RuleFilterKind.Sql && string.Concat((SqlExpression ?? string.Empty).Where(c => !char.IsWhiteSpace(c))) == "1=1"));
+
     public bool IsBinding => Kind is RuleFilterKind.DirectBinding or RuleFilterKind.TopicBinding or RuleFilterKind.FanoutBinding
         or RuleFilterKind.HeadersBinding or RuleFilterKind.OtherBinding;
 
@@ -185,6 +198,25 @@ public sealed record SubscriptionRules(string Subscription, IReadOnlyList<Subscr
 
     /// <summary>A subscription without rules: none in Service Bus, every message in SNS and Pub/Sub (no filter).</summary>
     public bool ReceivesAllWithoutRules => Service is RoutingService.Sns or RoutingService.PubSub;
+
+    /// <summary>
+    /// Pub/Sub: why QueueLoom cannot read the subscription's filter (it may live in a project QueueLoom cannot read),
+    /// or null. Pub/Sub still delivers to it, so the routing check says Pub/Sub decides.
+    /// </summary>
+    public string? Unreadable { get; init; }
+
+    /// <summary>
+    /// Service Bus: a catch-all rule (<c>$Default</c>, 1=1) next to other rules, or null. "All rules without actions are
+    /// combined using an OR condition and result in a single message on the subscription even if you have multiple
+    /// matching rules" and "Each rule with an action produces a copy of the message" (Microsoft Learn, Azure Service Bus
+    /// topic filters, https://learn.microsoft.com/azure/service-bus-messaging/topic-filters): while the catch-all stays,
+    /// the other rules without an action filter nothing.
+    /// </summary>
+    public string? CatchAllNotice => Service == RoutingService.ServiceBus && Rules.Count > 1 &&
+                                     Rules.FirstOrDefault(rule => rule.IsCatchAll) is { } catchAll
+        ? $"{catchAll.DisplayName} is 1=1 and takes every message. Rules are OR'ed, so the other rules without an action " +
+          $"change nothing (a rule with an action still adds its own copy). Delete or change {catchAll.DisplayName} for them to filter."
+        : null;
 
     /// <summary>Why this subscription may not receive what one would expect, or null.</summary>
     public string? Warning => Problem ?? (Rules.Count == 0 && !ReceivesAllWithoutRules && !IsFallback

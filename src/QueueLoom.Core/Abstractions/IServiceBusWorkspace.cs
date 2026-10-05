@@ -95,7 +95,10 @@ public interface IServiceBusWorkspace : IAsyncDisposable
     Task<IReadOnlyList<Routing.SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This service has no subscription rules.");
 
-    /// <summary>Adds a rule, or replaces the filter and action of the rule with the same name.</summary>
+    /// <summary>
+    /// Adds a rule, or replaces the filter and action of the rule with the same name. A replacement that carries
+    /// <see cref="Routing.SubscriptionRule.Original"/> is refused when the live rule no longer matches it (Service Bus).
+    /// </summary>
     Task SaveSubscriptionRuleAsync(string topic, string subscription, Routing.SubscriptionRule rule, bool replace,
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This service has no subscription rules.");

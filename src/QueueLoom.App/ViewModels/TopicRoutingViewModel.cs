@@ -50,6 +50,7 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
         : (Source.Service, Source.Rules.Count) switch
         {
             (RoutingService.Sns, 0) => "no filter policy · receives every message",
+            (RoutingService.PubSub, 0) when Source.Unreadable is not null => "filter not readable here",
             (RoutingService.PubSub, 0) => "no filter · receives every message",
             (RoutingService.Sns, _) => $"filter policy on the {Source.Rules[0].KindLabel.ToLowerInvariant()}",
             (RoutingService.PubSub, _) => "filter on the attributes",
@@ -67,6 +68,11 @@ public sealed class RoutingSubscriptionViewModel(SubscriptionRules rules) : Obse
     public string? Warning => Source.Warning;
 
     public bool HasWarning => Warning is not null;
+
+    /// <summary>Service Bus: a 1=1 rule next to other rules makes them filter nothing; said, never fixed silently.</summary>
+    public string? CatchAllNotice => Source.CatchAllNotice;
+
+    public bool HasCatchAllNotice => CatchAllNotice is not null;
 
     public SubscriptionRouting? Result
     {
@@ -444,7 +450,10 @@ public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
     private async Task AddRuleAsync(CancellationToken cancellationToken)
     {
         var subscription = Selected ?? throw new InvalidOperationException("Select a subscription first.");
-        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, null, Service, BindingKind)).ConfigureAwait(true);
+        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, null, Service, BindingKind)
+        {
+            Notice = CatchAllNoticeFor(subscription, null)
+        }).ConfigureAwait(true);
         if (rule is not null)
         {
             await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription), false, token), cancellationToken).ConfigureAwait(true);
@@ -454,12 +463,29 @@ public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
     private async Task EditRuleAsync(RuleItemViewModel? item, CancellationToken cancellationToken)
     {
         var subscription = SubscriptionOf(item);
-        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, item!.Rule, Service, BindingKind)).ConfigureAwait(true);
+        var rule = await _services.EditRule(new RuleEditorViewModel(Topic, subscription.Name, item!.Rule, Service, BindingKind)
+        {
+            Notice = CatchAllNoticeFor(subscription, item.Rule)
+        }).ConfigureAwait(true);
         if (rule is not null)
         {
-            await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription), true, token), cancellationToken).ConfigureAwait(true);
+            // The rule as it was shown goes along, so the service can refuse when someone changed it in the meantime.
+            await ChangeAsync(token => _services.SaveRule(subscription.Name, ForDestination(rule, subscription) with { Original = item.Rule }, true, token),
+                cancellationToken).ConfigureAwait(true);
         }
     }
+
+    /// <summary>
+    /// Service Bus: adding or changing a rule next to a 1=1 rule without an action filters nothing, because rules are
+    /// OR'ed. The operator is told before saving; QueueLoom never deletes $Default on its own.
+    /// </summary>
+    private string? CatchAllNoticeFor(RoutingSubscriptionViewModel subscription, SubscriptionRule? editing) =>
+        Service == RoutingService.ServiceBus &&
+        subscription.Source.Rules.FirstOrDefault(rule => rule.IsCatchAll && !ReferenceEquals(rule, editing)) is { } catchAll
+            ? $"{catchAll.DisplayName} on {subscription.Name} is 1=1 and already takes every message. Rules are OR'ed, so a rule " +
+              $"without an action changes nothing while it stays (one with an action still adds its own copy). Delete or change " +
+              $"{catchAll.DisplayName} afterwards if this rule should filter; QueueLoom does not remove it for you."
+            : null;
 
     private async Task DeleteRuleAsync(RuleItemViewModel? item, CancellationToken cancellationToken)
     {

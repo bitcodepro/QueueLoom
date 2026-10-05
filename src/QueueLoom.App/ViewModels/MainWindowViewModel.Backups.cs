@@ -172,16 +172,20 @@ public sealed partial class MainWindowViewModel
         var group = SelectedBackupGroup;
         var scope = group is null or { Kind: BackupGroupKind.All } ? "all environments" : $"{group.KindLabel.ToLowerInvariant()} '{group.Title}'";
         var filterNote = string.IsNullOrWhiteSpace(BackupFilterText) ? string.Empty : $" matching '{BackupFilterText.Trim()}'";
-        var sources = targets
+        // The overflow marker counts the same "profile · source" groups that are listed: one queue across nine
+        // environments is nine lines, not one.
+        var groups = targets
             .GroupBy(item => $"{item.ProfileName} · {item.SourceDisplay}")
             .OrderByDescending(item => item.Count())
+            .ToArray();
+        var sources = groups
             .Take(8)
             .Select(item => $"• {item.Key}: {item.Count():N0}");
         var confirmed = await _dialogs.ConfirmAsync(
             "Delete local backups",
             $"Delete {targets.Length:N0} local backup file(s) from {scope}{filterNote}?\n\n" +
             string.Join("\n", sources) +
-            (targets.Select(item => item.SourceDisplay).Distinct().Count() > 8 ? "\n• …" : string.Empty) +
+            (groups.Length > 8 ? $"\n• … and {groups.Length - 8:N0} more" : string.Empty) +
             "\n\nThe queues themselves are not changed. Deleted files cannot be restored by QueueLoom.",
             isDangerous: true,
             cancellationToken: cancellationToken).ConfigureAwait(true);

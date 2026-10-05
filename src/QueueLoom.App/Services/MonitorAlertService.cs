@@ -87,6 +87,10 @@ public sealed class MonitorAlertService(
     /// <summary>
     /// Slack takes plain text. Microsoft Teams workflows ("When a Teams webhook request is received") take an
     /// Adaptive Card; the text is included too for other services that read it.
+    /// An Adaptive Card TextBlock renders a Markdown subset (**bold**, _italic_, lists and [title](url) links), so an
+    /// environment or queue name such as "[click](https://evil)" would become a link. Broker-supplied text therefore goes
+    /// into a RichTextBlock TextRun, which Adaptive Cards documents as not supporting Markdown
+    /// (https://learn.microsoft.com/adaptive-cards/authoring-cards/text-features): it is shown literally.
     /// </summary>
     public static JsonObject BuildWebhookPayload(string webhookUrl, MonitorAlert alert)
     {
@@ -113,7 +117,11 @@ public sealed class MonitorAlertService(
                     ["version"] = "1.4",
                     ["body"] = new JsonArray(
                         new JsonObject { ["type"] = "TextBlock", ["text"] = alert.Title, ["weight"] = "Bolder", ["size"] = "Medium" },
-                        new JsonObject { ["type"] = "TextBlock", ["text"] = alert.Text, ["wrap"] = true })
+                        new JsonObject
+                        {
+                            ["type"] = "RichTextBlock",
+                            ["inlines"] = new JsonArray(new JsonObject { ["type"] = "TextRun", ["text"] = alert.Text })
+                        })
                 }
             })
         };

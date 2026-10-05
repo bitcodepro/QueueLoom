@@ -51,6 +51,11 @@ public sealed partial class BatchReplayStore
                 Detail = File.Exists(detail) ? File.ReadAllText(detail) : null
             });
         }
+        // Checked last: retention removes plan.json before any item file, so a plan still present here proves no item
+        // above was read from a half-removed operation (a missing state file would otherwise read as Pending).
+        if (!File.Exists(Path.Combine(folder, "plan.json")))
+            throw new InvalidDataException("This operation is no longer saved; finished operations are removed after " +
+                                           $"{LocalHistoryRetention.RetentionDays} days. Refresh the history.");
         return new OperationHistory(plan, items);
     }
 
@@ -242,9 +247,20 @@ public sealed partial class BatchReplayStore
                 {
                     if (failure is not null) throw failure;
                     var outcome = outcomes!.GetValueOrDefault(item.Key);
-                    var moved = outcome?.Outcome == DeadLetterMessageDeletionOutcome.Deleted;
-                    await WriteStateAsync(stateFile, moved ? "Moved" : "SentOriginalKept", CancellationToken.None);
-                    results[position] = new ResendItemResult(item, moved ? ResendOutcome.Moved : ResendOutcome.SentOriginalKept, outcome?.Detail);
+                    // Deleted is a proven move and NotFound / Cancelled a proven untouched original (OriginalKept). A Failed
+                    // settlement may have been accepted before its response was lost, so it stays DeleteUncertain.
+                    var state = outcome?.Outcome switch
+                    {
+                        DeadLetterMessageDeletionOutcome.Deleted => "Moved",
+                        DeadLetterMessageDeletionOutcome.NotFound or DeadLetterMessageDeletionOutcome.Cancelled => "OriginalKept",
+                        _ => "DeleteUncertain"
+                    };
+                    await WriteStateAsync(stateFile, state, CancellationToken.None);
+                    if (state == "DeleteUncertain" && outcome?.Detail is { } detail)
+                    {
+                        await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.detail"), detail, CancellationToken.None);
+                    }
+                    results[position] = new ResendItemResult(item, state == "Moved" ? ResendOutcome.Moved : ResendOutcome.SentOriginalKept, outcome?.Detail);
                 }
                 catch (Exception exception)
                 {

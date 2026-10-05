@@ -354,8 +354,19 @@ public sealed class TopologyManagementRegressionTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new GetQueueAttributesResponse
             {
-                Attributes = new Dictionary<string, string> { ["QueueArn"] = "arn:aws:sqs:us-east-1:111111111111:" + NameOf(request.QueueUrl) }
+                // The queue's stored attributes, as GetQueueAttributes returns them, plus its ARN.
+                Attributes = new Dictionary<string, string>(Queues.GetValueOrDefault(NameOf(request.QueueUrl)) ?? [], StringComparer.Ordinal)
+                {
+                    ["QueueArn"] = "arn:aws:sqs:us-east-1:111111111111:" + NameOf(request.QueueUrl)
+                }
             });
+
+        public override Task<SetQueueAttributesResponse> SetQueueAttributesAsync(SetQueueAttributesRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            foreach (var (name, value) in request.Attributes) Queues[NameOf(request.QueueUrl)][name] = value;
+            return Task.FromResult(new SetQueueAttributesResponse());
+        }
 
         public override Task<DeleteQueueResponse> DeleteQueueAsync(string queueUrl, CancellationToken cancellationToken = default) =>
             DeleteQueueAsync(new DeleteQueueRequest { QueueUrl = queueUrl }, cancellationToken);

@@ -162,6 +162,10 @@ internal sealed class RabbitMqTopologyIndex
                 queue.State is "running" or "idle" or "live" ? ServiceBusEntityStatus.Active : ServiceBusEntityStatus.Unknown)
             {
                 HasDeadLetterQueue = deadLetter is not null,
+                MaxDeliveryCount = queue.IsQuorum && queue.DeliveryLimit is { } ownLimit and > 0 and <= int.MaxValue ? (int)ownLimit : null,
+                // A negative delivery-limit turns the limit off (RabbitMQ 4.0+); without one, 4.0 and later apply 20.
+                CountsRequeues = queue.IsQuorum && queue.DeliveryLimit is not < 0,
+                DeadLetterQueueName = deadLetter?.Name,
                 Note = notes.Count == 0 ? null : string.Join(" · ", notes),
                 Consumers = queue.Consumers is { } consumers ? ConsumerActivity.Connected(consumers) : null
             };

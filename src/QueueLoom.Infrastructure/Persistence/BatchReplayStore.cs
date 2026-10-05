@@ -15,7 +15,8 @@ public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProp
     public DeadLetterMessageKey? Original { get; init; }
 }
 
-/// <summary>Durable replay and resend history. Unknown and confirmed sends are never retried.</summary>
+/// <summary>Durable replay and resend history. Unknown and confirmed sends are never retried. Finished operations are
+/// removed after <see cref="LocalHistoryRetention.Period"/>; unfinished ones are kept (see DeleteExpired).</summary>
 public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
 {
     public string RootDirectory => Path.GetFullPath(root);
@@ -68,13 +69,14 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         }
         catch
         {
-            // A batch that cannot be prepared leaves no body snapshots behind: nothing lists or cleans a folder without plan.json.
+            // A batch that cannot be prepared leaves no body snapshots behind now, instead of waiting for retention (DeleteExpired).
             DeleteUnpublished(folder);
             throw;
         }
     }
 
-    /// <summary>Removes a folder whose plan was never published; a published plan is history and is kept.</summary>
+    /// <summary>Removes a folder whose plan was never published; a published plan is history, kept until DeleteExpired
+    /// finds it finished and older than <see cref="LocalHistoryRetention.Period"/>.</summary>
     private static void DeleteUnpublished(string folder)
     {
         try

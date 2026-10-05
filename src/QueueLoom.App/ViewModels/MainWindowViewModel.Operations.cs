@@ -220,6 +220,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HasMessages)); OnPropertyChanged(nameof(EmptyMessagesText));
         OnPropertyChanged(nameof(CanLoadMoreMessages)); OnPropertyChanged(nameof(BrowsePageStatus));
         OnPropertyChanged(nameof(ShowLogReadBar));
+        NotifyBrowseDeliveryNotes();
         LoadMoreMessagesCommand?.NotifyCanExecuteChanged();
         ReadLogCommand?.NotifyCanExecuteChanged();
         FormatJsonCommand?.NotifyCanExecuteChanged(); GenerateMessageIdCommand?.NotifyCanExecuteChanged();

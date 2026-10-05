@@ -62,4 +62,64 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
         }
         return records.OrderByDescending(r => r.Timestamp).ToArray();
     }
+
+    /// <summary>
+    /// Deletes records older than <paramref name="cutoff"/> by their own timestamp (see <see cref="LocalHistoryRetention"/>).
+    /// A damaged record has no trustworthy timestamp, so its file time decides. Only record files (and leftover
+    /// temporary files) inside dated day folders of this journal are touched; the view cutoff and locks stay.
+    /// Best effort: anything that cannot be read or deleted now is left for the next run.
+    /// </summary>
+    /// <returns>The number of files deleted.</returns>
+    public int DeleteExpired(DateTimeOffset cutoff)
+    {
+        if (!Directory.Exists(directory)) return 0;
+        // The desktop app and MCP servers share this journal; whoever holds the lock cleans up and the others skip.
+        using var ownership = CrossProcessFileLock.TryAcquire(Path.Combine(directory, ".retention.lock"));
+        if (ownership is null) return 0;
+        var cutoffDay = cutoff.UtcDateTime.Date;
+        var deleted = 0;
+        foreach (var dayFolder in Directory.GetDirectories(directory))
+        {
+            // Append files a record under its UTC day, so a later day folder cannot hold an expired record.
+            if (!DateTime.TryParseExact(Path.GetFileName(dayFolder), "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var day) || day > cutoffDay) continue;
+            try
+            {
+                if (File.GetAttributes(dayFolder).HasFlag(FileAttributes.ReparsePoint)) continue; // never follow links out
+                foreach (var file in Directory.GetFiles(dayFolder))
+                {
+                    try
+                    {
+                        if (RecordTime(file) is { } written && written < cutoff)
+                        {
+                            File.Delete(file);
+                            deleted++;
+                        }
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+                }
+                // Only a day wholly before the cutoff is finished; the folder Append is writing to is never removed.
+                if (day < cutoffDay && !Directory.EnumerateFileSystemEntries(dayFolder).Any()) Directory.Delete(dayFolder);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        }
+        return deleted;
+    }
+
+    /// <summary>The record's own timestamp, or the file time for a damaged record or an interrupted write; null for
+    /// files that are not journal records.</summary>
+    private static DateTimeOffset? RecordTime(string file)
+    {
+        var name = Path.GetFileName(file);
+        if (name.EndsWith(".json.tmp", StringComparison.Ordinal)) return File.GetLastWriteTimeUtc(file);
+        if (!name.EndsWith(".json", StringComparison.Ordinal)) return null;
+        try
+        {
+            var record = JsonSerializer.Deserialize<ActivityRecord>(File.ReadAllText(file));
+            if (record is not null && record.Timestamp != default) return record.Timestamp;
+        }
+        // The same damage ReadRecent tolerates: invalid JSON or valid JSON the model refuses.
+        catch (Exception exception) when (exception is JsonException or ArgumentException or NotSupportedException) { }
+        return File.GetLastWriteTimeUtc(file);
+    }
 }

@@ -62,13 +62,15 @@ public sealed partial class MainWindowViewModel
         }
 
         var untick = cause.IsSelected;
+        var browseOnly = Messages.Count(message => message.IsMarked && !message.CanDelete);
         _updatingReasonSelection = true;
         try
         {
             using var batch = BatchMessageUpdates();
-            foreach (var message in Messages.Where(message => message.CanDelete))
+            // Exactly the chip's messages end up ticked: active messages ticked only to compare are unticked too.
+            foreach (var message in Messages)
             {
-                message.IsMarked = !untick && cause.Matches(message);
+                message.IsMarked = !untick && message.CanDelete && cause.Matches(message);
             }
         }
         finally
@@ -77,7 +79,8 @@ public sealed partial class MainWindowViewModel
         }
 
         RebuildDeadLetterReasons();
-        StatusText = untick ? $"Unticked the messages with cause {cause.Text}" : $"Ticked {cause.Count:N0} message(s) with cause {cause.Text}";
+        StatusText = (untick ? $"Unticked the messages with cause {cause.Text}" : $"Ticked {cause.Count:N0} message(s) with cause {cause.Text}") +
+                     BrowseOnlyUntickedNote(browseOnly);
     }
 
     /// <summary>Ticks exactly the messages with this reason; when they are already ticked, unticks them.</summary>
@@ -89,13 +92,15 @@ public sealed partial class MainWindowViewModel
         }
 
         var untick = reason.IsSelected;
+        var browseOnly = Messages.Count(message => message.IsMarked && !message.CanDelete);
         _updatingReasonSelection = true;
         try
         {
             using var batch = BatchMessageUpdates();
-            foreach (var message in Messages.Where(message => message.CanDelete))
+            // Exactly the chip's messages end up ticked: active messages ticked only to compare are unticked too.
+            foreach (var message in Messages)
             {
-                message.IsMarked = !untick &&
+                message.IsMarked = !untick && message.CanDelete &&
                                    DeadLetterReasonItemViewModel.ReasonOf(message) == reason.Reason;
             }
         }
@@ -111,8 +116,16 @@ public sealed partial class MainWindowViewModel
             (false, true) => $"Ticked {reason.Count:N0} {reason.Reason.ToLowerInvariant()} message(s)",
             (true, false) => $"Unticked the messages with reason {reason.Reason}",
             _ => $"Ticked {reason.Count:N0} message(s) with reason {reason.Reason}"
-        };
+        } + BrowseOnlyUntickedNote(browseOnly);
     }
+
+    /// <summary>
+    /// A chip ticks exactly its dead letters (or scheduled/deferred messages), so the status count, the ticks and
+    /// Delete/Resend agree; active messages that were ticked only to compare or export are unticked and said so.
+    /// </summary>
+    private static string BrowseOnlyUntickedNote(int count) => count == 0
+        ? string.Empty
+        : $"; unticked {count:N0} active message(s) that were ticked only to compare or export";
 
     private bool _updatingReasonSelection;
 

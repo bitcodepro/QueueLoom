@@ -75,6 +75,10 @@ public static class TopicRouting
             {
                 return new SubscriptionRouting(subscription.Subscription, RoutingOutcome.Skips, [], subscription.Warning) { Reason = problem };
             }
+            if (subscription.Unreadable is { } unreadable)
+            {
+                return new SubscriptionRouting(subscription.Subscription, RoutingOutcome.Unknown, [], subscription.Warning) { Reason = unreadable };
+            }
             if (subscription.Rules.Count == 0 && subscription.ReceivesAllWithoutRules)
             {
                 return new SubscriptionRouting(subscription.Subscription, RoutingOutcome.Receives, [], subscription.Warning)

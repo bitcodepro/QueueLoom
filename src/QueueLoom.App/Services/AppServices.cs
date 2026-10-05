@@ -40,6 +40,13 @@ public static class AppServices
             new JsonLinesDeadLetterHistoryStore(Path.Combine(paths.RootDirectory, "dlq-history.jsonl")));
         services.AddSingleton<QueueLoom.Core.ServiceBus.IScheduledResendStore>(_ => new JsonScheduledResendStore(paths));
         services.AddSingleton<IBatchReplayStore>(_ => new BatchReplayStore(Path.Combine(paths.RootDirectory, "replay")));
+        // Started by App once the window exists; deletes Activity records and finished operations after three days.
+        services.AddSingleton(provider => new LocalHistoryRetention(
+            provider.GetRequiredService<IActivityJournal>() as FileActivityJournal,
+            provider.GetRequiredService<IBatchReplayStore>() as BatchReplayStore,
+            provider.GetRequiredService<QueueLoom.Core.ServiceBus.IScheduledResendStore>(),
+            TimeProvider.System,
+            provider.GetService<ILogger<LocalHistoryRetention>>()));
 
         services.AddSingleton<TopLevelAccessor>();
         services.AddSingleton<WindowDialogService>();
