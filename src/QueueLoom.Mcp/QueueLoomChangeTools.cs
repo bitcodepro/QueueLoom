@@ -397,6 +397,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
     {
         const int MaximumPages = 20;
         var found = new Dictionary<DeadLetterMessageKey, BrowsedMessage>();
+        var ambiguous = new List<DeadLetterMessageKey>();
         foreach (var group in keys.GroupBy(key => (key.Source, key.SubQueue)))
         {
             var wanted = group.ToDictionary(key => key.SequenceNumber);
@@ -407,14 +408,23 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                         new BrowseMessagesRequest(group.Key.Source, group.Key.SubQueue, BrowseMessagesRequest.MaximumMaxMessages, from),
                         cancellationToken)
                     .ConfigureAwait(false);
-                foreach (var message in batch)
+                // Services without real sequence numbers (RabbitMQ, SQS, Pub/Sub) derive them from the Message ID (or the
+                // content), so different deliveries can share one: a key that matches messages which differ does not
+                // say which one was chosen, and none of them is taken.
+                foreach (var matches in batch
+                             .Where(message => wanted.TryGetValue(message.SequenceNumber, out var key) &&
+                                               (key.MessageId is null || string.Equals(key.MessageId, message.Properties.MessageId, StringComparison.Ordinal)))
+                             .GroupBy(message => message.SequenceNumber))
                 {
-                    if (wanted.TryGetValue(message.SequenceNumber, out var key) &&
-                        (key.MessageId is null || string.Equals(key.MessageId, message.Properties.MessageId, StringComparison.Ordinal)))
+                    var key = wanted[matches.Key];
+                    wanted.Remove(matches.Key);
+                    var candidates = matches.ToArray();
+                    if (candidates.Skip(1).Any(other => !SameMessage(candidates[0], other)))
                     {
-                        found[key] = message;
-                        wanted.Remove(message.SequenceNumber);
+                        ambiguous.Add(key);
+                        continue;
                     }
+                    found[key] = candidates[0];
                 }
 
                 if (batch.Count < BrowseMessagesRequest.MaximumMaxMessages || !batch[^1].HasSequenceNumber)
@@ -425,9 +435,23 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             }
         }
 
+        if (ambiguous.Count > 0)
+        {
+            throw new McpException(
+                $"{ambiguous.Count} listed message(s) cannot be told apart from other messages in the same queue (for example " +
+                $"#{ambiguous[0].SequenceNumber} {ambiguous[0].MessageId ?? "(no Message ID)"} in {McpMapping.EntityName(ambiguous[0].Source)}): " +
+                "several different messages share that Message ID or content key, so it is not known which one was chosen. " +
+                "Nothing was sent. Resend them from the QueueLoom app, which uses the message selected there.");
+        }
         return (keys.Where(found.ContainsKey).Select(key => found[key]).ToArray(),
             keys.Where(key => !found.ContainsKey(key)).ToArray());
     }
+
+    /// <summary>The same message content: body, standard properties and application properties.</summary>
+    private static bool SameMessage(BrowsedMessage first, BrowsedMessage second) =>
+        first.Body.Span.SequenceEqual(second.Body.Span) &&
+        first.Properties == second.Properties &&
+        first.ApplicationProperties.SequenceEqual(second.ApplicationProperties);
 
     private Task<ApprovalDecision> RequestApprovalAsync(
         McpServer server,

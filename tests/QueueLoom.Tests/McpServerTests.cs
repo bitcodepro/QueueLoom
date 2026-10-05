@@ -281,6 +281,57 @@ public sealed class McpServerTests
         Assert.Equal([ProfileAccessMode.ReadWrite, ProfileAccessMode.ReadOnly], server.Workspace.AccessModeChanges);
     }
 
+    // Bug 3. Two different deliveries share a Message ID (so, on RabbitMQ, SQS and Pub/Sub, one derived sequence
+    // number). Choosing B through MCP must never send A: an ambiguous choice is refused and nothing is sent. Also for
+    // both listed at once, and for two messages without an ID whose content key collides (same body, other headers).
+    [Theory]
+    [InlineData("B")]
+    [InlineData("both")]
+    [InlineData("no-id")]
+    public async Task ResendCopy_NeverSendsAnotherMessageThatSharesTheChosenKey(string choice)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var id = choice == "no-id" ? null : "repeated-id";
+        BrowsedMessage Delivery(string body, string header) => new(
+            Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, System.Text.Encoding.UTF8.GetBytes(body),
+            new EditableMessageProperties(MessageId: id),
+            [new MessageApplicationProperty("tenant", ApplicationPropertyType.String, header)]) { HasSequenceNumber = false };
+        server.Workspace.BrowseMessages = choice == "no-id"
+            ? [Delivery("same", "A"), Delivery("same", "B")]
+            : [Delivery("A", "x"), Delivery("B", "x")];
+        var chosen = new { entity = "orders", subQueue = "dlq", sequenceNumber = 77L, messageId = id };
+
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = choice == "both" ? new[] { chosen, chosen } : new[] { chosen },
+            ["mode"] = "copy",
+            ["reason"] = "retry after the fix"
+        });
+
+        Assert.Contains("cannot be told apart", error, StringComparison.Ordinal);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.Empty(server.Approver.Requests);
+    }
+
+    // Exact duplicates (same body and metadata) are interchangeable: copying one of them is still allowed.
+    [Fact]
+    public async Task ResendCopy_AllowsExactDuplicatesOfTheChosenMessage()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        BrowsedMessage Delivery() => new(Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, "same"u8.ToArray(),
+            new EditableMessageProperties(MessageId: "repeated-id")) { HasSequenceNumber = false };
+        server.Workspace.BrowseMessages = [Delivery(), Delivery()];
+
+        await server.CallAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 77L, messageId = "repeated-id" } },
+            ["mode"] = "copy",
+            ["reason"] = "retry after the fix"
+        });
+
+        Assert.Equal("same", Assert.Single(server.Workspace.SentMessages).Message.Body.Content);
+    }
+
     [Fact]
     public async Task ResendMove_SendsTheOriginalsBackAndThenRemovesThem()
     {

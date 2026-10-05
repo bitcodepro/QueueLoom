@@ -33,7 +33,13 @@ public static class MessageExport
             ? MessageExportFormat.Csv
             : MessageExportFormat.Json;
 
-    public static async Task WriteAsync(
+    /// <summary>
+    /// Writes the export through <see cref="QueueLoom.Core.IO.SafeFileWriter"/>: the message bodies go into a file only
+    /// the current user can open, and an existing export is replaced in one step keeping its access (narrowed, never
+    /// widened, when a rename cannot keep its group). A new export is private.
+    /// </summary>
+    /// <returns>True when an existing file's group access had to be narrowed.</returns>
+    public static Task<bool> WriteAsync(
         string path,
         IReadOnlyList<ExportedMessage> messages,
         CancellationToken cancellationToken = default)
@@ -41,32 +47,19 @@ public static class MessageExport
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(messages);
         cancellationToken.ThrowIfCancellationRequested();
-        var destination = Path.GetFullPath(path);
-        var temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
-        var ownsTemporary = false;
-        try
+        var csv = FormatFor(path) == MessageExportFormat.Csv;
+        return QueueLoom.Core.IO.SafeFileWriter.WriteAsync(Path.GetFullPath(path), async (stream, token) =>
         {
-            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
+            if (csv)
             {
-                ownsTemporary = true;
-                if (FormatFor(path) == MessageExportFormat.Csv)
-                {
-                    await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), leaveOpen: true);
-                    await WriteCsvAsync(writer, messages, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await WriteJsonAsync(stream, messages, cancellationToken).ConfigureAwait(false);
-                }
-                stream.Flush(flushToDisk: true);
+                await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), leaveOpen: true);
+                await WriteCsvAsync(writer, messages, token).ConfigureAwait(false);
             }
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporary, destination, overwrite: true);
-        }
-        finally
-        {
-            if (ownsTemporary && File.Exists(temporary)) File.Delete(temporary);
-        }
+            else
+            {
+                await WriteJsonAsync(stream, messages, token).ConfigureAwait(false);
+            }
+        }, cancellationToken);
     }
 
     public static async Task WriteJsonAsync(Stream stream, IReadOnlyList<ExportedMessage> messages, CancellationToken cancellationToken)

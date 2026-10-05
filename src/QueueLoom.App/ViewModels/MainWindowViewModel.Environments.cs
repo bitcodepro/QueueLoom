@@ -377,20 +377,33 @@ public sealed partial class MainWindowViewModel
         }
         await StopMonitorForConfigurationChangeAsync(selected.Id).ConfigureAwait(true);
         InvalidateProfileArtifacts(selected.Id, "Its environment was removed; the previous draft is no longer sendable.");
+        // Every resend saved for this environment is cancelled, including ones another window scheduled after this
+        // window loaded its list: the saved list is what windows run from. This happens while the environment
+        // change is still held, so no window can claim one of them in between (see RunScheduledAsync).
         var cancelledResends = 0;
-        foreach (var item in ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).ToArray())
+        var saved = _scheduledStore?.Load().Where(resend => resend.ProfileId == selected.Id).ToArray()
+                    ?? ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
+        foreach (var resend in saved)
         {
             try
             {
-                RemoveScheduled(item.Resend);
+                if (RemoveScheduled(resend))
+                {
+                    cancelledResends++;
+                }
             }
             catch (IOException)
             {
                 // Left listed (RemoveScheduled reported why); it can still be cancelled on Activity.
                 continue;
             }
-            ScheduledResends.Remove(item);
-            cancelledResends++;
+        }
+        foreach (var item in ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).ToArray())
+        {
+            if (_scheduledStore is null || !_scheduledStore.Load().Any(resend => resend.Id == item.Resend.Id))
+            {
+                ScheduledResends.Remove(item);
+            }
         }
         AddActivity("Warning", "Environment removed", selected.Name +
             (cancelledResends > 0 ? $" · {cancelledResends:N0} scheduled resend(s) cancelled; nothing was sent" : string.Empty));

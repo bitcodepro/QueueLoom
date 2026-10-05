@@ -3,7 +3,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 
-namespace QueueLoom.App.Services;
+namespace QueueLoom.Core.IO;
 
 /// <summary>
 /// Replaces a file only once its new contents are complete and flushed to disk, and then in one step, so no failure
@@ -18,7 +18,7 @@ namespace QueueLoom.App.Services;
 /// <see cref="ReplacementMode"/>): access only ever narrows, and the caller is told so it can say so.
 /// </para>
 /// </summary>
-internal static class SafeFileWriter
+public static class SafeFileWriter
 {
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
