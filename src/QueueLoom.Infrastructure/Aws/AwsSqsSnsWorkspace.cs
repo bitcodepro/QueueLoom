@@ -404,25 +404,69 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 .ToArray();
         }
 
+        /// <summary>
+        /// Makes the messages visible again. A batch answers per entry: entries it reports failed are retried (only
+        /// those), and every later batch is still released. A receipt handle that is no longer valid, or a message no
+        /// longer in flight, needs nothing more (it is visible again or gone). What still fails is reported after all
+        /// batches were tried: those messages only reappear when their visibility timeout ends.
+        /// </summary>
         public async Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
+            var unreleased = new List<(LeasedMessage Message, string Reason)>();
             foreach (var chunk in messages.Chunk(MaximumBatch))
             {
-                await owner.Sqs.ChangeMessageVisibilityBatchAsync(
-                        new ChangeMessageVisibilityBatchRequest
-                        {
-                            QueueUrl = queue.Url,
-                            Entries = chunk.Select((message, index) => new ChangeMessageVisibilityBatchRequestEntry
+                var pending = chunk.ToList();
+                for (var attempt = 1; pending.Count > 0; attempt++)
+                {
+                    var response = await owner.Sqs.ChangeMessageVisibilityBatchAsync(
+                            new ChangeMessageVisibilityBatchRequest
                             {
-                                Id = index.ToString(CultureInfo.InvariantCulture),
-                                ReceiptHandle = message.LeaseHandle,
-                                VisibilityTimeout = 0
-                            }).ToList()
-                        },
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                                QueueUrl = queue.Url,
+                                Entries = pending.Select((message, index) => new ChangeMessageVisibilityBatchRequestEntry
+                                {
+                                    Id = index.ToString(CultureInfo.InvariantCulture),
+                                    ReceiptHandle = message.LeaseHandle,
+                                    VisibilityTimeout = 0
+                                }).ToList()
+                            },
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    var retry = new List<LeasedMessage>();
+                    foreach (var failure in response.Failed ?? [])
+                    {
+                        if (!int.TryParse(failure.Id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index) ||
+                            index < 0 || index >= pending.Count || failure.Code is "ReceiptHandleIsInvalid" or "MessageNotInflight"
+                            || failure.Code?.EndsWith(".ReceiptHandleIsInvalid", StringComparison.Ordinal) == true
+                            || failure.Code?.EndsWith(".MessageNotInflight", StringComparison.Ordinal) == true)
+                        {
+                            continue;
+                        }
+                        if (failure.SenderFault != true && attempt < ReleaseAttempts)
+                        {
+                            retry.Add(pending[index]);
+                        }
+                        else
+                        {
+                            unreleased.Add((pending[index], failure.Code ?? failure.Message ?? "failed"));
+                        }
+                    }
+                    pending = retry;
+                    if (pending.Count > 0)
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt), cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+            if (unreleased.Count > 0)
+            {
+                throw new IOException(
+                    $"{unreleased.Count:N0} message(s) read from '{queue.Name}' could not be made visible again " +
+                    $"({string.Join(", ", unreleased.Select(item => item.Reason).Distinct().Take(3))}); they reappear when " +
+                    "their visibility timeout ends. Nothing was lost.");
             }
         }
+
+        private const int ReleaseAttempts = 3;
 
         public async Task<IReadOnlyCollection<LeasedMessage>> SettleAsync(
             IReadOnlyCollection<LeasedMessage> messages,

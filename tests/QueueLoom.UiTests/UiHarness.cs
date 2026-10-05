@@ -167,6 +167,7 @@ internal sealed class WindowFixture : IAsyncDisposable
     }
 
     public MainWindowViewModel ViewModel { get; }
+    public string DataDirectory => _dataDirectory;
     public BatchReplayStore OperationStore { get; }
     public FileActivityJournal ActivityJournal { get; }
 

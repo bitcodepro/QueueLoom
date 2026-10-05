@@ -72,6 +72,8 @@ public static class MessageExport
             var properties = message.Properties;
             var (encoding, body) = Body(message);
             writer.WriteStartObject();
+            // 2: typed application properties, every standard property and the Kafka record are included.
+            writer.WriteNumber("exportVersion", ExportVersion);
             writer.WriteString("environment", environment);
             writer.WriteString("source", message.Source.DisplayName);
             writer.WriteString("sourceKind", message.Source.Kind.ToString());
@@ -94,6 +96,18 @@ public static class MessageExport
             WriteOptional(writer, "replyTo", properties.ReplyTo);
             WriteOptional(writer, "amqpType", properties.AmqpType);
             WriteOptional(writer, "amqpAppId", properties.AmqpAppId);
+            WriteOptional(writer, "replyToSessionId", properties.ReplyToSessionId);
+            WriteOptional(writer, "partitionKey", properties.PartitionKey);
+            WriteOptional(writer, "transactionPartitionKey", properties.TransactionPartitionKey);
+            WriteOptional(writer, "nativeSubject", properties.NativeSubject);
+            if (properties.TimeToLive is { } timeToLive)
+            {
+                writer.WriteString("timeToLive", timeToLive.ToString("c", CultureInfo.InvariantCulture));
+            }
+            if (properties.ScheduledEnqueueTime is { } scheduled)
+            {
+                writer.WriteString("scheduledEnqueueTimeUtc", scheduled.ToUniversalTime());
+            }
             if (message.EnqueuedAt is { } enqueuedAt)
             {
                 writer.WriteString("enqueuedAtUtc", enqueuedAt.ToUniversalTime());
@@ -107,6 +121,53 @@ public static class MessageExport
                 writer.WriteString(property.Name, property.Value);
             }
             writer.WriteEndObject();
+            // The object above keeps one text value per name (as before); this list keeps each property's type, the
+            // service's own type label and repeated names, so Int64 "42" and String "42" stay different.
+            writer.WriteStartArray("typedApplicationProperties");
+            foreach (var property in message.ApplicationProperties)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", property.Name);
+                writer.WriteString("type", property.Type.ToString());
+                if (property.WireType is not null)
+                {
+                    writer.WriteString("wireType", property.WireType);
+                }
+                writer.WriteString("value", property.Value);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            if (message.KafkaEnvelope is { } kafka)
+            {
+                // The record as Kafka holds it: a binary key, a tombstone, and headers (repeated, binary or null).
+                writer.WriteStartObject("kafka");
+                if (kafka.Key is { } key)
+                {
+                    writer.WriteString("keyBase64", Convert.ToBase64String(key));
+                }
+                else
+                {
+                    writer.WriteNull("keyBase64");
+                }
+                writer.WriteBoolean("tombstone", kafka.IsTombstone);
+                writer.WriteStartArray("headers");
+                foreach (var header in kafka.Headers)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("name", header.Name);
+                    if (header.Value is { } value)
+                    {
+                        writer.WriteString("valueBase64", Convert.ToBase64String(value));
+                    }
+                    else
+                    {
+                        writer.WriteNull("valueBase64");
+                    }
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
             writer.WriteString("bodyEncoding", encoding);
             writer.WriteString("body", body);
             if (message.IsBodyTruncated)
@@ -190,9 +251,13 @@ public static class MessageExport
         }
     }
 
+    /// <summary>The JSON export's format version, written on every message.</summary>
+    public const int ExportVersion = 2;
+
+    /// <summary>A missing (null) property is left out; an empty one is written, so the two stay apart.</summary>
     private static void WriteOptional(Utf8JsonWriter writer, string name, string? value)
     {
-        if (!string.IsNullOrEmpty(value))
+        if (value is not null)
         {
             writer.WriteString(name, value);
         }

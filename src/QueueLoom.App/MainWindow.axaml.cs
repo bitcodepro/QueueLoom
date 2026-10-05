@@ -129,42 +129,69 @@ public sealed partial class MainWindow : Window
         {
             case nameof(MainWindowViewModel.MonitorIntervalSeconds):
                 var interval = _viewModel.MonitorIntervalSeconds;
-                _ = SavePreferenceBestEffortAsync(() => _settingsStore.SaveMonitorIntervalSecondsAsync(interval));
+                TrackPreferenceSave(() => _settingsStore.SaveMonitorIntervalSecondsAsync(interval));
                 break;
             case nameof(MainWindowViewModel.ThemePreference):
                 var theme = _viewModel.ThemePreference;
-                _ = SavePreferenceBestEffortAsync(() => _settingsStore.SaveThemeAsync(theme));
+                TrackPreferenceSave(() => _settingsStore.SaveThemeAsync(theme));
                 break;
             case nameof(MainWindowViewModel.KeepInTray):
                 var keepInTray = _viewModel.KeepInTray;
-                _ = SavePreferenceBestEffortAsync(() =>
+                TrackPreferenceSave(() =>
                     _settingsStore.UpdateAsync(settings => settings with { KeepInTray = keepInTray }));
                 break;
             case nameof(MainWindowViewModel.SystemNotifications):
                 var system = _viewModel.SystemNotifications;
-                _ = SavePreferenceBestEffortAsync(() =>
+                TrackPreferenceSave(() =>
                     _settingsStore.UpdateAsync(settings => settings with { SystemNotifications = system }));
                 break;
             case nameof(MainWindowViewModel.AlertWebhookUrl) when !_viewModel.HasAlertWebhookError:
                 var webhook = string.IsNullOrWhiteSpace(_viewModel.AlertWebhookUrl) ? null : _viewModel.AlertWebhookUrl.Trim();
-                _ = SavePreferenceBestEffortAsync(() =>
+                TrackPreferenceSave(() =>
                     _settingsStore.UpdateAsync(settings => settings with { AlertWebhookUrl = webhook }));
                 break;
             case nameof(MainWindowViewModel.ProtobufSchemaPath):
                 var protobuf = string.IsNullOrWhiteSpace(_viewModel.ProtobufSchemaPath) ? null : _viewModel.ProtobufSchemaPath;
-                _ = SavePreferenceBestEffortAsync(() =>
+                TrackPreferenceSave(() =>
                     _settingsStore.UpdateAsync(settings => settings with { ProtobufSchemaPath = protobuf }));
                 break;
             case nameof(MainWindowViewModel.BackupRetentionDays):
                 var retention = _viewModel.BackupRetentionDays;
-                _ = SavePreferenceBestEffortAsync(() =>
+                TrackPreferenceSave(() =>
                     _settingsStore.UpdateAsync(settings => settings with { BackupRetentionDays = retention }));
                 break;
             case nameof(MainWindowViewModel.SavedSearches):
                 var searches = _viewModel.CaptureSavedSearchChanges();
-                _ = SavePreferenceBestEffortAsync(() => _viewModel.PersistSavedSearchesAsync(searches, merge =>
+                TrackPreferenceSave(() => _viewModel.PersistSavedSearchesAsync(searches, merge =>
                     _settingsStore.UpdateAsync(settings => settings with { SavedSearches = merge(settings.SavedSearches) })));
                 break;
+        }
+    }
+
+    private readonly List<Task> _preferenceSaves = [];
+
+    /// <summary>Saves a preference in the background, remembered so closing can wait for it.</summary>
+    private void TrackPreferenceSave(Func<Task> save)
+    {
+        var task = SavePreferenceBestEffortAsync(save);
+        lock (_preferenceSaves)
+        {
+            _preferenceSaves.Add(task);
+        }
+        _ = task.ContinueWith(done =>
+        {
+            lock (_preferenceSaves)
+            {
+                _preferenceSaves.Remove(done);
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private Task PendingPreferenceSaves()
+    {
+        lock (_preferenceSaves)
+        {
+            return Task.WhenAll(_preferenceSaves.ToArray());
         }
     }
 
@@ -291,11 +318,10 @@ public sealed partial class MainWindow : Window
             // store is released, so a queued reinsert cannot be overtaken or abandoned (bounded like the rest of closing).
             await ShutdownWait.WithinAsync(() => new ValueTask(_viewModel.DrainSavedSearchSavesAsync()),
                 _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
-            if (_settingsStore is not null)
-            {
-                // A settings file that cannot be rewritten (damaged or from a newer version) must not skip disposal.
-                await SavePreferenceBestEffortAsync(() => _settingsStore.SaveMonitorIntervalSecondsAsync(_viewModel.MonitorIntervalSeconds));
-            }
+            // Every change is saved when it is made; closing only waits for saves still under way. Writing this window's
+            // value again here would overwrite a newer value another window saved since this one loaded its settings.
+            await ShutdownWait.WithinAsync(() => new ValueTask(PendingPreferenceSaves()),
+                _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
             await _viewModel.DisposeAsync();
         }
         catch (Exception exception)

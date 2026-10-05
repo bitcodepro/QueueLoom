@@ -382,7 +382,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var summary = $"{result.SentCount} of {items.Length} sent" +
                           (resendMode == ResendMode.Move ? $", {result.MovedCount} original(s) removed" : string.Empty) +
                           (result.OriginalsKeptCount > 0 ? $", {result.OriginalsKeptCount} original(s) kept" : string.Empty) +
-                          (result.FailedCount > 0 ? $", {result.FailedCount} failed" : string.Empty) +
+                          (result.FailedCount > 0 ? $", {result.FailedCount} failed or uncertain (see details; do not resend those blindly)" : string.Empty) +
                           (result.CancelledCount > 0 ? $", {result.CancelledCount} not sent" : string.Empty) +
                           (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + ".";
             session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 ? "Success" : "Warning",

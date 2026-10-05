@@ -825,6 +825,11 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace
         {
             if (held.Count > 0) await channel.ReleaseAsync(held, CancellationToken.None).ConfigureAwait(false);
         }
+        catch (IOException exception)
+        {
+            // The channel says what it could not release and what that means (for example SQS: visible again later).
+            error = exception.Message;
+        }
         catch
         {
             error = "Channel cleanup failed; verify remaining deliveries before retrying.";
