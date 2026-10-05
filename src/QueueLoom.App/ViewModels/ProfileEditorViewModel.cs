@@ -274,6 +274,48 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         }
     }
 
+    /// <summary>A service account key is a few kilobytes; anything much larger is not one.</summary>
+    internal const int MaximumKeyFileBytes = 64 * 1024;
+
+    /// <summary>
+    /// Loads a downloaded service account key. The stream is read without asking its length (a picker may hand out
+    /// one that cannot tell), at most <see cref="MaximumKeyFileBytes"/>; any failure is shown here instead of escaping
+    /// the click handler, where it would end the application.
+    /// </summary>
+    public async Task LoadGoogleServiceAccountKeyAsync(Func<Task<Stream>> open)
+    {
+        ArgumentNullException.ThrowIfNull(open);
+        try
+        {
+            await using var stream = await open().ConfigureAwait(true);
+            var buffer = new byte[MaximumKeyFileBytes + 1];
+            var read = 0;
+            int count;
+            while (read < buffer.Length && (count = await stream.ReadAsync(buffer.AsMemory(read)).ConfigureAwait(true)) > 0)
+            {
+                read += count;
+            }
+            if (read > MaximumKeyFileBytes)
+            {
+                Error = "That file is larger than a service account key (64 KB). Choose the JSON key downloaded for the service account.";
+                return;
+            }
+            Error = string.Empty;
+            GoogleServiceAccountKey = new System.Text.UTF8Encoding(false).GetString(buffer, 0, read).TrimStart('\uFEFF');
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            ReportKeyFileProblem(exception);
+        }
+    }
+
+    /// <summary>Shows why a key file could not be chosen or read.</summary>
+    public void ReportKeyFileProblem(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        Error = $"The key file could not be read: {QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(exception)}";
+    }
+
     /// <summary>"Key for queueloom@orders-prod.iam.gserviceaccount.com", or how to get one.</summary>
     public string GoogleKeySummary =>
         TryReadServiceAccount(GoogleServiceAccountKey, out var email, out _)

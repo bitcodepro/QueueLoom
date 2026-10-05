@@ -77,6 +77,46 @@ public sealed class PubSubKafkaStabilityTests
         Assert.All(failed, message => Assert.DoesNotContain(message.LeaseHandle, subscriber.Acked));
     }
 
+    // Cancelled while the schemas of a page are being looked up: the records already read are handed over (without
+    // schemas) instead of being dropped, so the channel, which has moved past them, does not lose them.
+    [Fact]
+    public async Task Kafka_CancellingDuringSchemaLookupKeepsTheRecordsRead()
+    {
+        await using var owner = new KafkaWorkspace(new EmptyVault());
+        var fixture = new Fixture { Body = [0, 0, 0, 0, 7, (byte)'x'] };
+        owner.ConsumerFactory = fixture.Create;
+        using var cancellation = new CancellationTokenSource();
+        var handler = new CancellingHandler(cancellation);
+        typeof(KafkaWorkspace).GetField("_schemaRegistry", Any)!.SetValue(owner,
+            new SchemaRegistryClient("http://registry.test", null, null, handler));
+        var channel = NewChannel(owner, out _);
+        try
+        {
+            var page = await channel.ReceiveAsync(10, cancellation.Token);
+
+            Assert.Equal(3, page.Count);
+            Assert.All(page, message => Assert.Null(message.Message.Schema));
+            Assert.Equal(1, handler.Calls);
+        }
+        finally
+        {
+            ((IDisposable)channel).Dispose();
+        }
+    }
+
+    private sealed class CancellingHandler(CancellationTokenSource cancellation) : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            await cancellation.CancelAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
     private static ILeasedMessageChannel NewChannel(KafkaWorkspace owner, out Type type)
     {
         type = typeof(KafkaWorkspace).GetNestedType("KafkaChannel", BindingFlags.NonPublic)!;
@@ -94,6 +134,7 @@ public sealed class PubSubKafkaStabilityTests
     internal sealed class Fixture
     {
         public bool FailClose { get; init; }
+        public byte[] Body { get; init; } = "body"u8.ToArray();
         public bool FailWatermarksOnce { get; set; }
         public bool Disposed { get; private set; }
         private long _position = -1;
@@ -132,7 +173,7 @@ public sealed class PubSubKafkaStabilityTests
                     return new ConsumeResult<byte[]?, byte[]?>
                     {
                         Topic = "isolated", Partition = 0, Offset = offset,
-                        Message = new() { Value = "body"u8.ToArray(), Timestamp = new Timestamp(DateTime.UnixEpoch), Headers = new Headers() }
+                        Message = new() { Value = Body, Timestamp = new Timestamp(DateTime.UnixEpoch), Headers = new Headers() }
                     };
                 default:
                     return null;
