@@ -394,6 +394,44 @@ public sealed class McpServerTests
         Assert.Empty(server.Approver.Requests);
     }
 
+    // The MCP path with the real classifier: B was chosen and is gone; only its counter twin A is there. On classic
+    // queues (4.2 and 4.3) the counter is the producer's, so A is not sent. On a quorum queue the broker raised the
+    // counter of the same message, which is found and sent.
+    [Theory]
+    [InlineData(false, "4.2.0", false)]
+    [InlineData(false, "4.3.0", false)]
+    [InlineData(true, "4.2.0", true)]
+    [InlineData(true, "4.3.0", true)]
+    public async Task ResendCopy_FollowsTheQueueTypeForCounterHeaders(bool quorum, string version, bool sent)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var owned = QueueLoom.Infrastructure.RabbitMq.RabbitMqWorkspace.BrokerOwnedHeaders(quorum, Version.Parse(version));
+        var header = quorum ? "x-delivery-count" : "x-acquired-count";
+        BrowsedMessage Counted(string count) => new BrowsedMessage(Orders.Reference, ServiceBusSubQueue.DeadLetter, 77, "same"u8.ToArray(),
+            new EditableMessageProperties(MessageId: "repeated-id"),
+            [new MessageApplicationProperty(header, ApplicationPropertyType.Int64, count)]) { HasSequenceNumber = false } with { BrokerOwnedHeaders = owned };
+        var chosen = Counted("2");
+        server.Workspace.BrowseMessages = [Counted("1")];
+
+        if (sent)
+        {
+            await server.CallAsync("resend_dead_letters", new()
+            {
+                ["messages"] = new[] { Pick(chosen) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
+            });
+            Assert.Single(server.Workspace.SentMessages);
+        }
+        else
+        {
+            var error = await server.CallForErrorAsync("resend_dead_letters", new()
+            {
+                ["messages"] = new[] { Pick(chosen) }, ["mode"] = "copy", ["reason"] = "retry after the fix"
+            });
+            Assert.Contains("None of the listed messages", error, StringComparison.Ordinal);
+            Assert.Empty(server.Workspace.SentMessages);
+        }
+    }
+
     [Fact]
     public async Task ResendCopy_KeepsAProducerSetCounterHeaderApart()
     {

@@ -205,6 +205,33 @@ public sealed class RabbitComplexHeaderTests
         Assert.True(ambiguous);
     }
 
+    // The classifier itself: counters are broker-owned only on quorum queues (x-acquired-count from RabbitMQ 4.3);
+    // classic queues of any version and queues of unknown type keep every header in the identity.
+    [Theory]
+    [InlineData(false, "4.2.0", "")]
+    [InlineData(false, "4.3.0", "")]
+    [InlineData(false, null, "")]
+    [InlineData(true, "4.2.0", "x-delivery-count")]
+    [InlineData(true, "4.3.1", "x-acquired-count,x-delivery-count")]
+    [InlineData(true, null, "x-delivery-count")]
+    public void BrokerOwnedHeadersNeedAQuorumQueue(bool quorum, string? version, string expected)
+    {
+        var owned = RabbitMqWorkspace.BrokerOwnedHeaders(quorum, version is null ? null : Version.Parse(version));
+
+        Assert.Equal(expected, string.Join(",", owned.Order(StringComparer.Ordinal)));
+    }
+
+    // Queue metadata without a type (or an unknown one) is not evidence of a quorum queue.
+    [Theory]
+    [InlineData("""{"name":"q"}""")]
+    [InlineData("""{"name":"q","type":"something-new"}""")]
+    [InlineData("""{"name":"q","type":"classic"}""")]
+    public void UnknownQueueTypesAreNotQuorum(string json)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        Assert.False(RabbitQueueInfo.From(document.RootElement).IsQuorum);
+    }
+
     /// <summary>Same keys, values, CLR types (which decide the AMQP field types RabbitMQ.Client writes) and bytes.</summary>
     private static void AssertSameAmqp(object? expected, object? actual)
     {

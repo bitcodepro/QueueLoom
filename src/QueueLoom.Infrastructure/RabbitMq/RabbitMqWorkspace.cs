@@ -200,19 +200,24 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             ? throw new InvalidOperationException($"'{queue.Name}' is a stream. Streams are read by offset, which QueueLoom does not support yet.")
             : new RabbitChannel(this, queue.Name, source, subQueue, belongsTo, BrokerOwnedHeaders(queue));
 
+    private IReadOnlySet<string> BrokerOwnedHeaders(RabbitQueueInfo queue) => BrokerOwnedHeaders(queue.IsQuorum, ServerVersion());
+
     /// <summary>
-    /// The headers this broker writes itself on messages read from <paramref name="queue"/>: a quorum queue keeps its
-    /// delivery count in x-delivery-count, and RabbitMQ 4.3 and later count acquisitions in x-acquired-count on every
-    /// queue type. Earlier versions keep a producer's x-acquired-count as it was sent, so it stays part of the message.
+    /// The headers the broker writes itself on messages read from a queue, as far as it is established: a quorum
+    /// queue keeps its delivery count in x-delivery-count, and from RabbitMQ 4.3 its delivery path also counts
+    /// acquisitions in x-acquired-count. Classic queues (any version), and queues whose type is not known, pass a
+    /// producer's headers through unchanged, so nothing is broker-owned there and every header stays part of the
+    /// message's identity.
     /// </summary>
-    private IReadOnlySet<string> BrokerOwnedHeaders(RabbitQueueInfo queue)
+    internal static IReadOnlySet<string> BrokerOwnedHeaders(bool isQuorum, Version? serverVersion)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
-        if (queue.IsQuorum)
+        if (!isQuorum)
         {
-            names.Add("x-delivery-count");
+            return names;
         }
-        if (ServerVersion() is { } version && version >= new Version(4, 3))
+        names.Add("x-delivery-count");
+        if (serverVersion is { } version && version >= new Version(4, 3))
         {
             names.Add("x-acquired-count");
         }
