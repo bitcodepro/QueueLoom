@@ -137,8 +137,8 @@ public sealed partial class GooglePubSubWorkspace
                     // Someone else created the same name meanwhile with other settings: it is theirs, not changed here.
                     throw new InvalidOperationException(
                         $"Whether Pub/Sub created the subscription '{definition.Name}' is unknown ({exception.Status.Detail}): a " +
-                        "subscription with that name exists now, but not with the requested topic, dead-letter policy, " +
-                        "retention or acknowledgement deadline, so it was probably created by someone else. It was left " +
+                        "subscription with that name exists now, but not with the requested topic, filter, delivery type, " +
+                        "dead-letter policy, retention or acknowledgement deadline, so it was probably created by someone else. It was left " +
                         "unchanged; check it in Google Cloud before deleting anything.", exception);
                 }
                 var leftovers = created.Count == 0 ? string.Empty : $" Created before that: {string.Join(" and ", created)}.";
@@ -167,6 +167,13 @@ public sealed partial class GooglePubSubWorkspace
     /// <summary>Whether a read-back subscription carries everything this request asked for.</summary>
     private static bool HasRequestedConfiguration(Subscription existing, Subscription requested) =>
         existing.Topic == requested.Topic
+        // Delivery semantics the request leaves at their defaults: unfiltered pull delivery, no export, no ordering.
+        && existing.Filter == requested.Filter
+        && string.IsNullOrEmpty(existing.PushConfig?.PushEndpoint) == string.IsNullOrEmpty(requested.PushConfig?.PushEndpoint)
+        && (existing.BigqueryConfig is null) == (requested.BigqueryConfig is null)
+        && (existing.CloudStorageConfig is null) == (requested.CloudStorageConfig is null)
+        && existing.EnableMessageOrdering == requested.EnableMessageOrdering
+        && existing.EnableExactlyOnceDelivery == requested.EnableExactlyOnceDelivery
         && (requested.AckDeadlineSeconds == 0 || existing.AckDeadlineSeconds == requested.AckDeadlineSeconds)
         && (requested.MessageRetentionDuration is null || Equals(existing.MessageRetentionDuration, requested.MessageRetentionDuration))
         && (requested.DeadLetterPolicy is null

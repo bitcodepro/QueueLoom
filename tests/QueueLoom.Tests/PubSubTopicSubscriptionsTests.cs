@@ -153,6 +153,53 @@ public sealed class PubSubTopicSubscriptionsTests
         Assert.Empty(subscriber.Deleted);
     }
 
+    // A same-name, same-topic subscription with matching settings but a filter, a push endpoint or an export receives
+    // different messages or delivers them elsewhere: it is not the ordinary subscription requested.
+    [Theory]
+    [InlineData("filter")]
+    [InlineData("push")]
+    [InlineData("bigquery")]
+    [InlineData("ordering")]
+    public async Task Create_TimedOutWhileASameTopicSubscriptionWithOtherDeliveryAppearedIsNotSuccess(string variant)
+    {
+        var appeared = new Subscription
+        {
+            Name = "projects/project-a/subscriptions/orders", Topic = "projects/project-a/topics/events",
+            DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = "projects/project-a/topics/orders-dead-letter", MaxDeliveryAttempts = 5 }
+        };
+        switch (variant)
+        {
+            case "filter": appeared.Filter = "attributes.region = \"EU\""; break;
+            case "push": appeared.PushConfig = new PushConfig { PushEndpoint = "https://example.test/push" }; break;
+            case "bigquery": appeared.BigqueryConfig = new BigQueryConfig { Table = "p.d.t" }; break;
+            case "ordering": appeared.EnableMessageOrdering = true; break;
+        }
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber { UnavailableOn = "projects/project-a/subscriptions/orders", AppearOnFailure = appeared };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events")));
+
+        Assert.Contains("someone else", error.Message, StringComparison.Ordinal);
+        Assert.Empty(subscriber.Deleted);
+    }
+
+    // The same subscription with the full requested configuration (as Pub/Sub returns it: an empty push config) is ours.
+    [Fact]
+    public async Task Create_TimedOutWhileTheRequestedSubscriptionAppearedIsSuccess()
+    {
+        var appeared = new Subscription
+        {
+            Name = "projects/project-a/subscriptions/orders", Topic = "projects/project-a/topics/events", PushConfig = new PushConfig(),
+            DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = "projects/project-a/topics/orders-dead-letter", MaxDeliveryAttempts = 5 }
+        };
+        var subscriber = new FakeSubscriber { UnavailableOn = "projects/project-a/subscriptions/orders", AppearOnFailure = appeared };
+        await using var workspace = Workspace(new FakePublisher(), subscriber);
+
+        await workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events"));
+    }
+
     // Dead-letter setup failed before the subscription itself was requested; a same-topic subscription created by someone
     // else meanwhile must not be taken as ours.
     [Fact]
