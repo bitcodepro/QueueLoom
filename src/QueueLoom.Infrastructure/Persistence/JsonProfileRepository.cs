@@ -290,5 +290,9 @@ public sealed class JsonProfileRepository : IAtomicProfileRepository, IProfileMu
         public Guid? SelectedProfileId { get; set; }
 
         public List<ServiceBusProfile> Profiles { get; set; } = [];
+
+        /// <summary>Fields this version does not know (for example from a newer QueueLoom), written back unchanged.</summary>
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalFields { get; set; }
     }
 }

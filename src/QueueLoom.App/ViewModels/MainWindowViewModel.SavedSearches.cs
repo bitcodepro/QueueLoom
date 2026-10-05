@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Collections.ObjectModel;
 using QueueLoom.App.Commands;
 using QueueLoom.Core.Settings;
@@ -119,6 +120,11 @@ public sealed partial class MainWindowViewModel
             {
                 SavedSearches.Add(search);
             }
+            _savedSearchLastCaptured = [.. SavedSearches];
+            lock (_pendingSavedSearchChanges)
+            {
+                _pendingSavedSearchChanges.Clear();
+            }
         }
         finally
         {
@@ -127,6 +133,169 @@ public sealed partial class MainWindowViewModel
     }
 
     private bool _loadingSavedSearches;
+
+    /// <summary>The saved searches as of the last load or capture by this window.</summary>
+    private SavedSearch[] _savedSearchLastCaptured = [];
+    private long _savedSearchCaptures;
+
+    /// <summary>One change made in this window, and the save currently writing it (0 when none is).</summary>
+    private sealed class SavedSearchChange(long capture, SavedSearch[] added, SavedSearch[] removed)
+    {
+        public long Capture { get; } = capture;
+        public SavedSearch[] Added { get; } = added;
+        public SavedSearch[] Removed { get; } = removed;
+        public long WrittenBy { get; set; }
+    }
+
+    /// <summary>This window's changes, in order, that no save has confirmed written yet. Guarded by itself.</summary>
+    private readonly List<SavedSearchChange> _pendingSavedSearchChanges = [];
+
+    /// <summary>
+    /// Captures this window's saved-search change since the previous capture. The returned update decides when it
+    /// actually runs which changes still need writing: earlier changes no save has taken, in order, plus its own. A
+    /// change another save is writing or has written is not replayed, so a remote edit or deletion made after that
+    /// write survives. <see cref="SavedSearchSave.Fail"/> hands a failed save's changes back to the next save.
+    /// </summary>
+    public SavedSearchSave CaptureSavedSearchChanges()
+    {
+        var previous = _savedSearchLastCaptured;
+        var local = SavedSearches.ToArray();
+        _savedSearchLastCaptured = local;
+        var capture = ++_savedSearchCaptures;
+        lock (_pendingSavedSearchChanges)
+        {
+            _pendingSavedSearchChanges.Add(new SavedSearchChange(capture,
+                local.Where(search => !previous.Contains(search)).ToArray(),
+                previous.Where(search => !local.Contains(search)).ToArray()));
+        }
+        return new SavedSearchSave(
+            stored =>
+            {
+                lock (_pendingSavedSearchChanges)
+                {
+                    foreach (var change in _pendingSavedSearchChanges)
+                    {
+                        if (change.Capture > capture || change.WrittenBy != 0 && change.WrittenBy != capture)
+                        {
+                            continue;
+                        }
+                        change.WrittenBy = capture;
+                        stored = ApplySavedSearchChange(change.Added, change.Removed, stored);
+                    }
+                }
+                return stored;
+            },
+            () =>
+            {
+                lock (_pendingSavedSearchChanges)
+                {
+                    _pendingSavedSearchChanges.RemoveAll(change => change.WrittenBy == capture);
+                }
+            },
+            () =>
+            {
+                lock (_pendingSavedSearchChanges)
+                {
+                    foreach (var change in _pendingSavedSearchChanges.Where(change => change.WrittenBy == capture))
+                    {
+                        change.WrittenBy = 0;
+                    }
+                }
+            });
+    }
+
+    private readonly SemaphoreSlim _savedSearchSaveGate = new(1, 1);
+
+    /// <summary>
+    /// Writes one captured save and settles it (acknowledged or failed) before the next save of this window may run,
+    /// so a later save never skips a change whose failed write has not yet been handed back.
+    /// </summary>
+    public Task PersistSavedSearchesAsync(
+        SavedSearchSave save, Func<Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>>, Task> write)
+    {
+        ArgumentNullException.ThrowIfNull(save);
+        ArgumentNullException.ThrowIfNull(write);
+        // Registered as soon as it is admitted, before it waits for the gate, so closing can drain it.
+        var task = PersistSavedSearchesCoreAsync(save, write);
+        lock (_savedSearchSaves)
+        {
+            _savedSearchSaves.Add(task);
+        }
+        _ = task.ContinueWith(finished =>
+        {
+            lock (_savedSearchSaves)
+            {
+                _savedSearchSaves.Remove(finished);
+            }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return task;
+    }
+
+    private readonly List<Task> _savedSearchSaves = [];
+
+    /// <summary>
+    /// Completes once every saved-search save admitted so far has been written and settled (successfully or not), so
+    /// closing can write its final settings and release the settings store only after them. Failures were already
+    /// reported by the saves themselves; they are observed here, not rethrown.
+    /// </summary>
+    public async Task DrainSavedSearchSavesAsync()
+    {
+        Task[] pending;
+        lock (_savedSearchSaves)
+        {
+            pending = [.. _savedSearchSaves];
+        }
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogDebug(exception, "A saved-search save failed before closing");
+        }
+    }
+
+    private async Task PersistSavedSearchesCoreAsync(
+        SavedSearchSave save, Func<Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>>, Task> write)
+    {
+        await _savedSearchSaveGate.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            try
+            {
+                await write(save.Merge).ConfigureAwait(true);
+            }
+            catch
+            {
+                save.Fail();
+                throw;
+            }
+            save.Acknowledge();
+        }
+        finally
+        {
+            _savedSearchSaveGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Applies this window's additions and removals (local against baseline) to the stored list. Everything else in
+    /// the stored list, including searches another window added, edited or deleted, is kept as stored.
+    /// </summary>
+    internal static IReadOnlyList<SavedSearch> MergeSavedSearches(
+        IReadOnlyList<SavedSearch> baseline, IReadOnlyList<SavedSearch> local, IReadOnlyList<SavedSearch> stored) =>
+        ApplySavedSearchChange(local.Where(search => !baseline.Contains(search)).ToArray(),
+            baseline.Where(search => !local.Contains(search)).ToArray(), stored);
+
+    private static IReadOnlyList<SavedSearch> ApplySavedSearchChange(
+        IReadOnlyList<SavedSearch> added, IReadOnlyList<SavedSearch> removed, IReadOnlyList<SavedSearch> stored)
+    {
+        var merged = stored.Where(search => !removed.Contains(search)
+            // A search added here replaces a stored one with the same name (names are shown case-insensitively).
+            && !added.Any(item => string.Equals(item.Name, search.Name, StringComparison.OrdinalIgnoreCase))).ToList();
+        merged.InsertRange(0, added);
+        return merged.Take(AppSettings.MaximumSavedSearches).ToArray();
+    }
 
     /// <summary>True while settings are being applied; the shell skips saving then.</summary>
     public bool IsLoadingSavedSearches => _loadingSavedSearches;
@@ -217,3 +386,12 @@ public sealed partial class MainWindowViewModel
         return kept;
     }
 }
+
+/// <summary>
+/// A captured saved-search change: the update to apply to the stored list, the call to make once it was written,
+/// and the call to make when the write failed (its changes then go with the next save).
+/// </summary>
+public sealed record SavedSearchSave(
+    Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>> Merge,
+    Action Acknowledge,
+    Action Fail);

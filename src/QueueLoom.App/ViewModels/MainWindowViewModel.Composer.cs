@@ -221,7 +221,7 @@ public sealed partial class MainWindowViewModel
         DraftTransactionPartitionKey = draft.Properties.TransactionPartitionKey ?? string.Empty;
         DraftScheduledEnqueueTime = draft.Properties.ScheduledEnqueueTime?.ToString("O", CultureInfo.InvariantCulture)
             ?? string.Empty;
-        DraftTimeToLiveSeconds = draft.Properties.TimeToLive?.TotalSeconds.ToString("0.###") ?? string.Empty;
+        DraftTimeToLiveSeconds = FormatTimeToLiveSeconds(draft.Properties.TimeToLive);
         DraftApplicationProperties = ApplicationPropertiesJson.Serialize(draft.ApplicationProperties);
 
         var destination = selected.Source.Kind == ServiceBusEntityKind.Subscription
@@ -314,7 +314,7 @@ public sealed partial class MainWindowViewModel
         }
 
         if (profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns)
-            _composerSendAttempts[attemptKey] = (operationFingerprint, isMove);
+            RecordComposerSendAttempt(attemptKey, operationFingerprint, isMove);
 
         if (_draftSourceMessage is not null && _draftSourceMessage.IsDeadLetter && !_draftSourceIsLocalBackup)
         {
@@ -377,6 +377,23 @@ public sealed partial class MainWindowViewModel
                 destination.Reference);
         }
     }
+
+    /// <summary>
+    /// Shows a TTL as seconds that parse back to the same positive value; rounding to milliseconds turned a
+    /// sub-millisecond TTL into "0", which the composer then refused to send.
+    /// </summary>
+    internal static string FormatTimeToLiveSeconds(TimeSpan? timeToLive) =>
+        timeToLive?.TotalSeconds.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty;
+
+    internal int ComposerSendAttemptCount => _composerSendAttempts.Count;
+
+    /// <summary>
+    /// Remembers a send attempt for the rest of the session. Entries are never evicted: they are safety evidence for
+    /// broker duplicate detection (up to 7 days on Azure), so a forgotten MessageId would let an edited move reuse it,
+    /// be acknowledged but discarded as a duplicate, and delete the original. One small entry per manual send is cheap.
+    /// </summary>
+    internal void RecordComposerSendAttempt((Guid ProfileId, string MessageId) key, string fingerprint, bool isMove) =>
+        _composerSendAttempts[key] = (fingerprint, isMove);
 
     private MessageDraft BuildDraft()
     {
