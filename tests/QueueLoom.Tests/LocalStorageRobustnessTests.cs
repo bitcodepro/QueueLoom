@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using QueueLoom.App.ViewModels;
+using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Tests.Infrastructure;
@@ -137,5 +138,91 @@ public sealed partial class ViewModelStateTests
         Assert.Contains(".damaged-", warning.Details, StringComparison.Ordinal);
         Assert.Empty(vm.ScheduledResends);
         Assert.Single(Directory.GetFiles(Path.GetDirectoryName(store.FilePath)!, "*.damaged-*"));
+    }
+
+    private static ScheduledResend LaterJob(Guid profileId) =>
+        new(Guid.NewGuid(), profileId, "dev", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1), ResendMode.Copy, 0, "x", []);
+
+    // Deleting environment A reads the damaged list directly: the warning is given, and B's cached job (it will not
+    // run) leaves the list.
+    [Fact]
+    public async Task AScheduleListFoundDamagedWhileDeletingAnEnvironmentIsReported()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        paths.EnsureCreated();
+        var a = CreateProfile("A", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var b = CreateProfile("B", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var store = new JsonScheduledResendStore(paths);
+        store.Save([LaterJob(a.Id), LaterJob(b.Id)]);
+        await using var vm = new MainWindowViewModel(new FakeProfileRepository([a, b], a.Id), new FakeSecretVault(), new FakeWorkspace(),
+            new FakeDialogService { ConfirmResult = true }, scheduledResends: store);
+        await vm.InitializeAsync();
+        Assert.Equal(2, vm.ScheduledResends.Count);
+        await File.WriteAllTextAsync(store.FilePath, "[ { broken");
+
+        vm.SelectedProfile = vm.Profiles.Single(profile => profile.Name == "A");
+        await vm.DeleteEnvironmentCommand.ExecuteAsync();
+
+        Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
+        Assert.Empty(vm.ScheduledResends);
+    }
+
+    // A background read (the history cleanup) finds the list damaged and no job changes afterwards: the next schedule
+    // check reports it.
+    [Fact]
+    public async Task AScheduleListFoundDamagedInTheBackgroundIsReported()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        paths.EnsureCreated();
+        var store = new JsonScheduledResendStore(paths);
+        store.Save([LaterJob(Guid.NewGuid())]);
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace(), scheduledResends: store);
+        await File.WriteAllTextAsync(store.FilePath, "[ { broken");
+        store.Load();
+
+        await vm.RunDueScheduledResendsAsync();
+
+        Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
+        Assert.Empty(vm.ScheduledResends);
+    }
+
+    // Adding a job finds the old list damaged, sets it aside, and then cannot save: the save error stands and the
+    // set-aside list is still reported.
+    [Fact]
+    public async Task AScheduleListSetAsideByAFailedAddIsReported()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        paths.EnsureCreated();
+        var profile = CreateProfile("Dev", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var inner = new JsonScheduledResendStore(paths);
+        inner.Save([LaterJob(profile.Id)]);
+        var store = new SaveFailingStore(inner);
+        await using var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), scheduledResends: store);
+        await File.WriteAllTextAsync(inner.FilePath, "[ { broken");
+        var schedule = typeof(MainWindowViewModel).GetMethod("ScheduleResend",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        var error = Assert.Throws<System.Reflection.TargetInvocationException>(() => schedule.Invoke(vm,
+            [profile, Array.Empty<ResendItem>(), new ResendOptions(null, ResendMode.Copy, 0), DateTimeOffset.UtcNow.AddDays(1)]));
+
+        Assert.IsType<IOException>(error.InnerException);
+        Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
+        Assert.Empty(vm.ScheduledResends);
+    }
+
+    private sealed class SaveFailingStore(JsonScheduledResendStore inner) : IScheduledResendStore
+    {
+        public IReadOnlyList<ScheduledResend> Load() => inner.Load();
+        public void Save(IReadOnlyList<ScheduledResend> resends) => inner.Save(resends);
+        public void Add(ScheduledResend resend)
+        {
+            inner.Load();
+            throw new IOException("The disk is full.");
+        }
+        public bool TryRemove(ScheduledResend expected) => inner.TryRemove(expected);
+        public string? TakeSetAsideFile() => inner.TakeSetAsideFile();
     }
 }

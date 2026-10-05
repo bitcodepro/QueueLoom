@@ -44,8 +44,9 @@ public sealed partial class MainWindowViewModel
         UpdateScheduledStatuses();
     }
 
-    // The store sets a damaged list aside whenever it reads one: at start, but also when a job is added or removed
-    // later. Its jobs will not run, so they leave the list here too and the operator is told.
+    // The store sets a damaged list aside whenever it reads one: at start, when a job is added or removed, when an
+    // environment is deleted, or in a background read. Its jobs will not run, so they leave the list here too and
+    // the operator is told.
     private void ReportSetAsideSchedules()
     {
         if (_scheduledStore?.TakeSetAsideFile() is not { } aside)
@@ -101,6 +102,9 @@ public sealed partial class MainWindowViewModel
     /// <summary>Runs every due resend whose environment is connected with write access, one at a time.</summary>
     public async Task RunDueScheduledResendsAsync(CancellationToken cancellationToken = default)
     {
+        // A damaged list can be found by a read elsewhere (the background history cleanup); it is reported here at
+        // the latest.
+        ReportSetAsideSchedules();
         UpdateScheduledStatuses();
         var now = Clock.GetUtcNow();
         foreach (var item in ScheduledResends.ToArray())
@@ -136,9 +140,16 @@ public sealed partial class MainWindowViewModel
             options.Destination?.DisplayName ?? "their sources",
             items.Select(ScheduledResendItem.From).ToArray())
         { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
-        _scheduledStore?.Add(resend);
+        try
+        {
+            _scheduledStore?.Add(resend);
+        }
+        finally
+        {
+            // Also when saving failed after the old list was found damaged and set aside.
+            ReportSetAsideSchedules();
+        }
         ScheduledResends.Add(CreateScheduledItem(resend));
-        ReportSetAsideSchedules();
         UpdateScheduledStatuses();
         StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {ScheduledResends[^1].Title}. It is listed on Activity.";
         AddActivity("Info", "Resend scheduled", $"{profile.Name} · {ScheduledResends[^1].Title} · {sendAt.ToLocalTime():g}", options.Destination);
