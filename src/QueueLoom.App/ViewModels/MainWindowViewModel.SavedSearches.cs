@@ -203,6 +203,37 @@ public sealed partial class MainWindowViewModel
             });
     }
 
+    private readonly SemaphoreSlim _savedSearchSaveGate = new(1, 1);
+
+    /// <summary>
+    /// Writes one captured save and settles it (acknowledged or failed) before the next save of this window may run,
+    /// so a later save never skips a change whose failed write has not yet been handed back.
+    /// </summary>
+    public async Task PersistSavedSearchesAsync(
+        SavedSearchSave save, Func<Func<IReadOnlyList<SavedSearch>, IReadOnlyList<SavedSearch>>, Task> write)
+    {
+        ArgumentNullException.ThrowIfNull(save);
+        ArgumentNullException.ThrowIfNull(write);
+        await _savedSearchSaveGate.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            try
+            {
+                await write(save.Merge).ConfigureAwait(true);
+            }
+            catch
+            {
+                save.Fail();
+                throw;
+            }
+            save.Acknowledge();
+        }
+        finally
+        {
+            _savedSearchSaveGate.Release();
+        }
+    }
+
     /// <summary>
     /// Applies this window's additions and removals (local against baseline) to the stored list. Everything else in
     /// the stored list, including searches another window added, edited or deleted, is kept as stored.

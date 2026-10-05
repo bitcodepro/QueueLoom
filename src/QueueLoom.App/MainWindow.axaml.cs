@@ -162,19 +162,8 @@ public sealed partial class MainWindow : Window
                 break;
             case nameof(MainWindowViewModel.SavedSearches):
                 var searches = _viewModel.CaptureSavedSearchChanges();
-                _ = SavePreferenceBestEffortAsync(async () =>
-                {
-                    try
-                    {
-                        await _settingsStore.UpdateAsync(settings => settings with { SavedSearches = searches.Merge(settings.SavedSearches) });
-                    }
-                    catch
-                    {
-                        searches.Fail();
-                        throw;
-                    }
-                    searches.Acknowledge();
-                });
+                _ = SavePreferenceBestEffortAsync(() => _viewModel.PersistSavedSearchesAsync(searches, merge =>
+                    _settingsStore.UpdateAsync(settings => settings with { SavedSearches = merge(settings.SavedSearches) })));
                 break;
         }
     }

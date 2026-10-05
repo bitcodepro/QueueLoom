@@ -240,6 +240,49 @@ public sealed partial class ViewModelStateTests
         Assert.Equal([c, a, b], stored);
     }
 
+    // c1 (+A) fails to write and c2 (-A) is queued behind it: c2 must not run until c1's failure is settled, so the
+    // removal is not lost and a later +C leaves only C.
+    [Fact]
+    public async Task AppStability_FailedAddThenQueuedRemoveDoesNotResurrect()
+    {
+        await using var vm = CreateViewModel(new FakeProfileRepository([], null), new FakeWorkspace());
+        var a = new SavedSearch("A", "a");
+        var c = new SavedSearch("C", "c");
+        vm.ApplyPreferences(new AppSettings { SavedSearches = [] });
+        IReadOnlyList<SavedSearch> stored = [];
+        var firstWriting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstFails = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        vm.SavedSearches.Insert(0, a);
+        var first = vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), async merge =>
+        {
+            _ = merge(stored); // claimed, but the disk write fails
+            firstWriting.SetResult();
+            await firstFails.Task;
+            throw new IOException("disk full");
+        });
+        await firstWriting.Task;
+        vm.SavedSearches.Remove(a);
+        var second = vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), merge =>
+        {
+            stored = merge(stored);
+            return Task.CompletedTask;
+        });
+        Assert.False(second.IsCompleted); // waits for the first save to settle
+        firstFails.SetResult();
+        await Assert.ThrowsAsync<IOException>(() => first);
+        await second;
+
+        vm.SavedSearches.Insert(0, c);
+        await vm.PersistSavedSearchesAsync(vm.CaptureSavedSearchChanges(), merge =>
+        {
+            stored = merge(stored);
+            return Task.CompletedTask;
+        });
+
+        Assert.Equal([c], stored);
+    }
+
     // Saves that finish out of order: the older acknowledgement must not move the baseline back.
     [Fact]
     public async Task AppStability_OutOfOrderSavedSearchAcknowledgementsKeepTheNewest()
