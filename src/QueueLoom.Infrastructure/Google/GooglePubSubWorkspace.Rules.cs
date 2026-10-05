@@ -49,6 +49,12 @@ public sealed partial class GooglePubSubWorkspace
                 {
                     var subscription = await Subscriber.GetSubscriptionAsync(new GetSubscriptionRequest { Subscription = name },
                         CallSettings.FromCancellationToken(token)).ConfigureAwait(false);
+                    // Deleted and recreated under the same name for another topic between the listing and this read:
+                    // it no longer receives this topic's messages.
+                    if (!string.Equals(subscription.Topic, topicName.ToString(), StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
                     result.Add(ToRules(subscription, display) with { Note = elsewhere });
                 }
                 catch (RpcException exception) when (exception.StatusCode == StatusCode.NotFound)

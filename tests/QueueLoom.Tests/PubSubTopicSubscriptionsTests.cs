@@ -117,6 +117,56 @@ public sealed class PubSubTopicSubscriptionsTests
         Assert.Empty(subscriber.Deleted);
     }
 
+    // The subscription is created, but the response is lost (DEADLINE_EXCEEDED): the read-back finds it with the
+    // requested topic, so the create succeeds instead of being reported as a definite refusal.
+    [Fact]
+    public async Task Create_AppliedButTimedOutIsReconciledAsCreated()
+    {
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber { LoseResponseOf = "projects/project-a/subscriptions/orders" };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        await workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events"));
+
+        Assert.Contains("projects/project-a/subscriptions/orders", subscriber.Created);
+        Assert.Empty(subscriber.Deleted);
+    }
+
+    // A timeout whose outcome cannot be read back is reported as uncertain: the dead-letter resources may already serve
+    // the subscription, so the message must not present them as safe to delete.
+    [Fact]
+    public async Task Create_TimedOutAndUnreadableIsReportedAsUncertain()
+    {
+        var publisher = new FakePublisher();
+        var subscriber = new FakeSubscriber { LoseResponseOf = "projects/project-a/subscriptions/orders", DenyReadsAfterLoss = true };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: true, TopicName: "events")));
+
+        Assert.Contains("unknown", error.Message, StringComparison.Ordinal);
+        Assert.Contains("before deleting anything", error.Message, StringComparison.Ordinal);
+        Assert.Empty(subscriber.Deleted);
+    }
+
+    // A subscription listed for topic A was deleted and recreated under the same name for topic B before it was read:
+    // it no longer receives A's messages and must not be shown as one of A's recipients.
+    [Fact]
+    public async Task Rules_SkipASubscriptionRecreatedForAnotherTopicMeanwhile()
+    {
+        var publisher = new FakePublisher { TopicSubscriptions = [["projects/project-a/subscriptions/moved"]] };
+        var subscriber = new FakeSubscriber();
+        subscriber.Existing["projects/project-a/subscriptions/moved"] = new Subscription
+        {
+            Name = "projects/project-a/subscriptions/moved", Topic = "projects/project-a/topics/other"
+        };
+        await using var workspace = Workspace(publisher, subscriber);
+
+        var rules = await workspace.GetTopicRulesAsync("events");
+
+        Assert.DoesNotContain(rules, item => item.Subscription == "moved");
+    }
+
     private static GooglePubSubWorkspace Workspace(FakePublisher publisher, FakeSubscriber subscriber)
     {
         var workspace = new GooglePubSubWorkspace(new DeepAuditCloudTests.EmptyVault());
@@ -172,11 +222,16 @@ public sealed class PubSubTopicSubscriptionsTests
         public Dictionary<string, Subscription> Existing { get; } = new(StringComparer.Ordinal);
         public HashSet<string> Denied { get; } = new(StringComparer.Ordinal);
         public (string Name, StatusCode Status)? Refuse { get; init; }
+        /// <summary>Created on the server, then DEADLINE_EXCEEDED before the response arrives.</summary>
+        public string? LoseResponseOf { get; init; }
+        public bool DenyReadsAfterLoss { get; init; }
+        private bool _lost;
         public List<string> Created { get; } = [];
         public List<string> Deleted { get; } = [];
 
         public override Task<Subscription> GetSubscriptionAsync(GetSubscriptionRequest request, CallSettings? callSettings = null) =>
-            Denied.Contains(request.Subscription) ? Task.FromException<Subscription>(new RpcException(new Status(StatusCode.PermissionDenied, "denied")))
+            _lost && DenyReadsAfterLoss ? Task.FromException<Subscription>(new RpcException(new Status(StatusCode.Unavailable, "unavailable")))
+            : Denied.Contains(request.Subscription) ? Task.FromException<Subscription>(new RpcException(new Status(StatusCode.PermissionDenied, "denied")))
             : Existing.TryGetValue(request.Subscription, out var subscription) ? Task.FromResult(subscription)
             : Task.FromException<Subscription>(new RpcException(new Status(StatusCode.NotFound, "not found")));
 
@@ -188,6 +243,11 @@ public sealed class PubSubTopicSubscriptionsTests
                 return Task.FromException<Subscription>(new RpcException(new Status(StatusCode.AlreadyExists, "exists")));
             Created.Add(request.Name);
             Existing[request.Name] = request;
+            if (request.Name == LoseResponseOf)
+            {
+                _lost = true;
+                return Task.FromException<Subscription>(new RpcException(new Status(StatusCode.DeadlineExceeded, "deadline exceeded")));
+            }
             return Task.FromResult(request);
         }
 

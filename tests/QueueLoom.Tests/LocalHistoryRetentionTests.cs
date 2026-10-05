@@ -23,7 +23,7 @@ public sealed class LocalHistoryRetentionTests
         using var directory = new TemporaryDirectory();
         var store = new BatchReplayStore(Path.Combine(directory.Path, "operations"));
         var oldCopy = await Prepare(store, ResendMode.Copy, "Sent", "Sent");
-        var oldMove = await Prepare(store, ResendMode.Move, "Moved", "SentOriginalKept");
+        var oldMove = await Prepare(store, ResendMode.Move, "Moved", "OriginalKept");
         var recent = await Prepare(store, ResendMode.Copy, "Sent", "Sent");
         Age(store, oldCopy, Expired);
         Age(store, oldMove, Expired);

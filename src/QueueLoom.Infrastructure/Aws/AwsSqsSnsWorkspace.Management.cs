@@ -127,9 +127,30 @@ public sealed partial class AwsSqsSnsWorkspace
                         }
                     }, token).ConfigureAwait(false);
                 }
-                catch (AmazonServiceException)
+                catch (Exception exception) when (exception is AmazonServiceException or HttpRequestException or TaskCanceledException)
                 {
-                    // Without sqs:SetQueueAttributes the dead-letter queue keeps the marker retention: still more than 13 days.
+                    // A dead letter keeps its original enqueue age, so a shortened retention can expire it early after
+                    // redrive. The outcome may also be unknown (a lost response): only a read-back of 14 days lets the
+                    // queue be connected; otherwise nothing more is created and the operator is told what to set.
+                    string? retention = null;
+                    try
+                    {
+                        retention = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
+                        {
+                            QueueUrl = deadLetter.QueueUrl,
+                            AttributeNames = ["MessageRetentionPeriod"]
+                        }, CancellationToken.None).ConfigureAwait(false)).Attributes.GetValueOrDefault("MessageRetentionPeriod");
+                    }
+                    catch (Exception readBack) when (readBack is AmazonServiceException or HttpRequestException or TaskCanceledException)
+                    {
+                    }
+                    if (retention != FullRetentionSeconds.ToString(CultureInfo.InvariantCulture))
+                    {
+                        throw new InvalidOperationException(
+                            $"The dead-letter queue '{deadLetterName}' was created, but its retention could not be set to 14 days " +
+                            $"({exception.Message}). '{definition.Name}' was not created. Set MessageRetentionPeriod of " +
+                            $"'{deadLetterName}' to 1209600 (or delete it) and create '{definition.Name}' again.", exception);
+                    }
                 }
                 attributes["RedrivePolicy"] = RedrivePolicy(deadLetterState["QueueArn"], definition.Settings.MaxDeliveryCount ?? 5);
             }

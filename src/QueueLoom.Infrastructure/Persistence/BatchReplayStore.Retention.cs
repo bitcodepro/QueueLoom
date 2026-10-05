@@ -42,7 +42,9 @@ public sealed partial class BatchReplayStore
     internal static bool IsFinishedState(ResendMode mode, string state) => mode switch
     {
         ResendMode.Copy => state == "Sent",
-        ResendMode.Move => state is "Moved" or "SentOriginalKept",
+        // OriginalKept is a proven untouched original. The older SentOriginalKept was also written for a failed (possibly
+        // accepted) settlement, so it is kept like DeleteUncertain.
+        ResendMode.Move => state is "Moved" or "OriginalKept",
         _ => false
     };
 

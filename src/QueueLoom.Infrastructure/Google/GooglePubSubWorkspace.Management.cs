@@ -99,6 +99,35 @@ public sealed partial class GooglePubSubWorkspace
 
                 await Subscriber.CreateSubscriptionAsync(subscription, token).ConfigureAwait(false);
             }
+            catch (RpcException exception) when (!IsDefiniteRejection(exception.StatusCode))
+            {
+                // A timeout, a cancellation or a lost response does not say whether Pub/Sub created the subscription:
+                // a read-back decides. Present with the requested topic is done; absent is a definite non-creation.
+                Subscription? existing = null;
+                var known = true;
+                try
+                {
+                    existing = await Subscriber.GetSubscriptionAsync(subscription.SubscriptionName, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (RpcException readBack) when (readBack.StatusCode == StatusCode.NotFound)
+                {
+                }
+                catch (RpcException)
+                {
+                    known = false;
+                }
+                if (existing is not null && existing.Topic == subscription.Topic)
+                {
+                    return;
+                }
+                var leftovers = created.Count == 0 ? string.Empty : $" Created before that: {string.Join(" and ", created)}.";
+                throw new InvalidOperationException(known
+                    ? $"Pub/Sub did not create the subscription '{definition.Name}' ({exception.Status.Detail}).{leftovers}" +
+                      (created.Count == 0 ? string.Empty : " Delete them in Google Cloud if nothing else uses them.")
+                    : $"Whether Pub/Sub created the subscription '{definition.Name}' is unknown ({exception.Status.Detail}), and it " +
+                      $"could not be read back.{leftovers} Check the subscription in Google Cloud before deleting anything: those " +
+                      "resources may already serve it.", exception);
+            }
             catch (RpcException exception)
             {
                 // What this call created is never deleted here: another operator creating the same subscription at the
@@ -113,6 +142,11 @@ public sealed partial class GooglePubSubWorkspace
                       "Delete them in Google Cloud if nothing else uses them.", exception);
             }
         }, cancellationToken);
+
+    /// <summary>Pub/Sub answered and refused the request, so nothing was created by it.</summary>
+    private static bool IsDefiniteRejection(StatusCode code) => code is StatusCode.AlreadyExists or StatusCode.InvalidArgument
+        or StatusCode.PermissionDenied or StatusCode.NotFound or StatusCode.FailedPrecondition or StatusCode.Unauthenticated
+        or StatusCode.OutOfRange or StatusCode.ResourceExhausted or StatusCode.Unimplemented;
 
     private async Task EnsureSubscriptionMissingAsync(SubscriptionName name, CancellationToken cancellationToken)
     {

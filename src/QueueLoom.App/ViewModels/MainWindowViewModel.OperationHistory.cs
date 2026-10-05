@@ -12,6 +12,7 @@ public sealed class OperationItemViewModel(OperationItem item) : ObservableObjec
     public string Description => $"{Item.Index + 1}: {Item.Origin} → {Item.Destination} · {Item.MessageId}";
     public string Outcome => Item.State switch
     {
+        "OriginalKept" => $"Send confirmed; the original was not removed and is still in the source (or already gone). Never resend. {Item.Detail}",
         "SentOriginalKept" => $"Send confirmed; source removal not confirmed. Never resend. {Item.Detail}",
         "DeleteUncertain" or "Deleting" => $"Send confirmed; source deletion unknown. Manual inspection required. {Item.Detail}",
         "AwaitingScheduleClaim" => "Blocked scheduled snapshot: claim/activation was not completed. Review the scheduled job before any new operation.",

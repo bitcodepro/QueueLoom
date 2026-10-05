@@ -366,6 +366,37 @@ public sealed class SqsDeadLetterOwnershipTests
         Assert.Contains("arn:aws:sqs:us-east-1:111111111111:orders-dlq", sqs.Queues["orders"]["RedrivePolicy"], StringComparison.Ordinal);
     }
 
+    // A dead letter keeps its original enqueue age, so a shortened retention can expire it early after redrive: when the
+    // 14 days cannot be established, the source queue is not connected to the dead-letter queue.
+    [Theory]
+    [InlineData("denied")]
+    [InlineData("timeout")]
+    public async Task ADeadLetterQueueWhoseRetentionCannotBeRestoredIsNotConnected(string failure)
+    {
+        using var sqs = new RacingSqs { SetFailure = failure };
+        await using var workspace = Workspace(sqs);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(MaxDeliveryCount: 3), CreateDeadLetterQueue: true)));
+
+        Assert.False(sqs.Queues.ContainsKey("orders"));
+        Assert.Contains("1209600", error.Message, StringComparison.Ordinal);
+        Assert.Empty(sqs.Deleted);
+    }
+
+    // The retention was applied but the response was lost: the read-back shows 14 days, so the queue is created.
+    [Fact]
+    public async Task ARetentionAppliedButWhoseResponseWasLostStillConnectsTheQueue()
+    {
+        using var sqs = new RacingSqs { SetFailure = "lost" };
+        await using var workspace = Workspace(sqs);
+
+        await workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(MaxDeliveryCount: 3), CreateDeadLetterQueue: true));
+
+        Assert.Equal("1209600", sqs.Queues["orders-dlq"]["MessageRetentionPeriod"]);
+        Assert.True(sqs.Queues.ContainsKey("orders"));
+    }
+
     private static AwsSqsSnsWorkspace Workspace(RacingSqs sqs)
     {
         var workspace = new AwsSqsSnsWorkspace(new DeepAuditCloudTests.EmptyVault());
@@ -430,9 +461,20 @@ public sealed class SqsDeadLetterOwnershipTests
                 }
             });
 
+        /// <summary>"denied" refuses SetQueueAttributes; "lost" applies it and then loses the response; "timeout" loses it unapplied.</summary>
+        public string? SetFailure { get; init; }
+
         public override Task<SetQueueAttributesResponse> SetQueueAttributesAsync(SetQueueAttributesRequest request,
             CancellationToken cancellationToken = default)
         {
+            if (SetFailure == "denied")
+                throw new AmazonSQSException("Access to the resource is denied.") { ErrorCode = "AccessDenied", StatusCode = System.Net.HttpStatusCode.Forbidden };
+            if (SetFailure == "lost")
+            {
+                foreach (var (name, value) in request.Attributes) Queues[NameOf(request.QueueUrl)][name] = value;
+                throw new TaskCanceledException("The request timed out.");
+            }
+            if (SetFailure == "timeout") throw new TaskCanceledException("The request timed out.");
             foreach (var (name, value) in request.Attributes) Queues[NameOf(request.QueueUrl)][name] = value;
             return Task.FromResult(new SetQueueAttributesResponse());
         }
