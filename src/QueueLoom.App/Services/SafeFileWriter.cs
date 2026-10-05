@@ -6,29 +6,37 @@ using System.Text;
 namespace QueueLoom.App.Services;
 
 /// <summary>
-/// Replaces a file only once its new contents are complete and flushed to disk, so a failure, a cancellation or a
-/// crash while producing them leaves the previous file as it was instead of empty or cut short.
+/// Replaces a file only once its new contents are complete and flushed to disk, and then in one step, so no failure
+/// (while producing the contents or while putting them in place) leaves the previous file empty, cut short or missing.
 /// <para>
 /// The new contents are first written to a temporary file next to the target that only the current user can open, so
-/// they are never readable more widely than before, even while being written. The existing file's access is then kept:
-/// on Windows, <see cref="File.Replace(string, string, string?)"/> gives the result the replaced file's security
-/// descriptor; on Unix, a file whose mode grants its group anything is updated in place (its owner, group and mode stay
-/// exactly as they were, which a rename could not keep, since a new file takes the process's group), and any other
-/// file is renamed over with its mode.
+/// they are never readable more widely than before, even while being written. Publishing keeps the existing file's
+/// access: on Windows, <see cref="File.Replace(string, string, string?, bool)"/> gives the result the replaced file's
+/// security descriptor (with a backup that restores the original if the replacement fails half-way); on Unix the file
+/// is renamed over with the existing mode. A rename gives the file the process's group, so when the existing file's
+/// group had more access than everyone else, that extra access is not carried over (it could otherwise reach another
+/// group): access only ever narrows, and the caller is told so it can say so.
 /// </para>
 /// </summary>
 internal static class SafeFileWriter
 {
-    private const UnixFileMode GroupBits = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute;
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
-    public static Task WriteTextAsync(string path, string contents, CancellationToken cancellationToken) =>
+    /// <summary>Test seam: replaces the Windows <see cref="File.Replace(string, string, string?, bool)"/> call.</summary>
+    internal static readonly AsyncLocal<Action<string, string, string>?> ReplaceOverride = new();
+
+    /// <summary>Test seam: runs just before the temporary file is put in place, and may fail it.</summary>
+    internal static readonly AsyncLocal<Action<string, string>?> BeforePublish = new();
+
+    /// <returns>True when group access had to be narrowed (see the class summary).</returns>
+    public static Task<bool> WriteTextAsync(string path, string contents, CancellationToken cancellationToken) =>
         WriteAsync(path, (stream, token) => stream.WriteAsync(new UTF8Encoding(false).GetBytes(contents), token).AsTask(),
             cancellationToken);
 
-    public static async Task WriteAsync(string path, Func<Stream, CancellationToken, Task> write, CancellationToken cancellationToken)
+    public static async Task<bool> WriteAsync(string path, Func<Stream, CancellationToken, Task> write, CancellationToken cancellationToken)
     {
         var temporary = TemporaryPathFor(path);
+        var keepTemporary = false;
         try
         {
             await using (var stream = CreatePrivate(temporary, FileOptions.Asynchronous))
@@ -37,17 +45,26 @@ internal static class SafeFileWriter
                 stream.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            Publish(temporary, path);
+            return Publish(temporary, path, narrowGroup: true, ref keepTemporary);
         }
         finally
         {
-            TryDelete(temporary);
+            if (!keepTemporary)
+            {
+                TryDelete(temporary);
+            }
         }
     }
 
-    public static void WriteText(string path, string contents)
+    /// <summary>
+    /// Synchronous variant. <paramref name="narrowGroup"/> false is for QueueLoom's own files (such as update receipts),
+    /// whose group grants nobody anything that matters: their mode is kept as it is.
+    /// </summary>
+    /// <returns>True when group access had to be narrowed.</returns>
+    public static bool WriteText(string path, string contents, bool narrowGroup = true)
     {
         var temporary = TemporaryPathFor(path);
+        var keepTemporary = false;
         try
         {
             using (var stream = CreatePrivate(temporary, FileOptions.None))
@@ -55,12 +72,27 @@ internal static class SafeFileWriter
                 stream.Write(new UTF8Encoding(false).GetBytes(contents));
                 stream.Flush(flushToDisk: true);
             }
-            Publish(temporary, path);
+            return Publish(temporary, path, narrowGroup, ref keepTemporary);
         }
         finally
         {
-            TryDelete(temporary);
+            if (!keepTemporary)
+            {
+                TryDelete(temporary);
+            }
         }
+    }
+
+    /// <summary>
+    /// The mode for the replaced file: the existing one, except group access beyond what everyone else has, which the
+    /// new file's group (the process's) must not receive.
+    /// </summary>
+    internal static UnixFileMode ReplacementMode(UnixFileMode existing, out bool narrowed)
+    {
+        var group = ((int)existing >> 3) & 7;
+        var others = (int)existing & 7;
+        narrowed = (group & ~others) != 0;
+        return narrowed ? (UnixFileMode)(((int)existing & ~(7 << 3)) | ((group & others) << 3)) : existing;
     }
 
     /// <summary>A new file only the current user can open, restricted before anything is written to it.</summary>
@@ -90,35 +122,69 @@ internal static class SafeFileWriter
         return stream;
     }
 
-    /// <summary>Puts the complete temporary file in place of <paramref name="path"/>, keeping the existing file's access.</summary>
-    private static void Publish(string temporary, string path)
+    /// <summary>Puts the complete temporary file in place of <paramref name="path"/> in one step.</summary>
+    private static bool Publish(string temporary, string path, bool narrowGroup, ref bool keepTemporary)
     {
+        BeforePublish.Value?.Invoke(temporary, path);
         if (!File.Exists(path))
         {
             File.Move(temporary, path);
-            return;
+            return false;
         }
         if (OperatingSystem.IsWindows())
         {
-            // ReplaceFile keeps the replaced file's security descriptor (its DACL, protection and owner).
-            File.Replace(temporary, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
-            return;
+            ReplaceOnWindows(temporary, path, ref keepTemporary);
+            return false;
         }
-        var mode = File.GetUnixFileMode(path);
-        if ((mode & GroupBits) != 0)
-        {
-            // The file's group matters to who can read it. The contents are complete and flushed already; copying them
-            // over the file keeps it the same file (owner, group, mode), where a rename would hand it the process's group.
-            using (var source = new FileStream(temporary, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (var target = new FileStream(path, FileMode.Truncate, FileAccess.Write, FileShare.None))
-            {
-                source.CopyTo(target);
-                target.Flush(flushToDisk: true);
-            }
-            return;
-        }
+        var existing = File.GetUnixFileMode(path);
+        var narrowed = false;
+        var mode = narrowGroup ? ReplacementMode(existing, out narrowed) : existing;
         File.SetUnixFileMode(temporary, mode);
         File.Move(temporary, path, overwrite: true);
+        return narrowed;
+    }
+
+    /// <summary>
+    /// ReplaceFile keeps the replaced file's security descriptor. It may fail half-way: with
+    /// ERROR_UNABLE_TO_MOVE_REPLACEMENT the original is already at the backup name and the replacement still at its
+    /// temporary name. The original is then put back; if even that fails, the complete new file is kept, not deleted.
+    /// </summary>
+    private static void ReplaceOnWindows(string temporary, string path, ref bool keepTemporary)
+    {
+        var backup = TemporaryPathFor(path) + ".previous";
+        try
+        {
+            if (ReplaceOverride.Value is { } replace)
+            {
+                replace(temporary, path, backup);
+            }
+            else
+            {
+                File.Replace(temporary, path, backup, ignoreMetadataErrors: false);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            if (!File.Exists(path))
+            {
+                try
+                {
+                    if (File.Exists(backup))
+                    {
+                        File.Move(backup, path);
+                    }
+                }
+                catch (Exception restore) when (restore is IOException or UnauthorizedAccessException)
+                {
+                    keepTemporary = File.Exists(temporary);
+                    throw new IOException(
+                        $"'{path}' could not be replaced, and the previous version could not be put back. It is at " +
+                        $"'{backup}'" + (keepTemporary ? $"; the new version is at '{temporary}'." : "."), exception);
+                }
+            }
+            throw;
+        }
+        TryDelete(backup);
     }
 
     [SupportedOSPlatform("windows")]

@@ -103,40 +103,158 @@ public sealed class LeftoverFixTests
         if (!synchronous) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, seenWhileWriting);
     }
 
-    // A file whose mode grants its group access (0640) is updated in place: it stays the same file, so its group, which
-    // decides who that group access is for, cannot change; the new content waited in an owner-only temporary file.
+    // A file whose group has more access than everyone else (0640): the replacement is atomic, but that extra group
+    // access is not carried over (a rename hands the file the process's group), and the caller is told; QueueLoom's own
+    // files (narrowGroup: false) keep their mode as it is.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task SafeFileWriter_KeepsAGroupReadableFileItsOwnGroup(bool synchronous)
+    public async Task SafeFileWriter_NarrowsGroupAccessItCannotKeep(bool synchronous)
     {
         if (OperatingSystem.IsWindows()) return;
-        await KeepsAGroupReadableFileOnUnix(synchronous);
+        await NarrowsGroupAccessOnUnix(synchronous);
     }
 
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
-    private static async Task KeepsAGroupReadableFileOnUnix(bool synchronous)
+    private static async Task NarrowsGroupAccessOnUnix(bool synchronous)
     {
         using var directory = new TemporaryDirectory();
         var path = Path.Combine(directory.Path, "environments.json");
-        var link = Path.Combine(directory.Path, "same-file");
         await File.WriteAllTextAsync(path, "previous export");
         var groupReadable = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
         File.SetUnixFileMode(path, groupReadable);
-        using (var ln = System.Diagnostics.Process.Start("ln", [path, link])) await ln!.WaitForExitAsync();
-        UnixFileMode? seenWhileWriting = null;
 
-        if (synchronous) SafeFileWriter.WriteText(path, "new export");
-        else await SafeFileWriter.WriteAsync(path, async (stream, token) =>
-        {
-            seenWhileWriting = File.GetUnixFileMode(((FileStream)stream).Name);
-            await stream.WriteAsync("new export"u8.ToArray(), token);
-        }, CancellationToken.None);
+        var narrowed = synchronous
+            ? SafeFileWriter.WriteText(path, "new export")
+            : await SafeFileWriter.WriteTextAsync(path, "new export", CancellationToken.None);
+
+        Assert.True(narrowed);
+        Assert.Equal("new export", await File.ReadAllTextAsync(path));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        Assert.Equal([path], Directory.GetFiles(directory.Path));
+
+        File.SetUnixFileMode(path, groupReadable);
+        Assert.False(SafeFileWriter.WriteText(path, "receipt", narrowGroup: false));
+        Assert.Equal(groupReadable, File.GetUnixFileMode(path));
+    }
+
+    [Theory]
+    [InlineData(0b110_100_000, 0b110_000_000, true)]  // 0640 -> 0600
+    [InlineData(0b110_110_100, 0b110_100_100, true)]  // 0664 -> 0644
+    [InlineData(0b110_100_100, 0b110_100_100, false)] // 0644 stays
+    [InlineData(0b110_000_000, 0b110_000_000, false)] // 0600 stays
+    [InlineData(0b111_101_101, 0b111_101_101, false)] // 0755 stays
+    public void SafeFileWriter_ReplacementModeOnlyNarrows(int existing, int expected, bool narrowed)
+    {
+        Assert.Equal((UnixFileMode)expected, SafeFileWriter.ReplacementMode((UnixFileMode)existing, out var wasNarrowed));
+        Assert.Equal(narrowed, wasNarrowed);
+    }
+
+    // An ordinary 0644 file (group access no wider than everyone's) is replaced atomically and keeps its mode.
+    [Fact]
+    public async Task SafeFileWriter_ReplacesAnOrdinarilyReadableFile()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        await ReplacesAnOrdinaryFileOnUnix();
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static async Task ReplacesAnOrdinaryFileOnUnix()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(path, "previous export");
+        var ordinary = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        File.SetUnixFileMode(path, ordinary);
+
+        await SafeFileWriter.WriteTextAsync(path, "new export", CancellationToken.None);
 
         Assert.Equal("new export", await File.ReadAllTextAsync(path));
-        Assert.Equal("new export", await File.ReadAllTextAsync(link)); // the same inode, so the same owner and group
-        Assert.Equal(groupReadable, File.GetUnixFileMode(path));
-        if (!synchronous) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, seenWhileWriting);
+        Assert.Equal(ordinary, File.GetUnixFileMode(path));
+    }
+
+    // The contents were staged completely, but putting them in place fails: the previous file is intact (both writers).
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SafeFileWriter_AFailedPublicationKeepsThePreviousFile(bool synchronous)
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(path, "previous export");
+        SafeFileWriter.BeforePublish.Value = (_, _) => throw new IOException("the disk went away");
+        try
+        {
+            if (synchronous) Assert.Throws<IOException>(() => SafeFileWriter.WriteText(path, "new export"));
+            else await Assert.ThrowsAsync<IOException>(() => SafeFileWriter.WriteTextAsync(path, "new export", CancellationToken.None));
+        }
+        finally
+        {
+            SafeFileWriter.BeforePublish.Value = null;
+        }
+
+        Assert.Equal("previous export", await File.ReadAllTextAsync(path));
+        Assert.Equal([path], Directory.GetFiles(directory.Path));
+    }
+
+    // Windows ReplaceFile failing with ERROR_UNABLE_TO_MOVE_REPLACEMENT (1176): the original has been moved to the backup
+    // name and the replacement is still at its temporary name. The original is put back.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SafeFileWriter_AHalfDoneWindowsReplacementPutsTheOriginalBack(bool synchronous)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(path, "previous export");
+        SafeFileWriter.ReplaceOverride.Value = (_, destination, backup) =>
+        {
+            File.Move(destination, backup);
+            throw new IOException("Unable to move the replacement file to the file to be replaced.", unchecked((int)0x80070498));
+        };
+        try
+        {
+            if (synchronous) Assert.Throws<IOException>(() => SafeFileWriter.WriteText(path, "new export"));
+            else await Assert.ThrowsAsync<IOException>(() => SafeFileWriter.WriteTextAsync(path, "new export", CancellationToken.None));
+        }
+        finally
+        {
+            SafeFileWriter.ReplaceOverride.Value = null;
+        }
+
+        Assert.Equal("previous export", await File.ReadAllTextAsync(path));
+        Assert.Equal([path], Directory.GetFiles(directory.Path));
+    }
+
+    // If even putting the original back fails, the complete new version is kept (not deleted) and both places are named.
+    [Fact]
+    public async Task SafeFileWriter_KeepsTheNewVersionWhenTheOriginalCannotBePutBack()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "environments.json");
+        await File.WriteAllTextAsync(path, "previous export");
+        SafeFileWriter.ReplaceOverride.Value = (_, destination, backup) =>
+        {
+            File.Move(destination, backup);
+            Directory.CreateDirectory(destination); // blocks moving the backup back
+            throw new IOException("Unable to move the replacement file to the file to be replaced.", unchecked((int)0x80070498));
+        };
+        IOException error;
+        try
+        {
+            error = await Assert.ThrowsAsync<IOException>(() => SafeFileWriter.WriteTextAsync(path, "new export", CancellationToken.None));
+        }
+        finally
+        {
+            SafeFileWriter.ReplaceOverride.Value = null;
+        }
+
+        var files = Directory.GetFiles(directory.Path).Select(File.ReadAllText).ToArray();
+        Assert.Contains("previous export", files);
+        Assert.Contains("new export", files);
+        Assert.Contains("could not be put back", error.Message, StringComparison.Ordinal);
     }
 
     // Windows: an export restricted to the current user (protected DACL) stays so after being replaced, although its
