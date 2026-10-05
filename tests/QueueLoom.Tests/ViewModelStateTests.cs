@@ -1077,6 +1077,7 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             SearchRequests.Add(request);
+            if (BrowseCleanupWarning is { } searchWarning) CleanupWarning?.Invoke(this, searchWarning);
             if (SearchGate is not null) await SearchGate(cancellationToken);
             var now = DateTimeOffset.UtcNow;
             var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
@@ -1216,6 +1217,7 @@ public sealed partial class ViewModelStateTests
             IProgress<DeadLetterMessageDeletionProgress>? progress = null)
         {
             DeleteRequests.Add(request);
+            if (BrowseCleanupWarning is { } deleteWarning) CleanupWarning?.Invoke(this, deleteWarning);
             OnDelete?.Invoke();
             var now = DateTimeOffset.UtcNow;
             return Task.FromResult(new DeleteDeadLetterMessagesResult(

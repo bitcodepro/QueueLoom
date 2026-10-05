@@ -205,6 +205,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
             var queue = McpMapping.ParseSubQueue(subQueue);
             var count = Math.Clamp(maxMessages, 1, 100);
+            var cleanup = new List<string>();
             var messages = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: false, token).ConfigureAwait(false);
@@ -212,7 +213,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 return await workspace.BrowseMessagesAsync(
                         new BrowseMessagesRequest(source, queue, count, fromSequenceNumber), token)
                     .ConfigureAwait(false);
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, cleanup).ConfigureAwait(false);
             return new MessageListInfo(
                 profile.Name,
                 $"{messages.Count} message(s) from {entity} ({McpMapping.SubQueueName(queue)}); nothing was removed" +
@@ -220,7 +221,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     ? "."
                     // These services have no peek: messages are received, held briefly and released, which counts as a
                     // receive (SQS), a delivery attempt (Pub/Sub with a dead-letter policy) or a requeue (RabbitMQ).
-                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue."),
+                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue.") +
+                McpMapping.CleanupNote(cleanup),
                 messages.Select(McpMapping.ToInfo).ToArray());
         });
 
@@ -242,6 +244,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             }
 
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var cleanup = new List<string>();
             var result = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: true, token).ConfigureAwait(false);
@@ -251,7 +254,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     : await workspace.SearchDeadLettersAsync(
                             new DeadLetterSearchRequest(query.Trim(), targets, maximumResults: Math.Clamp(maxResults, 1, 500)), token)
                         .ConfigureAwait(false);
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, cleanup).ConfigureAwait(false);
             if (result is null)
             {
                 return new MessageListInfo(profile.Name, "The environment has no queues or subscriptions.", []);
@@ -260,7 +263,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             return new MessageListInfo(
                 profile.Name,
                 $"{result.MatchCount} match(es) after inspecting {result.ScannedMessageCount} message(s)" +
-                (result.IsComplete ? "." : "; the search stopped at a limit or hit errors, so results may be incomplete."),
+                (result.IsComplete ? "." : "; the search stopped at a limit or hit errors, so results may be incomplete.") +
+                McpMapping.CleanupNote(cleanup),
                 result.Matches.Select(McpMapping.ToInfo).ToArray());
         });
 

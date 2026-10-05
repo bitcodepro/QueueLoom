@@ -726,6 +726,41 @@ public sealed class McpServerTests
         }
     }
 
+    internal sealed class RecordingJournal : IActivityJournal
+    {
+        public List<ActivityRecord> Records { get; } = [];
+        public void Append(ActivityRecord record) { lock (Records) Records.Add(record); }
+        public IReadOnlyList<ActivityRecord> ReadRecent(int maximum = 500) { lock (Records) return Records.TakeLast(maximum).ToArray(); }
+    }
+
+    // Review: in MCP mode too, messages a tool read that could not all be returned to their queue are reported, in the
+    // tool's reply and in Activity, while the tool's own result stands (peek, search and selected deletion).
+    [Theory]
+    [InlineData("peek")]
+    [InlineData("search")]
+    [InlineData("delete")]
+    public async Task CleanupWarningsReachTheReplyAndActivity(string tool)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        server.Workspace.BrowseCleanupWarning =
+            "1 message(s) read from 'orders' could not be made visible again (busy); they reappear when their visibility timeout ends.";
+
+        var reply = tool switch
+        {
+            "peek" => await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "dlq" }),
+            "search" => await server.CallAsync("search_dead_letters", new() { ["query"] = "correlation" }),
+            _ => await server.CallAsync("delete_dead_letter_messages", new()
+            {
+                ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 2L, messageId = (string?)null } },
+                ["reason"] = "cleanup test"
+            })
+        };
+
+        Assert.Contains("could not be made visible again", reply.GetProperty("summary").GetString(), StringComparison.Ordinal);
+        Assert.Contains(server.Journal.Records, record => record.Level == "Warning" && record.Details.Contains("could not be made visible again", StringComparison.Ordinal));
+        if (tool == "peek") Assert.Equal(2, reply.GetProperty("messages").GetArrayLength());
+    }
+
     private sealed class McpTestServer : IAsyncDisposable
     {
         private readonly CancellationTokenSource _stop = new();
@@ -736,6 +771,8 @@ public sealed class McpServerTests
         public required FakeProfileRepository Profiles { get; init; }
         public RecordingApprover Approver { get; private init; } = new(false);
         public required string ExportDirectory { get; init; }
+        public RecordingJournal Journal => JournalInstance;
+        public required RecordingJournal JournalInstance { get; init; }
         private Task Run { init => _run = value; }
         private CancellationTokenSource Stop { init => _stop = value; }
 
@@ -762,6 +799,7 @@ public sealed class McpServerTests
             var recording = new RecordingApprover(approve);
             var profiles = new FakeProfileRepository([profile], profile.Id);
             var history = new MemoryHistoryStore();
+            var journal = new RecordingJournal();
 
             var clientToServer = new Pipe();
             var serverToClient = new Pipe();
@@ -774,6 +812,7 @@ public sealed class McpServerTests
                     services.AddSingleton<IProfileRepository>(profiles);
                     services.AddSingleton<IServiceBusWorkspace>(workspace);
                     services.AddSingleton<IDeadLetterHistoryStore>(history);
+                    services.AddSingleton<IActivityJournal>(journal);
                     services.AddSingleton(approver ?? recording);
                 },
                 input: clientToServer.Reader.AsStream(),
@@ -793,6 +832,7 @@ public sealed class McpServerTests
                 History = history,
                 Client = client,
                 Workspace = workspace,
+                JournalInstance = journal,
                 Profiles = profiles,
                 Approver = recording,
                 ExportDirectory = exportDirectory,

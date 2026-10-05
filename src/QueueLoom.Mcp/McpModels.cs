@@ -1,3 +1,4 @@
+using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
@@ -148,6 +149,11 @@ public sealed record ChangeResult(string Environment, bool Approved, string Summ
 
 internal static class McpMapping
 {
+    /// <summary>The reply note for messages that could not all be returned to their queue (none: empty).</summary>
+    public static string CleanupNote(IReadOnlyCollection<string> warnings) => warnings.Count == 0
+        ? string.Empty
+        : " Warning: " + string.Join(" ", warnings.Select(SensitiveDataRedactor.Redact));
+
     private const int MaximumBodyCharacters = 4_000;
     internal const int MaximumPropertyValueCharacters = 1_000;
     internal const int MaximumApplicationProperties = 50;
