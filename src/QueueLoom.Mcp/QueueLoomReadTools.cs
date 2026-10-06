@@ -20,7 +20,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     /// <summary>
     /// SQS, Pub/Sub and RabbitMQ have no peek: a read receives the messages and releases them, which counts as a
     /// delivery (the SQS receive count, Pub/Sub delivery attempts, a quorum queue's delivery count). On a live queue a
-    /// redrive or dead-letter policy can then move messages that were only looked at, so a person approves that read
+    /// redrive or dead-letter policy can then move (or, without a dead-letter target, discard) messages that were only
+    /// looked at, so a person approves that read
     /// first, as for a change. Dead-letter queues, Azure Service Bus (real peek) and Kafka (offsets) read freely.
     /// </summary>
     private async Task ConfirmLiveQueueReadAsync(McpServer server, ServiceBusProfile profile, string entity,
@@ -44,7 +45,12 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 $"{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\n" +
                 $"Up to {count:N0} live message(s) of '{entity.Trim()}' will be received and released at once. " +
                 $"{profile.Provider.DisplayName()} counts each read as a delivery, so a redrive or dead-letter policy can move " +
-                "these messages to the dead-letter queue. Nothing is deleted or sent."),
+                "these messages to a dead-letter queue, or, where none is set, discard them for good" +
+                (profile.Provider == MessagingProvider.RabbitMq
+                    ? " (a RabbitMQ quorum queue drops a message past its delivery limit, 20 by default since RabbitMQ 4.0, " +
+                      "unless it has a dead-letter exchange)"
+                    : string.Empty) +
+                ". QueueLoom itself deletes and sends nothing."),
             server,
             cancellationToken).ConfigureAwait(false);
         if (!decision.Approved)
@@ -229,7 +235,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
                  "SQS, Pub/Sub and RabbitMQ receive the messages and release them at once (paging is not available there). " +
                  "That read counts as a delivery: it raises the SQS receive count, the Pub/Sub delivery attempts (with a dead-letter policy) and, up to RabbitMQ 4.2, " +
-                 "a quorum queue's delivery count, so a redrive or dead-letter policy can move a message that is read often. " +
+                 "a quorum queue's delivery count, so a redrive or dead-letter policy can move a message that is read often " +
+                 "(or, with no dead-letter target, such as a RabbitMQ quorum queue without a dead-letter exchange, drop it). " +
                  "Bodies longer than 4,000 characters are truncated, as are property values over 1,000 characters (at most 50 properties) " +
                  "and dead-letter reasons or descriptions over 4,000; the *Truncated fields say when. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
                  "unpacked in decodedBody. Use fromSequenceNumber to page on Azure. Reading 'active' on SQS, Pub/Sub or RabbitMQ " +
@@ -264,7 +271,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     ? "."
                     // These services have no peek: messages are received, held briefly and released, which counts as a
                     // receive (SQS), a delivery attempt (Pub/Sub with a dead-letter policy) or a requeue (RabbitMQ).
-                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue.") +
+                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue (or drop them where none is set).") +
                 McpMapping.CleanupNote(cleanup),
                 messages.Select(McpMapping.ToInfo).ToArray());
         });

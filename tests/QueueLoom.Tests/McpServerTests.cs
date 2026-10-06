@@ -286,6 +286,26 @@ public sealed class McpServerTests
         }
     }
 
+    // In read-only mode change tools are hidden, but a live read still needs approval: the server still has an
+    // approver (the desktop window wherever there is a desktop, whatever the mode), and approved, the read is done.
+    [Fact]
+    public async Task AReadOnlyServerCanStillApproveALiveRead()
+    {
+        Assert.True(QueueLoom.App.Mcp.McpMode.UsesDesktopApprover(hasDesktopSession: true));
+        await using var server = await McpTestServer.StartAsync(readOnly: true, approve: true, provider: MessagingProvider.RabbitMq);
+
+        var tools = await server.Client.ListToolsAsync();
+        var peek = await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active" });
+
+        Assert.DoesNotContain(tools, tool => tool.Name == "delete_dead_letter_messages");
+        Assert.Equal(2, peek.GetProperty("messages").GetArrayLength());
+        var request = Assert.Single(server.Approver.Requests);
+        // RabbitMQ: a quorum queue drops a message past its delivery limit unless it has a dead-letter exchange.
+        Assert.Contains("discard them for good", request.Details, StringComparison.Ordinal);
+        Assert.Contains("delivery limit, 20 by default", request.Details, StringComparison.Ordinal);
+        Assert.DoesNotContain("Nothing is deleted", request.Details, StringComparison.Ordinal);
+    }
+
     // Approved, the live read goes ahead.
     [Fact]
     public async Task AnApprovedLiveReadIsDone()

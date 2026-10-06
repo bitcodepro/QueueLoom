@@ -37,7 +37,9 @@ internal static class McpMode
         var logs = new FileLoggerProvider(Path.Combine(paths.RootDirectory, "logs"));
         LoadProtobufSchemas(paths);
 
-        if (!settings.ReadOnly && HasDesktopSession())
+        // Also in read-only mode: a read of live messages on SQS, Pub/Sub or RabbitMQ asks for approval, and a client
+        // without elicitation can only get it from the desktop window.
+        if (UsesDesktopApprover(HasDesktopSession()))
         {
             // Avalonia must own the main thread; the server runs beside it and ends the app when the client leaves.
             App.BackgroundService = () => RunServerAsync(settings, paths, logs, new DesktopApprover());
@@ -102,6 +104,9 @@ internal static class McpMode
                 logging.SetMinimumLevel(LogLevel.Information);
                 logging.AddProvider(logs);
             });
+
+    /// <summary>Whether approvals use the desktop window; it does not depend on read-only mode, which only hides change tools.</summary>
+    internal static bool UsesDesktopApprover(bool hasDesktopSession) => hasDesktopSession;
 
     private static bool HasDesktopSession() =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ||
