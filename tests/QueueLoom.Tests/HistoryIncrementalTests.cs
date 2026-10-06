@@ -67,6 +67,54 @@ public sealed class HistoryIncrementalTests
         Assert.Equal([2L, 3L, 4L, 5L], new JsonLinesDeadLetterHistoryStore(file, new Clock()).Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
     }
 
+    // A compaction can leave the file's length and first bytes unchanged: an out-of-order file A (kept, over 4 KB),
+    // B (expired), C becomes A, C, D when D is the size of B. A warm reader must still see D, and its next append must
+    // not compact D away.
+    [Fact]
+    public void ACompactionThatKeepsLengthAndFirstBytesIsStillNoticed()
+    {
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "history.jsonl");
+        var big = Enumerable.Range(0, 25).ToDictionary(index => new string('x', 200) + index.ToString("00"), _ => 1L);
+        DeadLetterHistorySample Record(DateTimeOffset at, long total, IReadOnlyDictionary<string, long>? sources = null) =>
+            new(at, Profile, "Test", total, sources ?? new Dictionary<string, long> { ["q"] = total });
+        var a = Record(Now.AddDays(-20), 1, big);
+        var b = Record(Now.AddDays(-40), 2);
+        var c = Record(Now.AddDays(-10), 3);
+        var d = Record(Now.AddDays(-5), 4);
+        Assert.True(JsonSerializer.Serialize(a).Length > 4096);
+        Assert.Equal(JsonSerializer.Serialize(b).Length, JsonSerializer.Serialize(d).Length);
+        File.WriteAllText(file, string.Concat(new[] { a, b, c }.Select(sample => JsonSerializer.Serialize(sample) + "\n")));
+        var lengthBefore = new FileInfo(file).Length;
+        var reader = new JsonLinesDeadLetterHistoryStore(file, new Clock());
+        Assert.Equal([2L, 1L, 3L], reader.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+
+        new JsonLinesDeadLetterHistoryStore(file, new Clock()).Append(d);
+        Assert.Equal(lengthBefore, new FileInfo(file).Length);
+
+        Assert.Equal([1L, 3L, 4L], reader.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+        reader.Append(Record(Now.AddDays(-1), 5));
+        Assert.Equal([1L, 3L, 4L, 5L], new JsonLinesDeadLetterHistoryStore(file, new Clock()).Read(Profile, DateTimeOffset.MinValue)
+            .Select(sample => sample.Total));
+    }
+
+    // A complete record without its newline (a crash) after an expired one: the compaction run by the next append keeps
+    // it, once.
+    [Fact]
+    public void ACompactionKeepsAValidRecordThatLostItsNewline()
+    {
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "history.jsonl");
+        File.WriteAllText(file, JsonSerializer.Serialize(Sample(Now.AddDays(-40), 1)) + "\n" + JsonSerializer.Serialize(Sample(Now.AddMinutes(-5), 2)));
+        var store = new JsonLinesDeadLetterHistoryStore(file, new Clock());
+        Assert.Equal([1L, 2L], store.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+
+        store.Append(Sample(Now.AddMinutes(-1), 3));
+
+        Assert.Equal([2L, 3L], store.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+        Assert.Equal([2L, 3L], new JsonLinesDeadLetterHistoryStore(file, new Clock()).Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+    }
+
     // The file is deleted (history cleared) and written anew: nothing from before is shown.
     [Fact]
     public void ADeletedFileStartsAFreshHistory()

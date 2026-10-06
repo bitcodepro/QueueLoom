@@ -20,7 +20,7 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         lock (_gate)
         {
             using var ownership = OwnFile();
-            var samples = Load();
+            var samples = WithTail(Load());
             var previous = samples.LastOrDefault(item => item.ProfileId == sample.ProfileId);
             if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.Total == sample.Total)
             {
@@ -28,9 +28,10 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             }
 
             var now = _time.GetUtcNow();
-            var oldest = samples.Count == 0 || sample.At < samples[0].At ? sample.At : samples[0].At;
+            var oldest = samples.Append(sample).Min(item => item.At);
             if (now - _lastCompaction > TimeSpan.FromDays(1) && oldest < now - DeadLetterHistory.Retention)
             {
+                // The valid record of a crash tail (complete but without its newline) is kept too.
                 var kept = samples.Append(sample).Where(item => item.At >= now - DeadLetterHistory.Retention)
                     .OrderBy(item => item.At).ToArray();
                 // The cache is read again from the rewritten file, whether or not the rewrite succeeds.
@@ -61,22 +62,40 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         lock (_gate)
         {
             using var ownership = OwnFile();
-            return Load().Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray();
+            return WithTail(Load()).Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray();
         }
     }
 
-    // The samples read so far, the file length they cover (always just after a newline) and the file's first bytes.
-    // The file only grows between compactions, so a later Load reads just the lines added since, by this or another
-    // process. A compaction rewrites the file from its oldest kept sample, which changes its first bytes (or makes it
-    // shorter), and then everything is read again. Before, every monitor check parsed the whole 30-day file.
+    // The samples read so far, the file length they cover (always just after a newline), the file's first bytes and its
+    // generation. The file only grows between compactions, so a later Load reads just the lines added since, by this or
+    // another process. Every compaction first writes a new generation next to the file, and a changed generation (or
+    // a shorter file, or other first bytes, for a file rewritten some other way) makes the next Load read everything
+    // again. Before, every monitor check parsed the whole 30-day file.
     private readonly List<DeadLetterHistorySample> _samples = [];
     private long _readLength;
     private byte[] _head = [];
+    private string? _generation;
     private const int HeadBytes = 4096;
+
+    // A complete record after the last newline (a crash before its newline was written). It is not part of the
+    // samples read so far: an append terminates it and the next Load reads it as an ordinary line.
+    private DeadLetterHistorySample? _tail;
+
+    private string GenerationFile => file + ".generation";
+
+    private List<DeadLetterHistorySample> WithTail(List<DeadLetterHistorySample> samples) =>
+        _tail is null ? samples : [.. samples, _tail];
 
     private List<DeadLetterHistorySample> Load()
     {
         // Reload under ownership: another window may have appended or compacted the shared file.
+        _tail = null;
+        var generation = ReadGeneration();
+        if (generation is null || generation != _generation)
+        {
+            Reset();
+            _generation = generation;
+        }
         if (!File.Exists(file))
         {
             Reset();
@@ -117,6 +136,17 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             _samples.Sort((left, right) => left.At.CompareTo(right.At));
         }
         _readLength += end;
+        if (Encoding.UTF8.GetString(added, end, added.Length - end) is { } rest && !string.IsNullOrWhiteSpace(rest))
+        {
+            try
+            {
+                _tail = JsonSerializer.Deserialize<DeadLetterHistorySample>(rest) is { Sources: not null } complete ? complete : null;
+            }
+            catch (JsonException)
+            {
+                // Cut short: nothing to keep.
+            }
+        }
         if (_head.Length < HeadBytes && _readLength > _head.Length)
         {
             stream.Position = 0;
@@ -145,11 +175,26 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         _head = [];
     }
 
+    /// <summary>The current generation; "" before any compaction, null when it cannot be read (then nothing is reused).</summary>
+    private string? ReadGeneration()
+    {
+        try
+        {
+            return File.Exists(GenerationFile) ? File.ReadAllText(GenerationFile) : string.Empty;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     private CrossProcessFileLock OwnFile() =>
         CrossProcessFileLock.AcquireAsync(file + ".lock", CancellationToken.None).GetAwaiter().GetResult();
 
     private void Rewrite(IReadOnlyList<DeadLetterHistorySample> samples)
     {
+        // The new generation first: if the rewrite fails after it, readers only read everything again.
+        AtomicFile.WriteTextAsync(GenerationFile, Guid.NewGuid().ToString("N"), CancellationToken.None).GetAwaiter().GetResult();
         AtomicFile.WriteTextAsync(file, string.Concat(samples.Select(sample => JsonSerializer.Serialize(sample) + "\n")),
             CancellationToken.None).GetAwaiter().GetResult();
     }
