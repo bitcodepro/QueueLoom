@@ -28,6 +28,29 @@ public sealed class ActivityRecentWalkTests
         Assert.Equal(9, journal.ReadRecent().Count);
     }
 
+    // Retention removes an expired day after the folders were listed and before it is read: the newer records are
+    // still returned.
+    [Fact]
+    public void ADayRemovedByRetentionWhileReadingIsSkipped()
+    {
+        using var directory = new TemporaryDirectory();
+        var journal = new FileActivityJournal(directory.Path);
+        var start = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        journal.Append(Record(start, "old"));
+        journal.Append(Record(start.AddDays(1), "new-1"));
+        journal.Append(Record(start.AddDays(1).AddMinutes(1), "new-2"));
+        FileActivityJournal.AfterDaysListed.Value = () => journal.DeleteExpired(start.AddDays(1));
+        try
+        {
+            Assert.Equal(["new-2", "new-1"], journal.ReadRecent(10).Select(record => record.Action));
+        }
+        finally
+        {
+            FileActivityJournal.AfterDaysListed.Value = null;
+        }
+        Assert.False(Directory.Exists(Path.Combine(directory.Path, "2026-10-01")));
+    }
+
     // An older day folder that cannot be read (another account's restore, a damaged disk) is not needed for the
     // newest records, and must not hide them: before, listing it failed the whole Activity history.
     [Fact]
@@ -45,6 +68,8 @@ public sealed class ActivityRecentWalkTests
         try
         {
             Assert.Equal(["new-2", "new-1"], journal.ReadRecent(2).Select(record => record.Action));
+            // Also when the limit is not met and the unreadable day is actually visited.
+            Assert.Equal(["new-2", "new-1"], journal.ReadRecent(10).Select(record => record.Action));
         }
         finally
         {
