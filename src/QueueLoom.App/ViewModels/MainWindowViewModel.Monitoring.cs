@@ -1,4 +1,5 @@
 using QueueLoom.App.Models;
+using QueueLoom.App.Services;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
@@ -441,6 +442,9 @@ public sealed partial class MainWindowViewModel
     private void CaptureMonitorSnapshot(ProfileItemViewModel profile, DeadLetterSnapshot snapshot)
     {
         var detectedAt = DateTimeOffset.UtcNow;
+        // Everything one check finds goes out as one alert: a broker outage that dead-letters into fifty queues sends
+        // one notification and one webhook post, not fifty (most of which the in-flight limit would then drop).
+        var alerts = new List<MonitorAlert>();
         foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
@@ -469,7 +473,7 @@ public sealed partial class MainWindowViewModel
                     existing.LastDetectedAt = detectedAt;
                     if (count > previousCount)
                     {
-                        RaiseMonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount);
+                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount));
                     }
                     AddActivity(
                         "Warning",
@@ -489,7 +493,7 @@ public sealed partial class MainWindowViewModel
                 detectedAt);
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
-            RaiseMonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null);
+            alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null));
             AddActivity(
                 "Warning",
                 "DLQ detected",
@@ -497,6 +501,10 @@ public sealed partial class MainWindowViewModel
                 entity.Entity);
         }
 
+        if (alerts.Count > 0)
+        {
+            RaiseMonitorAlert(QueueLoom.App.Services.MonitorAlert.Combine(alerts));
+        }
         NotifyMonitorNotificationsChanged();
     }
 

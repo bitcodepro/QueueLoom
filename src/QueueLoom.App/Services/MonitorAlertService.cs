@@ -11,9 +11,25 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
 {
     public string Title => "QueueLoom: dead letters";
 
-    public string Text => PreviousCount is { } previous
-        ? $"{Environment} · {Source}: {Count:N0} dead-lettered messages (was {previous:N0})"
-        : $"{Environment} · {Source}: {Count:N0} dead-lettered messages";
+    public string Text => Combined is { Count: > 0 } combined
+        ? $"{Environment}: dead letters in {combined.Count:N0} sources · " +
+          string.Join("; ", combined.Take(MaximumListed).Select(alert => alert.SourceText)) +
+          (combined.Count > MaximumListed ? $"; and {combined.Count - MaximumListed:N0} more" : string.Empty)
+        : $"{Environment} · {SourceText}";
+
+    /// <summary>The alerts of one monitor check, when it found more than one source: sent as one notification.</summary>
+    public IReadOnlyList<MonitorAlert>? Combined { get; init; }
+
+    internal const int MaximumListed = 5;
+
+    private string SourceText => PreviousCount is { } previous
+        ? $"{Source}: {Count:N0} dead-lettered messages (was {previous:N0})"
+        : $"{Source}: {Count:N0} dead-lettered messages";
+
+    /// <summary>One alert for everything one check found: a check of many sources sends one message, not one each.</summary>
+    public static MonitorAlert Combine(IReadOnlyList<MonitorAlert> alerts) => alerts.Count == 1
+        ? alerts[0]
+        : new MonitorAlert(alerts[0].Environment, $"{alerts.Count:N0} sources", alerts.Sum(alert => alert.Count), null) { Combined = alerts };
 }
 
 /// <summary>Sends monitor alerts outside the QueueLoom window.</summary>
