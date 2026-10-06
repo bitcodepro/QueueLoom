@@ -90,7 +90,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                           (result.NotFoundCount > 0 ? $", {result.NotFoundCount} not found" : string.Empty) +
                           (result.FailedCount > 0 ? $", {result.FailedCount} failed" : string.Empty) +
                           (result.CancelledCount > 0 ? $", {result.CancelledCount} not processed" : string.Empty) + "." +
-                          McpMapping.CleanupNote(cleanup);
+                          McpMapping.CleanupNote(cleanup.Concat(result.Warnings).ToArray());
             session.Record(result.FailedCount == 0 ? "Warning" : "Error", "Deleted dead-letter messages",
                 $"{summary} Reason: {reason}. Backup: {result.BackupDirectory}", profile);
             return new ChangeResult(profile.Name, true, summary, result.BackupDirectory,
@@ -150,7 +150,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var summary = $"{result.DeletedCount:N0} message(s) backed up and deleted" +
                           (problem is not null ? $"; {SensitiveDataRedactor.Redact(problem)}"
                               : result.Sources.Any(item => item.LimitReached) ? $"; the limit of {maxMessages:N0} was reached, so more may remain."
-                              : ".");
+                              : ".") + McpMapping.CleanupNote(result.Warnings);
             // Reaching the requested limit is the normal end of "purge up to N", not an error.
             session.Record(problem is not null ? "Error" : "Warning", "Purged dead letters",
                 $"{McpMapping.EntityName(source)}: {summary} Reason: {reason}. Backup: {result.BackupDirectory}", profile, source);
@@ -386,8 +386,8 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                           (result.OriginalsKeptCount > 0 ? $", {result.OriginalsKeptCount} original(s) kept" : string.Empty) +
                           (result.FailedCount > 0 ? $", {result.FailedCount} failed or uncertain (see details; do not resend those blindly)" : string.Empty) +
                           (result.CancelledCount > 0 ? $", {result.CancelledCount} not sent" : string.Empty) +
-                          (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + ".";
-            session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 ? "Success" : "Warning",
+                          (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + "." + McpMapping.CleanupNote(result.Warnings);
+            session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.Warnings.Count == 0 ? "Success" : "Warning",
                 resendMode == ResendMode.Move ? "Moved dead-letter messages" : "Resent dead-letter messages",
                 $"{summary} Reason: {reason}" + (result.BackupDirectory is null ? "." : $". Backup: {result.BackupDirectory}"),
                 profile, target);

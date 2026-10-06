@@ -325,7 +325,7 @@ public sealed partial class MainWindowViewModel
         var summary = $"{result.DeletedCount:N0} of {marked.Length:N0} deleted" +
                       (result.NotFoundCount > 0 ? $" · {result.NotFoundCount:N0} not found" : string.Empty) +
                       (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed" : string.Empty) +
-                      (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not processed (cancelled)" : string.Empty);
+                      (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not processed (cancelled)" : string.Empty) + OperationWarnings(result.Warnings);
         StatusText = $"Selected messages: {summary}";
         MessageListTitle = $"Backup saved to {result.BackupDirectory}";
         // "Backed up and deleted" only when every ticked message was; not found or cancelled ones were not deleted.
