@@ -77,7 +77,13 @@ public sealed partial class AppUpdaterTests
     public void Diagnostics_RollbackRecordedOnlyAfterRestoredExecutableWasVerified()
     {
         var facts = new List<UpdateRestart.RecordedRecovery>();
-        void Record(UpdateRestart.RecordedRecovery fact) => facts.Add(fact);
+        // The event is static and other test classes run rollbacks in parallel; Restore is synchronous, so only the
+        // facts raised on this test's own thread are this test's.
+        var thread = Environment.CurrentManagedThreadId;
+        void Record(UpdateRestart.RecordedRecovery fact)
+        {
+            if (Environment.CurrentManagedThreadId == thread) lock (facts) facts.Add(fact);
+        }
         UpdateRestart.RecoveryRecorded += Record;
         try
         {
