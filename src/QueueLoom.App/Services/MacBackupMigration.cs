@@ -16,17 +16,19 @@ internal static class MacBackupMigration
         if (!string.IsNullOrWhiteSpace(backupOverride))
         {
             var relative = Path.GetRelativePath(Path.GetFullPath(bundle), Path.GetFullPath(backupOverride));
-            if (relative == ".") throw new IOException("The application bundle itself cannot be used as a backup directory.");
+            if (relative == ".") return directories.ToArray(); // Invalid override: preserve only actual backup directories.
             if (!Path.IsPathRooted(relative) && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                 directories.Add(relative);
         }
         return directories.Distinct(StringComparer.Ordinal).ToArray();
     }
 
-    internal static void Preserve(UpdateRestart.Receipt receipt, string sourceBundle)
+    internal static void Preserve(UpdateRestart.Receipt receipt, string sourceBundle, string? backupOverride = null)
     {
         if (receipt.Target.Bundle is not { } bundle || !Directory.Exists(sourceBundle)) return;
-        foreach (var relative in receipt.BundleBackupDirectories ?? [LegacyDirectory])
+        // An old installer launches the new helper with an older receipt. Recover its inherited custom override too.
+        foreach (var relative in (receipt.BundleBackupDirectories ?? CaptureDirectories(receipt.Target, backupOverride) ?? [])
+                     .Append(LegacyDirectory).Distinct(StringComparer.Ordinal))
         {
             var source = Path.GetFullPath(Path.Combine(sourceBundle, relative));
             var sourceRelative = Path.GetRelativePath(Path.GetFullPath(sourceBundle), source);
@@ -35,47 +37,70 @@ internal static class MacBackupMigration
                 throw new InvalidDataException("The update receipt contains an unexpected backup directory.");
             var destination = QueueLoomPaths.OutsideApplicationBundle(Path.Combine(bundle, relative),
                 Path.Combine(bundle, "Contents", "MacOS"));
-            if (Directory.Exists(source)) CopyDirectory(source, destination);
+            if (Directory.Exists(source)) CopyDirectory(source, destination, sourceBundle,
+                Path.Combine(Path.GetDirectoryName(Path.GetFullPath(bundle))!, "backups"));
         }
     }
 
-    private static void RejectLinks(string path)
+    private static void RejectLinks(string path, string boundary)
     {
-        for (var current = Path.GetFullPath(path); current is not null; current = Path.GetDirectoryName(current))
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(boundary));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var relative = Path.GetRelativePath(root, current);
+        if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new IOException("Backup preservation would leave its installation directory.");
+        while (true)
+        {
             if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
                 throw new IOException($"Backup preservation cannot follow a link: {current}");
-    }
-
-    private static void CopyDirectory(string source, string destination)
-    {
-        RejectLinks(source);
-        RejectLinks(destination);
-        Directory.CreateDirectory(destination);
-        foreach (var entry in Directory.EnumerateFileSystemEntries(source))
-        {
-            RejectLinks(entry);
-            var target = Path.Combine(destination, Path.GetFileName(entry));
-            if (Directory.Exists(entry)) CopyDirectory(entry, target);
-            else CopyFile(entry, target);
+            // Ancestors above the installation may be OS aliases, such as /var -> /private/var on macOS.
+            if (string.Equals(current, root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return;
+            current = Path.GetDirectoryName(current) ?? throw new IOException("Backup preservation has no installation boundary.");
         }
     }
 
-    private static void CopyFile(string source, string destination)
+    internal static int CopyLegacyDirectory(string source, string destination, string sourceBundle, CancellationToken token)
     {
-        RejectLinks(destination);
+        var relative = Path.GetRelativePath(Path.GetFullPath(sourceBundle), Path.GetFullPath(destination));
+        if (!Path.IsPathRooted(relative) && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new IOException("Legacy backups must be copied outside the application bundle.");
+        return CopyDirectory(source, destination, sourceBundle, destination, token);
+    }
+
+    private static int CopyDirectory(string source, string destination, string sourceBoundary, string destinationBoundary, CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        RejectLinks(source, sourceBoundary);
+        RejectLinks(destination, destinationBoundary);
+        Directory.CreateDirectory(destination);
+        var copied = 0;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(source))
+        {
+            token.ThrowIfCancellationRequested();
+            RejectLinks(entry, sourceBoundary);
+            var target = Path.Combine(destination, Path.GetFileName(entry));
+            copied += Directory.Exists(entry) ? CopyDirectory(entry, target, sourceBoundary, destinationBoundary, token)
+                : CopyFile(entry, target, destinationBoundary, token);
+        }
+        return copied;
+    }
+
+    private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token)
+    {
+        RejectLinks(destination, destinationBoundary);
         using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
         var hash = SHA256.HashData(input);
         if (File.Exists(destination))
         {
             using var existing = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (SHA256.HashData(existing).AsSpan().SequenceEqual(hash)) return;
+            if (SHA256.HashData(existing).AsSpan().SequenceEqual(hash)) return 0;
             destination = Path.Combine(Path.GetDirectoryName(destination)!,
                 Path.GetFileNameWithoutExtension(destination) + ".recovered-" + Convert.ToHexString(hash) + Path.GetExtension(destination));
-            RejectLinks(destination);
+            RejectLinks(destination, destinationBoundary);
             if (File.Exists(destination))
             {
                 using var recovered = File.OpenRead(destination);
-                if (SHA256.HashData(recovered).AsSpan().SequenceEqual(hash)) return;
+                if (SHA256.HashData(recovered).AsSpan().SequenceEqual(hash)) return 0;
                 throw new IOException("A conflicting recovered backup already exists; the old bundle was retained.");
             }
         }
@@ -85,7 +110,9 @@ internal static class MacBackupMigration
         {
             using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             { input.CopyTo(output); output.Flush(flushToDisk: true); }
+            token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, overwrite: false);
+            return 1;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }

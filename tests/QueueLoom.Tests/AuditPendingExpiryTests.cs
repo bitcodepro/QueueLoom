@@ -48,6 +48,11 @@ public sealed partial class ViewModelStateTests
         vm.AreAllMessagesMarked = true;
 
         await vm.DeleteMarkedMessagesCommand.ExecuteAsync();
+        // The relock waits for the command's operation gate, then adds its Activity entry. Await that writer too.
+        var relock = (Task)typeof(MainWindowViewModel).GetField("_writeUnlockTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
+        await relock.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(vm.CanWrite);
+        Assert.Equal(ProfileAccessMode.ReadOnly, workspace.ConnectedAccessMode);
 
         Assert.Equal([1L], client.Touched);
         Assert.NotNull(reported);

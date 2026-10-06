@@ -13,6 +13,7 @@ using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Infrastructure.Security;
 using QueueLoom.Mcp;
+using QueueLoom.App.Services;
 
 namespace QueueLoom.App.Mcp;
 
@@ -71,6 +72,21 @@ internal static class McpMode
         FileLoggerProvider logs,
         IOperationApprover approver)
     {
+        try
+        {
+            var copied = await new LegacyBackupMigration(paths).RunAsync().ConfigureAwait(false);
+            if (copied > 0 || paths.BackupDirectoryWarning is not null)
+            {
+                var action = copied > 0 ? "Legacy backups preserved" : "Backup directory changed";
+                var detail = copied > 0 ? $"{copied:N0} backup file(s) copied outside the application bundle; originals kept." : paths.BackupDirectoryWarning!;
+                try { new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")).Append(
+                    new ActivityRecord(Guid.NewGuid(), DateTimeOffset.UtcNow, "Info", action, detail, null, null, null)); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                { await Console.Error.WriteLineAsync("Backup migration finished, but its Activity entry could not be saved."); }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { await Console.Error.WriteLineAsync("Legacy backups could not be migrated; originals remain in the application bundle."); }
         // An MCP server can run for days and appends to the shared Activity journal, so it applies the same retention.
         // Operation history belongs to the desktop app, which cleans it up itself.
         using var retention = new LocalHistoryRetention(new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")), null);

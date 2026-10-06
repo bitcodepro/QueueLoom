@@ -107,4 +107,20 @@ public sealed partial class AppUpdaterTests
         return (AppUpdater.TargetFor("osx-arm64", executable), legacy,
             Staging(("QueueLoom.app/Contents/MacOS/QueueLoom", "new program")));
     }
+
+    [Fact]
+    public void Audit_MacOlderReceiptPreservesConfiguredCustomBackups()
+    {
+        var (target, _, _) = MacBackupFixture();
+        var custom = Path.Combine(target.Bundle!, "Contents", "custom-backups");
+        Directory.CreateDirectory(custom);
+        File.WriteAllText(Path.Combine(custom, "custom.json"), "old custom backup");
+        // Receipts from released versions have no BundleBackupDirectories field. The helper inherits the override.
+        var oldReceipt = new UpdateRestart.Receipt(Guid.NewGuid().ToString("N"), target, "", []);
+
+        MacBackupMigration.Preserve(oldReceipt, target.Bundle!, custom);
+
+        var remapped = QueueLoomPaths.OutsideApplicationBundle(custom, Path.GetDirectoryName(target.Executable)!);
+        Assert.Equal("old custom backup", File.ReadAllText(Path.Combine(remapped, "custom.json")));
+    }
 }

@@ -848,6 +848,7 @@ public sealed partial class ViewModelStateTests
         /// <summary>Upserts after this many succeed fail (null: never).</summary>
         public int? FailUpsertsAfter { get; set; }
         public Func<CancellationToken, Task>? ListGate { get; set; }
+        public Func<Guid, CancellationToken, Task<ServiceBusProfile?>>? GetGate { get; set; }
 
         public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default)
         {
@@ -856,7 +857,7 @@ public sealed partial class ViewModelStateTests
         }
 
         public Task<ServiceBusProfile?> GetAsync(Guid profileId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(_profiles.FirstOrDefault(profile => profile.Id == profileId));
+            GetGate?.Invoke(profileId, cancellationToken) ?? Task.FromResult(_profiles.FirstOrDefault(profile => profile.Id == profileId));
 
         public Task UpsertAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
