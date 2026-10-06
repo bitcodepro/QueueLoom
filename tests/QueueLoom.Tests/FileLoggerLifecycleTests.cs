@@ -118,10 +118,23 @@ public sealed class FileLoggerLifecycleTests
         using var directory = new TemporaryDirectory();
         var logs = Path.Combine(directory.Path, "logs");
         var held = HoldLock(logs);
-        using var provider = new FileLoggerProvider(logs, clock: () => Now);
+        var waiting = new ManualResetEventSlim(false);
+        FileLoggerProvider.LockBusyObserved.Value = waiting.Set;
+        FileLoggerProvider provider;
+        try
+        {
+            // The writer thread captures the seam when it starts.
+            provider = new FileLoggerProvider(logs, clock: () => Now);
+        }
+        finally
+        {
+            FileLoggerProvider.LockBusyObserved.Value = null;
+        }
+        using var owned = provider;
         var logger = provider.CreateLogger("app");
         logger.LogInformation("waiting");
-        Thread.Sleep(100);
+        // The writer is in its retry loop on the held lock before the folder moves.
+        Assert.True(waiting.Wait(TimeSpan.FromSeconds(10)));
         Directory.Move(logs, Path.Combine(directory.Path, "logs-old"));
         held.Dispose();
 

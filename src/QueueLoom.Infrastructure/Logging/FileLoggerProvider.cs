@@ -307,6 +307,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             // item's own recovery, and the next item recreates the directory before trying again.
             catch (IOException exception) when (exception is not DirectoryNotFoundException && !_abandoned)
             {
+                LockBusyObserved.Value?.Invoke();
                 Thread.Sleep(1);
             }
             catch (IOException)
@@ -315,6 +316,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
             }
         }
     }
+
+    /// <summary>Test seam: told each time the writer finds the cross-process lock busy and waits.</summary>
+    internal static readonly AsyncLocal<Action?> LockBusyObserved = new();
 
     /// <summary>Test seam: replaces opening the cross-process write lock.</summary>
     internal static readonly AsyncLocal<Func<string, FileStream?>?> AcquireWriteLockOverride = new();
