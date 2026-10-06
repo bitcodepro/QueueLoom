@@ -90,6 +90,122 @@ public sealed class SchemaRegistryDecodingTests
         Assert.Null(await client.GetAsync(1, CancellationToken.None));
     }
 
+    // A wrong registry URL answers with a large download: at most the response limit is read, the id is not cached
+    // as "no schema", and the registry is not marked unreachable for the other ids.
+    [Fact]
+    public async Task RegistryClient_ReadsOnlyALimitedResponse()
+    {
+        var large = new CountingStream(64L * 1024 * 1024);
+        var handler = new LargeOnceHandler(large, """{"schemaType":"PROTOBUF","schema":"message B {}"}""");
+        using var client = new SchemaRegistryClient("http://registry:8081", null, null, handler);
+
+        Assert.Null(await client.GetAsync(1, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.True(large.BytesRead <= SchemaRegistryClient.MaximumResponseBytes + 128 * 1024, $"{large.BytesRead:N0} bytes were read.");
+        Assert.Equal(new MessageSchema(2, MessageSchemaType.Protobuf, "message B {}"), await client.GetAsync(2, CancellationToken.None));
+    }
+
+    // The registry sends 200 OK and then drops the connection mid-body (or stalls past the deadline): the record is
+    // shown without its schema instead of the browse failing; the registry is treated as unreachable for the backoff,
+    // and asked again after it. The caller's own cancellation still ends the lookup.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RegistryClient_TreatsABrokenBodyAsARegistryFailure(bool stall)
+    {
+        var time = new ManualTime();
+        var handler = new BrokenBodyHandler(stall, """{"schemaType":"PROTOBUF","schema":"message C {}"}""");
+        using var client = new SchemaRegistryClient("http://registry:8081", null, null, handler, time);
+
+        Assert.Null(await client.GetAsync(1, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Null(await client.GetAsync(2, CancellationToken.None));
+        Assert.Equal(1, handler.Calls);
+
+        time.Advance(SchemaRegistryClient.FailureBackoff + TimeSpan.FromSeconds(1));
+        Assert.Equal(new MessageSchema(2, MessageSchemaType.Protobuf, "message C {}"), await client.GetAsync(2, CancellationToken.None));
+
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetAsync(3, cancelled.Token));
+    }
+
+    private sealed class ManualTime : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
+    private sealed class BrokenBodyHandler(bool stall, string json) : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(Calls == 1
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new BrokenStream(stall)) }
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") });
+        }
+    }
+
+    private sealed class BrokenStream(bool stall) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException("The response ended prematurely.");
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!stall) throw new IOException("The response ended prematurely.");
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+    }
+
+    private sealed class LargeOnceHandler(Stream large, string json) : HttpMessageHandler
+    {
+        private bool _served;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (_served)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") });
+            }
+            _served = true;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(large) });
+        }
+    }
+
+    private sealed class CountingStream(long length) : Stream
+    {
+        public long BytesRead { get; private set; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => BytesRead; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var take = (int)Math.Min(count, length - BytesRead);
+            Array.Fill(buffer, (byte)' ', offset, take);
+            BytesRead += take;
+            return take;
+        }
+    }
+
     private static byte[] Framed(int id, byte[] payload) =>
         [0, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id, .. payload];
 
