@@ -203,17 +203,92 @@ public static class UpdateRestart
             if (entry.Current == receipt.Target.Bundle)
                 MacBackupMigration.Preserve(receipt, entry.Current);
             var failed = entry.Current + "." + receipt.Id + ".failed";
+            if ((File.Exists(failed) || Directory.Exists(failed)) &&
+                (File.Exists(entry.Current) || Directory.Exists(entry.Current)))
+            {
+                // A prior entry may already be restored. Require the retained backup to match; the
+                // mere presence of a current file must never turn a missing or tampered backup into success.
+                if (entry.Backup is not null && RecoveryMatches(entry.Backup, entry.Current)) continue;
+                throw new IOException($"Recovery cannot verify the partially restored {Path.GetFileName(entry.Current)}. Keep the update receipt and remaining files.");
+            }
             if (Directory.Exists(entry.Current)) MoveRetrying(() => Directory.Move(entry.Current, failed));
             else if (File.Exists(entry.Current)) MoveRetrying(() => File.Move(entry.Current, failed));
             if (entry.Backup is not null)
             {
-                if (Directory.Exists(entry.Backup)) MoveRetrying(() => Directory.Move(entry.Backup, entry.Current));
-                else MoveRetrying(() => File.Move(entry.Backup, entry.Current));
+                // Stage a complete copy alongside the installation, then publish it. The recorded backup
+                // stays intact through every entry and retry, including a crash during the copy.
+                var staged = entry.Current + "." + receipt.Id + ".restore-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    CopyRecoveryPath(entry.Backup, staged);
+                    if (Directory.Exists(staged)) MoveRetrying(() => Directory.Move(staged, entry.Current));
+                    else MoveRetrying(() => File.Move(staged, entry.Current));
+                }
+                finally { TryDelete(staged); }
             }
         }
         if (!File.Exists(receipt.Target.Executable))
             throw new IOException("Recovery did not restore a runnable previous executable. Keep the update receipt and remaining files.");
         RecordRecovery(RecordedRecovery.Restored);
+    }
+
+    private static void CopyRecoveryPath(string source, string destination)
+    {
+        var attributes = File.GetAttributes(source);
+        var directory = (attributes & FileAttributes.Directory) != 0;
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            // Preserve bundle links themselves; never recursively follow a link outside the recorded backup.
+            var target = (directory ? (FileSystemInfo)new DirectoryInfo(source) : new FileInfo(source)).LinkTarget
+                ?? throw new IOException("Recovery cannot copy an unsupported filesystem link.");
+            if (directory) Directory.CreateSymbolicLink(destination, target);
+            else File.CreateSymbolicLink(destination, target);
+        }
+        else if (directory)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (var child in Directory.EnumerateFileSystemEntries(source))
+                CopyRecoveryPath(child, Path.Combine(destination, Path.GetFileName(child)));
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+        }
+        else
+        {
+            using (var input = File.OpenRead(source))
+            using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                input.CopyTo(output);
+                output.Flush(flushToDisk: true);
+            }
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+        }
+    }
+
+    private static bool RecoveryMatches(string backup, string current)
+    {
+        var backupAttributes = File.GetAttributes(backup);
+        var currentAttributes = File.GetAttributes(current);
+        const FileAttributes kind = FileAttributes.Directory | FileAttributes.ReparsePoint;
+        if ((backupAttributes & kind) != (currentAttributes & kind)) return false;
+        var directory = (backupAttributes & FileAttributes.Directory) != 0;
+        if ((backupAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            FileSystemInfo left = directory ? new DirectoryInfo(backup) : new FileInfo(backup);
+            FileSystemInfo right = directory ? new DirectoryInfo(current) : new FileInfo(current);
+            return left.LinkTarget is not null && left.LinkTarget == right.LinkTarget;
+        }
+        if (!OperatingSystem.IsWindows() && File.GetUnixFileMode(backup) != File.GetUnixFileMode(current)) return false;
+        if (directory)
+        {
+            var left = Directory.EnumerateFileSystemEntries(backup).OrderBy(Path.GetFileName, StringComparer.Ordinal).ToArray();
+            var right = Directory.EnumerateFileSystemEntries(current).OrderBy(Path.GetFileName, StringComparer.Ordinal).ToArray();
+            return left.Length == right.Length && left.Zip(right).All(pair =>
+                Path.GetFileName(pair.First) == Path.GetFileName(pair.Second) && RecoveryMatches(pair.First, pair.Second));
+        }
+        if (new FileInfo(backup).Length != new FileInfo(current).Length) return false;
+        using var backupStream = File.OpenRead(backup);
+        using var currentStream = File.OpenRead(current);
+        return System.Security.Cryptography.SHA256.HashData(backupStream).AsSpan()
+            .SequenceEqual(System.Security.Cryptography.SHA256.HashData(currentStream));
     }
 
     public static async Task CleanAsync(Receipt receipt, string path, TimeSpan timeout)

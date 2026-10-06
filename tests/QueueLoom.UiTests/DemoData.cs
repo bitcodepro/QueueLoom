@@ -259,10 +259,12 @@ internal sealed class InMemoryProfileRepository(params ServiceBusProfile[] profi
 
     /// <summary>Holds listing (and so the window's start-up) until the task completes.</summary>
     public Task? ListGate { get; set; }
+    public Func<CancellationToken, Task>? ListAsyncGate { get; set; }
 
     public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default)
     {
-        if (ListGate is { } gate) await gate;
+        if (ListAsyncGate is { } asyncGate) await asyncGate(cancellationToken);
+        else if (ListGate is { } gate) await gate;
         return _profiles.ToArray();
     }
 

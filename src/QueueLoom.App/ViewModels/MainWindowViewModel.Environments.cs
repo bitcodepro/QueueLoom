@@ -611,6 +611,7 @@ public sealed partial class MainWindowViewModel
         Messages.Clear();
         SelectedMessage = null;
         SelectedDestination = null;
+        ReplayDestination = null;
         NotifyConnectionState();
         NotifyStatistics();
     }
