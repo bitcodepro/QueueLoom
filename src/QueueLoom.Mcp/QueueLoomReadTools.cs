@@ -8,11 +8,57 @@ using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Mcp;
 
-/// <summary>Read-only tools. They never lock, settle or send messages, so they run without approval.</summary>
+/// <summary>
+/// Read-only tools. They never settle or send messages, so they run without approval, except a read of a live queue
+/// on a service without peek (see <see cref="ConfirmLiveQueueReadAsync"/>).
+/// </summary>
 [McpServerToolType]
 public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSettings settings, IServiceProvider services)
 {
     private IDeadLetterHistoryStore? History => services.GetService(typeof(IDeadLetterHistoryStore)) as IDeadLetterHistoryStore;
+
+    /// <summary>
+    /// SQS, Pub/Sub and RabbitMQ have no peek: a read receives the messages and releases them, which counts as a
+    /// delivery (the SQS receive count, Pub/Sub delivery attempts, a quorum queue's delivery count). On a live queue a
+    /// redrive or dead-letter policy can then move (or, without a dead-letter target, discard) messages that were only
+    /// looked at, so a person approves that read
+    /// first, as for a change. Dead-letter queues, Azure Service Bus (real peek) and Kafka (offsets) read freely.
+    /// </summary>
+    private async Task ConfirmLiveQueueReadAsync(McpServer server, ServiceBusProfile profile, string entity,
+        ServiceBusSubQueue queue, int count, CancellationToken cancellationToken)
+    {
+        if (queue != ServiceBusSubQueue.Active || profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.Kafka)
+        {
+            return;
+        }
+        if (services.GetService(typeof(IOperationApprover)) is not IOperationApprover approver)
+        {
+            throw new McpException("Reading live messages here needs approval, and no approval is available in this QueueLoom.");
+        }
+        var client = server.ClientInfo is { } info ? $"{info.Name} {info.Version}".Trim() : "an MCP client";
+        var decision = await approver.RequestAsync(
+            new ApprovalRequest(
+                "Read live messages",
+                profile.Name,
+                profile.Environment == EnvironmentKind.Production,
+                $"Requested by: {client}\nEnvironment: {profile.Name} ({profile.EnvironmentDisplayName})\n" +
+                $"{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\n" +
+                $"Up to {count:N0} live message(s) of '{entity.Trim()}' will be received and released at once. " +
+                $"{profile.Provider.DisplayName()} counts each read as a delivery, so a redrive or dead-letter policy can move " +
+                "these messages to a dead-letter queue, or, where none is set, discard them for good" +
+                (profile.Provider == MessagingProvider.RabbitMq
+                    ? " (a RabbitMQ quorum queue drops a message past its delivery limit, 20 by default since RabbitMQ 4.0, " +
+                      "unless it has a dead-letter exchange)"
+                    : string.Empty) +
+                ". QueueLoom itself deletes and sends nothing."),
+            server,
+            cancellationToken).ConfigureAwait(false);
+        if (!decision.Approved)
+        {
+            session.Record("Info", "Read live messages not approved", decision.Reason, profile);
+            throw new McpException($"Not read: {decision.Reason}");
+        }
+    }
 
     private const string EnvironmentDescription =
         "Saved environment name (see list_environments). Optional when only one environment is saved.";
@@ -189,11 +235,14 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [Description("Returns messages from a queue or subscription without removing them. Azure Service Bus peeks; " +
                  "SQS, Pub/Sub and RabbitMQ receive the messages and release them at once (paging is not available there). " +
                  "That read counts as a delivery: it raises the SQS receive count, the Pub/Sub delivery attempts (with a dead-letter policy) and, up to RabbitMQ 4.2, " +
-                 "a quorum queue's delivery count, so a redrive or dead-letter policy can move a message that is read often. " +
+                 "a quorum queue's delivery count, so a redrive or dead-letter policy can move a message that is read often " +
+                 "(or, with no dead-letter target, such as a RabbitMQ quorum queue without a dead-letter exchange, drop it). " +
                  "Bodies longer than 4,000 characters are truncated, as are property values over 1,000 characters (at most 50 properties) " +
                  "and dead-letter reasons or descriptions over 4,000; the *Truncated fields say when. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
-                 "unpacked in decodedBody. Use fromSequenceNumber to page on Azure.")]
+                 "unpacked in decodedBody. Use fromSequenceNumber to page on Azure. Reading 'active' on SQS, Pub/Sub or RabbitMQ " +
+                 "asks the user first, because those reads count as deliveries of live messages.")]
     public Task<MessageListInfo> PeekMessagesAsync(
+        McpServer server,
         [Description("Queue name, or 'topic/subscription'.")] string entity,
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("'dlq' (default), 'transfer-dlq' or 'active'.")] string subQueue = "dlq",
@@ -205,6 +254,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
             var queue = McpMapping.ParseSubQueue(subQueue);
             var count = Math.Clamp(maxMessages, 1, 100);
+            await ConfirmLiveQueueReadAsync(server, profile, entity, queue, count, cancellationToken).ConfigureAwait(false);
             var cleanup = new List<string>();
             var messages = await session.ReadAsync(profile, async (workspace, token) =>
             {
@@ -221,7 +271,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     ? "."
                     // These services have no peek: messages are received, held briefly and released, which counts as a
                     // receive (SQS), a delivery attempt (Pub/Sub with a dead-letter policy) or a requeue (RabbitMQ).
-                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue.") +
+                    : $"; {profile.Provider.DisplayName()} counts each read as a delivery, so it can move messages to a dead-letter queue (or drop them where none is set).") +
                 McpMapping.CleanupNote(cleanup),
                 messages.Select(McpMapping.ToInfo).ToArray());
         });
@@ -271,8 +321,10 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [McpServerTool(Name = "export_messages", Title = "Export messages to a file", ReadOnly = true, Idempotent = false, OpenWorld = false)]
     [Description("Saves messages with their full bodies and properties to a JSON or CSV file on this computer and returns its path. " +
                  "Pass 'entity' to export messages from one queue or subscription (like peek_messages), or 'query' to export " +
-                 "dead letters matching a search across the environment (like search_dead_letters). Nothing is removed.")]
+                 "dead letters matching a search across the environment (like search_dead_letters). Nothing is removed. " +
+                 "Exporting 'active' on SQS, Pub/Sub or RabbitMQ asks the user first, as peek_messages does.")]
     public Task<ExportInfo> ExportMessagesAsync(
+        McpServer server,
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Queue name, or 'topic/subscription'.")] string? entity = null,
         [Description("Search the dead-letter queues instead of reading 'entity'. " + QueryDescription)] string? query = null,
@@ -298,6 +350,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var count = Math.Clamp(maxMessages, 1, BrowseMessagesRequest.MaximumMaxMessages);
 
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            if (hasEntity)
+            {
+                await ConfirmLiveQueueReadAsync(server, profile, entity!, McpMapping.ParseSubQueue(subQueue), count, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             var (label, messages, complete) = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: hasQuery, token).ConfigureAwait(false);
