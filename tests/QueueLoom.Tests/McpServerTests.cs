@@ -366,6 +366,82 @@ public sealed class McpServerTests
     };
 
     [Theory]
+    [InlineData("4.2.0", "x-delivery-count")]
+    [InlineData("4.3.0", "x-acquired-count")]
+    public async Task BugCycleOne_NoIdQuorumMessageCanBeCopiedAfterBrokerAddsCounter(string version, string counter)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var owned = QueueLoom.Infrastructure.RabbitMq.RabbitMqWorkspace.BrokerOwnedHeaders(true, Version.Parse(version));
+        BrowsedMessage Read(bool redelivered)
+        {
+            var headers = new Dictionary<string, object?> { ["tenant"] = "acme", ["x-death"] = new List<object?>
+                { new Dictionary<string, object?> { ["queue"] = "orders", ["reason"] = "rejected", ["count"] = 1L } } };
+            if (redelivered) headers[counter] = 1L;
+            return QueueLoom.Infrastructure.RabbitMq.RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(),
+                new RabbitMQ.Client.BasicProperties { Timestamp = new RabbitMQ.Client.AmqpTimestamp(1720000000), Headers = headers },
+                "orders", Orders.Reference, ServiceBusSubQueue.DeadLetter, owned);
+        }
+        var chosen = Read(false);
+        var later = Read(true);
+        Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(chosen), [later], out _));
+        server.Workspace.BrowseMessages = [later];
+        var result = await server.CallAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = chosen.SequenceNumber,
+                messageId = chosen.Properties.MessageId, fingerprint = MessageFingerprint.Of(chosen) } },
+            ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+        Assert.True(result.GetProperty("approved").GetBoolean());
+        Assert.Equal("body", Assert.Single(server.Workspace.SentMessages).Message.Body.Content);
+        Assert.Single(server.Approver.Requests);
+        Assert.Equal(chosen.SequenceNumber, later.SequenceNumber);
+    }
+
+    [Fact]
+    public async Task BugCycleOne_NoIdQuorumCounterTwinsRemainAmbiguousAndAreNotSent()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var owned = QueueLoom.Infrastructure.RabbitMq.RabbitMqWorkspace.BrokerOwnedHeaders(true, Version.Parse("4.2.0"));
+        BrowsedMessage Read(long? count) => QueueLoom.Infrastructure.RabbitMq.RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(),
+            new RabbitMQ.Client.BasicProperties { Headers = count is null ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?> { ["x-delivery-count"] = count.Value } },
+            "orders", Orders.Reference, ServiceBusSubQueue.DeadLetter, owned);
+        var chosen = Read(null);
+        server.Workspace.BrowseMessages = [Read(1), Read(2)];
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = chosen.SequenceNumber,
+                messageId = chosen.Properties.MessageId, fingerprint = MessageFingerprint.Of(chosen) } },
+            ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+        Assert.Contains("cannot be told apart", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.Empty(server.Approver.Requests);
+    }
+
+    [Theory]
+    [InlineData("delete_dead_letter_messages")]
+    [InlineData("purge_dead_letters")]
+    [InlineData("resend_dead_letters")]
+    public async Task BugCycleOne_McpReturnsPersistenceWarningAlongsideConfirmedResult(string tool)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        server.Workspace.ResultWarnings = ["delete-result.report could not be saved; backup remains available"];
+        var arguments = new Dictionary<string, object?> { ["reason"] = "consumer fixed" };
+        if (tool == "purge_dead_letters") { arguments["entity"] = "orders"; arguments["maxMessages"] = 10; }
+        else arguments["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 3L, messageId = (string?)null } };
+        if (tool == "resend_dead_letters") arguments["mode"] = "move";
+        var result = await server.CallAsync(tool, arguments);
+        Assert.True(result.GetProperty("approved").GetBoolean());
+        Assert.Contains("delete-result.report", result.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Warning", result.ToString(), StringComparison.Ordinal);
+        if (tool == "resend_dead_letters")
+            Assert.Contains("Moved", result.ToString(), StringComparison.Ordinal);
+        else if (tool == "delete_dead_letter_messages")
+            Assert.Contains("Deleted", result.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ResendCopy_SendsExactlyTheChosenOneOfMessagesSharingAKey(bool withoutId)

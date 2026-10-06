@@ -153,10 +153,10 @@ public sealed partial class MainWindowViewModel
                       (options.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
                       (result.OriginalsKeptCount > 0 ? $" · {result.OriginalsKeptCount:N0} originals kept" : string.Empty) +
                       (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain (review history)" : string.Empty) +
-                      (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
+                      (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty) + OperationWarnings(result.Warnings);
         StatusText = $"Resend: {summary}";
         AddActivity(
-            result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0 ? "Success" : "Warning",
+            result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0 && result.Warnings.Count == 0 ? "Success" : "Warning",
             options.Mode == ResendMode.Move ? "Selected messages moved" : "Selected messages resent",
             summary + (result.BackupDirectory is null ? string.Empty : $" · backup {result.BackupDirectory}"),
             options.Destination);

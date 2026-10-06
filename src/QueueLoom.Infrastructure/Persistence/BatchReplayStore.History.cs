@@ -187,6 +187,7 @@ public sealed partial class BatchReplayStore
         var results = new List<ResendItemResult>();
         var sentForMove = new List<(int Position, int Index)>();
         string? backup = null;
+        IReadOnlyList<string> warnings = [];
         foreach (var index in indexes)
         {
             if (token.IsCancellationRequested) break;
@@ -199,6 +200,7 @@ public sealed partial class BatchReplayStore
             ValidateConnection(plan, workspace, canWrite);
             var item = prepared[index];
             var stateFile = Path.Combine(folder, $"{index:D6}.state");
+            if (retryRejected) await ArchiveRejectedDetailAsync(folder, index, token);
             await WriteStateAsync(stateFile, "Sending", token); // Must succeed BEFORE the transport call.
             try
             {
@@ -236,6 +238,7 @@ public sealed partial class BatchReplayStore
                 deletion = await workspace.DeleteDeadLetterMessagesAsync(
                     new DeleteDeadLetterMessagesRequest(sentForMove.Select(sent => prepared[sent.Index].Key)), CancellationToken.None);
                 backup = deletion.BackupDirectory;
+                warnings = deletion.Warnings;
             }
             catch (Exception exception) { failure = exception; }
             var outcomes = deletion?.Messages.GroupBy(m => m.Message).ToDictionary(g => g.Key, g => g.First());
@@ -272,6 +275,20 @@ public sealed partial class BatchReplayStore
             }
         }
         foreach (var index in indexes.Skip(attempted)) results.Add(new ResendItemResult(prepared[index], ResendOutcome.Cancelled, "Unattempted; continue from history."));
-        return new ResendResult(results, backup);
+        return new ResendResult(results, backup) { Warnings = warnings };
+    }
+
+    private static async Task ArchiveRejectedDetailAsync(string folder, int index, CancellationToken token)
+    {
+        var detailFile = Path.Combine(folder, $"{index:D6}.detail");
+        if (!File.Exists(detailFile)) return;
+        var detail = await File.ReadAllTextAsync(detailFile, token);
+        if (string.IsNullOrEmpty(detail)) return;
+        var archive = Path.Combine(folder, $"{index:D6}.rejections.jsonl");
+        var previous = File.Exists(archive) ? await File.ReadAllTextAsync(archive, token) : string.Empty;
+        await AtomicFile.WriteTextAsync(archive,
+            previous + JsonSerializer.Serialize(new { retriedAt = DateTimeOffset.UtcNow, detail }) + "\n", token);
+        // Clear current detail before attempting transport. Both writes must succeed before any new broker effect.
+        await AtomicFile.WriteTextAsync(detailFile, string.Empty, token);
     }
 }

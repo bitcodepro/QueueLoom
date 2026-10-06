@@ -30,6 +30,10 @@ public sealed class OperationHistoryViewModel(ReplayPlan plan, string? profileNa
 
 public sealed partial class MainWindowViewModel
 {
+    private static string OperationWarnings(IReadOnlyList<string> warnings) => warnings.Count == 0
+        ? string.Empty
+        : " Warning: " + string.Join(" ", warnings.Select(QueueLoom.Core.Diagnostics.SensitiveDataRedactor.Redact));
+
     private OperationHistoryViewModel? _selectedOperation;
     private OperationItemViewModel? _selectedOperationItem;
     public ObservableCollection<OperationHistoryViewModel> OperationHistory { get; } = [];
@@ -128,10 +132,10 @@ public sealed partial class MainWindowViewModel
                           (plan.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +
                           (result.OriginalsKeptCount > 0 ? $" · {result.OriginalsKeptCount:N0} originals kept" : string.Empty) +
                           (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed or uncertain" : string.Empty) +
-                          (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty);
+                          (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not sent (cancelled)" : string.Empty) + OperationWarnings(result.Warnings);
             StatusText = $"Recovery: {summary}. Review item outcomes.";
             var complete = result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.CancelledCount == 0;
-            AddActivity(complete ? "Success" : "Warning",
+            AddActivity(complete && result.Warnings.Count == 0 ? "Success" : "Warning",
                 complete ? "Operation recovery completed" : result.CancelledCount > 0 ? "Operation recovery cancelled" : "Operation recovery incomplete",
                 $"{plan.Id:N} · {summary}" + (result.BackupDirectory is null ? string.Empty : $" · backup {result.BackupDirectory}"));
         }
