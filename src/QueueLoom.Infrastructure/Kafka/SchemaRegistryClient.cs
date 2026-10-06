@@ -94,8 +94,11 @@ internal sealed class SchemaRegistryClient : IDisposable
         {
             _failedUntil[id] = now + FailureBackoff;
         }
-        catch (Exception exception) when (exception is HttpRequestException
-                                              || exception is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        // The body is read as a stream (see above), so its failures arrive unwrapped: a connection dropped mid-body is
+        // an IOException, and the deadline expiring during the read an OperationCanceledException. Both are the
+        // registry failing, like an HttpRequestException; only the caller's own cancellation goes on.
+        catch (Exception exception) when (exception is HttpRequestException or IOException
+                                              || exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
             Interlocked.Exchange(ref _unreachableUntilTicks, (now + FailureBackoff).UtcTicks);
             // The body is then shown without its schema; the registry being down must not stop reading messages.
