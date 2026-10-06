@@ -308,6 +308,49 @@ public sealed class StableLauncherTests
         }
     }
 
+    [Fact]
+    public void SameAcknowledgementIsIdempotentAfterItsVersionWasConfirmed()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.StagePackage(fixture.Package("next").Path);
+        var first = installation.SelectForLaunch();
+        var second = installation.SelectForLaunch();
+        Assert.False(second.OwnsAttempt);
+        installation.Acknowledge(first.Version, first.Attempt!);
+        installation.Confirm(first);
+        installation.Acknowledge(second.Version, second.Attempt!);
+        Assert.Throws<InvalidDataException>(() => installation.Acknowledge(first.Version, Guid.NewGuid().ToString("N")));
+        Assert.False(installation.HasPendingActivation());
+    }
+
+    [Fact]
+    public async Task ConcurrentLaunchersDoNotShareAnUnconfirmedPayloadAttempt()
+    {
+        using var fixture = new InstallationFixture();
+        new VersionInstallation(fixture.Launcher).StagePackage(fixture.Package("next").Path);
+        var barrier = Path.Combine(fixture.Root, "startup barrier");
+        var first = fixture.RunLauncher("--payload-fixture", "--mcp", "--ack-barrier=" + barrier);
+        Task<(int Exit, string Output, string Error)>? second = null;
+        try
+        {
+            for (var i = 0; i < 1000 && !File.Exists(barrier + ".pids"); i++) await Task.Delay(10);
+            Assert.True(File.Exists(barrier + ".pids"));
+            second = fixture.RunLauncher("--payload-fixture", "--mcp", "--ack-barrier=" + barrier);
+            await Task.Delay(500);
+            Assert.Single(File.ReadAllLines(barrier + ".pids"));
+        }
+        finally
+        {
+            File.WriteAllText(barrier + ".release", "ready");
+            await first;
+            if (second is not null) await second;
+        }
+        Assert.Equal(0, (await first).Exit);
+        if (second is not null) Assert.Equal(0, (await second).Exit);
+        Assert.False(new VersionInstallation(fixture.Launcher).HasPendingActivation());
+    }
+
     private sealed class Interrupted : Exception;
     private static Action<string> At(string boundary) => point => { if (point == boundary) throw new Interrupted(); };
     private static async Task WaitFor(string path, Process process)

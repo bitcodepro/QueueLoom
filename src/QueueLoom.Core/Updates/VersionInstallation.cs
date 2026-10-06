@@ -96,7 +96,8 @@ public sealed class VersionInstallation
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return false; }
     }
-    public static string CurrentRid() => RuntimeInformation.OSArchitecture switch
+    // An emulated x64 launcher must keep using x64 payloads (Rosetta / Windows on ARM).
+    public static string CurrentRid() => RuntimeInformation.ProcessArchitecture switch
     {
         Architecture.X64 when OperatingSystem.IsWindows() => "win-x64",
         Architecture.X64 when OperatingSystem.IsLinux() => "linux-x64",
@@ -279,6 +280,11 @@ public sealed class VersionInstallation
     {
         using var ownership = Own();
         var state = ReadState();
+        if (!state.Pending && state.Active == version && HasAcknowledgement(new ActivationState(version, Bootstrap, true, attempt)))
+        {
+            Verify(version); // A second legitimate payload can finish acknowledgement after confirmation.
+            return;
+        }
         if (!state.Pending || state.Attempt != attempt || state.Active != version)
             throw new InvalidDataException("Startup acknowledgement does not match the active attempt.");
         Verify(version);

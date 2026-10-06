@@ -44,6 +44,15 @@ internal static class Program
 
     private static async Task<int> RunAsync(VersionInstallation installation, LaunchSelection selection, string[] args)
     {
+        // Only one launcher attempts an unconfirmed payload. Concurrent clients keep their input until
+        // that owner confirms or recovery selects a known-good version; they never share its ACK token.
+        var ownerWait = Stopwatch.StartNew();
+        while (selection.Attempt is not null && !selection.OwnsAttempt)
+        {
+            if (ownerWait.Elapsed >= TimeSpan.FromSeconds(60)) throw new IOException("Another launcher is still confirming startup; try again after it completes.");
+            await Task.Delay(25);
+            selection = installation.SelectForLaunch();
+        }
         var start = new ProcessStartInfo(selection.Executable)
         {
             UseShellExecute = false, WorkingDirectory = installation.Root, CreateNoWindow = true,

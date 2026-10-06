@@ -52,6 +52,9 @@ The launcher forwards caller arguments and standard streams, returns the payload
 diagnostics only to stderr. A pending MCP payload acknowledges after its host starts, before the launcher
 forwards the client's first input or exposes protocol output. Startup failure can therefore fall back
 without consuming that request. Generated MCP configuration and update restarts use the stable entry.
+Concurrent launchers wait for the attempt owner to confirm or recover before starting another payload.
+Repeating the already accepted acknowledgement for the same confirmed version is harmless; another
+candidate or an unknown acknowledgement token is rejected.
 
 ## Retention, durability and launcher maintenance
 

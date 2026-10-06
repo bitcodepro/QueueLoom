@@ -42,6 +42,12 @@ if (args.Length > 0 && args[0] == "--payload-fixture")
 {
     var context = PayloadLaunch.Current;
     if (args.Contains("--fail-before-ack") || args.Contains("--fail-version=" + Environment.GetEnvironmentVariable(VersionInstallation.ContextVersion))) return 31;
+    if (args.FirstOrDefault(arg => arg.StartsWith("--ack-barrier=", StringComparison.Ordinal)) is { } barrierArgument)
+    {
+        var barrier = barrierArgument["--ack-barrier=".Length..];
+        File.AppendAllText(barrier + ".pids", Environment.ProcessId + "\n");
+        while (!File.Exists(barrier + ".release")) await Task.Delay(10);
+    }
     context?.Acknowledge();
     var line = await Console.In.ReadLineAsync();
     Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
