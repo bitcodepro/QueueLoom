@@ -364,7 +364,7 @@ public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
         _loaded = false;
         try
         {
-            var selected = Selected?.Name;
+            var selected = Selected?.Source;
             var rules = await _services.LoadRules(cancellationToken).ConfigureAwait(true);
             Subscriptions.Clear();
             Headline = string.Empty;
@@ -373,7 +373,10 @@ public sealed class TopicRoutingViewModel : ObservableObject, IAsyncDisposable
             {
                 Subscriptions.Add(new RoutingSubscriptionViewModel(subscription));
             }
-            Selected = Subscriptions.FirstOrDefault(item => item.Name == selected) ?? Subscriptions.FirstOrDefault();
+            Selected = Subscriptions.FirstOrDefault(item => selected is not null &&
+                item.Source.Service == selected.Service && item.Source.Subscription == selected.Subscription &&
+                item.Source.IsExchange == selected.IsExchange && item.Source.IsFallback == selected.IsFallback)
+                ?? Subscriptions.FirstOrDefault();
             OnPropertyChanged(nameof(WarningCount));
             OnPropertyChanged(nameof(SubscriptionsCaption));
             _loaded = true;

@@ -1,5 +1,27 @@
 using QueueLoom.App.Services;
 
+// Harmless secret-tool substitute. Its files and process are owned by one isolated test directory.
+if (args.Length > 0 && args[0] == "store")
+{
+    var secretRoot = AppContext.BaseDirectory;
+    var value = await Console.In.ReadToEndAsync();
+    var first = Path.Combine(secretRoot, "first-store.pid");
+    if (!File.Exists(first))
+    {
+        File.WriteAllText(first, Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var wait = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(Path.Combine(secretRoot, "release-first-store")))
+        {
+            if (wait.Elapsed > TimeSpan.FromSeconds(20)) return 71;
+            await Task.Delay(10);
+        }
+        File.WriteAllText(Path.Combine(secretRoot, "stored"), value);
+        File.WriteAllText(Path.Combine(secretRoot, "first-store.done"), "done");
+    }
+    else File.WriteAllText(Path.Combine(secretRoot, "stored"), value);
+    return 0;
+}
+
 if (args.Length == 6 && args[0] == "--append-history")
 {
     var store = new QueueLoom.Infrastructure.Persistence.JsonLinesDeadLetterHistoryStore(args[1]);

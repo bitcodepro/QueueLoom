@@ -124,7 +124,7 @@ public sealed class UpdateRestartProcessTests : IDisposable
         Assert.Equal(1, result);
         Assert.Contains("did not confirm startup", File.ReadAllText(path + ".error"), StringComparison.Ordinal);
         Assert.True(File.Exists(target.Executable));
-        Assert.False(File.Exists(receipt.Entries.Single().Backup));
+        Assert.True(File.Exists(receipt.Entries.Single().Backup)); // Retained until explicit successful cleanup.
     }
 
     [Fact]
