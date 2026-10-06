@@ -248,6 +248,56 @@ public sealed class McpServerTests
         Assert.Equal(ProfileAccessMode.ReadOnly, server.Workspace.ConnectedAccessMode);
     }
 
+    // SQS, Pub/Sub and RabbitMQ have no peek: reading a live queue counts as a delivery and can make a redrive policy
+    // move the messages. The read tools are marked read-only (clients may run them unasked), so such a read asks the
+    // person first; refused, nothing is read. Dead-letter queues and Azure (a real peek) read without asking.
+    [Theory]
+    [InlineData(MessagingProvider.AmazonSqsSns, "active", true)]
+    [InlineData(MessagingProvider.GooglePubSub, "active", true)]
+    [InlineData(MessagingProvider.RabbitMq, "active", true)]
+    [InlineData(MessagingProvider.AmazonSqsSns, "dlq", false)]
+    [InlineData(MessagingProvider.AzureServiceBus, "active", false)]
+    [InlineData(MessagingProvider.Kafka, "active", false)]
+    public async Task ReadingALiveQueueThatCountsDeliveriesAsksFirst(MessagingProvider provider, string subQueue, bool asks)
+    {
+        await using var server = await McpTestServer.StartAsync(provider: provider);
+
+        foreach (var (tool, arguments) in new (string, Dictionary<string, object?>)[]
+                 {
+                     ("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = subQueue }),
+                     ("export_messages", new() { ["entity"] = "orders", ["subQueue"] = subQueue })
+                 })
+        {
+            if (asks)
+            {
+                Assert.Contains("Not read", await server.CallForErrorAsync(tool, arguments), StringComparison.Ordinal);
+            }
+            else
+            {
+                await server.CallAsync(tool, arguments);
+            }
+        }
+
+        Assert.Equal(asks ? 2 : 0, server.Approver.Requests.Count);
+        Assert.Equal(asks ? 0 : 2, server.Workspace.BrowseRequests.Count);
+        if (asks)
+        {
+            Assert.All(server.Approver.Requests, request => Assert.Contains("counts each read as a delivery", request.Details, StringComparison.Ordinal));
+        }
+    }
+
+    // Approved, the live read goes ahead.
+    [Fact]
+    public async Task AnApprovedLiveReadIsDone()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true, provider: MessagingProvider.AmazonSqsSns);
+
+        var peek = await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active" });
+
+        Assert.Equal(2, peek.GetProperty("messages").GetArrayLength());
+        Assert.Single(server.Approver.Requests);
+    }
+
     [Fact]
     public async Task Search_ReturnsMatchesTheModelCanDelete()
     {
@@ -781,9 +831,13 @@ public sealed class McpServerTests
             bool approve = false,
             IOperationApprover? approver = null,
             EnvironmentKind environment = EnvironmentKind.Development,
-            Func<ElicitRequestParams, ElicitResult>? elicit = null)
+            Func<ElicitRequestParams, ElicitResult>? elicit = null,
+            MessagingProvider provider = MessagingProvider.AzureServiceBus)
         {
-            var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment);
+            var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment) with
+            {
+                Provider = provider
+            };
             var workspace = new FakeWorkspace
             {
                 Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Orders]),
