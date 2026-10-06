@@ -300,7 +300,10 @@ public sealed partial class MainWindowViewModel
     private void LoadActivityHistory()
     {
         if (_activityLoaded || _activityJournal is null) return;
-        foreach (var item in _activityJournal.ReadRecent())
+        // Entries this window added before the history was read (a start-up warning) are already listed and also
+        // in the journal: they are not listed twice.
+        var shown = Activity.Select(item => (item.Timestamp, item.Level, item.Action)).ToHashSet();
+        foreach (var item in _activityJournal.ReadRecent().Where(record => !shown.Contains((record.Timestamp, record.Level, record.Action))))
             Activity.Add(new ActivityItemViewModel(item.Timestamp, item.Level, item.Action,
                 $"{item.ProfileName} · {item.Details} · operation {item.OperationId:N}", item.Source));
         _activityLoaded = true;

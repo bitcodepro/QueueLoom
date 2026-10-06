@@ -13,6 +13,12 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed;
 
+    /// <summary>
+    /// Why the last <see cref="LoadAsync"/> used default settings instead of the saved ones (a damaged, newer or
+    /// unreadable file); null when the file was read or there was none. The window tells the operator.
+    /// </summary>
+    public string? LoadProblem { get; private set; }
+
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -21,10 +27,22 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         {
             try
             {
-                return (await ReadAsync(cancellationToken).ConfigureAwait(false)).Settings;
+                var (settings, state, _) = await ReadAsync(cancellationToken).ConfigureAwait(false);
+                LoadProblem = state switch
+                {
+                    FileState.Damaged => $"The settings file {paths.SettingsFile} could not be read, so default settings " +
+                                         "(no saved searches, no alert webhook) are used. It is kept aside as a .damaged copy " +
+                                         "when settings are next saved.",
+                    FileState.Newer => $"The settings file {paths.SettingsFile} was written by a newer QueueLoom, so default " +
+                                       "settings are used and the file is left unchanged.",
+                    _ => null
+                };
+                return settings;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                LoadProblem = $"The settings file {paths.SettingsFile} could not be opened ({exception.Message}), so default " +
+                              "settings are used for now.";
                 return AppSettings.Default;
             }
         }

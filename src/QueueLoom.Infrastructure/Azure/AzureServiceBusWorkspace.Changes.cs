@@ -291,11 +291,21 @@ public sealed partial class AzureServiceBusWorkspace
 
                 progress?.Report(new DeadLetterPurgeProgress(
                     source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.BackingUp));
-                foreach (var backupBatch in messages.Chunk(BackupWriteConcurrency))
+                try
                 {
-                    await Task.WhenAll(backupBatch.Select(message =>
-                            backupSession.BackupAsync(message, source, subQueue, cancellationToken)))
-                        .ConfigureAwait(false);
+                    foreach (var backupBatch in messages.Chunk(BackupWriteConcurrency))
+                    {
+                        await Task.WhenAll(backupBatch.Select(message =>
+                                backupSession.BackupAsync(message, source, subQueue, cancellationToken)))
+                            .ConfigureAwait(false);
+                    }
+                }
+                catch
+                {
+                    // Nothing of this batch is deleted without a backup. Its messages are released now, instead of
+                    // staying locked (unseen by everyone) until their lock expires.
+                    await AbandonQuietlyAsync(receiver, messages).ConfigureAwait(false);
+                    throw;
                 }
                 backedUp = checked(backedUp + messages.Count);
 
@@ -320,6 +330,9 @@ public sealed partial class AzureServiceBusWorkspace
                 var settlementError = settlements.FirstOrDefault(exception => exception is not null);
                 if (settlementError is not null)
                 {
+                    // The ones not deleted are backed up and stay in the dead-letter queue; release them right away.
+                    await AbandonQuietlyAsync(receiver,
+                        messages.Where((_, index) => settlements[index] is not null).ToArray()).ConfigureAwait(false);
                     return new DeadLetterPurgeSourceResult(source, subQueue, deleted, settlementError.Message);
                 }
             }
@@ -344,6 +357,37 @@ public sealed partial class AzureServiceBusWorkspace
             return new DeadLetterPurgeSourceResult(source, subQueue, deleted, exception.Message);
         }
     }
+
+    /// <summary>Releases messages back to their queue; a lock already lost needs nothing, so failures are ignored.</summary>
+    /// <remarks>
+    /// The whole batch shares one short budget: against an unreachable namespace each call would otherwise spend the
+    /// full retry policy, holding the cancelled purge open for minutes. What is not released in time is released by
+    /// its lock expiring.
+    /// </remarks>
+    private static async Task AbandonQuietlyAsync(ServiceBusReceiver receiver, IReadOnlyList<ServiceBusReceivedMessage> messages)
+    {
+        using var budget = new CancellationTokenSource(AbandonBudgetOverride.Value ?? AbandonBudget);
+        foreach (var message in messages)
+        {
+            if (budget.IsCancellationRequested)
+            {
+                return;
+            }
+            try
+            {
+                await receiver.AbandonMessageAsync(message, propertiesToModify: null, budget.Token).WaitAsync(budget.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // The lock expires by itself; the message is not lost.
+            }
+        }
+    }
+
+    internal static readonly TimeSpan AbandonBudget = TimeSpan.FromSeconds(10);
+
+    /// <summary>Tests shorten the release budget.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> AbandonBudgetOverride = new();
 
     internal static bool HasConfirmedEmptyPurge(int consecutiveEmptyReceives) =>
         consecutiveEmptyReceives >= PurgeEmptyReceiveConfirmations;

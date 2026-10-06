@@ -171,6 +171,18 @@ internal sealed class WindowFixture : IAsyncDisposable
     public InMemoryProfileRepository ProfileRepository { get; }
     public string DataDirectory => _dataDirectory;
 
+    /// <summary>Shows the window over a settings file with the given content.</summary>
+    public static async Task<WindowFixture> OpenWithSettingsFileAsync(string content)
+    {
+        var fixture = new WindowFixture(DemoData.Development);
+        var paths = QueueLoomPaths.ForRoot(fixture._dataDirectory);
+        paths.EnsureCreated();
+        await File.WriteAllTextAsync(paths.SettingsFile, content);
+        fixture.Window.Show();
+        await fixture.SettleAsync();
+        return fixture;
+    }
+
     /// <summary>Shows the window while loading environments is held by <paramref name="gate"/>.</summary>
     public static async Task<WindowFixture> OpenHeldAsync(Task gate)
     {

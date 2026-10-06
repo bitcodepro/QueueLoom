@@ -57,6 +57,20 @@ public sealed class ClosingPreferencesUiTests
         Assert.Equal(120, (await settings.LoadAsync()).MonitorIntervalSeconds);
     });
 
+    // A damaged settings file: the window starts with defaults and says so in Activity.
+    [Fact]
+    public Task A_damaged_settings_file_is_reported() => UiSession.RunAsync(async () =>
+    {
+        await using var fixture = await WindowFixture.OpenWithSettingsFileAsync("{ not json");
+        for (var attempt = 0; attempt < 100 && !fixture.ViewModel.Activity.Any(item => item.Action == "Settings not loaded"); attempt++)
+        {
+            await fixture.SettleAsync();
+        }
+
+        var warning = Assert.Single(fixture.ViewModel.Activity, item => item.Action == "Settings not loaded");
+        Assert.Contains("could not be read", warning.Details, StringComparison.Ordinal);
+    });
+
     private static async Task CloseAsync(WindowFixture fixture)
     {
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
