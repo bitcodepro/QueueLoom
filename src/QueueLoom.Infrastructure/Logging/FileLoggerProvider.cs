@@ -146,43 +146,54 @@ public sealed class FileLoggerProvider : ILoggerProvider
         }
     }
 
+    // Kept as small, plain methods: code-coverage instrumentation rewrote a single loop with nested try blocks here
+    // into invalid IL on CI.
     private void WriteQueuedLines()
     {
         var reader = _queue.Reader;
-        while (true)
+        while (WaitForWork(reader))
         {
-            bool more;
-            try
-            {
-                more = reader.WaitToReadAsync().AsTask().GetAwaiter().GetResult();
-            }
-            catch (Exception)
-            {
-                more = false;
-            }
-            if (!more)
-            {
-                return;
-            }
             while (reader.TryRead(out var item))
             {
-                // One failure (any exception) costs that item only; the writer goes on with the next one.
-                try
-                {
-                    Process(item);
-                }
-                catch (Exception)
-                {
-                    if (item is LineItem)
-                    {
-                        Interlocked.Increment(ref _overflowCount);
-                    }
-                    if (item is FlushItem flush)
-                    {
-                        flush.Completion.TrySetResult();
-                    }
-                }
+                ProcessSafely(item);
             }
+        }
+    }
+
+    private static bool WaitForWork(ChannelReader<WorkItem> reader)
+    {
+        try
+        {
+            return reader.WaitToReadAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>One failure (any exception) costs that item only; the writer goes on with the next one.</summary>
+    private void ProcessSafely(WorkItem item)
+    {
+        try
+        {
+            Process(item);
+        }
+        catch (Exception)
+        {
+            Abandon(item);
+        }
+    }
+
+    private void Abandon(WorkItem item)
+    {
+        if (item is LineItem)
+        {
+            Interlocked.Increment(ref _overflowCount);
+        }
+        else if (item is FlushItem flush)
+        {
+            flush.Completion.TrySetResult();
         }
     }
 
@@ -222,7 +233,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
             // The desktop app and every MCP server process append to the same daily file; the cross-process lock
             // serializes appends without locking the log file itself, so readers are never blocked.
             using var writeLock = AcquireWriteLock();
-            if (writeLock is null)
+            // Checked again once the lock is held: an acquisition that succeeds after the shutdown budget was spent
+            // must not start an append after Dispose returned.
+            if (writeLock is null || _abandoned)
             {
                 if (text is not null) Interlocked.Increment(ref _overflowCount);
                 return;
@@ -290,7 +303,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
             {
                 return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
             }
-            catch (IOException) when (!_abandoned)
+            // Only contention is waited out. A missing directory (renamed or deleted logs folder) is not: it goes to the
+            // item's own recovery, and the next item recreates the directory before trying again.
+            catch (IOException exception) when (exception is not DirectoryNotFoundException && !_abandoned)
             {
                 Thread.Sleep(1);
             }

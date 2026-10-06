@@ -74,6 +74,65 @@ public sealed class FileLoggerLifecycleTests
         Assert.False(File.Exists(provider.CurrentFilePath), "A line was written after Dispose returned.");
     }
 
+    // The lock is acquired only after the shutdown budget was spent and Dispose returned: that late acquisition must
+    // not start an append.
+    [Fact]
+    public async Task ALockAcquiredAfterShutdownDoesNotWrite()
+    {
+        using var directory = new TemporaryDirectory();
+        Directory.CreateDirectory(directory.Path);
+        var entered = new SemaphoreSlim(0);
+        var gate = new ManualResetEventSlim(false);
+        FileLoggerProvider.AcquireWriteLockOverride.Value = path =>
+        {
+            entered.Release();
+            gate.Wait();
+            return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
+        };
+        FileLoggerProvider provider;
+        try
+        {
+            provider = new FileLoggerProvider(directory.Path, clock: () => Now, shutdownBudget: TimeSpan.FromMilliseconds(200));
+        }
+        finally
+        {
+            // The writer thread captured the override when it started; later tests must not see it.
+            FileLoggerProvider.AcquireWriteLockOverride.Value = null;
+        }
+        provider.CreateLogger("app").LogInformation("late line");
+        Assert.True(await entered.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        provider.Dispose();
+        gate.Set();
+        await Task.Delay(300);
+
+        Assert.False(File.Exists(provider.CurrentFilePath), "A line was written after Dispose returned.");
+    }
+
+    // The logs folder is renamed while the writer waits for the lock: the missing folder is not retried forever as
+    // contention. The waiting line is reported as dropped, and later logging recreates the folder and goes on.
+    [Fact]
+    public void ARemovedLogFolderIsRecreated()
+    {
+        if (OperatingSystem.IsWindows()) return; // a folder with an open file cannot be renamed on Windows
+        using var directory = new TemporaryDirectory();
+        var logs = Path.Combine(directory.Path, "logs");
+        var held = HoldLock(logs);
+        using var provider = new FileLoggerProvider(logs, clock: () => Now);
+        var logger = provider.CreateLogger("app");
+        logger.LogInformation("waiting");
+        Thread.Sleep(100);
+        Directory.Move(logs, Path.Combine(directory.Path, "logs-old"));
+        held.Dispose();
+
+        logger.LogInformation("after the move");
+        provider.Flush();
+
+        var text = File.ReadAllText(provider.CurrentFilePath);
+        Assert.Contains("after the move", text, StringComparison.Ordinal);
+        Assert.Equal(1, DroppedReported(text));
+    }
+
     // Flush waits for a full queue without holding anything other loggers need: logging from another thread goes on
     // at once (the line is counted as dropped), instead of waiting for the flush.
     [Fact]
