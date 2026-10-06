@@ -110,7 +110,7 @@ public sealed partial class ViewModelStateTests
     private static void SetPrivate(MainWindowViewModel vm, string name, object value) => typeof(MainWindowViewModel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(vm, value);
     private sealed class ThrowingScheduledStore : IScheduledResendStore
     {
-        public IReadOnlyList<ScheduledResend> Load() => [];
+        public IReadOnlyList<ScheduledResend> Load() => throw new IOException("isolated simulated storage failure");
         public void Save(IReadOnlyList<ScheduledResend> resends) => throw new IOException("isolated simulated storage failure");
         public void Add(ScheduledResend resend) => Save([resend]);
         public bool TryRemove(ScheduledResend expected) => throw new IOException("isolated simulated storage failure");

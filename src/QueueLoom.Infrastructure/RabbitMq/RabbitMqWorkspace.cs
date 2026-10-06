@@ -145,7 +145,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     protected override async Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken cancellationToken)
     {
         var vhost = Escape(_virtualHost);
-        var queues = await GetArrayAsync($"api/queues/{vhost}", cancellationToken).ConfigureAwait(false);
+        var queues = await GetArrayAsync($"api/queues/{vhost}?columns={QueueColumns}", cancellationToken).ConfigureAwait(false);
         var exchanges = await GetArrayAsync($"api/exchanges/{vhost}", cancellationToken).ConfigureAwait(false);
         var bindings = await GetArrayAsync($"api/bindings/{vhost}", cancellationToken).ConfigureAwait(false);
         _index = new RabbitMqTopologyIndex(
@@ -279,6 +279,17 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         }
     }
 
+    /// <summary>
+    /// The queue fields <see cref="RabbitQueueInfo.From"/> reads. Without a column list the management API returns every
+    /// queue's full statistics (message rates, backing-queue state, garbage collection, slave nodes), which on thousands
+    /// of queues is a heavy request for the broker and megabytes of JSON for each refresh.
+    /// </summary>
+    internal const string QueueColumns =
+        "name,type,messages_ready,messages_unacknowledged,arguments,effective_policy_definition,state,consumers";
+
+    /// <summary>At most this much of an error response is shown; a proxy's HTML page would otherwise fill the status line.</summary>
+    internal const int MaximumErrorCharacters = 1_000;
+
     private async Task<IReadOnlyList<JsonElement>> GetArrayAsync(string path, CancellationToken cancellationToken)
     {
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
@@ -304,8 +315,23 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 "The virtual host was not found, or the user has no permissions on it."),
             _ => new InvalidOperationException(
                 $"RabbitMQ {what} answered {(int)response.StatusCode} {response.ReasonPhrase}: " +
-                $"{(await response.Content.ReadAsStringAsync().ConfigureAwait(false)).Trim()}")
+                await ReadErrorTextAsync(response).ConfigureAwait(false))
         };
+    }
+
+    /// <summary>The start of an error response as one line of text, at most <see cref="MaximumErrorCharacters"/> long.</summary>
+    private static async Task<string> ReadErrorTextAsync(HttpResponseMessage response)
+    {
+        try
+        {
+            var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var line = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            return line.Length > MaximumErrorCharacters ? line[..MaximumErrorCharacters] + "…" : line;
+        }
+        catch (Exception exception) when (exception is IOException or HttpRequestException)
+        {
+            return "(the error text could not be read)";
+        }
     }
 
     private static string Escape(string virtualHost) => Uri.EscapeDataString(virtualHost);
@@ -343,11 +369,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 }
 
                 _held.Add(result.DeliveryTag);
-                var message = RabbitMqMessageMapper.FromAmqp(result.Body, result.BasicProperties, result.RoutingKey, source, subQueue);
-                if (brokerOwnedHeaders is { Count: > 0 })
-                {
-                    message = message with { BrokerOwnedHeaders = brokerOwnedHeaders };
-                }
+                // Ownership must be known before deriving the no-ID selection key, as well as the fingerprint.
+                var message = RabbitMqMessageMapper.FromAmqp(result.Body, result.BasicProperties, result.RoutingKey, source, subQueue, brokerOwnedHeaders);
                 var belongs = belongsTo is null || RabbitMqMessageMapper.DeadLetteredFrom(result.BasicProperties) == belongsTo;
                 messages.Add(new LeasedMessage(message, result.DeliveryTag.ToString(System.Globalization.CultureInfo.InvariantCulture), belongs)
                     { DeliveryIdentity = $"{_identity}:{result.DeliveryTag}" });

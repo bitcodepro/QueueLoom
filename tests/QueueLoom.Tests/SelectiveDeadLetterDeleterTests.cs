@@ -302,7 +302,7 @@ public sealed class SelectiveDeadLetterDeleterTests
             return Task.CompletedTask;
         }
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message)
+        public Task AbandonAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken)
         {
             OnAbandon?.Invoke(message);
             lock (_messages)

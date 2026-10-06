@@ -104,14 +104,16 @@ public sealed partial class MainWindowViewModel
     /// <see cref="MaximumAlertsInFlight"/> earlier alerts are still being delivered (a slow or hanging webhook), a new
     /// one is skipped and noted instead of starting yet another delivery; each delivery is bounded in time.
     /// </summary>
-    internal void RaiseMonitorAlert(string environment, string source, long count, long? previousCount)
+    internal void RaiseMonitorAlert(string environment, string source, long count, long? previousCount) =>
+        RaiseMonitorAlert(new MonitorAlert(environment, source, count, previousCount));
+
+    private void RaiseMonitorAlert(MonitorAlert alert)
     {
         if (_alerts is not { } alerts)
         {
             return;
         }
 
-        var alert = new MonitorAlert(environment, source, count, previousCount);
         if (Interlocked.Increment(ref _alertsInFlight) > MaximumAlertsInFlight)
         {
             Interlocked.Decrement(ref _alertsInFlight);

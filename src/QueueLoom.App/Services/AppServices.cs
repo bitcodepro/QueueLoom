@@ -19,13 +19,18 @@ public static class AppServices
         ArgumentNullException.ThrowIfNull(paths);
         var services = new ServiceCollection();
 
+        // The file logger writes on a background thread; it is created by the container (not passed in) so that
+        // disposing the container at shutdown also drains the lines still queued. AddProvider(instance) would leave
+        // the instance unowned, and its last lines would be lost on exit.
+        services.AddSingleton(_ => new FileLoggerProvider(Path.Combine(paths.RootDirectory, "logs")));
         services.AddLogging(logging =>
         {
             logging.SetMinimumLevel(LogLevel.Information);
-            logging.AddProvider(new FileLoggerProvider(Path.Combine(paths.RootDirectory, "logs")));
+            logging.Services.AddSingleton<ILoggerProvider>(provider => provider.GetRequiredService<FileLoggerProvider>());
         });
 
         services.AddSingleton(paths);
+        services.AddSingleton(_ => new LegacyBackupMigration(paths));
         services.AddSingleton(DiagnosticsJournal.Session);
         services.AddSingleton<JsonProfileRepository>();
         services.AddSingleton<IProfileRepository>(provider => provider.GetRequiredService<JsonProfileRepository>());

@@ -292,7 +292,8 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             }).ToArray();
         using var installer = Process.GetCurrentProcess();
         var receipt = new UpdateRestart.Receipt(id, target, downloadDirectory, entries,
-            InstallerPid: installer.Id, InstallerStartTicks: installer.StartTime.ToUniversalTime().Ticks);
+            InstallerPid: installer.Id, InstallerStartTicks: installer.StartTime.ToUniversalTime().Ticks)
+        { BundleBackupDirectories = MacBackupMigration.CaptureDirectories(target) };
         var moves = new List<(string Current, string Old)>();
         var added = new List<string>();
         // A previous unfinished update must be recovered, not overwritten.
@@ -320,6 +321,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 {
                     throw new InvalidOperationException("The package does not contain a complete QueueLoom.app with its executable.");
                 }
+                MacBackupMigration.Preserve(receipt, bundle);
                 ReplaceDirectory(bundle, newBundle, moves, added, id);
                 MakeExecutable(Path.Combine(bundle, "Contents", "MacOS", "QueueLoom"));
             }
@@ -347,11 +349,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             {
                 if (Directory.Exists(old))
                 {
-                    Directory.Move(old, current);
+                    UpdateRestart.MoveRetrying(() => Directory.Move(old, current));
                 }
                 else if (File.Exists(old))
                 {
-                    File.Move(old, current, overwrite: true);
+                    UpdateRestart.MoveRetrying(() => File.Move(old, current, overwrite: true));
                 }
             }
             File.Delete(receiptPath);
@@ -433,23 +435,23 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         if (File.Exists(current))
         {
             var old = current + "." + id + ".old";
-            File.Move(current, old);
+            UpdateRestart.MoveRetrying(() => File.Move(current, old));
             moves.Add((current, old));
         }
         else
         {
             added.Add(current);
         }
-        File.Move(replacement, current);
+        UpdateRestart.MoveRetrying(() => File.Move(replacement, current));
     }
 
     private static void ReplaceDirectory(string current, string replacement, List<(string, string)> moves, List<string> added, string id)
     {
         var old = current + "." + id + ".old";
-        Directory.Move(current, old);
+        UpdateRestart.MoveRetrying(() => Directory.Move(current, old));
         moves.Add((current, old));
         added.Add(current);
-        Directory.Move(replacement, current);
+        UpdateRestart.MoveRetrying(() => Directory.Move(replacement, current));
     }
 
     private static void MakeExecutable(string path)

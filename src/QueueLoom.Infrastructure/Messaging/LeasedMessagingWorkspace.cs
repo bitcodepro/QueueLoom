@@ -372,6 +372,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterMessageDeletionResult>(request.Messages.Count);
+        var warnings = new List<string>();
 
         for (var index = 0; index < groups.Length; index++)
         {
@@ -393,13 +394,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                     index + 1,
                     groups.Length,
                     progress,
-                    cancellationToken)
+                    cancellationToken,
+                    warnings.Add)
                 .ConfigureAwait(false));
         }
 
         _cachedTopology = null;
         return new DeleteDeadLetterMessagesResult(profile.Id, startedAt, TimeProvider.GetUtcNow(), results,
-            backupSession.RootDirectory);
+            backupSession.RootDirectory) { Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray() };
     }
 
     public virtual QueueManagementCapabilities? QueueManagement => null;
@@ -728,11 +730,13 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         int queueNumber,
         int queueCount,
         IProgress<DeadLetterMessageDeletionProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? cleanupWarning = null)
     {
         var outcomes = keys.ToDictionary(key => key, _ => (Outcome: DeadLetterMessageDeletionOutcome.NotFound, Detail: (string?)null));
         var pending = keys.ToList();
         var attempted = new HashSet<DeadLetterMessageKey>();
+        var settlementAttempted = new HashSet<DeadLetterMessageKey>();
         var held = new List<LeasedMessage>();
         var scanned = 0;
         var deleted = 0;
@@ -772,6 +776,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                         continue;
                     }
 
+                    settlementAttempted.Add(key);
                     var failed = await channel.SettleAsync([message], CancellationToken.None).ConfigureAwait(false);
                     if (failed.Count == 0)
                     {
@@ -794,7 +799,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             foreach (var key in pending)
             {
                 if (outcomes[key].Outcome != DeadLetterMessageDeletionOutcome.Failed)
-                    outcomes[key] = (DeadLetterMessageDeletionOutcome.Cancelled, null);
+                    outcomes[key] = settlementAttempted.Contains(key)
+                        ? (DeadLetterMessageDeletionOutcome.Failed, "Deletion outcome is unknown: the message may already have been deleted. Inspect the source and backup before retrying.")
+                        : (DeadLetterMessageDeletionOutcome.Cancelled, null);
             }
         }
         catch (Exception exception)
@@ -807,7 +814,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         }
         finally
         {
-            await ReleaseQuietlyAsync(channel, held).ConfigureAwait(false);
+            if (await ReleaseQuietlyAsync(channel, held).ConfigureAwait(false) is { } warning)
+                cleanupWarning?.Invoke(warning);
         }
 
         return keys.Select(key => new DeadLetterMessageDeletionResult(key, outcomes[key].Outcome, outcomes[key].Detail)).ToArray();

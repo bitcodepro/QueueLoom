@@ -293,17 +293,8 @@ public sealed partial class MainWindowViewModel
             $"{marked.Length:N0} messages in {sources.Length:N0} dead-letter queues",
             null);
 
-        using var deleteCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var deleteCancellation = CreateExpiryBoundedWriteCancellation(connectedProfileId, cancellationToken);
         var temporaryUnlockExpiresAt = _writeUnlockProfileId == connectedProfileId ? _writeUnlockExpiresAt : null;
-        if (temporaryUnlockExpiresAt is { } expiresAt)
-        {
-            var remaining = expiresAt - DateTimeOffset.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-            {
-                throw new InvalidOperationException("Temporary write access expired before the deletion started.");
-            }
-            deleteCancellation.CancelAfter(remaining);
-        }
 
         var progress = new Progress<DeadLetterMessageDeletionProgress>(update =>
             StatusText = $"Queue {update.QueueNumber}/{update.QueueCount} · {update.Source.DisplayName} · " +
@@ -318,7 +309,7 @@ public sealed partial class MainWindowViewModel
         catch (OperationCanceledException) when (
             !cancellationToken.IsCancellationRequested &&
             temporaryUnlockExpiresAt.HasValue &&
-            DateTimeOffset.UtcNow >= temporaryUnlockExpiresAt.Value)
+            Clock.GetUtcNow() >= temporaryUnlockExpiresAt.Value)
         {
             throw new InvalidOperationException(
                 "Temporary write access expired during the deletion. Some messages may already have been deleted; search again.");
@@ -334,7 +325,7 @@ public sealed partial class MainWindowViewModel
         var summary = $"{result.DeletedCount:N0} of {marked.Length:N0} deleted" +
                       (result.NotFoundCount > 0 ? $" · {result.NotFoundCount:N0} not found" : string.Empty) +
                       (result.FailedCount > 0 ? $" · {result.FailedCount:N0} failed" : string.Empty) +
-                      (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not processed (cancelled)" : string.Empty);
+                      (result.CancelledCount > 0 ? $" · {result.CancelledCount:N0} not processed (cancelled)" : string.Empty) + OperationWarnings(result.Warnings);
         StatusText = $"Selected messages: {summary}";
         MessageListTitle = $"Backup saved to {result.BackupDirectory}";
         // "Backed up and deleted" only when every ticked message was; not found or cancelled ones were not deleted.

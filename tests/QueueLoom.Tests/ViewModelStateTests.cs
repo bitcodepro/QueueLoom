@@ -848,6 +848,7 @@ public sealed partial class ViewModelStateTests
         /// <summary>Upserts after this many succeed fail (null: never).</summary>
         public int? FailUpsertsAfter { get; set; }
         public Func<CancellationToken, Task>? ListGate { get; set; }
+        public Func<Guid, CancellationToken, Task<ServiceBusProfile?>>? GetGate { get; set; }
 
         public async Task<IReadOnlyList<ServiceBusProfile>> ListAsync(CancellationToken cancellationToken = default)
         {
@@ -856,7 +857,7 @@ public sealed partial class ViewModelStateTests
         }
 
         public Task<ServiceBusProfile?> GetAsync(Guid profileId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(_profiles.FirstOrDefault(profile => profile.Id == profileId));
+            GetGate?.Invoke(profileId, cancellationToken) ?? Task.FromResult(_profiles.FirstOrDefault(profile => profile.Id == profileId));
 
         public Task UpsertAsync(ServiceBusProfile profile, CancellationToken cancellationToken = default)
         {
@@ -943,6 +944,7 @@ public sealed partial class ViewModelStateTests
 
     internal sealed class FakeWorkspace : IServiceBusWorkspace, ICleanupWarningSource
     {
+        public IReadOnlyList<string> ResultWarnings { get; set; } = [];
         public Dictionary<Guid, DeadLetterSnapshot> Snapshots { get; } = [];
 
         public List<DeadLetterPurgeRequest> PurgeRequests { get; } = [];
@@ -1121,7 +1123,7 @@ public sealed partial class ViewModelStateTests
                 now,
                 now,
                 results,
-                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")) { Warnings = ResultWarnings });
         }
 
         public QueueManagementCapabilities? QueueManagement { get; set; }
@@ -1194,11 +1196,14 @@ public sealed partial class ViewModelStateTests
         /// <summary>The outcome the fake reports for each pending message; removed when not set (e.g. Cancelled for a stopped run).</summary>
         public Func<BrowsedMessage, DeadLetterMessageDeletionOutcome>? PendingOutcome { get; set; }
 
+        public Func<IReadOnlyList<BrowsedMessage>, CancellationToken, Task<RemovePendingMessagesResult>>? PendingRemoval { get; set; }
+
         public Task<RemovePendingMessagesResult> RemovePendingMessagesAsync(
             IReadOnlyList<BrowsedMessage> messages,
             CancellationToken cancellationToken = default)
         {
             PendingRemovals.Add(messages);
+            if (PendingRemoval is not null) return PendingRemoval(messages, cancellationToken);
             return Task.FromResult(new RemovePendingMessagesResult(
                 messages.Select(message => new PendingMessageRemovalResult(message, PendingOutcome?.Invoke(message) ?? DeadLetterMessageDeletionOutcome.Deleted)).ToArray(),
                 Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
@@ -1233,7 +1238,7 @@ public sealed partial class ViewModelStateTests
                             : DeadLetterMessageDeletionOutcome.Deleted,
                     FailedSequenceNumbers.Contains(key.SequenceNumber) ? "Settlement response lost."
                         : MissingSequenceNumbers.Contains(key.SequenceNumber) ? "Already gone." : null)),
-                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")) { Warnings = ResultWarnings });
         }
 
         public async Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(

@@ -136,19 +136,10 @@ public sealed partial class MainWindowViewModel
         StatusText =
             $"Backing up and purging {knownCount:N0} known messages from {targetDescription}...";
 
-        using var purgeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var purgeCancellation = CreateExpiryBoundedWriteCancellation(connectedProfileId, cancellationToken);
         var temporaryUnlockExpiresAt = _writeUnlockProfileId == connectedProfileId
             ? _writeUnlockExpiresAt
             : null;
-        if (temporaryUnlockExpiresAt is { } expiresAt)
-        {
-            var remaining = expiresAt - DateTimeOffset.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-            {
-                throw new InvalidOperationException("Temporary write access expired before the purge started.");
-            }
-            purgeCancellation.CancelAfter(remaining);
-        }
 
         DeadLetterPurgeResult result;
         var progress = new Progress<DeadLetterPurgeProgress>(update =>
@@ -182,7 +173,7 @@ public sealed partial class MainWindowViewModel
         catch (OperationCanceledException) when (
             !cancellationToken.IsCancellationRequested &&
             temporaryUnlockExpiresAt.HasValue &&
-            DateTimeOffset.UtcNow >= temporaryUnlockExpiresAt.Value)
+            Clock.GetUtcNow() >= temporaryUnlockExpiresAt.Value)
         {
             throw new InvalidOperationException(
                 "Temporary write access expired during the purge. Some messages may already have been deleted; rescan the environment.");
@@ -206,11 +197,12 @@ public sealed partial class MainWindowViewModel
             : pendingVerifications > 0
                 ? $"Backed up and purged {result.DeletedCount:N0} messages · Azure counters are refreshing; rescan recommended"
                 : $"Backed up and purged {result.DeletedCount:N0} dead-letter messages from {targetDescription}";
+        StatusText += OperationWarnings(result.Warnings);
         AddActivity(
             failures == 0 ? "Warning" : "Error",
             failures == 0 ? "Dead letters backed up and purged" : "Partial dead-letter backup/purge",
             $"{targetDescription} · {result.DeletedCount:N0} backed up and deleted · " +
-            $"{failures:N0} errors · {pendingVerifications:N0} counters pending · {result.BackupDirectory}");
+            $"{failures:N0} errors · {pendingVerifications:N0} counters pending · {result.BackupDirectory}" + OperationWarnings(result.Warnings));
         if (failures > 0)
         {
             var firstError = result.Sources.First(source => !source.IsSuccessful).Error;

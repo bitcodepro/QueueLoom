@@ -1,7 +1,9 @@
 using QueueLoom.App.Models;
+using QueueLoom.App.Services;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
+using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
 
@@ -441,6 +443,10 @@ public sealed partial class MainWindowViewModel
     private void CaptureMonitorSnapshot(ProfileItemViewModel profile, DeadLetterSnapshot snapshot)
     {
         var detectedAt = DateTimeOffset.UtcNow;
+        // Everything one check finds goes out as one alert: a broker outage that dead-letters into fifty queues sends
+        // one notification and one webhook post, not fifty (most of which the in-flight limit would then drop).
+        var alerts = new List<MonitorAlert>();
+        var changes = new List<(ServiceBusEntityReference Entity, string Text)>();
         foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
@@ -469,13 +475,9 @@ public sealed partial class MainWindowViewModel
                     existing.LastDetectedAt = detectedAt;
                     if (count > previousCount)
                     {
-                        RaiseMonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount);
+                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount));
                     }
-                    AddActivity(
-                        "Warning",
-                        "DLQ count changed",
-                        $"{profile.Name} · {entity.Entity.DisplayName} · {previousCount:N0} → {count:N0}",
-                        entity.Entity);
+                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previousCount:N0} → {count:N0}"));
                 }
                 continue;
             }
@@ -489,7 +491,7 @@ public sealed partial class MainWindowViewModel
                 detectedAt);
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
-            RaiseMonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null);
+            alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null));
             AddActivity(
                 "Warning",
                 "DLQ detected",
@@ -497,7 +499,36 @@ public sealed partial class MainWindowViewModel
                 entity.Entity);
         }
 
+        ReportCountChanges(profile, changes);
+        if (alerts.Count > 0)
+        {
+            RaiseMonitorAlert(QueueLoom.App.Services.MonitorAlert.Combine(alerts));
+        }
         NotifyMonitorNotificationsChanged();
+    }
+
+    /// <summary>At most this many count changes of one check are listed one by one; more become one entry.</summary>
+    internal const int MaximumSeparateCountChanges = 3;
+
+    /// <summary>
+    /// A few changed queues keep one entry each, linked to the queue. When a check finds many (an outage moving dead
+    /// letters in dozens of queues, every check), they become one entry: each Activity entry is a file written to disk
+    /// on the window's thread, and fifty of them per check would stall it and bury everything else in Activity.
+    /// </summary>
+    private void ReportCountChanges(ProfileItemViewModel profile, List<(ServiceBusEntityReference Entity, string Text)> changes)
+    {
+        if (changes.Count <= MaximumSeparateCountChanges)
+        {
+            foreach (var (entity, text) in changes)
+            {
+                AddActivity("Warning", "DLQ count changed", $"{profile.Name} · {text}", entity);
+            }
+            return;
+        }
+        const int listed = 5;
+        AddActivity("Warning", "DLQ counts changed",
+            $"{profile.Name} · {changes.Count:N0} queues · " + string.Join("; ", changes.Take(listed).Select(change => change.Text)) +
+            (changes.Count > listed ? $"; and {changes.Count - listed:N0} more" : string.Empty));
     }
 
     private void ClearMonitorNotifications()

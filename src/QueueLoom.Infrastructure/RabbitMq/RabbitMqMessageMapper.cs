@@ -23,7 +23,8 @@ internal static class RabbitMqMessageMapper
         IReadOnlyBasicProperties properties,
         string routingKey,
         ServiceBusEntityReference source,
-        ServiceBusSubQueue subQueue)
+        ServiceBusSubQueue subQueue,
+        IReadOnlySet<string>? brokerOwnedHeaders = null)
     {
         var headers = properties.Headers ?? new Dictionary<string, object?>();
         var death = FirstDeath(headers);
@@ -53,7 +54,7 @@ internal static class RabbitMqMessageMapper
         return new BrowsedMessage(
             source,
             subQueue,
-            LeasedMessageIdentity.SequenceNumberFor(messageProperties.MessageId ?? ContentIdentity(body, properties)),
+            LeasedMessageIdentity.SequenceNumberFor(messageProperties.MessageId ?? ContentIdentity(body, properties, brokerOwnedHeaders)),
             body,
             messageProperties,
             applicationProperties,
@@ -66,7 +67,7 @@ internal static class RabbitMqMessageMapper
                 ? null
                 : $"From {death.Queue ?? "(unknown queue)"}" + (death.Count > 1 ? $", {death.Count} times" : string.Empty) +
                   (death.Time is { } time ? $", at {time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : string.Empty))
-        { HasSequenceNumber = false };
+        { HasSequenceNumber = false, BrokerOwnedHeaders = brokerOwnedHeaders ?? new HashSet<string>() };
     }
 
     /// <summary>The queue the message was dead-lettered from (the newest x-death entry), if any.</summary>
@@ -289,13 +290,14 @@ internal static class RabbitMqMessageMapper
     };
 
     /// <summary>A stable key for messages without a message ID: the body and the properties that do not change while it waits.</summary>
-    private static string ContentIdentity(ReadOnlyMemory<byte> body, IReadOnlyBasicProperties properties)
+    private static string ContentIdentity(ReadOnlyMemory<byte> body, IReadOnlyBasicProperties properties, IReadOnlySet<string>? brokerOwnedHeaders)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(body.Span);
         hash.AppendData(Encoding.UTF8.GetBytes(
             $"|{properties.CorrelationId}|{properties.Type}|{(properties.IsTimestampPresent() ? properties.Timestamp.UnixTime : 0)}|" +
-            string.Join(",", (properties.Headers ?? new Dictionary<string, object?>()).Keys.Order(StringComparer.Ordinal))));
+            string.Join(",", (properties.Headers ?? new Dictionary<string, object?>()).Keys
+                .Where(name => brokerOwnedHeaders?.Contains(name) != true).Order(StringComparer.Ordinal))));
         return "content:" + Convert.ToHexString(hash.GetHashAndReset());
     }
 }

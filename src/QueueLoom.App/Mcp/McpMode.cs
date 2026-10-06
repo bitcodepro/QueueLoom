@@ -13,6 +13,7 @@ using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Infrastructure.Security;
 using QueueLoom.Mcp;
+using QueueLoom.App.Services;
 
 namespace QueueLoom.App.Mcp;
 
@@ -37,14 +38,16 @@ internal static class McpMode
         var logs = new FileLoggerProvider(Path.Combine(paths.RootDirectory, "logs"));
         LoadProtobufSchemas(paths);
 
-        if (!settings.ReadOnly && HasDesktopSession())
+        // Also in read-only mode: a read of live messages on SQS, Pub/Sub or RabbitMQ asks for approval, and a client
+        // without elicitation can only get it from the desktop window.
+        if (UsesDesktopApprover(HasDesktopSession()))
         {
             // Avalonia must own the main thread; the server runs beside it and ends the app when the client leaves.
-            App.BackgroundService = () => RunServerAsync(settings, paths, logs, new DesktopApprover());
+            App.BackgroundService = () => RunServerOwningLogsAsync(settings, paths, logs, new DesktopApprover());
             return buildAvaloniaApp().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
         }
 
-        RunServerAsync(settings, paths, logs, new ElicitationApprover()).GetAwaiter().GetResult();
+        RunServerOwningLogsAsync(settings, paths, logs, new ElicitationApprover()).GetAwaiter().GetResult();
         return 0;
     }
 
@@ -65,17 +68,65 @@ internal static class McpMode
         }
     }
 
-    private static async Task RunServerAsync(
+    /// <summary>
+    /// Runs the server and then disposes the file logger, which drains the lines still queued. The logging host only
+    /// receives the instance (AddProvider) and does not dispose it.
+    /// </summary>
+    internal static async Task RunServerOwningLogsAsync(McpServerSettings settings, QueueLoomPaths paths, FileLoggerProvider logs,
+        IOperationApprover approver)
+    {
+        try
+        {
+            await RunServerAsync(settings, paths, logs, approver).ConfigureAwait(false);
+        }
+        finally
+        {
+            logs.Dispose();
+        }
+    }
+
+    internal static async Task RunServerAsync(
         McpServerSettings settings,
         QueueLoomPaths paths,
         FileLoggerProvider logs,
-        IOperationApprover approver)
+        IOperationApprover approver,
+        Func<CancellationToken, Task<int>>? migrateBackups = null,
+        Func<Task>? runServer = null)
     {
-        // An MCP server can run for days and appends to the shared Activity journal, so it applies the same retention.
-        // Operation history belongs to the desktop app, which cleans it up itself.
-        using var retention = new LocalHistoryRetention(new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")), null);
-        _ = retention.Start();
-        await RunMcpServerAsync(settings, paths, logs, approver).ConfigureAwait(false);
+        using var migrationCancellation = new CancellationTokenSource();
+        var migration = MigrateBackupsAsync(paths, migrateBackups ?? new LegacyBackupMigration(paths).RunAsync, migrationCancellation.Token);
+        try
+        {
+            // Serving must not wait for a large first migration or the desktop's migration lock.
+            using var retention = new LocalHistoryRetention(new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")), null);
+            _ = retention.Start();
+            await (runServer?.Invoke() ?? RunMcpServerAsync(settings, paths, logs, approver)).ConfigureAwait(false);
+        }
+        finally
+        {
+            migrationCancellation.Cancel();
+            await migration.ConfigureAwait(false);
+        }
+    }
+
+    private static async Task MigrateBackupsAsync(QueueLoomPaths paths, Func<CancellationToken, Task<int>> migrateBackups, CancellationToken token)
+    {
+        try
+        {
+            var copied = await migrateBackups(token).ConfigureAwait(false);
+            if (copied > 0 || paths.BackupDirectoryWarning is not null)
+            {
+                var action = copied > 0 ? "Legacy backups preserved" : "Backup directory changed";
+                var detail = copied > 0 ? $"{copied:N0} backup file(s) copied outside the application bundle; originals kept." : paths.BackupDirectoryWarning!;
+                try { new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")).Append(
+                    new ActivityRecord(Guid.NewGuid(), DateTimeOffset.UtcNow, "Info", action, detail, null, null, null)); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                { await Console.Error.WriteLineAsync("Backup migration finished, but its Activity entry could not be saved."); }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { await Console.Error.WriteLineAsync("Legacy backups could not be migrated; originals remain in the application bundle."); }
     }
 
     private static Task RunMcpServerAsync(
@@ -102,6 +153,9 @@ internal static class McpMode
                 logging.SetMinimumLevel(LogLevel.Information);
                 logging.AddProvider(logs);
             });
+
+    /// <summary>Whether approvals use the desktop window; it does not depend on read-only mode, which only hides change tools.</summary>
+    internal static bool UsesDesktopApprover(bool hasDesktopSession) => hasDesktopSession;
 
     private static bool HasDesktopSession() =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ||

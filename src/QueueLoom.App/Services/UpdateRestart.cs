@@ -18,7 +18,10 @@ public static class UpdateRestart
     public const string DownloadMarker = ".queueloom-download";
     public sealed record Entry(string Current, string? Backup);
     public sealed record Receipt(string Id, UpdateTarget Target, string DownloadDirectory, Entry[] Entries, bool Recovered = false,
-        int InstallerPid = 0, long InstallerStartTicks = 0);
+        int InstallerPid = 0, long InstallerStartTicks = 0)
+    {
+        public string[]? BundleBackupDirectories { get; init; }
+    }
     private static string? _startupReceipt;
     private static string? _startupId;
 
@@ -197,13 +200,15 @@ public static class UpdateRestart
                 throw new IOException($"Recovery cannot verify the previous installation: backup is missing for {Path.GetFileName(entry.Current)}. Keep the update receipt and remaining files.");
         foreach (var entry in receipt.Entries.Reverse())
         {
+            if (entry.Current == receipt.Target.Bundle)
+                MacBackupMigration.Preserve(receipt, entry.Current);
             var failed = entry.Current + "." + receipt.Id + ".failed";
-            if (Directory.Exists(entry.Current)) Directory.Move(entry.Current, failed);
-            else if (File.Exists(entry.Current)) File.Move(entry.Current, failed);
+            if (Directory.Exists(entry.Current)) MoveRetrying(() => Directory.Move(entry.Current, failed));
+            else if (File.Exists(entry.Current)) MoveRetrying(() => File.Move(entry.Current, failed));
             if (entry.Backup is not null)
             {
-                if (Directory.Exists(entry.Backup)) Directory.Move(entry.Backup, entry.Current);
-                else File.Move(entry.Backup, entry.Current);
+                if (Directory.Exists(entry.Backup)) MoveRetrying(() => Directory.Move(entry.Backup, entry.Current));
+                else MoveRetrying(() => File.Move(entry.Backup, entry.Current));
             }
         }
         if (!File.Exists(receipt.Target.Executable))
@@ -218,6 +223,13 @@ public static class UpdateRestart
         {
             foreach (var entry in receipt.Entries)
             {
+                // Copy again after the old process exited: it may have written a final backup during handoff.
+                // Any preservation failure leaves the old bundle and receipt available for retry.
+                if (entry.Current == receipt.Target.Bundle)
+                {
+                    if (entry.Backup is not null) MacBackupMigration.Preserve(receipt, entry.Backup);
+                    if (receipt.Recovered) MacBackupMigration.Preserve(receipt, entry.Current + "." + receipt.Id + ".failed");
+                }
                 if (entry.Backup is not null) TryDelete(entry.Backup);
                 if (receipt.Recovered) TryDelete(entry.Current + "." + receipt.Id + ".failed");
             }
@@ -329,5 +341,32 @@ public static class UpdateRestart
             else File.Delete(path);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>How long a rename may wait for a file another program has open (Windows only).</summary>
+    internal static readonly TimeSpan SharingRetryTime = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Renames, retrying for a while when Windows reports the file in use. An antivirus scanner (Microsoft Defender on a
+    /// freshly extracted program, for example) or a search indexer opens new files briefly without sharing deletion,
+    /// and a rename in that moment fails with a sharing violation although nothing is wrong. Other errors, and every
+    /// error on other systems, are thrown at once.
+    /// </summary>
+    internal static void MoveRetrying(Action move)
+    {
+        var started = Environment.TickCount64;
+        while (true)
+        {
+            try
+            {
+                move();
+                return;
+            }
+            catch (IOException exception) when (OperatingSystem.IsWindows() && (exception.HResult & 0xFFFF) is 32 or 33 &&
+                                                Environment.TickCount64 - started < SharingRetryTime.TotalMilliseconds)
+            {
+                Thread.Sleep(50);
+            }
+        }
     }
 }

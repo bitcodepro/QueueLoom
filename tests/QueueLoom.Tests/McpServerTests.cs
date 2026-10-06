@@ -14,7 +14,7 @@ using static QueueLoom.Tests.ViewModelStateTests;
 
 namespace QueueLoom.Tests;
 
-public sealed class McpServerTests
+public sealed partial class McpServerTests
 {
     private static readonly ServiceBusQueue Orders = new(
         "orders",
@@ -248,6 +248,76 @@ public sealed class McpServerTests
         Assert.Equal(ProfileAccessMode.ReadOnly, server.Workspace.ConnectedAccessMode);
     }
 
+    // SQS, Pub/Sub and RabbitMQ have no peek: reading a live queue counts as a delivery and can make a redrive policy
+    // move the messages. The read tools are marked read-only (clients may run them unasked), so such a read asks the
+    // person first; refused, nothing is read. Dead-letter queues and Azure (a real peek) read without asking.
+    [Theory]
+    [InlineData(MessagingProvider.AmazonSqsSns, "active", true)]
+    [InlineData(MessagingProvider.GooglePubSub, "active", true)]
+    [InlineData(MessagingProvider.RabbitMq, "active", true)]
+    [InlineData(MessagingProvider.AmazonSqsSns, "dlq", false)]
+    [InlineData(MessagingProvider.AzureServiceBus, "active", false)]
+    [InlineData(MessagingProvider.Kafka, "active", false)]
+    public async Task ReadingALiveQueueThatCountsDeliveriesAsksFirst(MessagingProvider provider, string subQueue, bool asks)
+    {
+        await using var server = await McpTestServer.StartAsync(provider: provider);
+
+        foreach (var (tool, arguments) in new (string, Dictionary<string, object?>)[]
+                 {
+                     ("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = subQueue }),
+                     ("export_messages", new() { ["entity"] = "orders", ["subQueue"] = subQueue })
+                 })
+        {
+            if (asks)
+            {
+                Assert.Contains("Not read", await server.CallForErrorAsync(tool, arguments), StringComparison.Ordinal);
+            }
+            else
+            {
+                await server.CallAsync(tool, arguments);
+            }
+        }
+
+        Assert.Equal(asks ? 2 : 0, server.Approver.Requests.Count);
+        Assert.Equal(asks ? 0 : 2, server.Workspace.BrowseRequests.Count);
+        if (asks)
+        {
+            Assert.All(server.Approver.Requests, request => Assert.Contains("counts each read as a delivery", request.Details, StringComparison.Ordinal));
+        }
+    }
+
+    // In read-only mode change tools are hidden, but a live read still needs approval: the server still has an
+    // approver (the desktop window wherever there is a desktop, whatever the mode), and approved, the read is done.
+    [Fact]
+    public async Task AReadOnlyServerCanStillApproveALiveRead()
+    {
+        Assert.True(QueueLoom.App.Mcp.McpMode.UsesDesktopApprover(hasDesktopSession: true));
+        await using var server = await McpTestServer.StartAsync(readOnly: true, approve: true, provider: MessagingProvider.RabbitMq);
+
+        var tools = await server.Client.ListToolsAsync();
+        var peek = await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active" });
+
+        Assert.DoesNotContain(tools, tool => tool.Name == "delete_dead_letter_messages");
+        Assert.Equal(2, peek.GetProperty("messages").GetArrayLength());
+        var request = Assert.Single(server.Approver.Requests);
+        // RabbitMQ: a quorum queue drops a message past its delivery limit unless it has a dead-letter exchange.
+        Assert.Contains("discard them for good", request.Details, StringComparison.Ordinal);
+        Assert.Contains("delivery limit, 20 by default", request.Details, StringComparison.Ordinal);
+        Assert.DoesNotContain("Nothing is deleted", request.Details, StringComparison.Ordinal);
+    }
+
+    // Approved, the live read goes ahead.
+    [Fact]
+    public async Task AnApprovedLiveReadIsDone()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true, provider: MessagingProvider.AmazonSqsSns);
+
+        var peek = await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active" });
+
+        Assert.Equal(2, peek.GetProperty("messages").GetArrayLength());
+        Assert.Single(server.Approver.Requests);
+    }
+
     [Fact]
     public async Task Search_ReturnsMatchesTheModelCanDelete()
     {
@@ -294,6 +364,82 @@ public sealed class McpServerTests
         entity = "orders", subQueue = "dlq", sequenceNumber = 77L, messageId = message.Properties.MessageId,
         fingerprint = withFingerprint ? MessageFingerprint.Of(message) : null
     };
+
+    [Theory]
+    [InlineData("4.2.0", "x-delivery-count")]
+    [InlineData("4.3.0", "x-acquired-count")]
+    public async Task BugCycleOne_NoIdQuorumMessageCanBeCopiedAfterBrokerAddsCounter(string version, string counter)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var owned = QueueLoom.Infrastructure.RabbitMq.RabbitMqWorkspace.BrokerOwnedHeaders(true, Version.Parse(version));
+        BrowsedMessage Read(bool redelivered)
+        {
+            var headers = new Dictionary<string, object?> { ["tenant"] = "acme", ["x-death"] = new List<object?>
+                { new Dictionary<string, object?> { ["queue"] = "orders", ["reason"] = "rejected", ["count"] = 1L } } };
+            if (redelivered) headers[counter] = 1L;
+            return QueueLoom.Infrastructure.RabbitMq.RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(),
+                new RabbitMQ.Client.BasicProperties { Timestamp = new RabbitMQ.Client.AmqpTimestamp(1720000000), Headers = headers },
+                "orders", Orders.Reference, ServiceBusSubQueue.DeadLetter, owned);
+        }
+        var chosen = Read(false);
+        var later = Read(true);
+        Assert.Single(MessageFingerprint.Find(MessageFingerprint.Of(chosen), [later], out _));
+        server.Workspace.BrowseMessages = [later];
+        var result = await server.CallAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = chosen.SequenceNumber,
+                messageId = chosen.Properties.MessageId, fingerprint = MessageFingerprint.Of(chosen) } },
+            ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+        Assert.True(result.GetProperty("approved").GetBoolean());
+        Assert.Equal("body", Assert.Single(server.Workspace.SentMessages).Message.Body.Content);
+        Assert.Single(server.Approver.Requests);
+        Assert.Equal(chosen.SequenceNumber, later.SequenceNumber);
+    }
+
+    [Fact]
+    public async Task BugCycleOne_NoIdQuorumCounterTwinsRemainAmbiguousAndAreNotSent()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var owned = QueueLoom.Infrastructure.RabbitMq.RabbitMqWorkspace.BrokerOwnedHeaders(true, Version.Parse("4.2.0"));
+        BrowsedMessage Read(long? count) => QueueLoom.Infrastructure.RabbitMq.RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(),
+            new RabbitMQ.Client.BasicProperties { Headers = count is null ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?> { ["x-delivery-count"] = count.Value } },
+            "orders", Orders.Reference, ServiceBusSubQueue.DeadLetter, owned);
+        var chosen = Read(null);
+        server.Workspace.BrowseMessages = [Read(1), Read(2)];
+        var error = await server.CallForErrorAsync("resend_dead_letters", new()
+        {
+            ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = chosen.SequenceNumber,
+                messageId = chosen.Properties.MessageId, fingerprint = MessageFingerprint.Of(chosen) } },
+            ["mode"] = "copy", ["reason"] = "retry after the fix"
+        });
+        Assert.Contains("cannot be told apart", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(server.Workspace.SentMessages);
+        Assert.Empty(server.Approver.Requests);
+    }
+
+    [Theory]
+    [InlineData("delete_dead_letter_messages")]
+    [InlineData("purge_dead_letters")]
+    [InlineData("resend_dead_letters")]
+    public async Task BugCycleOne_McpReturnsPersistenceWarningAlongsideConfirmedResult(string tool)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        server.Workspace.ResultWarnings = ["delete-result.report could not be saved; backup remains available"];
+        var arguments = new Dictionary<string, object?> { ["reason"] = "consumer fixed" };
+        if (tool == "purge_dead_letters") { arguments["entity"] = "orders"; arguments["maxMessages"] = 10; }
+        else arguments["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 3L, messageId = (string?)null } };
+        if (tool == "resend_dead_letters") arguments["mode"] = "move";
+        var result = await server.CallAsync(tool, arguments);
+        Assert.True(result.GetProperty("approved").GetBoolean());
+        Assert.Contains("delete-result.report", result.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Warning", result.ToString(), StringComparison.Ordinal);
+        if (tool == "resend_dead_letters")
+            Assert.Contains("Moved", result.ToString(), StringComparison.Ordinal);
+        else if (tool == "delete_dead_letter_messages")
+            Assert.Contains("Deleted", result.ToString(), StringComparison.Ordinal);
+    }
 
     [Theory]
     [InlineData(false)]
@@ -781,9 +927,13 @@ public sealed class McpServerTests
             bool approve = false,
             IOperationApprover? approver = null,
             EnvironmentKind environment = EnvironmentKind.Development,
-            Func<ElicitRequestParams, ElicitResult>? elicit = null)
+            Func<ElicitRequestParams, ElicitResult>? elicit = null,
+            MessagingProvider provider = MessagingProvider.AzureServiceBus)
         {
-            var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment);
+            var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment) with
+            {
+                Provider = provider
+            };
             var workspace = new FakeWorkspace
             {
                 Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Orders]),
