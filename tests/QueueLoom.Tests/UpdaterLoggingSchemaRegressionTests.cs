@@ -102,22 +102,25 @@ public sealed class UpdaterLoggingSchemaRegressionTests
         using var provider = new FileLoggerProvider(directory.Path, retainedDays: 14, clock: () => now);
         var logger = provider.CreateLogger("tray");
         logger.LogInformation("first day");
+        provider.Flush();
         var firstDay = provider.CurrentFilePath;
 
         now = now.AddDays(30);
         logger.LogInformation("a month later");
+        provider.Flush();
 
         Assert.False(File.Exists(firstDay), "A 30-day-old log survived a 14-day retention window.");
         Assert.Contains("a month later", File.ReadAllText(provider.CurrentFilePath), StringComparison.Ordinal);
     }
 
-    // The desktop app and every MCP server process write the same daily log file.
+    // The desktop app and every MCP server process write the same daily log file. Callers enqueue without waiting
+    // on the cross-process lock; every attempted line is either written or named in an explicit overflow notice.
     [Fact]
-    public async Task Logging_ConcurrentProcessesWritingTheSameDailyLogKeepEveryLine()
+    public async Task Logging_ConcurrentProcessesWritingTheSameDailyLogAccountForEveryLine()
     {
         using var directory = new TemporaryDirectory();
         var now = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
-        // Separate providers have separate in-process locks, exactly like the app and an MCP server process.
+        // Separate providers have separate queues and writers, exactly like the app and an MCP server process.
         using var desktop = new FileLoggerProvider(directory.Path, clock: () => now);
         using var mcp = new FileLoggerProvider(directory.Path, clock: () => now);
         const int lines = 1500;
@@ -131,11 +134,87 @@ public sealed class UpdaterLoggingSchemaRegressionTests
         var writers = new[] { Write(desktop, "desktop"), Write(mcp, "mcp") };
         start.Set();
         await Task.WhenAll(writers);
+        desktop.Flush();
+        mcp.Flush();
 
         var text = File.ReadAllLines(desktop.CurrentFilePath);
-        Assert.Equal(lines, text.Count(line => line.Contains("] desktop: line ", StringComparison.Ordinal)));
-        Assert.Equal(lines, text.Count(line => line.Contains("] mcp: line ", StringComparison.Ordinal)));
-        Assert.All(text, line => Assert.Matches(@"^\d{4}-\d{2}-\d{2} .* \[INF\] (desktop|mcp): line \d{5} x{200}$", line));
+        var desktopWritten = text.Count(line => line.Contains("] desktop: line ", StringComparison.Ordinal));
+        var mcpWritten = text.Count(line => line.Contains("] mcp: line ", StringComparison.Ordinal));
+        var dropped = text
+            .Where(line => line.Contains("log lines dropped because the log queue was full", StringComparison.Ordinal))
+            .Sum(line =>
+            {
+                var startOfCount = line.IndexOf("] QueueLoom: ", StringComparison.Ordinal);
+                if (startOfCount < 0) return 0;
+                var number = line[(startOfCount + "] QueueLoom: ".Length)..].Split(' ')[0];
+                return int.TryParse(number, out var count) ? count : 0;
+            });
+        Assert.Equal(lines * 2, desktopWritten + mcpWritten + dropped);
+        // With the default queue capacity, a 1,500-line burst from each side should not overflow.
+        Assert.Equal(0, dropped);
+        Assert.Equal(lines, desktopWritten);
+        Assert.Equal(lines, mcpWritten);
+        Assert.All(
+            text.Where(line => !line.Contains("log lines dropped because the log queue was full", StringComparison.Ordinal)),
+            line => Assert.Matches(@"^\d{4}-\d{2}-\d{2} .* \[INF\] (desktop|mcp): line \d{5} x{200}$", line));
+    }
+
+    // Hold the cross-process lock so the background writer cannot append; a tiny queue overflows; after release,
+    // later lines write again and the overflow is named in the file.
+    [Fact]
+    public void Logging_QueueOverflowWhileLockIsHeldIsReportedAndLoggingRecovers()
+    {
+        using var directory = new TemporaryDirectory();
+        var now = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
+        System.IO.Directory.CreateDirectory(directory.Path);
+        var lockPath = Path.Combine(directory.Path, FileLoggerProvider.WriteLockName);
+        var held = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
+        using var provider = new FileLoggerProvider(directory.Path, clock: () => now, maxQueuedLines: 2);
+        var logger = provider.CreateLogger("desktop");
+        try
+        {
+            for (var index = 0; index < 10; index++)
+            {
+                logger.LogInformation("burst {Index}", index);
+            }
+
+            // Give the background writer a moment to block on the held lock so the tiny queue stays full.
+            SpinWait.SpinUntil(() => provider.PendingOverflowCount >= 1, TimeSpan.FromSeconds(2));
+            Assert.True(provider.PendingOverflowCount >= 1, "Holding the lock should fill the tiny queue and drop lines.");
+        }
+        finally
+        {
+            held.Dispose();
+        }
+
+        provider.Flush();
+        logger.LogInformation("recovered");
+        provider.Flush();
+
+        var text = File.ReadAllText(provider.CurrentFilePath);
+        Assert.Contains("log lines dropped because the log queue was full", text, StringComparison.Ordinal);
+        Assert.Contains("recovered", text, StringComparison.Ordinal);
+        Assert.Equal(0, provider.PendingOverflowCount);
+    }
+
+    // A line enqueued while another process holds the lock is written after the lock is released (flush waits).
+    [Fact]
+    public void Logging_BackgroundWriterDeliversQueuedLineAfterLockIsReleased()
+    {
+        using var directory = new TemporaryDirectory();
+        var now = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
+        System.IO.Directory.CreateDirectory(directory.Path);
+        var lockPath = Path.Combine(directory.Path, FileLoggerProvider.WriteLockName);
+        var held = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
+        using var provider = new FileLoggerProvider(directory.Path, clock: () => now);
+        provider.CreateLogger("desktop").LogInformation("waiting for lock");
+
+        Assert.False(File.Exists(provider.CurrentFilePath), "The line must stay queued while the lock is held.");
+
+        held.Dispose();
+        provider.Flush();
+
+        Assert.Contains("waiting for lock", File.ReadAllText(provider.CurrentFilePath), StringComparison.Ordinal);
     }
 
     // Schema loading is recursive; without a limit a crafted or generated schema overflows the stack, which kills the

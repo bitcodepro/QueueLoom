@@ -36,6 +36,7 @@ public sealed class CycleTwoLoggingRegressionTests
         var logger = provider.CreateLogger("isolated");
         WithTimeout(() => logger.LogError(new IOException("password=PRIVATE_SENTINEL"), "password=PRIVATE_SENTINEL"));
         logger.LogInformation("recovered");
+        provider.Flush();
         var text = File.ReadAllText(provider.CurrentFilePath);
         Assert.Contains("recovered", text, StringComparison.Ordinal);
         Assert.DoesNotContain("PRIVATE_SENTINEL", text, StringComparison.Ordinal);
@@ -50,6 +51,7 @@ public sealed class CycleTwoLoggingRegressionTests
         logger.Log(LogLevel.Error, default, "password=PRIVATE_SENTINEL", null,
             (_, _) => throw new InvalidOperationException("password=PRIVATE_SENTINEL"));
         logger.LogInformation("recovered");
+        provider.Flush();
         var text = File.ReadAllText(provider.CurrentFilePath);
         Assert.Contains("recovered", text, StringComparison.Ordinal);
         Assert.DoesNotContain("PRIVATE_SENTINEL", text, StringComparison.Ordinal);

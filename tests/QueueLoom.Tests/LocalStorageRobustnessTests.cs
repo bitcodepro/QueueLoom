@@ -68,6 +68,7 @@ public sealed class LogLimitTests
 
         Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, "first dropped line");
         Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, "second dropped line");
+        provider.Flush();
 
         var tail = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(provider.CurrentFilePath)[(10 * 1024 * 1024 + 1)..]);
         Assert.Equal(1, tail.Split("nothing more is written to it today").Length - 1);
@@ -89,6 +90,7 @@ public sealed class LogLimitTests
         {
             Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, "dropped line");
         }
+        provider.Flush();
 
         Assert.Equal(10 * 1024 * 1024 + 1, new FileInfo(provider.CurrentFilePath).Length);
     }
