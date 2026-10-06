@@ -88,7 +88,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (!UpdateRestart.AcknowledgeStartup()) await CheckForUpdatesAsync();
+        var versionAcknowledged = QueueLoom.Core.Updates.PayloadLaunch.Current?.Acknowledge() == true;
+        if (!UpdateRestart.AcknowledgeStartup() && !versionAcknowledged) await CheckForUpdatesAsync();
     }
 
     private async Task InitializeAsync(MainWindowViewModel viewModel, JsonAppSettingsStore settingsStore)

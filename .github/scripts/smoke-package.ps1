@@ -4,8 +4,11 @@ $staging = "artifacts/package-$Rid"
 $relative = if ($Rid -eq 'win-x64') { 'QueueLoom.exe' } elseif ($Rid.StartsWith('osx-')) {
     'QueueLoom.app/Contents/MacOS/QueueLoom'
 } else { 'QueueLoom' }
-$executable = (Resolve-Path -LiteralPath (Join-Path $staging $relative)).Path
-$data = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+$data = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))))
+$privatePackage = Join-Path $data 'package'
+New-Item -ItemType Directory -Path $privatePackage -Force | Out-Null
+Get-ChildItem -LiteralPath $staging -Force | Copy-Item -Destination $privatePackage -Recurse
+$executable = (Resolve-Path -LiteralPath (Join-Path $privatePackage $relative)).Path
 $start = [Diagnostics.ProcessStartInfo]::new($executable)
 $start.ArgumentList.Add('--mcp')
 $start.ArgumentList.Add('--read-only')
@@ -14,7 +17,9 @@ $start.RedirectStandardInput = $true
 $start.RedirectStandardOutput = $true
 $start.RedirectStandardError = $true
 $start.CreateNoWindow = $true
-$start.Environment['QUEUELOOM_DATA_DIRECTORY'] = $data
+$start.Environment['QUEUELOOM_DATA_DIRECTORY'] = Join-Path $data 'user data'
+$start.Environment['QUEUELOOM_BACKUP_DIRECTORY'] = Join-Path $data 'backups'
+$start.Environment['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = Join-Path $data 'bundle-cache'
 $process = [Diagnostics.Process]::new()
 $process.StartInfo = $start
 $started = $false
@@ -43,8 +48,19 @@ try {
     }
     Write-Host "PASS $Rid packaged executable: MCP initialization and read-only tool discovery"
 } finally {
-    if ($started -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+    if ($started) { $process.StandardInput.Close() }
+    # Kill/tree waiting does not join descendants. Join only payloads in this exact private package before
+    # removing extracted native libraries which Windows may still have mapped.
+    $payloads = @([Diagnostics.Process]::GetProcessesByName('QueueLoom') | Where-Object {
+        $_.Id -ne $process.Id -and $_.MainModule.FileName.StartsWith($privatePackage + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($started -and -not $process.WaitForExit(15000)) { $process.Kill($true); $process.WaitForExit() }
+    foreach ($payload in $payloads) {
+        if (-not $payload.HasExited) { $payload.Kill($true); $payload.WaitForExit() }
+        $payload.Dispose()
+    }
     $process.Dispose()
     # This exact random directory belongs only to this smoke test.
-    if (Test-Path -LiteralPath $data) { Remove-Item -LiteralPath $data -Recurse -Force }
+    if (-not $data.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Smoke directory escaped the temporary workspace' }
+    if (Test-Path -LiteralPath $data) { [IO.Directory]::Delete($data, $true) }
 }

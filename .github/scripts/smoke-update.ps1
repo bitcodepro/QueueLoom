@@ -1,6 +1,7 @@
 param(
     [string] $Executable = 'artifacts/publish/QueueLoom.exe',
-    [string] $FixtureDirectory = 'tests/QueueLoom.UpdateFixture/bin/Release/net10.0'
+    [string] $FixtureDirectory = 'tests/QueueLoom.UpdateFixture/bin/Release/net10.0',
+    [string] $StablePackageDirectory
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This packaged GUI smoke test requires Windows.' }
@@ -36,7 +37,10 @@ try {
         Start-Sleep -Milliseconds 50
     }
     Move-Item -LiteralPath $exe -Destination $backup
-    Copy-Item -LiteralPath $package -Destination $exe
+    if ($StablePackageDirectory) {
+        # Reproduce the legacy top-level-file installer, including its bootstrap descriptor/archive.
+        Get-ChildItem -LiteralPath $StablePackageDirectory -File | Copy-Item -Destination $root
+    } else { Copy-Item -LiteralPath $package -Destination $exe }
     $download = Join-Path $root "downloads/1.5.4-$id"
     New-Item -ItemType Directory -Path $download | Out-Null
     [IO.File]::WriteAllText((Join-Path $download '.queueloom-download'), $id)
@@ -49,7 +53,9 @@ try {
         Entries = @(@{ Current = $exe; Backup = $backup })
     }
     [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 8))
-    $helper = Start-Isolated $exe @('--update-helper', $receiptPath, $id, $parent.Id.ToString(), $parent.StartTime.ToUniversalTime().Ticks.ToString())
+    $helper = if ($StablePackageDirectory) {
+        Start-Isolated (Join-Path $fixture 'QueueLoom.UpdateFixture.exe') @('--legacy-handoff', $exe, (Join-Path $root 'handoff.lock'), '2000')
+    } else { Start-Isolated $exe @('--update-helper', $receiptPath, $id, $parent.Id.ToString(), $parent.StartTime.ToUniversalTime().Ticks.ToString()) }
     Start-Sleep -Milliseconds 250
     if (-not (Test-Path -LiteralPath $backup)) { throw 'The backup was deleted while the previous process was running.' }
     if (-not $helper.WaitForExit(45000)) { throw 'The packaged restart helper timed out.' }
@@ -58,12 +64,19 @@ try {
         $detail = if (Test-Path -LiteralPath $errorFile) { [IO.File]::ReadAllText($errorFile) } else { 'No diagnostic file' }
         throw "Packaged restart helper failed ($($helper.ExitCode)): $detail"
     }
-    if ((Test-Path -LiteralPath $backup) -or (Test-Path -LiteralPath $download) -or (Test-Path -LiteralPath $receiptPath)) {
+    $cleanupWait = [Diagnostics.Stopwatch]::StartNew()
+    while (Test-Path -LiteralPath $receiptPath) {
+        if ($cleanupWait.Elapsed.TotalSeconds -gt 45) { throw 'Legacy handoff did not finish startup/cleanup.' }
+        Start-Sleep -Milliseconds 50
+    }
+    if ((Test-Path -LiteralPath $backup) -or (Test-Path -LiteralPath $download)) {
         throw 'Owned update files were not cleaned after confirmed GUI startup.'
     }
     if ([IO.File]::ReadAllText((Join-Path $root 'user-notes.old')) -ne 'keep') { throw 'An unrelated file was changed.' }
-    $updated = @(Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
-    if ($updated.Count -ne 1) { throw "Expected one running updated GUI; found $($updated.Count)." }
+    $updated = @(Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object {
+        if ($StablePackageDirectory) { $_.Path -like "$root\QueueLoom.versions\versions\*\payload\QueueLoom.exe" } else { $_.Path -eq $exe }
+    })
+    if ($updated.Count -ne 1) { throw "Expected one running updated GUI payload; found $($updated.Count)." }
     Write-Host 'PASS packaged Windows update: delayed exit, paths with spaces, confirmed GUI startup, owned-file cleanup and user-file preservation.'
 } finally {
     foreach ($process in @($parent, $helper)) {
@@ -73,8 +86,8 @@ try {
         }
     }
     # Match the exact random installation before touching any GUI process.
-    Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | ForEach-Object {
-        $_.Kill(); $_.WaitForExit(); $_.Dispose()
+    Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -or $_.Path -like "$root\QueueLoom.versions\versions\*\payload\QueueLoom.exe" } | ForEach-Object {
+        if (-not $_.HasExited) { $_.Kill($true); $_.WaitForExit() }; $_.Dispose()
     }
     $resolved = [IO.Path]::GetFullPath($root)
     $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -82,7 +95,7 @@ try {
         -not ([IO.Path]::GetFileName($resolved)).StartsWith('QueueLoom update smoke with spaces ')) { throw 'Unexpected smoke-test cleanup path.' }
     $cleanup = [Diagnostics.Stopwatch]::StartNew()
     while (Test-Path -LiteralPath $resolved) {
-        try { Remove-Item -LiteralPath $resolved -Recurse -Force }
+        try { [IO.Directory]::Delete($resolved, $true) }
         catch {
             if ($cleanup.Elapsed.TotalSeconds -gt 10) { throw }
             Start-Sleep -Milliseconds 100

@@ -32,6 +32,16 @@ runs:
         -p:Version=${{ inputs.version }}
         -o artifacts/publish
 
+    - name: Publish stable launcher
+      shell: pwsh
+      run: >-
+        dotnet publish src/QueueLoom.Launcher/QueueLoom.Launcher.csproj
+        -c Release -r ${{ inputs.rid }} --self-contained
+        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+        -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false
+        -p:Version=1.0.0
+        -o artifacts/launcher
+
     - name: Package with checksum
       id: package
       shell: pwsh
@@ -52,3 +62,12 @@ runs:
       run: |
         dotnet build tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj -c Release
         ./.github/scripts/smoke-update.ps1
+        ./.github/scripts/smoke-update.ps1 -StablePackageDirectory artifacts/package-win-x64
+
+    - name: Smoke test stable activation and verified recovery
+      shell: pwsh
+      env:
+        RID: ${{ inputs.rid }}
+      run: |
+        dotnet build tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj -c Release
+        ./.github/scripts/smoke-stable-update.ps1 -Rid $env:RID
