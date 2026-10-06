@@ -25,6 +25,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private readonly IServiceBusWorkspace _workspace;
     private readonly IUserDialogService _dialogs;
     private readonly IDeadLetterBackupRepository? _backupRepository;
+    private readonly LegacyBackupMigration? _backupMigration;
+    private bool _backupPathWarningReported;
     private readonly IClipboardService? _clipboard;
     private readonly IAppLauncher? _launcher;
     private readonly INotificationService? _notifications;
@@ -132,7 +134,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         IMonitorAlertService? alerts = null,
         IDeadLetterHistoryStore? history = null,
         IScheduledResendStore? scheduledResends = null,
-        DiagnosticsJournal? diagnostics = null)
+        DiagnosticsJournal? diagnostics = null,
+        LegacyBackupMigration? backupMigration = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -146,6 +149,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _backupRepository = backupRepository;
         _activityJournal = activityJournal;
         _replayStore = replayStore;
+        _backupMigration = backupMigration;
         _clipboard = clipboard;
         _launcher = launcher;
         _notifications = notifications;
@@ -426,6 +430,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             }
             try
             {
+                if (_backupMigration is not null)
+                {
+                    if (!_backupPathWarningReported && _backupMigration.Paths.BackupDirectoryWarning is { } warning)
+                    {
+                        _backupPathWarningReported = true;
+                        AddActivity("Warning", "Backup directory changed", warning);
+                    }
+                    var copied = await _backupMigration.RunAsync(token).ConfigureAwait(true);
+                    if (copied > 0) AddActivity("Info", "Legacy backups preserved", $"{copied:N0} backup file(s) copied outside the application bundle; originals kept.");
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                AddActivity("Warning", "Legacy backups not migrated", SanitizeException(exception));
+            }
+            try
+            {
                 await DeleteOldBackupsAsync(automatic: true, token).ConfigureAwait(true);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -438,6 +459,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
                 : "Choose an environment and connect";
         }, cancellationToken).ConfigureAwait(true);
     }
+
 
     private sealed record DiagnosticContext(ServiceBusProfile? Profile, string? Entity);
 

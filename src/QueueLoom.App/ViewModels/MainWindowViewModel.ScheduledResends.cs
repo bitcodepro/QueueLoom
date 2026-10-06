@@ -16,6 +16,7 @@ public sealed partial class MainWindowViewModel
     private IScheduledResendStore? _scheduledStore;
     private CancellationTokenSource? _scheduleCancellation;
     private Task? _scheduleTask;
+    private string? _scheduledReadError;
 
     /// <summary>The clock for scheduled resends; tests replace it.</summary>
     public TimeProvider Clock { get; set; } = TimeProvider.System;
@@ -102,6 +103,30 @@ public sealed partial class MainWindowViewModel
     /// <summary>Runs every due resend whose environment is connected with write access, one at a time.</summary>
     public async Task RunDueScheduledResendsAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_scheduledStore is not null)
+        {
+            IReadOnlyList<ScheduledResend> persisted;
+            try { persisted = _scheduledStore.Load(); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                var error = $"Scheduled resends could not be read: {exception.Message}";
+                if (_scheduledReadError != error) { _scheduledReadError = error; ErrorText = error; }
+                return; // Never execute a stale cache after a failed read.
+            }
+            _scheduledReadError = null;
+            ReportSetAsideSchedules(); // Report lost cached rows before reconciliation removes them.
+            var currentIds = persisted.Select(resend => resend.Id).ToHashSet();
+            foreach (var item in ScheduledResends.Where(item => !currentIds.Contains(item.Resend.Id)).ToArray())
+                ScheduledResends.Remove(item);
+            foreach (var resend in persisted)
+            {
+                var cached = ScheduledResends.FirstOrDefault(item => item.Resend.Id == resend.Id);
+                if (cached is null) ScheduledResends.Add(CreateScheduledItem(resend));
+                else if (!SameScheduledJob(cached.Resend, resend))
+                    ScheduledResends[ScheduledResends.IndexOf(cached)] = CreateScheduledItem(resend);
+            }
+        }
         // A damaged list can be found by a read elsewhere (the background history cleanup); it is reported here at
         // the latest.
         ReportSetAsideSchedules();
@@ -118,6 +143,35 @@ public sealed partial class MainWindowViewModel
                 allowCancellation: true).ConfigureAwait(true);
         }
     }
+
+    private static bool SameScheduledJob(ScheduledResend left, ScheduledResend right)
+    {
+        var empty = Array.Empty<ScheduledResendItem>();
+        if (left with { Items = empty } != right with { Items = empty } || left.Items.Count != right.Items.Count) return false;
+        for (var i = 0; i < left.Items.Count; i++)
+        {
+            var a = left.Items[i]; var b = right.Items[i];
+            if (a with { Message = MessageDraft.Empty } != b with { Message = MessageDraft.Empty } ||
+                a.Message.Body != b.Message.Body || a.Message.Properties != b.Message.Properties ||
+                a.Message.LegacyAmqpMetadata != b.Message.LegacyAmqpMetadata ||
+                !a.Message.ApplicationProperties.SequenceEqual(b.Message.ApplicationProperties) ||
+                !SameKafkaEnvelope(a.Message.KafkaEnvelope, b.Message.KafkaEnvelope)) return false;
+        }
+        return true;
+    }
+
+    private static bool SameKafkaEnvelope(KafkaEnvelope? left, KafkaEnvelope? right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left is null || right is null || left.IsTombstone != right.IsTombstone ||
+            left.OriginalProperties != right.OriginalProperties || !SameBytes(left.Key, right.Key) ||
+            !left.OriginalApplicationProperties.SequenceEqual(right.OriginalApplicationProperties) ||
+            left.Headers.Count != right.Headers.Count) return false;
+        return left.Headers.Zip(right.Headers).All(pair => pair.First.Name == pair.Second.Name && SameBytes(pair.First.Value, pair.Second.Value));
+    }
+
+    private static bool SameBytes(byte[]? left, byte[]? right) =>
+        left is null ? right is null : right is not null && left.AsSpan().SequenceEqual(right);
 
     /// <summary>"Run now" on Activity: the same checks as when it is due, just earlier.</summary>
     public Task RunScheduledNowAsync(ScheduledResendItemViewModel item) =>

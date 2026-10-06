@@ -10,6 +10,7 @@ public sealed record QueueLoomPaths(
     string SettingsFile,
     string StorageLockFile)
 {
+    public string? BackupDirectoryWarning { get; init; }
     public static QueueLoomPaths CreateDefault()
     {
         // Create: a new Linux or macOS account may not have ~/.local/share yet, and without this option .NET
@@ -23,19 +24,52 @@ public sealed record QueueLoomPaths(
         var rootOverride = Environment.GetEnvironmentVariable("QUEUELOOM_DATA_DIRECTORY");
         var persistentPaths = ForRoot(string.IsNullOrWhiteSpace(rootOverride) ? Path.Combine(localData, "QueueLoom") : rootOverride);
         var backupOverride = Environment.GetEnvironmentVariable("QUEUELOOM_BACKUP_DIRECTORY");
+        return ForProgram(persistentPaths, AppContext.BaseDirectory, backupOverride);
+    }
+
+    internal static QueueLoomPaths ForProgram(QueueLoomPaths persistentPaths, string executableDirectory, string? backupOverride)
+    {
+        var bundle = ApplicationBundleFor(executableDirectory);
+        var invalidOverride = !string.IsNullOrWhiteSpace(backupOverride) && bundle is not null &&
+            Path.GetRelativePath(bundle, Path.GetFullPath(backupOverride)) == ".";
+        var programBackups = ProgramBackupsDirectoryFor(executableDirectory);
+        var selected = !string.IsNullOrWhiteSpace(backupOverride) && !invalidOverride
+            ? OutsideApplicationBundle(Path.GetFullPath(backupOverride), executableDirectory)
+            : IsWritableDirectory(programBackups) ? programBackups : persistentPaths.BackupsDirectory;
         return persistentPaths with
         {
-            // Backups live in a "backups" folder next to the program on every OS, so they are easy to find
-            // and travel with a portable copy. Where that folder cannot be written (for example Program Files),
-            // they fall back to the data folder.
-            BackupsDirectory = !string.IsNullOrWhiteSpace(backupOverride)
-                ? Path.GetFullPath(backupOverride)
-                : IsWritableDirectory(ProgramBackupsDirectory) ? ProgramBackupsDirectory : persistentPaths.BackupsDirectory
+            BackupsDirectory = selected,
+            BackupDirectoryWarning = invalidOverride
+                ? $"The configured backup directory is the application bundle. Using {selected} instead." : null
         };
     }
 
-    /// <summary>The "backups" folder next to the running program (the directory of the executable).</summary>
-    public static string ProgramBackupsDirectory => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
+    /// <summary>The "backups" folder next to the executable, or beside a macOS application bundle.</summary>
+    public static string ProgramBackupsDirectory => ProgramBackupsDirectoryFor(AppContext.BaseDirectory);
+
+    internal static string ProgramBackupsDirectoryFor(string executableDirectory) =>
+        OutsideApplicationBundle(Path.Combine(executableDirectory, "backups"), executableDirectory);
+
+    public static string OutsideApplicationBundle(string directory, string executableDirectory)
+    {
+        var bundle = ApplicationBundleFor(executableDirectory);
+        var full = Path.GetFullPath(directory);
+        if (bundle is null) return full;
+        var relative = Path.GetRelativePath(bundle, full);
+        if (relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            Path.IsPathRooted(relative)) return full;
+        var root = Path.Combine(Path.GetDirectoryName(bundle)!, "backups");
+        return relative == "." || relative == Path.Combine("Contents", "MacOS", "backups")
+            ? root : Path.Combine(root, "bundle-custom", relative);
+    }
+
+    public static string? ApplicationBundleFor(string executableDirectory)
+    {
+        var macOS = new DirectoryInfo(Path.GetFullPath(executableDirectory));
+        var bundle = macOS.Parent?.Parent;
+        return macOS.Name == "MacOS" && macOS.Parent?.Name == "Contents" &&
+            bundle?.Name.EndsWith(".app", StringComparison.OrdinalIgnoreCase) == true ? bundle.FullName : null;
+    }
 
     internal static bool IsWritableDirectory(string directory)
     {
