@@ -727,6 +727,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private static string? NullIfWhiteSpace(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
 
+    /// <summary>Signal startup and running operations before the window begins its bounded shutdown waits.</summary>
+    internal void RequestShutdown() => _shutdownCancellation.Cancel();
+
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposeStarted, 1) == 0) _ = CompleteDisposalAsync();

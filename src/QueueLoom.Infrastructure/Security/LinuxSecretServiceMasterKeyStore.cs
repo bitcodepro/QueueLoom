@@ -53,20 +53,22 @@ internal sealed class LinuxSecretServiceMasterKeyStore : IPlatformMasterKeyStore
         }
 
         var newKey = RandomNumberGenerator.GetBytes(MasterKeySize);
-        var encoded = Convert.ToBase64String(newKey);
-        var store = await RunSecretToolAsync(
-            ["store", "--label=QueueLoom local vault key", "application", "QueueLoom", "vault", installationId],
-            encoded,
-            cancellationToken).ConfigureAwait(false);
-
-        if (store.ExitCode != 0)
+        var stored = false;
+        try
         {
-            CryptographicOperations.ZeroMemory(newKey);
-            throw new SecureStoreUnavailableException(
-                $"Linux Secret Service could not store the QueueLoom vault key: {SanitizeError(store.Error)}");
+            var store = await RunSecretToolAsync(
+                ["store", "--label=QueueLoom local vault key", "application", "QueueLoom", "vault", installationId],
+                Convert.ToBase64String(newKey), cancellationToken).ConfigureAwait(false);
+            if (store.ExitCode != 0)
+                throw new SecureStoreUnavailableException(
+                    $"Linux Secret Service could not store the QueueLoom vault key: {SanitizeError(store.Error)}");
+            stored = true;
+            return newKey;
         }
-
-        return newKey;
+        finally
+        {
+            if (!stored) CryptographicOperations.ZeroMemory(newKey);
+        }
     }
 
     private static async Task<ProcessResult> RunSecretToolAsync(
@@ -91,22 +93,39 @@ internal sealed class LinuxSecretServiceMasterKeyStore : IPlatformMasterKeyStore
         try
         {
             using var process = new Process { StartInfo = startInfo };
+            cancellationToken.ThrowIfCancellationRequested();
             process.Start();
-
-            if (standardInput is not null)
+            // Drain both pipes from startup, including while input is being written. Cancellation owns the
+            // child lifetime: disposing Process alone could let a late store overwrite the retry's key.
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            try
             {
-                await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken)
-                    .ConfigureAwait(false);
+                if (standardInput is not null)
+                    await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+                process.StandardInput.Close();
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                return new ProcessResult(process.ExitCode,
+                    await outputTask.ConfigureAwait(false), await errorTask.ConfigureAwait(false));
             }
-            process.StandardInput.Close();
-
-            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return new ProcessResult(
-                process.ExitCode,
-                await outputTask.ConfigureAwait(false),
-                await errorTask.ConfigureAwait(false));
+            finally
+            {
+                try
+                {
+                    try
+                    {
+                        if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    }
+                    catch (InvalidOperationException) when (process.HasExited) { /* Exited during the kill. */ }
+                }
+                finally
+                {
+                    // Even a failed kill must not release the caller to retry while the child can still
+                    // mutate the keyring. Both pipes remain drained until it reaches a terminal state.
+                    await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+                    await Task.WhenAll(outputTask, errorTask).ConfigureAwait(false);
+                }
+            }
         }
         catch (Win32Exception exception)
         {
