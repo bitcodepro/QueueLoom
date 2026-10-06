@@ -369,11 +369,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 }
 
                 _held.Add(result.DeliveryTag);
-                var message = RabbitMqMessageMapper.FromAmqp(result.Body, result.BasicProperties, result.RoutingKey, source, subQueue);
-                if (brokerOwnedHeaders is { Count: > 0 })
-                {
-                    message = message with { BrokerOwnedHeaders = brokerOwnedHeaders };
-                }
+                // Ownership must be known before deriving the no-ID selection key, as well as the fingerprint.
+                var message = RabbitMqMessageMapper.FromAmqp(result.Body, result.BasicProperties, result.RoutingKey, source, subQueue, brokerOwnedHeaders);
                 var belongs = belongsTo is null || RabbitMqMessageMapper.DeadLetteredFrom(result.BasicProperties) == belongsTo;
                 messages.Add(new LeasedMessage(message, result.DeliveryTag.ToString(System.Globalization.CultureInfo.InvariantCulture), belongs)
                     { DeliveryIdentity = $"{_identity}:{result.DeliveryTag}" });

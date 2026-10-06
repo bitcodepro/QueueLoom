@@ -49,6 +49,9 @@ public sealed record DeadLetterPurgeResult
 
     public string BackupDirectory { get; }
 
+    /// <summary>Report-persistence problems that do not change confirmed broker outcomes.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     public long DeletedCount => checked(Sources.Sum(source => source.DeletedCount));
 
     public bool HasFailures => Sources.Any(source => !source.IsSuccessful);

@@ -132,6 +132,9 @@ public sealed record DeleteDeadLetterMessagesResult
     public IReadOnlyList<DeadLetterMessageDeletionResult> Messages { get; }
     public string BackupDirectory { get; }
 
+    /// <summary>Persistence or lock-release problems that do not change confirmed message outcomes.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     public int DeletedCount => Count(DeadLetterMessageDeletionOutcome.Deleted);
     public int NotFoundCount => Count(DeadLetterMessageDeletionOutcome.NotFound);
     public int FailedCount => Count(DeadLetterMessageDeletionOutcome.Failed);

@@ -115,7 +115,7 @@ public sealed class SelectiveDeleteLockExpiryTests
             return Task.CompletedTask;
         }
 
-        public Task AbandonAsync(ServiceBusReceivedMessage message)
+        public Task AbandonAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken)
         {
             lock (_messages) _locked.Remove(message.SequenceNumber);
             return Task.CompletedTask;

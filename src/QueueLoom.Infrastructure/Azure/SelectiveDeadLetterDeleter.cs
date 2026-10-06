@@ -10,7 +10,7 @@ internal interface IDeadLetterLockReceiver
 
     Task CompleteAsync(ServiceBusReceivedMessage message);
 
-    Task AbandonAsync(ServiceBusReceivedMessage message);
+    Task AbandonAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken);
 }
 
 internal sealed class ServiceBusDeadLetterLockReceiver(ServiceBusReceiver receiver) : IDeadLetterLockReceiver
@@ -24,8 +24,8 @@ internal sealed class ServiceBusDeadLetterLockReceiver(ServiceBusReceiver receiv
     public Task CompleteAsync(ServiceBusReceivedMessage message) =>
         receiver.CompleteMessageAsync(message, CancellationToken.None);
 
-    public Task AbandonAsync(ServiceBusReceivedMessage message) =>
-        receiver.AbandonMessageAsync(message, cancellationToken: CancellationToken.None);
+    public Task AbandonAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken) =>
+        receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken);
 }
 
 /// <summary>
@@ -46,7 +46,8 @@ internal static class SelectiveDeadLetterDeleter
         int emptyReceiveConfirmations,
         TimeSpan receiveWaitTime,
         Action<int, int>? reportProgress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? reportCleanupWarning = null)
     {
         ArgumentNullException.ThrowIfNull(receiver);
         ArgumentNullException.ThrowIfNull(selection);
@@ -171,18 +172,30 @@ internal static class SelectiveDeadLetterDeleter
             {
                 toRelease = [.. held];
             }
-            foreach (var message in toRelease)
+            using var budget = new CancellationTokenSource(AzureServiceBusWorkspace.AbandonBudgetOverride.Value ?? AzureServiceBusWorkspace.AbandonBudget);
+            var unreleased = 0;
+            for (var index = 0; index < toRelease.Count; index++)
             {
+                if (budget.IsCancellationRequested)
+                {
+                    unreleased += toRelease.Count - index;
+                    break;
+                }
                 try
                 {
-                    await receiver.AbandonAsync(message).ConfigureAwait(false);
+                    // One budget for the whole cleanup, independently of caller cancellation; bound even a stuck SDK task.
+                    await receiver.AbandonAsync(toRelease[index], budget.Token).WaitAsync(budget.Token).ConfigureAwait(false);
                 }
-                catch (Exception)
+                catch (Exception exception) when (exception is not OutOfMemoryException)
                 {
-                    // Cleanup uses no caller token. A timeout leaves the lock to expire;
-                    // it must not erase confirmed settlements or prevent releasing other locks.
+                    // Immediate failures must not prevent later releases while there is budget remaining.
+                    unreleased++;
                 }
             }
+            if (unreleased > 0)
+                reportCleanupWarning?.Invoke($"Release of {unreleased:N0} held message lock(s) was not confirmed" +
+                    (budget.IsCancellationRequested ? " within the cleanup budget" : string.Empty) +
+                    ". Those locks will expire; confirmed deletions are retained.");
         }
 
         var reason = receiveError ?? (cancelled
