@@ -55,6 +55,27 @@ public sealed class LocalStorageRobustnessTests
 
 public sealed class LogLimitTests
 {
+    // Another process holds the log's write lock for a moment (longer than the 250 ms #84 allowed): the line waits for
+    // it and is written, not dropped.
+    [Fact]
+    public async Task ALineWaitsForABrieflyHeldLockInsteadOfBeingDropped()
+    {
+        using var directory = new TemporaryDirectory();
+        using var provider = new QueueLoom.Infrastructure.Logging.FileLoggerProvider(directory.Path);
+        var logger = provider.CreateLogger("app");
+        var held = new FileStream(Path.Combine(directory.Path, ".queueloom-log.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        var release = Task.Run(async () =>
+        {
+            await Task.Delay(700);
+            held.Dispose();
+        });
+
+        Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, "written after the wait");
+        await release;
+
+        Assert.Contains("written after the wait", File.ReadAllText(provider.CurrentFilePath), StringComparison.Ordinal);
+    }
+
     // The daily log is capped at 10 MB. Reaching it is now said once in the log, so the missing lines that follow are
     // explained instead of the log just going quiet.
     [Fact]

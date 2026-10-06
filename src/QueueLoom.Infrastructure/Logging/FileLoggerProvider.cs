@@ -14,7 +14,10 @@ public sealed class FileLoggerProvider : ILoggerProvider
 {
     private const long MaximumFileBytes = 10 * 1024 * 1024;
     private const string WriteLockName = ".queueloom-log.lock";
-    private const int LockWaitMilliseconds = 250;
+    // Another process (an MCP server, a second window) holds the lock only for one append, but on Windows and macOS a
+    // waiter can lose the race to it many times in a row; 250 ms dropped lines under load. Two seconds is the wait
+    // the log always had: a line is not lost to ordinary contention.
+    private const int LockWaitMilliseconds = 2_000;
 
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new(StringComparer.Ordinal);
     private readonly object _sync = new();
@@ -132,7 +135,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             {
                 return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1);
             }
-            // Logging runs on the caller's thread (often the window's): wait briefly, never long enough to stall it.
+            // Logging runs on the caller's thread: the wait is bounded, so a lock held for good cannot stall it forever.
             catch (IOException) when (Environment.TickCount64 - started < LockWaitMilliseconds)
             {
                 Thread.Sleep(1);
