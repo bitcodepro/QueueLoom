@@ -47,8 +47,7 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
         if (!Directory.Exists(directory)) return [];
         var cutoff = ClearViewCutoff;
         var records = new List<ActivityRecord>();
-        foreach (var file in Directory.EnumerateFiles(directory, "*.json", SearchOption.AllDirectories)
-                     .OrderDescending(StringComparer.Ordinal).Take(maximum))
+        foreach (var file in NewestRecordFiles(maximum))
         {
             try
             {
@@ -61,6 +60,32 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
                                                   IOException or UnauthorizedAccessException) { }
         }
         return records.OrderByDescending(r => r.Timestamp).ToArray();
+    }
+
+    /// <summary>
+    /// The newest <paramref name="maximum"/> record files, newest first (by path, as records are named by day and time).
+    /// Day folders are visited newest first and the walk stops once enough are found, instead of listing and sorting
+    /// every record of the retention period (over a hundred thousand files with a busy monitor) at each start. A day
+    /// folder that cannot be read is skipped, so it does not hide the rest of the history.
+    /// </summary>
+    private IEnumerable<string> NewestRecordFiles(int maximum)
+    {
+        var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+        var candidates = Directory.EnumerateFiles(directory, "*.json", new EnumerationOptions { IgnoreInaccessible = true }).ToList();
+        var fromDays = 0;
+        foreach (var day in Directory.EnumerateDirectories(directory).OrderDescending(StringComparer.Ordinal))
+        {
+            if (fromDays >= maximum)
+            {
+                break;
+            }
+            // A folder named after a later day sorts after every file of an earlier one, so older days cannot hold
+            // newer records than those already found.
+            var files = Directory.EnumerateFiles(day, "*.json", options).ToList();
+            candidates.AddRange(files);
+            fromDays += files.Count;
+        }
+        return candidates.OrderDescending(StringComparer.Ordinal).Take(maximum);
     }
 
     /// <summary>
