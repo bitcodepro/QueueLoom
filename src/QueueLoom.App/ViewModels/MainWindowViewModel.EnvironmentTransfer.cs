@@ -47,6 +47,30 @@ public sealed partial class MainWindowViewModel
         AddActivity("Info", "Environments exported", $"{profiles.Length:N0} environments · {path}");
     }
 
+    internal const int MaximumEnvironmentsFileBytes = 5 * 1024 * 1024;
+
+    /// <summary>
+    /// Reads at most <see cref="MaximumEnvironmentsFileBytes"/>. The limit applies to what is read, not to the size the
+    /// file system reports: a link to a large file, or a file that grows while it is read, is refused the same way.
+    /// </summary>
+    internal static async Task<string> ReadEnvironmentsFileAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81_920, useAsync: true);
+        var buffer = new byte[MaximumEnvironmentsFileBytes + 1];
+        var total = 0;
+        int read;
+        while (total < buffer.Length && (read = await stream.ReadAsync(buffer.AsMemory(total), cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            total += read;
+        }
+        if (total > MaximumEnvironmentsFileBytes)
+        {
+            throw new InvalidOperationException("The file is too large to be an environments file.");
+        }
+        using var reader = new StreamReader(new MemoryStream(buffer, 0, total), System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task ImportEnvironmentsAsync(CancellationToken cancellationToken)
     {
         var path = await _dialogs.ChooseOpenFileAsync("Import environments", [("QueueLoom environments", "*.json")], cancellationToken)
@@ -57,12 +81,7 @@ public sealed partial class MainWindowViewModel
             return;
         }
 
-        var info = new FileInfo(path);
-        if (info.Length > 5 * 1024 * 1024)
-        {
-            throw new InvalidOperationException("The file is too large to be an environments file.");
-        }
-        var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(true);
+        var json = await ReadEnvironmentsFileAsync(path, cancellationToken).ConfigureAwait(true);
         EnvironmentImport import;
         var saved = 0;
         try
