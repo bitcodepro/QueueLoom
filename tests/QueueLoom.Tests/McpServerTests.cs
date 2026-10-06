@@ -14,7 +14,7 @@ using static QueueLoom.Tests.ViewModelStateTests;
 
 namespace QueueLoom.Tests;
 
-public sealed class McpServerTests
+public sealed partial class McpServerTests
 {
     private static readonly ServiceBusQueue Orders = new(
         "orders",

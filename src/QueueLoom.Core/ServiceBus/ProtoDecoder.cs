@@ -140,6 +140,8 @@ public static class ProtoDecoder
         public Dictionary<string, int> Oneofs { get; } = new(StringComparer.Ordinal);
         /// <summary>An entry of a map field: written as "key": value of the map's object.</summary>
         public bool IsMapEntry { get; init; }
+        public object? MapKeyDefault { get; init; }
+        public object? MapValueDefault { get; init; }
     }
 
     private sealed record Occurrence(int Number, ProtoField? Field, object?[] Values, bool Matched);
@@ -150,7 +152,12 @@ public static class ProtoDecoder
         {
             throw new InvalidDataException("Nested too deeply.");
         }
-        var node = new Node { IsMapEntry = type.IsMapEntry };
+        var node = new Node
+        {
+            IsMapEntry = type.IsMapEntry,
+            MapKeyDefault = type.IsMapEntry ? MapDefault(type.FieldsByNumber.GetValueOrDefault(1), schemas) : null,
+            MapValueDefault = type.IsMapEntry ? MapDefault(type.FieldsByNumber.GetValueOrDefault(2), schemas) : null
+        };
         var position = 0;
         while (position < data.Length)
         {
@@ -335,7 +342,12 @@ public static class ProtoDecoder
 
     private static Node Copy(Node source)
     {
-        var copy = new Node { IsMapEntry = source.IsMapEntry };
+        var copy = new Node
+        {
+            IsMapEntry = source.IsMapEntry,
+            MapKeyDefault = source.MapKeyDefault,
+            MapValueDefault = source.MapValueDefault
+        };
         Merge(copy, source);
         return copy;
     }
@@ -413,6 +425,19 @@ public static class ProtoDecoder
         _ => value
     };
 
+    // Defaults belong to each entry's schema, not to wire occurrences: synthetic values must not
+    // affect fitting, presence or embedded-message merging. Absent message values are empty instances.
+    private static object? MapDefault(ProtoField? field, ProtoSchemaSet schemas) => field?.Type switch
+    {
+        ProtoFieldType.Bool => false,
+        ProtoFieldType.String or ProtoFieldType.Bytes => string.Empty,
+        ProtoFieldType.Message => new Node(),
+        ProtoFieldType.Enum => field.TypeName is not null && schemas.FindEnum(field.TypeName) is { Values.Count: > 0 } type
+            ? type.Values.First().Value : (object)0,
+        null => null,
+        _ => 0
+    };
+
     private static void Write(Utf8JsonWriter writer, object? value)
     {
         switch (value)
@@ -430,8 +455,8 @@ public static class ProtoDecoder
                         writer.WriteStartObject();
                         foreach (Node entry in values.Cast<Node>())
                         {
-                            writer.WritePropertyName(entry.TryGetValue(1, out var key) ? KeyText(key.Values.LastOrDefault()) : string.Empty);
-                            Write(writer, entry.TryGetValue(2, out var item) ? item.Values.LastOrDefault() : null);
+                            writer.WritePropertyName(KeyText(entry.TryGetValue(1, out var key) ? key.Values.LastOrDefault() : entry.MapKeyDefault));
+                            Write(writer, entry.TryGetValue(2, out var item) ? item.Values.LastOrDefault() : entry.MapValueDefault);
                         }
                         writer.WriteEndObject();
                     }
