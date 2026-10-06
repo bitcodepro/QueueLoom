@@ -1,5 +1,6 @@
 param([Parameter(Mandatory)] [ValidateSet('win-x64', 'linux-x64', 'osx-arm64', 'osx-x64')] [string] $Rid)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'smoke-processes.ps1')
 $staging = "artifacts/package-$Rid"
 $relative = if ($Rid -eq 'win-x64') { 'QueueLoom.exe' } elseif ($Rid.StartsWith('osx-')) {
     'QueueLoom.app/Contents/MacOS/QueueLoom'
@@ -51,9 +52,7 @@ try {
     if ($started) { $process.StandardInput.Close() }
     # Kill/tree waiting does not join descendants. Join only payloads in this exact private package before
     # removing extracted native libraries which Windows may still have mapped.
-    $payloads = @([Diagnostics.Process]::GetProcessesByName('QueueLoom') | Where-Object {
-        $_.Id -ne $process.Id -and $_.MainModule.FileName.StartsWith($privatePackage + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
-    })
+    $payloads = @(Get-OwnedSmokeProcesses $privatePackage $process.Id)
     if ($started -and -not $process.WaitForExit(15000)) { $process.Kill($true); $process.WaitForExit() }
     foreach ($payload in $payloads) {
         if (-not $payload.HasExited) { $payload.Kill($true); $payload.WaitForExit() }

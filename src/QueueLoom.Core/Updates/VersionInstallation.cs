@@ -232,33 +232,52 @@ public sealed class VersionInstallation
 
     public LaunchSelection SelectForLaunch()
     {
-        using var ownership = Own();
-        EnsureBootstrapOwned();
-        var state = ReadState();
-        try { Verify(state.Active); }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
-        { state = RecoverOwned(state); }
-        if (!state.Pending) return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
-        if (state.Attempt is not null && HasAcknowledgement(state))
+        for (var retry = 0; retry < 16; retry++)
         {
-            state = ConfirmOwned(state);
-            return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
+            ActivationState state;
+            using (Own())
+            {
+                state = ReadState();
+                // Bootstrap extraction is a publication boundary. An installed, unselected bootstrap
+                // needs no content read until recovery actually selects it.
+                if (state.Active == Bootstrap && !Directory.Exists(VersionDirectory(Bootstrap))) EnsureBootstrapOwned();
+            }
+            // Committed directories are immutable and retained. Full verification can run concurrently
+            // without holding the state lock; length/timestamp caches could miss same-stamp corruption.
+            _checkpoint?.Invoke("launch-verifying");
+            var verified = true;
+            try { Verify(state.Active); }
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+            { verified = false; }
+            _checkpoint?.Invoke("launch-verified");
+            using var ownership = Own();
+            // Never launch or mutate an obsolete snapshot if activation/confirmation/recovery raced
+            // the read. Re-read and verify the newly selected version before any decision.
+            if (ReadState() != state) continue;
+            if (!verified) state = RecoverOwned(state);
+            if (!state.Pending) return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
+            if (state.Attempt is not null && HasAcknowledgement(state))
+            {
+                state = ConfirmOwned(state);
+                return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
+            }
+            if (state.Attempt is not null && !OwnerAlive(state))
+            {
+                state = RecoverOwned(state);
+                return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
+            }
+            var ownsAttempt = state.Attempt is null;
+            if (ownsAttempt)
+            {
+                using var process = Process.GetCurrentProcess();
+                state = state with { Attempt = Guid.NewGuid().ToString("N"), OwnerPid = process.Id,
+                    OwnerStartTicks = process.StartTime.ToUniversalTime().Ticks };
+                Commit(state, "attempt");
+                _checkpoint?.Invoke("attempt-published");
+            }
+            return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, state.Attempt, ownsAttempt);
         }
-        if (state.Attempt is not null && !OwnerAlive(state))
-        {
-            state = RecoverOwned(state);
-            return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
-        }
-        var ownsAttempt = state.Attempt is null;
-        if (ownsAttempt)
-        {
-            using var process = Process.GetCurrentProcess();
-            state = state with { Attempt = Guid.NewGuid().ToString("N"), OwnerPid = process.Id,
-                OwnerStartTicks = process.StartTime.ToUniversalTime().Ticks };
-            Commit(state, "attempt");
-            _checkpoint?.Invoke("attempt-published");
-        }
-        return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, state.Attempt, ownsAttempt);
+        throw new IOException("Activation state changed repeatedly during verification; try launching again.");
     }
 
     public bool HasAcknowledgement(LaunchSelection selection)
@@ -330,8 +349,14 @@ public sealed class VersionInstallation
     private ActivationState RecoverOwned(ActivationState state)
     {
         var previous = state.Previous;
+        if (previous == Bootstrap && !Directory.Exists(VersionDirectory(Bootstrap))) EnsureBootstrapOwned();
         try { Verify(previous); }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException) { previous = Bootstrap; Verify(previous); }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+        {
+            previous = Bootstrap;
+            if (!Directory.Exists(VersionDirectory(Bootstrap))) EnsureBootstrapOwned();
+            Verify(previous);
+        }
         var recovered = new ActivationState(previous, Bootstrap, false);
         Commit(recovered, "recover");
         return recovered;

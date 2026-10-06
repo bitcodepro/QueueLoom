@@ -1,5 +1,6 @@
 param([Parameter(Mandatory)] [ValidateSet('win-x64', 'linux-x64', 'osx-arm64', 'osx-x64')] [string] $Rid)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'smoke-processes.ps1')
 $source = (Resolve-Path -LiteralPath "artifacts/package-$Rid").Path
 $root = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('QueueLoom stable smoke ' + [Guid]::NewGuid().ToString('N'))))
 $installation = Join-Path $root 'installation'
@@ -38,9 +39,7 @@ function Run-Mcp {
         if ($response.id -ne 1 -or $response.result.serverInfo.name -ne 'QueueLoom') { throw 'Stable package MCP initialization failed' }
     } finally {
         $process.StandardInput.Close()
-        $payloads = @([Diagnostics.Process]::GetProcessesByName('QueueLoom') | Where-Object {
-            $_.Id -ne $process.Id -and $_.MainModule.FileName.StartsWith($installation + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
-        })
+        $payloads = @(Get-OwnedSmokeProcesses $installation $process.Id)
         if (-not $process.WaitForExit(15000)) { $process.Kill($true); $process.WaitForExit() }
         foreach ($payload in $payloads) {
             if (-not $payload.HasExited) { $payload.Kill($true); $payload.WaitForExit() }

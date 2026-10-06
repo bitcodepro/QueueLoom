@@ -351,6 +351,92 @@ public sealed class StableLauncherTests
         Assert.False(new VersionInstallation(fixture.Launcher).HasPendingActivation());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LaunchVerificationDoesNotHoldTheInstallationLock(bool updated)
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.EnsureBootstrap();
+        if (updated)
+        {
+            installation.StagePackage(fixture.Package("confirmed").Path);
+            var candidate = installation.SelectForLaunch();
+            installation.Acknowledge(candidate.Version, candidate.Attempt!);
+            installation.Confirm(candidate);
+        }
+        var observed = false;
+        var selected = new VersionInstallation(fixture.Launcher, point =>
+        {
+            if (point != "launch-verifying") return;
+            // A second launcher/updater can acquire the lock while payload bytes are being read.
+            using var other = new FileStream(Path.Combine(installation.Store, "installation.lock"),
+                FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            observed = true;
+        }).SelectForLaunch();
+        Assert.True(observed);
+        Assert.Equal(installation.Verify(selected.Version), selected.Executable);
+    }
+
+    [Theory]
+    [InlineData("launch-verifying", true)]
+    [InlineData("launch-verified", false)]
+    public void ActivationDuringLaunchVerificationCannotReturnTheObsoleteSnapshot(string boundary, bool damageSnapshot)
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.EnsureBootstrap();
+        var original = installation.Verify(installation.Bootstrap);
+        var update = fixture.Package("new-active");
+        var activated = false;
+        var selection = new VersionInstallation(fixture.Launcher, point =>
+        {
+            if (point != boundary || activated) return;
+            activated = true;
+            installation.StagePackage(update.Path);
+            if (damageSnapshot) File.WriteAllText(original, "obsolete payload was damaged");
+        }).SelectForLaunch();
+        Assert.True(activated);
+        Assert.Equal(update.Descriptor.Id, selection.Version.Id);
+        Assert.True(selection.OwnsAttempt);
+    }
+
+    [Fact]
+    public void ConfirmedLaunchStillDetectsSameLengthAndTimestampDependencyCorruption()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.StagePackage(fixture.Package("confirmed").Path);
+        var selected = installation.SelectForLaunch();
+        installation.Acknowledge(selected.Version, selected.Attempt!);
+        installation.Confirm(selected);
+        var dependency = Directory.GetFiles(Path.GetDirectoryName(selected.Executable)!)
+            .First(file => file != selected.Executable && new FileInfo(file).Length > 0);
+        var stamp = File.GetLastWriteTimeUtc(dependency);
+        var bytes = File.ReadAllBytes(dependency);
+        bytes[0] ^= 1;
+        File.WriteAllBytes(dependency, bytes);
+        File.SetLastWriteTimeUtc(dependency, stamp);
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(dependency));
+        Assert.Equal(fixture.Initial.Id, new VersionInstallation(fixture.Launcher).SelectForLaunch().Version.Id);
+    }
+
+    [Fact]
+    public void UnselectedBootstrapDoesNotBlockValidActiveButMustVerifyBeforeFallback()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.StagePackage(fixture.Package("confirmed").Path);
+        var selected = installation.SelectForLaunch();
+        installation.Acknowledge(selected.Version, selected.Attempt!);
+        installation.Confirm(selected);
+        File.WriteAllText(installation.Verify(installation.Bootstrap), "corrupt bootstrap");
+        Assert.Equal(selected.Version, new VersionInstallation(fixture.Launcher).SelectForLaunch().Version);
+        File.WriteAllText(selected.Executable, "corrupt active");
+        Assert.Throws<InvalidDataException>(() => new VersionInstallation(fixture.Launcher).SelectForLaunch());
+    }
+
     private sealed class Interrupted : Exception;
     private static Action<string> At(string boundary) => point => { if (point == boundary) throw new Interrupted(); };
     private static async Task WaitFor(string path, Process process)
