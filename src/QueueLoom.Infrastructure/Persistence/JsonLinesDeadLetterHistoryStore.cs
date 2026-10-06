@@ -66,14 +66,17 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         }
     }
 
-    // The samples read so far, the file length they cover (always just after a newline), the file's first bytes and its
-    // generation. The file only grows between compactions, so a later Load reads just the lines added since, by this or
-    // another process. Every compaction first writes a new generation next to the file, and a changed generation (or
-    // a shorter file, or other first bytes, for a file rewritten some other way) makes the next Load read everything
-    // again. Before, every monitor check parsed the whole 30-day file.
+    // The samples read so far, the file length they cover (always just after a newline), the file's first bytes, the
+    // last line read and the generation. The file only grows between compactions, so a later Load reads just the lines
+    // added since, by this or another process. Every compaction first writes a new generation next to the file. A
+    // version without generations (one still running during an update) rewrites the file without it; that is noticed
+    // by the file being shorter, or by other bytes at its start or where the last line read ended, because a compaction
+    // drops at least one line and moves everything after it. Any of these makes the next Load read everything again.
+    // Before, every monitor check parsed the whole 30-day file.
     private readonly List<DeadLetterHistorySample> _samples = [];
     private long _readLength;
     private byte[] _head = [];
+    private byte[] _lastLine = [];
     private string? _generation;
     private const int HeadBytes = 4096;
 
@@ -83,8 +86,9 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
 
     private string GenerationFile => file + ".generation";
 
+    // In time order: the tail can be older than lines read before it, and Append takes the profile's latest sample.
     private List<DeadLetterHistorySample> WithTail(List<DeadLetterHistorySample> samples) =>
-        _tail is null ? samples : [.. samples, _tail];
+        _tail is null ? samples : [.. samples.Append(_tail).OrderBy(sample => sample.At)];
 
     private List<DeadLetterHistorySample> Load()
     {
@@ -102,7 +106,7 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             return _samples;
         }
         using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (stream.Length < _readLength || !HeadMatches(stream))
+        if (stream.Length < _readLength || !HeadMatches(stream) || !LastLineMatches(stream))
         {
             Reset();
         }
@@ -136,6 +140,11 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             _samples.Sort((left, right) => left.At.CompareTo(right.At));
         }
         _readLength += end;
+        if (end > 0)
+        {
+            var start = end >= 2 ? Array.LastIndexOf(added, (byte)'\n', end - 2) + 1 : 0;
+            _lastLine = added[start..end];
+        }
         if (Encoding.UTF8.GetString(added, end, added.Length - end) is { } rest && !string.IsNullOrWhiteSpace(rest))
         {
             try
@@ -168,11 +177,24 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         return current.AsSpan().SequenceEqual(_head);
     }
 
+    private bool LastLineMatches(FileStream stream)
+    {
+        if (_lastLine.Length == 0)
+        {
+            return true;
+        }
+        stream.Position = _readLength - _lastLine.Length;
+        var current = new byte[_lastLine.Length];
+        stream.ReadExactly(current);
+        return current.AsSpan().SequenceEqual(_lastLine);
+    }
+
     private void Reset()
     {
         _samples.Clear();
         _readLength = 0;
         _head = [];
+        _lastLine = [];
     }
 
     /// <summary>The current generation; "" before any compaction, null when it cannot be read (then nothing is reused).</summary>

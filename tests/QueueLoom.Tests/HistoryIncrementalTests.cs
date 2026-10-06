@@ -115,6 +115,50 @@ public sealed class HistoryIncrementalTests
         Assert.Equal([2L, 3L], new JsonLinesDeadLetterHistoryStore(file, new Clock()).Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
     }
 
+    // A version without generations (still running during an update) compacts the file in place of a newer one:
+    // A, B, C becomes A, C, D at the same length and with the same first 4 KB, and no generation is written.
+    [Fact]
+    public void ACompactionByAnOlderVersionIsStillNoticed()
+    {
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "history.jsonl");
+        var big = Enumerable.Range(0, 25).ToDictionary(index => new string('x', 200) + index.ToString("00"), _ => 1L);
+        DeadLetterHistorySample Record(DateTimeOffset at, long total, IReadOnlyDictionary<string, long>? sources = null) =>
+            new(at, Profile, "Test", total, sources ?? new Dictionary<string, long> { ["q"] = total });
+        var a = Record(Now.AddDays(-20), 1, big);
+        var b = Record(Now.AddDays(-40), 2);
+        var c = Record(Now.AddDays(-10), 3);
+        var d = Record(Now.AddDays(-5), 4);
+        string Lines(params DeadLetterHistorySample[] samples) => string.Concat(samples.Select(sample => JsonSerializer.Serialize(sample) + "\n"));
+        File.WriteAllText(file, Lines(a, b, c));
+        var reader = new JsonLinesDeadLetterHistoryStore(file, new Clock());
+        Assert.Equal([2L, 1L, 3L], reader.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+
+        // The older version's compaction: write a temporary file and move it over the history, nothing else.
+        File.WriteAllText(file + ".tmp", Lines(a, c, d));
+        Assert.Equal(new FileInfo(file).Length, new FileInfo(file + ".tmp").Length);
+        File.Move(file + ".tmp", file, overwrite: true);
+
+        Assert.Equal([1L, 3L, 4L], reader.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+    }
+
+    // A valid record that lost its newline can be older than the lines before it. The latest sample decides the
+    // spacing: a changed count is recorded, and reads stay in time order.
+    [Fact]
+    public void AnOlderUnterminatedRecordDoesNotHideANewerCount()
+    {
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "history.jsonl");
+        File.WriteAllText(file, JsonSerializer.Serialize(Sample(Now, 2)) + "\n" + JsonSerializer.Serialize(Sample(Now.AddSeconds(-10), 1)));
+        var store = new JsonLinesDeadLetterHistoryStore(file, new Clock());
+        Assert.Equal([1L, 2L], store.Read(Profile, DateTimeOffset.MinValue).Select(sample => sample.Total));
+
+        store.Append(Sample(Now.AddSeconds(10), 1));
+
+        Assert.Equal([1L, 2L, 1L], new JsonLinesDeadLetterHistoryStore(file, new Clock()).Read(Profile, DateTimeOffset.MinValue)
+            .Select(sample => sample.Total));
+    }
+
     // The file is deleted (history cleared) and written anew: nothing from before is shown.
     [Fact]
     public void ADeletedFileStartsAFreshHistory()
