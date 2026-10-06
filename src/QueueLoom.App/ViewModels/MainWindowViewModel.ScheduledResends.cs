@@ -102,6 +102,27 @@ public sealed partial class MainWindowViewModel
     /// <summary>Runs every due resend whose environment is connected with write access, one at a time.</summary>
     public async Task RunDueScheduledResendsAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_scheduledStore is not null)
+        {
+            IReadOnlyList<ScheduledResend> persisted;
+            try { persisted = _scheduledStore.Load(); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                ErrorText = $"Scheduled resends could not be read: {exception.Message}";
+                return; // Never execute a stale cache after a failed read.
+            }
+            var currentIds = persisted.Select(resend => resend.Id).ToHashSet();
+            foreach (var item in ScheduledResends.Where(item => !currentIds.Contains(item.Resend.Id)).ToArray())
+                ScheduledResends.Remove(item);
+            foreach (var resend in persisted)
+            {
+                // Reloaded records contain new item arrays. Replace the cached payload too, keeping its position.
+                var cached = ScheduledResends.FirstOrDefault(item => item.Resend.Id == resend.Id);
+                if (cached is null) ScheduledResends.Add(CreateScheduledItem(resend));
+                else ScheduledResends[ScheduledResends.IndexOf(cached)] = CreateScheduledItem(resend);
+            }
+        }
         // A damaged list can be found by a read elsewhere (the background history cleanup); it is reported here at
         // the latest.
         ReportSetAsideSchedules();

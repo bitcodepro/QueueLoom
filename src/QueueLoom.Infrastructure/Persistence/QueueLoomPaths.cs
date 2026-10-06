@@ -25,17 +25,35 @@ public sealed record QueueLoomPaths(
         var backupOverride = Environment.GetEnvironmentVariable("QUEUELOOM_BACKUP_DIRECTORY");
         return persistentPaths with
         {
-            // Backups live in a "backups" folder next to the program on every OS, so they are easy to find
-            // and travel with a portable copy. Where that folder cannot be written (for example Program Files),
-            // they fall back to the data folder.
+            // A macOS bundle is replaced as a whole. Its backups must live beside the bundle, not inside it.
+            // Portable installations keep backups beside the executable; unwritable defaults use the data folder.
             BackupsDirectory = !string.IsNullOrWhiteSpace(backupOverride)
-                ? Path.GetFullPath(backupOverride)
+                ? OutsideApplicationBundle(Path.GetFullPath(backupOverride), AppContext.BaseDirectory)
                 : IsWritableDirectory(ProgramBackupsDirectory) ? ProgramBackupsDirectory : persistentPaths.BackupsDirectory
         };
     }
 
-    /// <summary>The "backups" folder next to the running program (the directory of the executable).</summary>
-    public static string ProgramBackupsDirectory => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "backups"));
+    /// <summary>The "backups" folder next to the executable, or beside a macOS application bundle.</summary>
+    public static string ProgramBackupsDirectory => ProgramBackupsDirectoryFor(AppContext.BaseDirectory);
+
+    internal static string ProgramBackupsDirectoryFor(string executableDirectory) =>
+        OutsideApplicationBundle(Path.Combine(executableDirectory, "backups"), executableDirectory);
+
+    public static string OutsideApplicationBundle(string directory, string executableDirectory)
+    {
+        var macOS = new DirectoryInfo(Path.GetFullPath(executableDirectory));
+        var bundle = macOS.Parent?.Parent;
+        var full = Path.GetFullPath(directory);
+        if (macOS.Name != "MacOS" || macOS.Parent?.Name != "Contents" ||
+            bundle is null || !bundle.Name.EndsWith(".app", StringComparison.OrdinalIgnoreCase)) return full;
+        var relative = Path.GetRelativePath(bundle.FullName, full);
+        if (relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            Path.IsPathRooted(relative)) return full;
+        if (relative == ".") throw new InvalidOperationException("The application bundle itself cannot be used as a backup directory.");
+        var root = Path.Combine(bundle.Parent!.FullName, "backups");
+        return relative == Path.Combine("Contents", "MacOS", "backups")
+            ? root : Path.Combine(root, "bundle-custom", relative);
+    }
 
     internal static bool IsWritableDirectory(string directory)
     {
