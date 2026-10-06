@@ -59,15 +59,15 @@ internal static class MacBackupMigration
         }
     }
 
-    internal static int CopyLegacyDirectory(string source, string destination, string sourceBundle, CancellationToken token)
+    internal static int CopyLegacyDirectory(string source, string destination, string sourceBundle, CancellationToken token, CopyCache? cache = null)
     {
         var relative = Path.GetRelativePath(Path.GetFullPath(sourceBundle), Path.GetFullPath(destination));
         if (!Path.IsPathRooted(relative) && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new IOException("Legacy backups must be copied outside the application bundle.");
-        return CopyDirectory(source, destination, sourceBundle, destination, token);
+        return CopyDirectory(source, destination, sourceBundle, destination, token, cache);
     }
 
-    private static int CopyDirectory(string source, string destination, string sourceBoundary, string destinationBoundary, CancellationToken token = default)
+    private static int CopyDirectory(string source, string destination, string sourceBoundary, string destinationBoundary, CancellationToken token = default, CopyCache? cache = null)
     {
         token.ThrowIfCancellationRequested();
         RejectLinks(source, sourceBoundary);
@@ -79,28 +79,36 @@ internal static class MacBackupMigration
             token.ThrowIfCancellationRequested();
             RejectLinks(entry, sourceBoundary);
             var target = Path.Combine(destination, Path.GetFileName(entry));
-            copied += Directory.Exists(entry) ? CopyDirectory(entry, target, sourceBoundary, destinationBoundary, token)
-                : CopyFile(entry, target, destinationBoundary, token);
+            copied += Directory.Exists(entry) ? CopyDirectory(entry, target, sourceBoundary, destinationBoundary, token, cache)
+                : CopyFile(entry, target, destinationBoundary, token, cache);
         }
         return copied;
     }
 
-    private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token)
+    private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token, CopyCache? cache)
     {
         RejectLinks(destination, destinationBoundary);
+        var originalDestination = destination;
+        var sourceStamp = cache is null ? null : FileStamp.Read(source);
+        if (cache?.IsCurrent(source, destination, destinationBoundary, sourceStamp) == true) return 0;
+        int Verified(int copied)
+        {
+            cache?.Remember(source, originalDestination, destination, sourceStamp);
+            return copied;
+        }
         using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
         var hash = SHA256.HashData(input);
         if (File.Exists(destination))
         {
             using var existing = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (SHA256.HashData(existing).AsSpan().SequenceEqual(hash)) return 0;
+            if (SHA256.HashData(existing).AsSpan().SequenceEqual(hash)) return Verified(0);
             destination = Path.Combine(Path.GetDirectoryName(destination)!,
                 Path.GetFileNameWithoutExtension(destination) + ".recovered-" + Convert.ToHexString(hash) + Path.GetExtension(destination));
             RejectLinks(destination, destinationBoundary);
             if (File.Exists(destination))
             {
                 using var recovered = File.OpenRead(destination);
-                if (SHA256.HashData(recovered).AsSpan().SequenceEqual(hash)) return 0;
+                if (SHA256.HashData(recovered).AsSpan().SequenceEqual(hash)) return Verified(0);
                 throw new IOException("A conflicting recovered backup already exists; the old bundle was retained.");
             }
         }
@@ -112,8 +120,45 @@ internal static class MacBackupMigration
             { input.CopyTo(output); output.Flush(flushToDisk: true); }
             token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, overwrite: false);
-            return 1;
+            return Verified(1);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    internal sealed record FileStamp(long Length, long ModifiedTicks, long CreatedTicks)
+    {
+        internal static FileStamp? Read(string path)
+        {
+            var file = new FileInfo(path);
+            return file.Exists ? new(file.Length, file.LastWriteTimeUtc.Ticks, file.CreationTimeUtc.Ticks) : null;
+        }
+    }
+
+    internal sealed record VerifiedCopy(FileStamp Source, string Destination, FileStamp Target);
+
+    // Only startup uses this metadata hint. Destructive update/rollback/cleanup always re-verify file contents.
+    internal sealed class CopyCache(Dictionary<string, VerifiedCopy> entries)
+    {
+        internal Dictionary<string, VerifiedCopy> Entries { get; } = entries;
+        internal bool Changed { get; private set; }
+        private static string Key(string source, string destination) => Path.GetFullPath(source) + "\n" + Path.GetFullPath(destination);
+
+        internal bool IsCurrent(string source, string destination, string boundary, FileStamp? sourceStamp)
+        {
+            if (sourceStamp is null || !Entries.TryGetValue(Key(source, destination), out var copy) || copy is null ||
+                copy.Source != sourceStamp || string.IsNullOrEmpty(copy.Destination) || copy.Target is null) return false;
+            RejectLinks(copy.Destination, boundary);
+            return copy.Target == FileStamp.Read(copy.Destination);
+        }
+
+        internal void Remember(string source, string requestedDestination, string verifiedDestination, FileStamp? before)
+        {
+            if (before is null || before != FileStamp.Read(source) || FileStamp.Read(verifiedDestination) is not { } target) return;
+            var copy = new VerifiedCopy(before, Path.GetFullPath(verifiedDestination), target);
+            var key = Key(source, requestedDestination);
+            if (Entries.TryGetValue(key, out var prior) && prior == copy) return;
+            Entries[key] = copy;
+            Changed = true;
+        }
     }
 }

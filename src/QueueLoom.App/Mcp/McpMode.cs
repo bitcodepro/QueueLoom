@@ -66,15 +66,35 @@ internal static class McpMode
         }
     }
 
-    private static async Task RunServerAsync(
+    internal static async Task RunServerAsync(
         McpServerSettings settings,
         QueueLoomPaths paths,
         FileLoggerProvider logs,
-        IOperationApprover approver)
+        IOperationApprover approver,
+        Func<CancellationToken, Task<int>>? migrateBackups = null,
+        Func<Task>? runServer = null)
+    {
+        using var migrationCancellation = new CancellationTokenSource();
+        var migration = MigrateBackupsAsync(paths, migrateBackups ?? new LegacyBackupMigration(paths).RunAsync, migrationCancellation.Token);
+        try
+        {
+            // Serving must not wait for a large first migration or the desktop's migration lock.
+            using var retention = new LocalHistoryRetention(new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")), null);
+            _ = retention.Start();
+            await (runServer?.Invoke() ?? RunMcpServerAsync(settings, paths, logs, approver)).ConfigureAwait(false);
+        }
+        finally
+        {
+            migrationCancellation.Cancel();
+            await migration.ConfigureAwait(false);
+        }
+    }
+
+    private static async Task MigrateBackupsAsync(QueueLoomPaths paths, Func<CancellationToken, Task<int>> migrateBackups, CancellationToken token)
     {
         try
         {
-            var copied = await new LegacyBackupMigration(paths).RunAsync().ConfigureAwait(false);
+            var copied = await migrateBackups(token).ConfigureAwait(false);
             if (copied > 0 || paths.BackupDirectoryWarning is not null)
             {
                 var action = copied > 0 ? "Legacy backups preserved" : "Backup directory changed";
@@ -85,13 +105,9 @@ internal static class McpMode
                 { await Console.Error.WriteLineAsync("Backup migration finished, but its Activity entry could not be saved."); }
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         { await Console.Error.WriteLineAsync("Legacy backups could not be migrated; originals remain in the application bundle."); }
-        // An MCP server can run for days and appends to the shared Activity journal, so it applies the same retention.
-        // Operation history belongs to the desktop app, which cleans it up itself.
-        using var retention = new LocalHistoryRetention(new FileActivityJournal(Path.Combine(paths.RootDirectory, "activity")), null);
-        _ = retention.Start();
-        await RunMcpServerAsync(settings, paths, logs, approver).ConfigureAwait(false);
     }
 
     private static Task RunMcpServerAsync(

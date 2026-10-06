@@ -1,5 +1,7 @@
 using QueueLoom.Infrastructure.Persistence;
 using System.Diagnostics;
+using System.Text.Json;
+using QueueLoom.Core.IO;
 
 namespace QueueLoom.App.Services;
 
@@ -18,12 +20,23 @@ public sealed class LegacyBackupMigration
         var target = new UpdateTarget("osx-arm64", Path.GetDirectoryName(bundle)!, Path.Combine(ExecutableDirectory, "QueueLoom"), bundle);
         Paths.EnsureCreated();
         using var ownership = await AcquireMigrationFileAsync(cancellationToken).ConfigureAwait(false);
+        var cachePath = Path.Combine(Paths.RootDirectory, "legacy-backup-migration.v1.json");
+        Dictionary<string, MacBackupMigration.VerifiedCopy>? entries = null;
+        try
+        {
+            if (File.Exists(cachePath)) entries = JsonSerializer.Deserialize<Dictionary<string, MacBackupMigration.VerifiedCopy>>(
+                await File.ReadAllTextAsync(cachePath, cancellationToken).ConfigureAwait(false));
+        }
+        catch (JsonException) { /* Rebuild a damaged hint from verified copies; never trust it to skip a file. */ }
+        var cache = new MacBackupMigration.CopyCache(entries ?? []);
         var copied = 0;
         foreach (var relative in MacBackupMigration.CaptureDirectories(target, BackupOverride) ?? [])
         {
             var source = Path.Combine(bundle, relative);
-            if (Directory.Exists(source)) copied += MacBackupMigration.CopyLegacyDirectory(source, Paths.BackupsDirectory, bundle, cancellationToken);
+            if (Directory.Exists(source)) copied += MacBackupMigration.CopyLegacyDirectory(source, Paths.BackupsDirectory, bundle, cancellationToken, cache);
         }
+        // Commit hints only after the complete pass succeeds; interrupted/failed passes remain safe to retry.
+        if (cache.Changed) await SafeFileWriter.WriteTextAsync(cachePath, JsonSerializer.Serialize(cache.Entries), cancellationToken).ConfigureAwait(false);
         return copied;
     }, cancellationToken);
 

@@ -9,11 +9,40 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
+    [Fact]
+    public async Task Review2_ExactClaimRejectsPayloadChangedAfterCacheRefresh()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Changed before claim", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var store = new JsonScheduledResendStore(QueueLoomPaths.ForRoot(directory.Path));
+        var job = DueJob(profile) with { DueAt = DateTimeOffset.UtcNow.AddHours(1) };
+        store.Add(job);
+        var profiles = new FakeProfileRepository([profile], profile.Id);
+        var workspace = new FakeWorkspace();
+        await using var vm = new MainWindowViewModel(profiles, new FakeSecretVault(), workspace, new FakeDialogService(), scheduledResends: store);
+        await vm.InitializeAsync(); await vm.ConnectCommand.ExecuteAsync();
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        profiles.GetGate = async (_, _) => { paused.TrySetResult(); await release.Task; return profile; };
+        var run = vm.RunScheduledNowAsync(Assert.Single(vm.ScheduledResends));
+        var updated = job with { Items = [job.Items[0] with { Message = new MessageDraft(new EditableMessageBody("changed externally", MessageBodyFormat.Text)) }] };
+        try
+        {
+            await paused.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            store.Save([updated]);
+        }
+        finally { release.TrySetResult(); await run; }
+        Assert.Empty(workspace.SentMessages);
+        Assert.Equal("changed externally", Assert.Single(store.Load()).Items[0].Message.Body.Content);
+        Assert.Contains("changed in another window", vm.StatusText, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("body")]
     [InlineData("key")]
     [InlineData("header")]
     [InlineData("tombstone")]
+    [InlineData("native-subject")]
     public async Task Review_RefreshKeepsEqualWirePayloadButAcceptsExternalPayloadChanges(string change)
     {
         using var directory = new TemporaryDirectory();
@@ -38,6 +67,8 @@ public sealed partial class ViewModelStateTests
             "body" => new MessageDraft(new EditableMessageBody("edited", MessageBodyFormat.Text)) { KafkaEnvelope = draft.KafkaEnvelope },
             "key" => draft with { KafkaEnvelope = draft.KafkaEnvelope! with { Key = [] } },
             "header" => draft with { KafkaEnvelope = draft.KafkaEnvelope! with { Headers = [new KafkaRawHeader("binary", null)] } },
+            "native-subject" => new MessageDraft(draft.Body, draft.Properties with { NativeSubject = "changed" }, draft.ApplicationProperties)
+                { KafkaEnvelope = draft.KafkaEnvelope },
             _ => draft with { KafkaEnvelope = draft.KafkaEnvelope! with { IsTombstone = true } }
         };
         new JsonScheduledResendStore(QueueLoomPaths.ForRoot(directory.Path)).Save([job with { Items = [job.Items[0] with { Message = edited }] }]);
@@ -46,6 +77,7 @@ public sealed partial class ViewModelStateTests
         var refreshed = Assert.Single(vm.ScheduledResends);
         Assert.NotSame(original, refreshed);
         Assert.Equal(edited.Body, refreshed.Resend.Items[0].Message.Body);
+        Assert.Equal(edited.Properties, refreshed.Resend.Items[0].Message.Properties);
         Assert.Equal(edited.KafkaEnvelope!.Key, refreshed.Resend.Items[0].Message.KafkaEnvelope!.Key);
         Assert.Equal(edited.KafkaEnvelope.IsTombstone, refreshed.Resend.Items[0].Message.KafkaEnvelope!.IsTombstone);
         Assert.Equal(edited.KafkaEnvelope.Headers[0].Value, refreshed.Resend.Items[0].Message.KafkaEnvelope!.Headers[0].Value);
