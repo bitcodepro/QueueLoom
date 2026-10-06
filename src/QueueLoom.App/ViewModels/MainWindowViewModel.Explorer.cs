@@ -62,6 +62,7 @@ public sealed partial class MainWindowViewModel
     private void ApplyTopology(ServiceBusTopology topology, bool preserveDestination = true)
     {
         var previousDestination = preserveDestination ? SelectedDestination?.Reference : null;
+        var previousReplayDestination = preserveDestination ? ReplayDestination?.Reference : null;
         _topology = topology;
         NotifyBrowseDeliveryNotes();
         OnPropertyChanged(nameof(CanDeleteSelectedMessages));
@@ -113,6 +114,9 @@ public sealed partial class MainWindowViewModel
         SelectedDestination = previousDestination is null
             ? null
             : Destinations.FirstOrDefault(item => item.Reference == previousDestination);
+        ReplayDestination = previousReplayDestination is null
+            ? null
+            : Destinations.FirstOrDefault(item => item.Reference == previousReplayDestination);
         ApplyEntityFilter();
         RefreshConsumerRows();
         NotifyStatistics();

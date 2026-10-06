@@ -48,6 +48,8 @@ public sealed record ResendProgress(int Processed, int Total, int Failed);
 
 public sealed record ResendResult(IReadOnlyList<ResendItemResult> Items, string? BackupDirectory)
 {
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     public int SentCount => Items.Count(item => item.Outcome is ResendOutcome.Sent or ResendOutcome.Moved or ResendOutcome.SentOriginalKept);
 
     public int MovedCount => Count(ResendOutcome.Moved);
@@ -155,6 +157,7 @@ public static class DeadLetterResender
         }
 
         string? backupDirectory = null;
+        IReadOnlyList<string> warnings = [];
         var sent = Enumerable.Range(0, items.Count).Where(index => results[index]!.Outcome == ResendOutcome.Sent).ToArray();
         if (mode == ResendMode.Move && sent.Length > 0)
         {
@@ -166,6 +169,7 @@ public static class DeadLetterResender
                         CancellationToken.None)
                     .ConfigureAwait(false);
                 backupDirectory = deletion.BackupDirectory;
+                warnings = deletion.Warnings;
                 var outcomes = deletion.Messages
                     .GroupBy(message => message.Message)
                     .ToDictionary(group => group.Key, group => group.First());
@@ -188,7 +192,7 @@ public static class DeadLetterResender
             }
         }
 
-        return new ResendResult(results.Select(result => result!).ToArray(), backupDirectory);
+        return new ResendResult(results.Select(result => result!).ToArray(), backupDirectory) { Warnings = warnings };
     }
 
     public static void EnsureSafeMessageIds(QueueLoom.Core.Profiles.MessagingProvider? provider,

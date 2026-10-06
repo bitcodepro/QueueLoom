@@ -944,6 +944,7 @@ public sealed partial class ViewModelStateTests
 
     internal sealed class FakeWorkspace : IServiceBusWorkspace, ICleanupWarningSource
     {
+        public IReadOnlyList<string> ResultWarnings { get; set; } = [];
         public Dictionary<Guid, DeadLetterSnapshot> Snapshots { get; } = [];
 
         public List<DeadLetterPurgeRequest> PurgeRequests { get; } = [];
@@ -1122,7 +1123,7 @@ public sealed partial class ViewModelStateTests
                 now,
                 now,
                 results,
-                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")) { Warnings = ResultWarnings });
         }
 
         public QueueManagementCapabilities? QueueManagement { get; set; }
@@ -1237,7 +1238,7 @@ public sealed partial class ViewModelStateTests
                             : DeadLetterMessageDeletionOutcome.Deleted,
                     FailedSequenceNumbers.Contains(key.SequenceNumber) ? "Settlement response lost."
                         : MissingSequenceNumbers.Contains(key.SequenceNumber) ? "Already gone." : null)),
-                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")));
+                Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "backup")) { Warnings = ResultWarnings });
         }
 
         public async Task<DeadLetterSnapshot> GetDeadLetterSnapshotAsync(

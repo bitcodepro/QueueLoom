@@ -74,6 +74,7 @@ public sealed partial class AzureServiceBusWorkspace
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterPurgeSourceResult>(request.Targets.Count);
+        var warnings = new List<string>();
 
         for (var index = 0; index < request.Targets.Count; index++)
         {
@@ -101,9 +102,9 @@ public sealed partial class AzureServiceBusWorkspace
                     progress,
                     cancellationToken)
                 .ConfigureAwait(false));
-            await AtomicFile.WriteTextAsync(Path.Combine(backupSession.RootDirectory, "purge-result.report"),
-                System.Text.Json.JsonSerializer.Serialize(new { profileId = profile.Id, startedAt,
-                    updatedAt = _timeProvider.GetUtcNow(), sources = results }), CancellationToken.None).ConfigureAwait(false);
+            await WriteResultReportAsync(backupSession.RootDirectory, "purge-result.report",
+                new { profileId = profile.Id, startedAt, updatedAt = _timeProvider.GetUtcNow(), sources = results, warnings },
+                warnings).ConfigureAwait(false);
         }
 
         _cachedTopology = null;
@@ -117,7 +118,7 @@ public sealed partial class AzureServiceBusWorkspace
             startedAt,
             _timeProvider.GetUtcNow(),
             results,
-            backupSession.RootDirectory);
+            backupSession.RootDirectory) { Warnings = Array.AsReadOnly(warnings.Distinct().ToArray()) };
     }
 
     public async Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
@@ -137,6 +138,7 @@ public sealed partial class AzureServiceBusWorkspace
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterMessageDeletionResult>(request.Messages.Count);
+        var warnings = new List<string>();
 
         for (var index = 0; index < groups.Length; index++)
         {
@@ -166,7 +168,8 @@ public sealed partial class AzureServiceBusWorkspace
                         PurgeReceiveWaitTime,
                         (scanned, deleted) => progress?.Report(new DeadLetterMessageDeletionProgress(
                             source, subQueue, targetNumber, groups.Length, scanned, deletedBefore + deleted)),
-                        cancellationToken)
+                        cancellationToken,
+                        warnings.Add)
                     .ConfigureAwait(false));
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -176,9 +179,9 @@ public sealed partial class AzureServiceBusWorkspace
                     new DeadLetterMessageDeletionResult(key, DeadLetterMessageDeletionOutcome.Failed, exception.Message)));
             }
 
-            await AtomicFile.WriteTextAsync(Path.Combine(backupSession.RootDirectory, "delete-result.report"),
-                System.Text.Json.JsonSerializer.Serialize(new { profileId = profile.Id, startedAt,
-                    updatedAt = _timeProvider.GetUtcNow(), messages = results }), CancellationToken.None).ConfigureAwait(false);
+            await WriteResultReportAsync(backupSession.RootDirectory, "delete-result.report",
+                new { profileId = profile.Id, startedAt, updatedAt = _timeProvider.GetUtcNow(), messages = results, warnings },
+                warnings).ConfigureAwait(false);
         }
 
         _cachedTopology = null;
@@ -187,7 +190,23 @@ public sealed partial class AzureServiceBusWorkspace
             startedAt,
             _timeProvider.GetUtcNow(),
             results,
-            backupSession.RootDirectory);
+            backupSession.RootDirectory) { Warnings = Array.AsReadOnly(warnings.Distinct().ToArray()) };
+    }
+
+    private static async Task WriteResultReportAsync(string backupDirectory, string reportName, object report, List<string> warnings)
+    {
+        try
+        {
+            await AtomicFile.WriteTextAsync(Path.Combine(backupDirectory, reportName),
+                System.Text.Json.JsonSerializer.Serialize(report), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Settlement has already happened. Report I/O must never erase that fact or the backup location.
+            warnings.Add($"{reportName} could not be saved: " +
+                QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(exception) +
+                $". Broker outcomes are confirmed as returned; backups are in {backupDirectory}.");
+        }
     }
 
     private ServiceBusReceiver CreateDeadLetterLockReceiver(ServiceBusEntityReference source, ServiceBusSubQueue subQueue)

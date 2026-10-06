@@ -339,9 +339,9 @@ public sealed partial class MainWindowViewModel
                     // The original is gone; sending the draft again is a new message, not another move.
                     _draftSourceMessage = null;
                     DraftOriginNotice = "Sent · the original was backed up and removed. Sending again creates a new message.";
-                    StatusText = "Message sent · original backed up and removed from the DLQ";
-                    AddActivity("Success", "DLQ message moved",
-                        $"{profile.Name} · {original.Source.DisplayName} → {destination.Reference.DisplayName} · backup {result.BackupDirectory}",
+                    StatusText = "Message sent · original backed up and removed from the DLQ" + OperationWarnings(result.Warnings);
+                    AddActivity(result.Warnings.Count == 0 ? "Success" : "Warning", "DLQ message moved",
+                        $"{profile.Name} · {original.Source.DisplayName} → {destination.Reference.DisplayName} · backup {result.BackupDirectory}" + OperationWarnings(result.Warnings),
                         destination.Reference);
                     break;
                 case ResendOutcome.SentOriginalKept:
