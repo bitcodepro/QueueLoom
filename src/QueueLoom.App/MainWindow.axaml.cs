@@ -71,9 +71,10 @@ public sealed partial class MainWindow : Window
         _initialized = true;
         try
         {
-            // Assigned before the first await so a close during startup waits for it.
+            // Retained so shutdown can defer releasing services until startup actually settles.
             _initializationTask = InitializeAsync(_viewModel, _settingsStore);
             await _initializationTask;
+            if (_shutdownInProgress || _shutdownComplete) return;
             _viewModel.PropertyChanged += OnTrayRelevantPropertyChanged;
             UpdateTray();
         }
@@ -93,6 +94,7 @@ public sealed partial class MainWindow : Window
     private async Task InitializeAsync(MainWindowViewModel viewModel, JsonAppSettingsStore settingsStore)
     {
         var settings = await settingsStore.LoadAsync();
+        if (_shutdownInProgress || _shutdownComplete) return;
         if (settingsStore.LoadProblem is { } problem)
         {
             viewModel.ReportLocalDataProblem("Settings not loaded", problem);
@@ -103,6 +105,7 @@ public sealed partial class MainWindow : Window
         // still loading: closing no longer writes a final value, so a change that is not saved now would be lost.
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
         await viewModel.InitializeAsync();
+        if (_shutdownInProgress || _shutdownComplete) return;
         viewModel.StartScheduledResends();
     }
 
@@ -308,17 +311,11 @@ public sealed partial class MainWindow : Window
 
         try
         {
+            _viewModel.RequestShutdown();
             if (_initializationTask is not null)
             {
-                try
-                {
-                    await _initializationTask;
-                }
-                catch (Exception exception)
-                {
-                    // Already reported by OnOpened; shutdown still has to release resources.
-                    _logger?.LogDebug(exception, "Startup had failed before shutdown");
-                }
+                await ShutdownWait.WithinAsync(() => new ValueTask(WaitForStartupAsync()),
+                    _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
             }
             // Saved-search saves already admitted are written before the final settings write and before the settings
             // store is released, so a queued reinsert cannot be overtaken or abandoned (bounded like the rest of closing).
@@ -346,11 +343,32 @@ public sealed partial class MainWindow : Window
             {
                 // Disposing the services waits for the workspace's running operations; a stuck one must not keep
                 // the window open, so this wait is bounded like the view model's.
-                await ShutdownWait.WithinAsync(shutdownCompleted, _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
+                await ShutdownWait.WithinAsync(() => new ValueTask(ReleaseServicesAfterStartupAsync(shutdownCompleted)),
+                    _viewModel.ShutdownDrainTimeout, _viewModel.Clock, _logger);
             }
             _shutdownComplete = true;
             _shutdownInProgress = false;
             Close();
         }
+    }
+
+    private async Task WaitForStartupAsync()
+    {
+        try
+        {
+            if (_initializationTask is not null) await _initializationTask;
+        }
+        catch (Exception exception)
+        {
+            _logger?.LogDebug(exception, "Startup had failed before shutdown");
+        }
+    }
+
+    private async Task ReleaseServicesAfterStartupAsync(Func<ValueTask> release)
+    {
+        // Startup may ignore cancellation. Close the window within its deadline while keeping its
+        // dependencies alive until the operation stops, rather than disposing them underneath it.
+        await WaitForStartupAsync();
+        await release();
     }
 }

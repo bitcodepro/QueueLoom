@@ -6,7 +6,7 @@ namespace QueueLoom.Tests;
 public sealed class FakeSecretToolCollection;
 
 [Collection("Fake secret-tool")]
-public sealed class SecretServiceLookupTests
+public sealed partial class SecretServiceLookupTests
 {
     [Fact]
     public async Task LookupThatFailsWithAMessage_DoesNotReplaceTheStoredKey()
