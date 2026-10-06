@@ -100,7 +100,27 @@ public static class BodyDecoder
         }
 
         var final = current.Span;
-        if (TryText(final, out var text))
+        var protobufHint = contentType?.Contains("proto", StringComparison.OrdinalIgnoreCase) == true;
+        messageType ??= ProtoSchemaCatalog.HintFrom(contentType);
+        var readable = TryText(final, out var text);
+        // Wire bytes can also be valid UTF-8. An explicit hint takes precedence over the text view.
+        if (!readable || protobufHint || !string.IsNullOrWhiteSpace(messageType))
+        {
+            if (!protos.IsEmpty && ProtoDecoder.DecodeBestFit(final, protos, messageType) is { } typed)
+            {
+                steps.Add($"Protobuf ({typed.Type.FullName})");
+                var named = protos.Resolve(messageType) == typed.Type;
+                return new DecodedBody(steps, typed.Json, true, note ??
+                    (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body."));
+            }
+            if (Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf))
+            {
+                steps.Add("Protobuf (no schema)");
+                return new DecodedBody(steps, protobuf, true,
+                    note ?? "Without the .proto file, fields are shown by number and nested messages are guessed.");
+            }
+        }
+        if (readable)
         {
             if (TryIndentJson(text, out var json))
             {
@@ -108,22 +128,6 @@ public static class BodyDecoder
                 return steps.Count > 1 ? new DecodedBody(steps, json, true, note) : null;
             }
             return steps.Count > 0 ? new DecodedBody([.. steps, "text"], text, false, note) : null;
-        }
-
-        var protobufHint = contentType?.Contains("proto", StringComparison.OrdinalIgnoreCase) == true;
-        messageType ??= ProtoSchemaCatalog.HintFrom(contentType);
-        if (!protos.IsEmpty && ProtoDecoder.DecodeBestFit(final, protos, messageType) is { } typed)
-        {
-            steps.Add($"Protobuf ({typed.Type.FullName})");
-            var named = protos.Resolve(messageType) == typed.Type;
-            return new DecodedBody(steps, typed.Json, true, note ??
-                (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body."));
-        }
-        if (Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf))
-        {
-            steps.Add("Protobuf (no schema)");
-            return new DecodedBody(steps, protobuf, true,
-                note ?? "Without the .proto file, fields are shown by number and nested messages are guessed.");
         }
 
         return steps.Count > 0 ? new DecodedBody([.. steps, "binary"], HexDump(final), false, note) : null;
@@ -747,7 +751,7 @@ public static class BodyDecoder
     /// <summary>Walks an Avro schema (JSON) and writes the matching binary data as JSON values.</summary>
     private sealed class AvroSchema
     {
-        private readonly Dictionary<string, JsonElement> _named = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, (JsonElement Schema, string? Namespace)> _named = new(StringComparer.Ordinal);
 
         public AvroSchema(JsonElement root)
         {
@@ -762,7 +766,9 @@ public static class BodyDecoder
         private const int MaximumDepth = 1000;
         private int _depth;
 
-        public void Write(Utf8JsonWriter writer, JsonElement schema, AvroReader reader)
+        public void Write(Utf8JsonWriter writer, JsonElement schema, AvroReader reader) => Write(writer, schema, reader, null);
+
+        private void Write(Utf8JsonWriter writer, JsonElement schema, AvroReader reader, string? enclosingNamespace)
         {
             CheckOutputBudget(writer);
             if (++_depth > MaximumDepth)
@@ -771,7 +777,7 @@ public static class BodyDecoder
             }
             try
             {
-                WriteValue(writer, schema, reader);
+                WriteValue(writer, schema, reader, enclosingNamespace);
             }
             finally
             {
@@ -789,16 +795,16 @@ public static class BodyDecoder
                 throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
         }
 
-        private void WriteValue(Utf8JsonWriter writer, JsonElement schema, AvroReader reader)
+        private void WriteValue(Utf8JsonWriter writer, JsonElement schema, AvroReader reader, string? enclosingNamespace)
         {
             switch (schema.ValueKind)
             {
                 case JsonValueKind.String:
-                    WriteNamedOrPrimitive(writer, schema.GetString()!, reader);
+                    WriteNamedOrPrimitive(writer, schema.GetString()!, reader, enclosingNamespace);
                     return;
                 case JsonValueKind.Array:
                     var branch = checked((int)reader.ReadLong());
-                    Write(writer, schema[branch], reader);
+                    Write(writer, schema[branch], reader, enclosingNamespace);
                     return;
                 case JsonValueKind.Object:
                     break;
@@ -807,9 +813,10 @@ public static class BodyDecoder
             }
 
             var type = schema.GetProperty("type");
+            var space = NamespaceFor(schema, enclosingNamespace);
             if (type.ValueKind != JsonValueKind.String)
             {
-                Write(writer, type, reader);
+                Write(writer, type, reader, space);
                 return;
             }
 
@@ -820,7 +827,7 @@ public static class BodyDecoder
                     foreach (var field in schema.GetProperty("fields").EnumerateArray())
                     {
                         writer.WritePropertyName(EncodeBoundedText(writer, field.GetProperty("name").GetString()!));
-                        Write(writer, field.GetProperty("type"), reader);
+                        Write(writer, field.GetProperty("type"), reader, space);
                     }
                     writer.WriteEndObject();
                     return;
@@ -829,7 +836,7 @@ public static class BodyDecoder
                     return;
                 case "array":
                     writer.WriteStartArray();
-                    ReadBlocks(reader, () => Write(writer, schema.GetProperty("items"), reader));
+                    ReadBlocks(reader, () => Write(writer, schema.GetProperty("items"), reader, space));
                     writer.WriteEndArray();
                     return;
                 case "map":
@@ -837,7 +844,7 @@ public static class BodyDecoder
                     ReadBlocks(reader, () =>
                     {
                         writer.WritePropertyName(EncodeBoundedText(writer, reader.ReadString()));
-                        Write(writer, schema.GetProperty("values"), reader);
+                        Write(writer, schema.GetProperty("values"), reader, space);
                     });
                     writer.WriteEndObject();
                     return;
@@ -847,12 +854,12 @@ public static class BodyDecoder
                     writer.WriteStringValue(EncodeBoundedText(writer, Convert.ToHexString(reader.ReadFixed(fixedSize))));
                     return;
                 default:
-                    WriteNamedOrPrimitive(writer, type.GetString()!, reader);
+                    WriteNamedOrPrimitive(writer, type.GetString()!, reader, space);
                     return;
             }
         }
 
-        private void WriteNamedOrPrimitive(Utf8JsonWriter writer, string type, AvroReader reader)
+        private void WriteNamedOrPrimitive(Utf8JsonWriter writer, string type, AvroReader reader, string? enclosingNamespace)
         {
             switch (type)
             {
@@ -881,11 +888,13 @@ public static class BodyDecoder
                     return;
             }
 
-            if (!_named.TryGetValue(type, out var named))
+            var fullName = type.Contains('.', StringComparison.Ordinal) || string.IsNullOrEmpty(enclosingNamespace)
+                ? type : $"{enclosingNamespace}.{type}";
+            if (!_named.TryGetValue(fullName, out var named))
             {
                 throw new FormatException($"The Avro schema refers to an unknown type '{type}'.");
             }
-            Write(writer, named, reader);
+            Write(writer, named.Schema, reader, named.Namespace);
         }
 
         private static long RemainingJsonBytes(Utf8JsonWriter writer) => MaximumDecodedBytes - writer.BytesCommitted - writer.BytesPending - 2;
@@ -951,15 +960,13 @@ public static class BodyDecoder
                     return;
             }
 
-            var space = schema.TryGetProperty("namespace", out var ns) ? ns.GetString() : enclosingNamespace;
+            var space = NamespaceFor(schema, enclosingNamespace);
             if (schema.TryGetProperty("name", out var name) && name.GetString() is { } shortName)
             {
                 var fullName = shortName.Contains('.', StringComparison.Ordinal) || string.IsNullOrEmpty(space)
                     ? shortName
                     : $"{space}.{shortName}";
-                _named[fullName] = schema;
-                _named.TryAdd(shortName, schema);
-                _named.TryAdd(fullName[(fullName.LastIndexOf('.') + 1)..], schema);
+                _named[fullName] = (schema, space);
             }
 
             if (schema.TryGetProperty("fields", out var fields))
@@ -976,6 +983,16 @@ public static class BodyDecoder
                     Register(inner, space);
                 }
             }
+        }
+
+        private static string? NamespaceFor(JsonElement schema, string? enclosingNamespace)
+        {
+            if (!schema.TryGetProperty("name", out var name)) return enclosingNamespace;
+            var fullName = name.GetString()!;
+            var separator = fullName.LastIndexOf('.');
+            // A dotted name supplies its namespace and ignores the separate namespace attribute.
+            return separator >= 0 ? fullName[..separator]
+                : schema.TryGetProperty("namespace", out var ns) ? ns.GetString() : enclosingNamespace;
         }
     }
 }

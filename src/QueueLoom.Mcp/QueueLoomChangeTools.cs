@@ -90,7 +90,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                           (result.NotFoundCount > 0 ? $", {result.NotFoundCount} not found" : string.Empty) +
                           (result.FailedCount > 0 ? $", {result.FailedCount} failed" : string.Empty) +
                           (result.CancelledCount > 0 ? $", {result.CancelledCount} not processed" : string.Empty) + "." +
-                          McpMapping.CleanupNote(cleanup.Concat(result.Warnings).ToArray());
+                          McpMapping.CleanupNote(cleanup.Concat(result.Warnings).Distinct(StringComparer.Ordinal).ToArray());
             session.Record(result.FailedCount == 0 ? "Warning" : "Error", "Deleted dead-letter messages",
                 $"{summary} Reason: {reason}. Backup: {result.BackupDirectory}", profile);
             return new ChangeResult(profile.Name, true, summary, result.BackupDirectory,
@@ -274,6 +274,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             }
 
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var cleanup = new List<string>();
             var (target, originals, missing) = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: false, token).ConfigureAwait(false);
@@ -333,7 +334,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
 
                 var (found, notFound) = await FindMessagesAsync(workspace, keys, fingerprints, token).ConfigureAwait(false);
                 return (to, found, notFound);
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, cleanup).ConfigureAwait(false);
 
             if (originals.Count == 0)
             {
@@ -379,15 +380,16 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
 
             var result = await session.WriteAsync(profile,
                     (workspace, token) => DeadLetterResender.ResendAsync(workspace, items, resendMode, messagesPerSecond, null, token),
-                    cancellationToken)
+                    cancellationToken, cleanup)
                 .ConfigureAwait(false);
+            var warnings = cleanup.Concat(result.Warnings).Distinct(StringComparer.Ordinal).ToArray();
             var summary = $"{result.SentCount} of {items.Length} sent" +
                           (resendMode == ResendMode.Move ? $", {result.MovedCount} original(s) removed" : string.Empty) +
                           (result.OriginalsKeptCount > 0 ? $", {result.OriginalsKeptCount} original(s) kept" : string.Empty) +
                           (result.FailedCount > 0 ? $", {result.FailedCount} failed or uncertain (see details; do not resend those blindly)" : string.Empty) +
                           (result.CancelledCount > 0 ? $", {result.CancelledCount} not sent" : string.Empty) +
-                          (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + "." + McpMapping.CleanupNote(result.Warnings);
-            session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 && result.Warnings.Count == 0 ? "Success" : "Warning",
+                          (missing.Count > 0 ? $", {missing.Count} not found" : string.Empty) + "." + McpMapping.CleanupNote(warnings);
+            session.Record(result.FailedCount == 0 && result.OriginalsKeptCount == 0 && warnings.Length == 0 ? "Success" : "Warning",
                 resendMode == ResendMode.Move ? "Moved dead-letter messages" : "Resent dead-letter messages",
                 $"{summary} Reason: {reason}" + (result.BackupDirectory is null ? "." : $". Backup: {result.BackupDirectory}"),
                 profile, target);
