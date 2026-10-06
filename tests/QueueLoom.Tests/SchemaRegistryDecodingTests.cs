@@ -90,6 +90,57 @@ public sealed class SchemaRegistryDecodingTests
         Assert.Null(await client.GetAsync(1, CancellationToken.None));
     }
 
+    // A wrong registry URL answers with a large download: at most the response limit is read, the id is not cached
+    // as "no schema", and the registry is not marked unreachable for the other ids.
+    [Fact]
+    public async Task RegistryClient_ReadsOnlyALimitedResponse()
+    {
+        var large = new CountingStream(64L * 1024 * 1024);
+        var handler = new LargeOnceHandler(large, """{"schemaType":"PROTOBUF","schema":"message B {}"}""");
+        using var client = new SchemaRegistryClient("http://registry:8081", null, null, handler);
+
+        Assert.Null(await client.GetAsync(1, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.True(large.BytesRead <= SchemaRegistryClient.MaximumResponseBytes + 128 * 1024, $"{large.BytesRead:N0} bytes were read.");
+        Assert.Equal(new MessageSchema(2, MessageSchemaType.Protobuf, "message B {}"), await client.GetAsync(2, CancellationToken.None));
+    }
+
+    private sealed class LargeOnceHandler(Stream large, string json) : HttpMessageHandler
+    {
+        private bool _served;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (_served)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") });
+            }
+            _served = true;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(large) });
+        }
+    }
+
+    private sealed class CountingStream(long length) : Stream
+    {
+        public long BytesRead { get; private set; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => BytesRead; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var take = (int)Math.Min(count, length - BytesRead);
+            Array.Fill(buffer, (byte)' ', offset, take);
+            BytesRead += take;
+            return take;
+        }
+    }
+
     private static byte[] Framed(int id, byte[] payload) =>
         [0, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id, .. payload];
 
