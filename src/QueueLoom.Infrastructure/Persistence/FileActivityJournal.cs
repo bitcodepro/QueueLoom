@@ -21,7 +21,14 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
         if (existing > cutoff) cutoff = existing;
         AtomicFile.WriteTextAsync(Path.Combine(directory, ".view-cutoff"), cutoff.Value.ToString("O", CultureInfo.InvariantCulture), CancellationToken.None).GetAwaiter().GetResult();
     }
-    public void Append(ActivityRecord record)
+    public void Append(ActivityRecord record) => Write(record, durable: true);
+
+    public void AppendEntry(ActivityRecord record) => Write(record, durable: false);
+
+    /// <summary>Tests observe each record forced to disk.</summary>
+    internal static readonly AsyncLocal<Action?> ForcedToDisk = new();
+
+    private void Write(ActivityRecord record, bool durable)
     {
         var day = Path.Combine(directory, record.Timestamp.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
         Directory.CreateDirectory(day);
@@ -35,7 +42,10 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
                 AtomicFile.RestrictToCurrentUser(temporary);
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(record);
                 stream.Write(bytes);
-                stream.Flush(true);
+                // The rename below keeps a reader from ever seeing a half-written record either way; forcing the
+                // bytes to disk is what costs a disk round trip, so only durable records pay it.
+                stream.Flush(flushToDisk: durable);
+                if (durable) ForcedToDisk.Value?.Invoke();
             }
             File.Move(temporary, target);
         }

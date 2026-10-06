@@ -7,7 +7,15 @@ public sealed record ActivityRecord(Guid OperationId, DateTimeOffset Timestamp, 
 
 public interface IActivityJournal
 {
+    /// <summary>Saves the record durably (on disk before returning): used before a destructive operation starts.</summary>
     void Append(ActivityRecord record);
+
+    /// <summary>
+    /// Saves an ordinary entry. It need not be forced to disk before returning: losing the newest entries in a power
+    /// failure is acceptable, a wait on the disk for every entry on the window's thread is not.
+    /// </summary>
+    void AppendEntry(ActivityRecord record) => Append(record);
+
     IReadOnlyList<ActivityRecord> ReadRecent(int maximum = 500);
 }
 

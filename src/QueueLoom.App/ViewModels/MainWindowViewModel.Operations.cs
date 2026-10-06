@@ -249,7 +249,7 @@ public sealed partial class MainWindowViewModel
 
     private void PersistActivity(string level, string action, string details, ServiceBusEntityReference? source, DateTimeOffset timestamp)
     {
-        try { _activityJournal?.Append(MakeActivity(level, action, details, source, timestamp)); }
+        try { _activityJournal?.AppendEntry(MakeActivity(level, action, details, source, timestamp)); }
         catch (Exception exception) { ErrorText = $"Activity journal could not be saved: {SanitizeException(exception)}"; }
     }
 
