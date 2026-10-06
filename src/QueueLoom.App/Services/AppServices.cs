@@ -26,6 +26,7 @@ public static class AppServices
         });
 
         services.AddSingleton(paths);
+        services.AddSingleton(_ => new LegacyBackupMigration(paths));
         services.AddSingleton(DiagnosticsJournal.Session);
         services.AddSingleton<JsonProfileRepository>();
         services.AddSingleton<IProfileRepository>(provider => provider.GetRequiredService<JsonProfileRepository>());

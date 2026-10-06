@@ -293,17 +293,8 @@ public sealed partial class MainWindowViewModel
             $"{marked.Length:N0} messages in {sources.Length:N0} dead-letter queues",
             null);
 
-        using var deleteCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var deleteCancellation = CreateExpiryBoundedWriteCancellation(connectedProfileId, cancellationToken);
         var temporaryUnlockExpiresAt = _writeUnlockProfileId == connectedProfileId ? _writeUnlockExpiresAt : null;
-        if (temporaryUnlockExpiresAt is { } expiresAt)
-        {
-            var remaining = expiresAt - DateTimeOffset.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-            {
-                throw new InvalidOperationException("Temporary write access expired before the deletion started.");
-            }
-            deleteCancellation.CancelAfter(remaining);
-        }
 
         var progress = new Progress<DeadLetterMessageDeletionProgress>(update =>
             StatusText = $"Queue {update.QueueNumber}/{update.QueueCount} · {update.Source.DisplayName} · " +
@@ -318,7 +309,7 @@ public sealed partial class MainWindowViewModel
         catch (OperationCanceledException) when (
             !cancellationToken.IsCancellationRequested &&
             temporaryUnlockExpiresAt.HasValue &&
-            DateTimeOffset.UtcNow >= temporaryUnlockExpiresAt.Value)
+            Clock.GetUtcNow() >= temporaryUnlockExpiresAt.Value)
         {
             throw new InvalidOperationException(
                 "Temporary write access expired during the deletion. Some messages may already have been deleted; search again.");

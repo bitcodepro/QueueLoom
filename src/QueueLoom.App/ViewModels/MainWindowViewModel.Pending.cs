@@ -58,7 +58,8 @@ public sealed partial class MainWindowViewModel
 
         RecordOperationIntent("Remove scheduled or deferred messages started",
             $"{scheduled:N0} scheduled · {deferred:N0} deferred", null);
-        var result = await _workspace.RemovePendingMessagesAsync(marked.Select(message => message.Message).ToArray(), cancellationToken)
+        using var removalCancellation = CreateExpiryBoundedWriteCancellation(connectedProfileId, cancellationToken);
+        var result = await _workspace.RemovePendingMessagesAsync(marked.Select(message => message.Message).ToArray(), removalCancellation.Token)
             .ConfigureAwait(true);
 
         var removed = result.Messages

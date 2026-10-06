@@ -11,7 +11,7 @@ public sealed partial class MainWindowViewModel
                             (_writeUnlockProfileId != _workspace.ConnectedProfileId || IsTemporaryWriteUnlockActive);
 
     private bool IsTemporaryWriteUnlockActive =>
-        _writeUnlockExpiresAt is { } expiresAt && DateTimeOffset.UtcNow < expiresAt;
+        _writeUnlockExpiresAt is { } expiresAt && Clock.GetUtcNow() < expiresAt;
 
     public bool CanUnlockWrites => IsConnected && !CanWrite;
 
@@ -37,7 +37,7 @@ public sealed partial class MainWindowViewModel
         CancelWriteUnlockTimerWithoutWaiting();
         await _workspace.SetAccessModeAsync(ProfileAccessMode.ReadWrite, cancellationToken).ConfigureAwait(true);
         _connectedProfile = unlocked;
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        var expiresAt = Clock.GetUtcNow().AddMinutes(10);
         _writeUnlockCancellation = new CancellationTokenSource();
         _writeUnlockProfileId = selected.Id;
         _writeUnlockExpiresAt = expiresAt;
@@ -54,10 +54,10 @@ public sealed partial class MainWindowViewModel
     {
         try
         {
-            var delay = expiresAt - DateTimeOffset.UtcNow;
+            var delay = expiresAt - Clock.GetUtcNow();
             if (delay > TimeSpan.Zero)
             {
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(true);
+                await Task.Delay(delay, Clock, cancellationToken).ConfigureAwait(true);
             }
             NotifyConnectionState();
             await _workspaceGate.WaitAsync(cancellationToken).ConfigureAwait(true);
@@ -118,6 +118,26 @@ public sealed partial class MainWindowViewModel
             _writeUnlockCancellation = null;
             _writeUnlockTask = null;
         }
+    }
+
+    private WriteOperationCancellation CreateExpiryBoundedWriteCancellation(Guid profileId, CancellationToken token)
+    {
+        CancellationTokenSource? expiry = null;
+        if (_writeUnlockProfileId == profileId && _writeUnlockExpiresAt is { } expiresAt)
+        {
+            var remaining = expiresAt - Clock.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+                throw new InvalidOperationException("Temporary write access expired before the operation started.");
+            expiry = new CancellationTokenSource(remaining, Clock);
+        }
+        return new WriteOperationCancellation(token, expiry);
+    }
+
+    private sealed class WriteOperationCancellation(CancellationToken token, CancellationTokenSource? expiry) : IDisposable
+    {
+        private readonly CancellationTokenSource _linked = CancellationTokenSource.CreateLinkedTokenSource(token, expiry?.Token ?? default);
+        public CancellationToken Token => _linked.Token;
+        public void Dispose() { _linked.Dispose(); expiry?.Dispose(); }
     }
 
     private void CancelWriteUnlockTimerWithoutWaiting()
