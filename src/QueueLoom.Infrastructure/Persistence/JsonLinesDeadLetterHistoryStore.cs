@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using QueueLoom.Core.Monitoring;
@@ -66,19 +67,16 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         }
     }
 
-    // The samples read so far, the file length they cover (always just after a newline), the file's first bytes, the
-    // last line read and the generation. The file only grows between compactions, so a later Load reads just the lines
-    // added since, by this or another process. Every compaction first writes a new generation next to the file. A
-    // version without generations (one still running during an update) rewrites the file without it; that is noticed
-    // by the file being shorter, or by other bytes at its start or where the last line read ended, because a compaction
-    // drops at least one line and moves everything after it. Any of these makes the next Load read everything again.
-    // Before, every monitor check parsed the whole 30-day file.
+    // The samples read so far, the file length they cover (always just after a newline) and a SHA-256 hash of exactly
+    // those bytes. A later Load re-hashes that region and, when it is unchanged, parses only the lines added since, by
+    // this or another process. Any other change to the region (a compaction by any version, with or without the
+    // generation below, an edit, a replaced file) makes the next Load read and parse everything again. Hashing reads
+    // the file but parses nothing: before, every monitor check deserialized the whole 30-day file, which is what
+    // stalled the window. The generation, written by every compaction of this version, adds an explicit signal.
     private readonly List<DeadLetterHistorySample> _samples = [];
     private long _readLength;
-    private byte[] _head = [];
-    private byte[] _lastLine = [];
+    private byte[] _prefixHash = [];
     private string? _generation;
-    private const int HeadBytes = 4096;
 
     // A complete record after the last newline (a crash before its newline was written). It is not part of the
     // samples read so far: an append terminates it and the next Load reads it as an ordinary line.
@@ -106,9 +104,11 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             return _samples;
         }
         using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (stream.Length < _readLength || !HeadMatches(stream) || !LastLineMatches(stream))
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        if (_readLength > 0 && (stream.Length < _readLength || !PrefixMatches(stream, hash)))
         {
             Reset();
+            hash.GetHashAndReset();
         }
         stream.Position = _readLength;
         var added = new byte[stream.Length - _readLength];
@@ -139,12 +139,9 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         {
             _samples.Sort((left, right) => left.At.CompareTo(right.At));
         }
+        hash.AppendData(added, 0, end);
+        _prefixHash = hash.GetCurrentHash();
         _readLength += end;
-        if (end > 0)
-        {
-            var start = end >= 2 ? Array.LastIndexOf(added, (byte)'\n', end - 2) + 1 : 0;
-            _lastLine = added[start..end];
-        }
         if (Encoding.UTF8.GetString(added, end, added.Length - end) is { } rest && !string.IsNullOrWhiteSpace(rest))
         {
             try
@@ -156,45 +153,33 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
                 // Cut short: nothing to keep.
             }
         }
-        if (_head.Length < HeadBytes && _readLength > _head.Length)
-        {
-            stream.Position = 0;
-            _head = new byte[(int)Math.Min(HeadBytes, _readLength)];
-            stream.ReadExactly(_head);
-        }
         return _samples;
     }
 
-    private bool HeadMatches(FileStream stream)
+    /// <summary>Hashes the region read before into <paramref name="hash"/> and says whether it is unchanged.</summary>
+    private bool PrefixMatches(FileStream stream, IncrementalHash hash)
     {
-        if (_head.Length == 0)
-        {
-            return true;
-        }
         stream.Position = 0;
-        var current = new byte[_head.Length];
-        stream.ReadExactly(current);
-        return current.AsSpan().SequenceEqual(_head);
-    }
-
-    private bool LastLineMatches(FileStream stream)
-    {
-        if (_lastLine.Length == 0)
+        var buffer = new byte[1024 * 1024];
+        var remaining = _readLength;
+        while (remaining > 0)
         {
-            return true;
+            var read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+            if (read == 0)
+            {
+                return false;
+            }
+            hash.AppendData(buffer, 0, read);
+            remaining -= read;
         }
-        stream.Position = _readLength - _lastLine.Length;
-        var current = new byte[_lastLine.Length];
-        stream.ReadExactly(current);
-        return current.AsSpan().SequenceEqual(_lastLine);
+        return hash.GetCurrentHash().AsSpan().SequenceEqual(_prefixHash);
     }
 
     private void Reset()
     {
         _samples.Clear();
         _readLength = 0;
-        _head = [];
-        _lastLine = [];
+        _prefixHash = [];
     }
 
     /// <summary>The current generation; "" before any compaction, null when it cannot be read (then nothing is reused).</summary>
