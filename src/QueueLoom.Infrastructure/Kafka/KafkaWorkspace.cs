@@ -268,9 +268,28 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         }
         catch (ProduceException<byte[]?, byte[]?> exception)
         {
-            throw new InvalidOperationException($"Kafka did not accept the message: {exception.Error.Reason}", exception);
+            // ProduceAsync rebuilds the delivery result without librdkafka's persistence status, so "not persisted"
+            // there is only the default and proves nothing. Any broker answer can follow an earlier attempt whose
+            // response was lost (librdkafka retries by itself), so only a failure before the record was handed to a
+            // broker is a refusal. Anything else may have been stored, and must not read as a refusal, or sending it
+            // again could duplicate it.
+            var status = exception.DeliveryResult?.Status;
+            throw status == PersistenceStatus.Persisted
+                ? new InvalidOperationException($"Kafka stored the message but reported an error: {exception.Error.Reason}", exception)
+                : status != PersistenceStatus.PossiblyPersisted && IsDefiniteRefusal(exception.Error.Code)
+                    ? new DeliveryRejectedException($"Kafka did not accept the message: {exception.Error.Reason}", exception)
+                    : new InvalidOperationException(
+                        $"Whether Kafka stored the message is unknown ({exception.Error.Reason}). Check '{destination.Name}' " +
+                        "before sending it again.", exception);
         }
     }
+
+    /// <summary>
+    /// Client errors raised only when the record is put in the send queue, so no attempt can have written it. Unknown
+    /// topic or partition are not among them: librdkafka also fails records already sent and queued for a retry with
+    /// them, when stale metadata drops the partition.
+    /// </summary>
+    internal static bool IsDefiniteRefusal(ErrorCode code) => code is ErrorCode.Local_QueueFull or ErrorCode.Local_InvalidArg;
 
     /// <summary>
     /// Watermarks of one partition. A topic that was just created, or is being deleted or moved, can briefly have no
