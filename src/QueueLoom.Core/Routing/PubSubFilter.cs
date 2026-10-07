@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace QueueLoom.Core.Routing;
@@ -31,25 +32,31 @@ public sealed class PubSubFilter
 
     private abstract record Node
     {
-        public abstract bool Evaluate(RoutingMessage message, List<SqlFilterStep>? steps);
+        // Conditions can chain or nest deeply enough to exhaust the stack, which would end the process. Running short
+        // of stack is reported instead.
+        public bool Evaluate(RoutingMessage message, List<SqlFilterStep>? steps) => RuntimeHelpers.TryEnsureSufficientExecutionStack()
+            ? EvaluateCore(message, steps)
+            : throw new SqlFilterNotSupportedException("The filter is nested too deeply to evaluate.");
+
+        protected abstract bool EvaluateCore(RoutingMessage message, List<SqlFilterStep>? steps);
     }
 
     private sealed record And(Node Left, Node Right) : Node
     {
         // Both sides are evaluated so every failing comparison can be explained.
-        public override bool Evaluate(RoutingMessage message, List<SqlFilterStep>? steps) =>
+        protected override bool EvaluateCore(RoutingMessage message, List<SqlFilterStep>? steps) =>
             Left.Evaluate(message, steps) & Right.Evaluate(message, steps);
     }
 
     private sealed record Or(Node Left, Node Right) : Node
     {
-        public override bool Evaluate(RoutingMessage message, List<SqlFilterStep>? steps) =>
+        protected override bool EvaluateCore(RoutingMessage message, List<SqlFilterStep>? steps) =>
             Left.Evaluate(message, steps) | Right.Evaluate(message, steps);
     }
 
     private sealed record Not(Node Operand, string Text) : Node
     {
-        public override bool Evaluate(RoutingMessage message, List<SqlFilterStep>? steps)
+        protected override bool EvaluateCore(RoutingMessage message, List<SqlFilterStep>? steps)
         {
             var inner = new List<SqlFilterStep>();
             var result = !Operand.Evaluate(message, inner);
@@ -68,7 +75,7 @@ public sealed class PubSubFilter
 
     private sealed record Attribute(string Name, Comparison Kind, string Value, string Text) : Node
     {
-        public override bool Evaluate(RoutingMessage message, List<SqlFilterStep>? steps)
+        protected override bool EvaluateCore(RoutingMessage message, List<SqlFilterStep>? steps)
         {
             var exists = message.Attributes.ContainsKey(Name);
             var actual = exists ? message.AttributeTextOf(Name) : null;
@@ -129,8 +136,14 @@ public sealed class PubSubFilter
             }
         }
 
+        // Every nesting step (NOT, '-', parentheses) passes through here; deep enough nesting is a syntax error, not a
+        // stack overflow that would end the process.
         private Node ParseUnary()
         {
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                throw new SqlFilterSyntaxException("The filter is nested too deeply.", _position);
+            }
             SkipSpaces();
             var start = _position;
             if (TryKeyword("NOT") || TryChar('-'))
