@@ -72,7 +72,18 @@ public sealed partial class AzureServiceBusWorkspace
         return null;
     }
 
-    private static async Task<ServiceBusTopic> MapTopicAsync(
+    /// <summary>
+    /// The topic with its subscriptions; null when the topic was deleted after the topic list was read (by another
+    /// tool, a colleague or a test). Only "not found" is absorbed; every other failure still fails the refresh.
+    /// </summary>
+    private static bool IsEntityNotFound(Exception exception) => exception switch
+    {
+        ServiceBusException serviceBus => serviceBus.Reason == ServiceBusFailureReason.MessagingEntityNotFound,
+        RequestFailedException request => request.Status == 404,
+        _ => false
+    };
+
+    private static async Task<ServiceBusTopic?> MapTopicAsync(
         ServiceBusAdministrationClient administration,
         TopicProperties properties,
         TopicRuntimeProperties? runtime,
@@ -84,7 +95,28 @@ public sealed partial class AzureServiceBusWorkspace
         var subscriptionRuntimeTask = ReadAllAsync(
             administration.GetSubscriptionsRuntimePropertiesAsync(properties.Name, cancellationToken),
             cancellationToken);
-        await Task.WhenAll(subscriptionPropertiesTask, subscriptionRuntimeTask).ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(subscriptionPropertiesTask, subscriptionRuntimeTask).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Both reads have finished. The topic is left out only when every failure says it no longer exists:
+            // any other failure is reported, then a cancellation, whichever read failed first.
+            Task[] reads = [subscriptionPropertiesTask, subscriptionRuntimeTask];
+            var other = reads.Where(read => read.IsFaulted)
+                .SelectMany(read => read.Exception!.InnerExceptions)
+                .FirstOrDefault(failure => !IsEntityNotFound(failure));
+            if (other is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(other);
+            }
+            if (reads.FirstOrDefault(read => read.IsCanceled) is { } cancelled)
+            {
+                await cancelled.ConfigureAwait(false);
+            }
+            return null;
+        }
 
         var runtimeByName = subscriptionRuntimeTask.Result
             .ToDictionary(item => item.SubscriptionName, StringComparer.Ordinal);
