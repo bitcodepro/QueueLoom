@@ -45,11 +45,38 @@ public sealed class SqsTopologyDeletedQueueTests
         await Assert.ThrowsAnyAsync<Exception>(() => ReadTopologyAsync(sqs));
     }
 
-    private static async Task<ServiceBusTopology> ReadTopologyAsync(ScriptedSqs sqs)
+    // The same for SNS: a topic deleted after ListTopics (at ListSubscriptionsByTopic or GetTopicAttributes) and a
+    // subscription removed after ListSubscriptionsByTopic are left out; the surviving topic and subscription stay.
+    [Theory]
+    [InlineData("subscriptions")]
+    [InlineData("topic-attributes")]
+    public async Task ATopicOrSubscriptionDeletedDuringTheRefreshIsLeftOut(string where)
     {
+        var sns = new ScriptedSns(where);
+
+        var topology = await ReadTopologyAsync(new ScriptedSqs(_ => new InvalidOperationException("unused")), sns, queues: false);
+
+        var topic = Assert.Single(topology.Topics);
+        Assert.Equal("kept", topic.Name);
+        Assert.Single(topic.Subscriptions);
+    }
+
+    // A failure other than "not found" on a topic still fails the refresh.
+    [Fact]
+    public async Task OtherTopicFailuresStillFailTheRefresh()
+    {
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            ReadTopologyAsync(new ScriptedSqs(_ => new InvalidOperationException("unused")), new ScriptedSns("throttled"), queues: false));
+    }
+
+    private static async Task<ServiceBusTopology> ReadTopologyAsync(ScriptedSqs sqs) => await ReadTopologyAsync(sqs, new EmptySns(), queues: true);
+
+    private static async Task<ServiceBusTopology> ReadTopologyAsync(ScriptedSqs sqs, AmazonSimpleNotificationServiceClient sns, bool queues)
+    {
+        sqs.ListNothing = !queues;
         await using var workspace = new AwsSqsSnsWorkspace(new DeepAuditCloudTests.EmptyVault());
         typeof(AwsSqsSnsWorkspace).GetField("_sqs", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace, sqs);
-        typeof(AwsSqsSnsWorkspace).GetField("_sns", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace, new EmptySns());
+        typeof(AwsSqsSnsWorkspace).GetField("_sns", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace, sns);
         var read = typeof(AwsSqsSnsWorkspace).GetMethod("ReadTopologyAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         return await (Task<ServiceBusTopology>)read.Invoke(workspace, [CancellationToken.None])!;
     }
@@ -57,8 +84,13 @@ public sealed class SqsTopologyDeletedQueueTests
     private sealed class ScriptedSqs(Func<string, Exception> failGone)
         : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost" })
     {
+        public bool ListNothing { get; set; }
+
         public override Task<ListQueuesResponse> ListQueuesAsync(ListQueuesRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ListQueuesResponse { QueueUrls = ["http://localhost/000000000000/gone", "http://localhost/000000000000/kept"] });
+            Task.FromResult(new ListQueuesResponse
+            {
+                QueueUrls = ListNothing ? [] : ["http://localhost/000000000000/gone", "http://localhost/000000000000/kept"]
+            });
 
         public override Task<GetQueueAttributesResponse> GetQueueAttributesAsync(GetQueueAttributesRequest request, CancellationToken cancellationToken = default) =>
             request.QueueUrl.EndsWith("/gone", StringComparison.Ordinal)
@@ -67,6 +99,46 @@ public sealed class SqsTopologyDeletedQueueTests
                 {
                     Attributes = new() { ["QueueArn"] = "arn:aws:sqs:eu-west-1:000000000000:kept", ["ApproximateNumberOfMessages"] = "0" }
                 });
+    }
+
+    private sealed class ScriptedSns(string where)
+        : AmazonSimpleNotificationServiceClient(new BasicAWSCredentials("test", "test"), new AmazonSimpleNotificationServiceConfig { ServiceURL = "http://localhost" })
+    {
+        private const string Gone = "arn:aws:sns:eu-west-1:000000000000:gone";
+        private const string Kept = "arn:aws:sns:eu-west-1:000000000000:kept";
+
+        private static Exception NotFound() => new Sns.NotFoundException("Topic does not exist");
+
+        public override Task<Sns.ListTopicsResponse> ListTopicsAsync(Sns.ListTopicsRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new Sns.ListTopicsResponse { Topics = [new() { TopicArn = Gone }, new() { TopicArn = Kept }] });
+
+        public override Task<Sns.ListSubscriptionsByTopicResponse> ListSubscriptionsByTopicAsync(Sns.ListSubscriptionsByTopicRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request.TopicArn == Gone && where == "subscriptions") return Task.FromException<Sns.ListSubscriptionsByTopicResponse>(NotFound());
+            if (request.TopicArn == Gone && where == "throttled")
+                return Task.FromException<Sns.ListSubscriptionsByTopicResponse>(new AmazonSimpleNotificationServiceException("slow down") { ErrorCode = "Throttling" });
+            return Task.FromResult(new Sns.ListSubscriptionsByTopicResponse
+            {
+                Subscriptions =
+                [
+                    new() { SubscriptionArn = request.TopicArn + ":live", Protocol = "sqs", Endpoint = "arn:aws:sqs:eu-west-1:000000000000:q", TopicArn = request.TopicArn },
+                    new() { SubscriptionArn = request.TopicArn + ":removed", Protocol = "sqs", Endpoint = "arn:aws:sqs:eu-west-1:000000000000:r", TopicArn = request.TopicArn }
+                ]
+            });
+        }
+
+        public override Task<Sns.GetSubscriptionAttributesResponse> GetSubscriptionAttributesAsync(Sns.GetSubscriptionAttributesRequest request,
+            CancellationToken cancellationToken = default) =>
+            request.SubscriptionArn.EndsWith(":removed", StringComparison.Ordinal)
+                ? Task.FromException<Sns.GetSubscriptionAttributesResponse>(new Sns.NotFoundException("Subscription does not exist"))
+                : Task.FromResult(new Sns.GetSubscriptionAttributesResponse { Attributes = [] });
+
+        public override Task<Sns.GetTopicAttributesResponse> GetTopicAttributesAsync(Sns.GetTopicAttributesRequest request,
+            CancellationToken cancellationToken = default) =>
+            request.TopicArn == Gone && where == "topic-attributes"
+                ? Task.FromException<Sns.GetTopicAttributesResponse>(NotFound())
+                : Task.FromResult(new Sns.GetTopicAttributesResponse { Attributes = [] });
     }
 
     private sealed class EmptySns()

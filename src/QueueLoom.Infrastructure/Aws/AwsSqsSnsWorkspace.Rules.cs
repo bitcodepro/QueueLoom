@@ -24,7 +24,8 @@ public sealed partial class AwsSqsSnsWorkspace
     public override Task<IReadOnlyList<SubscriptionRules>> GetTopicRulesAsync(string topic, CancellationToken cancellationToken = default) =>
         ReadRulesAsync<IReadOnlyList<SubscriptionRules>>(async token =>
         {
-            var info = await ReadTopicAsync(FindTopicArn(topic), token).ConfigureAwait(false);
+            var info = await ReadTopicAsync(FindTopicArn(topic), token).ConfigureAwait(false)
+                       ?? throw new InvalidOperationException($"Topic '{topic}' no longer exists. Refresh and try again.");
             // The names are derived and numbered in list order; a change addresses the subscription shown, by its ARN.
             _shownSubscriptions[topic] = info.Subscriptions.ToDictionary(item => item.Name, item => item.Arn, StringComparer.Ordinal);
             return info.Subscriptions.Select(subscription => new SubscriptionRules(subscription.Name, subscription.FilterPolicy is null
@@ -165,7 +166,8 @@ public sealed partial class AwsSqsSnsWorkspace
         var shown = _shownSubscriptions.TryGetValue(topic, out var names) && names.TryGetValue(subscription, out var arn)
             ? arn
             : _index.FindSubscription(topic, subscription)?.Arn;
-        var info = await ReadTopicAsync(FindTopicArn(topic), cancellationToken).ConfigureAwait(false);
+        var info = await ReadTopicAsync(FindTopicArn(topic), cancellationToken).ConfigureAwait(false)
+                   ?? throw new InvalidOperationException($"Topic '{topic}' no longer exists. Refresh and try again.");
         var found = (shown is not null && shown.StartsWith("arn:", StringComparison.Ordinal)
                         ? info.Subscriptions.FirstOrDefault(item => item.Arn == shown)
                         : info.Subscriptions.FirstOrDefault(item => item.Name == subscription))
