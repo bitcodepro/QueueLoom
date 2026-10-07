@@ -99,8 +99,22 @@ public sealed partial class AzureServiceBusWorkspace
         {
             await Task.WhenAll(subscriptionPropertiesTask, subscriptionRuntimeTask).ConfigureAwait(false);
         }
-        catch (Exception exception) when (IsEntityNotFound(exception))
+        catch (Exception)
         {
+            // Both reads have finished. The topic is left out only when every failure says it no longer exists:
+            // any other failure is reported, then a cancellation, whichever read failed first.
+            Task[] reads = [subscriptionPropertiesTask, subscriptionRuntimeTask];
+            var other = reads.Where(read => read.IsFaulted)
+                .SelectMany(read => read.Exception!.InnerExceptions)
+                .FirstOrDefault(failure => !IsEntityNotFound(failure));
+            if (other is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(other);
+            }
+            if (reads.FirstOrDefault(read => read.IsCanceled) is { } cancelled)
+            {
+                await cancelled.ConfigureAwait(false);
+            }
             return null;
         }
 
