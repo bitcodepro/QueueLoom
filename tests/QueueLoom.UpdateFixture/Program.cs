@@ -1,6 +1,16 @@
 using QueueLoom.App.Services;
 using QueueLoom.Core.Updates;
 
+if (args.Length >= 3 && args[0] == "--spawn-outside")
+{
+    // An installation process with a child running from elsewhere: test cleanup must stop the first, not the second.
+    var outside = new System.Diagnostics.ProcessStartInfo(args[1]) { UseShellExecute = false };
+    foreach (var argument in args.Skip(2)) outside.ArgumentList.Add(argument);
+    using var spawned = System.Diagnostics.Process.Start(outside)!;
+    PublishMarker(Path.Combine(AppContext.BaseDirectory, "spawned.pid"), spawned.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    await Task.Delay(TimeSpan.FromMinutes(2));
+    return 0;
+}
 if (args.Length == 3 && args[0] == "--stage-version")
 {
     new VersionInstallation(args[1]).StagePackage(args[2]);
@@ -171,7 +181,13 @@ if (args.Length > 0 && args[0] == "--hold-lock")
 {
     using var locked = new FileStream(args[1], FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     File.WriteAllText(args[1] + ".held", "ready");
-    await Task.Delay(int.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture));
+    // "until-released": held until the test writes <file>.release (bounded), instead of for a fixed time.
+    if (args[2] == "until-released")
+    {
+        var held = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(args[1] + ".release") && held.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(10);
+    }
+    else await Task.Delay(int.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture));
     return 0;
 }
 if (UpdateRestart.HandleArguments(args, out var code)) return code;
@@ -194,8 +210,33 @@ if (args.Length > 0 && args[0] == "--update-startup")
     UpdateRestart.AcknowledgeStartup();
     await Task.Delay(1000);
 }
-else File.WriteAllText(Path.Combine(root, "recovered-started.txt"), "Previous application restarted");
+else
+{
+    // A test can hold the restarted previous version before it finishes starting, to check its own cleanup.
+    if (File.Exists(Path.Combine(root, "hold-recovery")))
+    {
+        PublishMarker(Path.Combine(root, "recovery-held.txt"), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            gate: Path.Combine(root, "gate-marker-publication"));
+        var held = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(Path.Combine(root, "release-recovery")) && held.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(20);
+    }
+    File.WriteAllText(Path.Combine(root, "recovered-started.txt"), "Previous application restarted");
+}
 return 0;
+
+// A marker a test reads as soon as it exists: written and closed under a temporary name, then renamed, so a reader
+// never sees it partial or still open. With a gate, the temporary file waits for the test before it is renamed.
+static void PublishMarker(string marker, string content, string? gate = null)
+{
+    var temporary = marker + ".tmp";
+    File.WriteAllText(temporary, content);
+    if (gate is not null && File.Exists(gate))
+    {
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(gate + ".open") && waited.Elapsed < TimeSpan.FromSeconds(60)) Thread.Sleep(10);
+    }
+    File.Move(temporary, marker);
+}
 
 namespace QueueLoom.App.Services
 {
