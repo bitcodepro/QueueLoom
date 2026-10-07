@@ -517,15 +517,18 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
         File.Copy(Fixture, Path.Combine(staging, Path.GetFileName(target.Executable)));
         AppUpdater.Install(target, staging);
         var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(UpdateRestart.ReceiptPath(target)))!;
-        var holder = Start(Fixture, "--hold-lock", receipt.Entries.Single().Backup!, "1200");
-        await WaitFor(receipt.Entries.Single().Backup! + ".held");
-        var cleaning = UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.FromSeconds(10));
+        // Held until this test releases it, not for a fixed time a slow machine could use up before the check.
+        var backup = receipt.Entries.Single().Backup!;
+        var holder = Start(Fixture, "--hold-lock", backup, "until-released");
+        await WaitFor(backup + ".held");
+        var cleaning = UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.FromSeconds(30));
         if (OperatingSystem.IsWindows())
         {
             await Task.Delay(250);
             Assert.False(cleaning.IsCompleted);
-            Assert.True(File.Exists(receipt.Entries.Single().Backup));
+            Assert.True(File.Exists(backup));
         }
+        File.WriteAllText(backup + ".release", "release");
         await cleaning;
         await holder.WaitForExitAsync();
         Assert.False(File.Exists(receipt.Entries.Single().Backup));

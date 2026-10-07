@@ -181,7 +181,13 @@ if (args.Length > 0 && args[0] == "--hold-lock")
 {
     using var locked = new FileStream(args[1], FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     File.WriteAllText(args[1] + ".held", "ready");
-    await Task.Delay(int.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture));
+    // "until-released": held until the test writes <file>.release (bounded), instead of for a fixed time.
+    if (args[2] == "until-released")
+    {
+        var held = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(args[1] + ".release") && held.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(10);
+    }
+    else await Task.Delay(int.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture));
     return 0;
 }
 if (UpdateRestart.HandleArguments(args, out var code)) return code;

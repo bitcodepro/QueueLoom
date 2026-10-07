@@ -224,10 +224,10 @@ public sealed partial class UpdateRestartProcessTests
             if (_handle is not null)
             {
                 if (WaitForSingleObject(_handle, 0) == 0) return;
-                if (!TerminateProcess(_handle, 1) && WaitForSingleObject(_handle, 0) != 0)
-                    throw new InvalidOperationException($"Process {Id} could not be stopped (error {Marshal.GetLastWin32Error()}).");
+                // Termination is refused for a process that is already exiting; either way it must be seen to exit.
+                var error = TerminateProcess(_handle, 1) ? 0 : Marshal.GetLastWin32Error();
                 if (WaitForSingleObject(_handle, (uint)ExitBound.TotalMilliseconds) != 0)
-                    throw new InvalidOperationException($"Process {Id} did not exit; the installation is kept.");
+                    throw new InvalidOperationException($"Process {Id} did not exit (termination error {error}); the installation is kept.");
                 return;
             }
             if (_process!.HasExited) return;
