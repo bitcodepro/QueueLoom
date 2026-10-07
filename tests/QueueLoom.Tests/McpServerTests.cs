@@ -928,7 +928,8 @@ public sealed partial class McpServerTests
             IOperationApprover? approver = null,
             EnvironmentKind environment = EnvironmentKind.Development,
             Func<ElicitRequestParams, ElicitResult>? elicit = null,
-            MessagingProvider provider = MessagingProvider.AzureServiceBus)
+            MessagingProvider provider = MessagingProvider.AzureServiceBus,
+            string? clientName = null)
         {
             var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment) with
             {
@@ -970,6 +971,10 @@ public sealed partial class McpServerTests
                 cancellationToken: stop.Token);
 
             var options = new McpClientOptions();
+            if (clientName is not null)
+            {
+                options.ClientInfo = new Implementation { Name = clientName, Version = "1.0" };
+            }
             if (elicit is not null)
             {
                 options.Handlers.ElicitationHandler = (request, _) => ValueTask.FromResult(elicit(request!));

@@ -70,7 +70,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 .Select(group => $"• {McpMapping.EntityName(group.Key.Source)} ({McpMapping.SubQueueName(group.Key.SubQueue)}): {group.Count()}")
                 .ToArray();
             var examples = request.Messages.Take(10)
-                .Select(message => $"  #{message.SequenceNumber} {message.MessageId ?? "(no Message ID)"}");
+                .Select(message => $"  #{message.SequenceNumber} {(message.MessageId is { } id ? ApprovalText.OneLine(id) : "(no Message ID)")}");
             var decision = await RequestApprovalAsync(server, profile, "Delete dead-letter messages",
                 $"{request.Messages.Count} dead-lettered message(s) will be backed up locally and then permanently deleted. " +
                 "Other messages stay in the queue.\n\n" +
@@ -206,11 +206,14 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
             var preview = draft.Body.Content.Length > 600 ? draft.Body.Content[..600] + "…" : draft.Body.Content;
             var decision = await RequestApprovalAsync(server, profile, "Send a message",
                 $"One message will be sent to {McpMapping.EntityName(target)}.\n" +
-                $"Message ID: {draft.Properties.MessageId}\nSubject: {subject ?? "—"}\nCorrelation ID: {correlationId ?? "—"}\n" +
+                // Every value here comes from the model: one line each, so none can imitate the lines around it.
+                $"Message ID: {ApprovalText.OneLine(draft.Properties.MessageId)}\nSubject: {(subject is null ? "—" : ApprovalText.OneLine(subject))}\n" +
+                $"Correlation ID: {(correlationId is null ? "—" : ApprovalText.OneLine(correlationId))}\n" +
                 // Everything that is sent is shown: application properties drive subscription filters and consumers.
-                $"Content type: {draft.Properties.ContentType ?? "—"}\n" +
+                $"Content type: {(draft.Properties.ContentType is { } type ? ApprovalText.OneLine(type) : "—")}\n" +
                 (draft.ApplicationProperties.Count == 0 ? string.Empty
-                    : "Application properties:\n" + string.Join("\n", draft.ApplicationProperties.Select(property => $"  {property.Name} = {property.Value}")) + "\n") +
+                    : "Application properties:\n" + string.Join("\n", draft.ApplicationProperties.Select(property =>
+                        $"  {ApprovalText.OneLine(property.Name)} = {ApprovalText.OneLine(property.Value)}")) + "\n") +
                 $"Body ({format}, {Encoding.UTF8.GetByteCount(draft.Body.Content).ToString("N0", CultureInfo.InvariantCulture)} bytes):\n{preview}",
                 reason, cancellationToken).ConfigureAwait(false);
             if (!decision.Approved)
@@ -360,7 +363,9 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 .Select(group => $"• to {group.Key}: {group.Count()}")
                 .ToArray();
             var examples = items.Take(10).Select(item =>
-                $"  {McpMapping.EntityName(item.Original.Source)} #{item.Original.SequenceNumber} {item.Original.Properties.MessageId ?? "(no Message ID)"}");
+                // A stored message's ID was chosen by its producer: one line, like every other value here.
+                $"  {McpMapping.EntityName(item.Original.Source)} #{item.Original.SequenceNumber} " +
+                (item.Original.Properties.MessageId is { } id ? ApprovalText.OneLine(id) : "(no Message ID)"));
             var decision = await RequestApprovalAsync(server, profile, action,
                 $"{items.Length} dead-lettered message(s) will be sent again with " +
                 (preserveMessageIds ? "preserved Message IDs (duplicate detection may suppress delivery)" : "distinct new Message IDs") +
@@ -516,7 +521,8 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
         // The reason is written by the model: one bounded line, so it cannot imitate or push away the real details.
         var oneLine = string.Join(' ', reason.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         reason = oneLine.Length > 500 ? oneLine[..500] + "…" : oneLine;
-        var client = server.ClientInfo is { } info ? $"{info.Name} {info.Version}".Trim() : "an MCP client";
+        // The client names itself: one line, so it cannot add lines of its own.
+        var client = server.ClientInfo is { } info ? ApprovalText.OneLine($"{info.Name} {info.Version}".Trim()) : "an MCP client";
         return approver.RequestAsync(
             new ApprovalRequest(
                 action,
