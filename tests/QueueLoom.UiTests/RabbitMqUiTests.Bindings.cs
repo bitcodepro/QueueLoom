@@ -29,7 +29,7 @@ public sealed partial class RabbitMqUiTests
     [InlineData(true)]
     public Task PresenceBindings_ModalEditorSavesReloadsAndDelivers(bool toExchange) => UiSession.RunAsync(async () =>
     {
-        var host = Broker!.Split(':')[0];
+        var host = Broker.Split(':')[0];
         var port = int.Parse(Broker.Split(':')[1], System.Globalization.CultureInfo.InvariantCulture);
         var vhost = $"bindings-{Guid.NewGuid():N}";
         using var management = new HttpClient(new HttpClientHandler { UseProxy = false })

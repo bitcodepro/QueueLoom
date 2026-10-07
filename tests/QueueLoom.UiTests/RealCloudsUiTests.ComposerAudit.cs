@@ -12,11 +12,10 @@ namespace QueueLoom.UiTests;
 
 public sealed partial class RealCloudsUiTests
 {
-    [Fact]
+    [EmulatorFact(Emulators.ServiceBus)]
     public Task AzureComposerCopyThenEditedMoveRequiresANewIdentity() => UiSession.RunAsync(async () =>
     {
-        var connection = Environment.GetEnvironmentVariable("QUEUELOOM_SERVICEBUS_EMULATOR");
-        if (string.IsNullOrWhiteSpace(connection)) return;
+        var connection = Environment.GetEnvironmentVariable(Emulators.ServiceBus)!;
         var root = Path.Combine(Path.GetTempPath(), "queueloom-composer-audit", Guid.NewGuid().ToString("N"));
         var source = ServiceBusEntityReference.Queue("audit-composer-dedup");
         var originalId = Guid.NewGuid().ToString("N");

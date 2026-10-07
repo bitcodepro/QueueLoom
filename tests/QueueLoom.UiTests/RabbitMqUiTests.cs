@@ -16,17 +16,12 @@ namespace QueueLoom.UiTests;
 /// </summary>
 public sealed partial class RabbitMqUiTests
 {
-    private static readonly string? Broker = Environment.GetEnvironmentVariable("QUEUELOOM_RABBITMQ");
+    private static readonly string Broker = Environment.GetEnvironmentVariable("QUEUELOOM_RABBITMQ") ?? string.Empty;
     private static readonly string? ScreenshotDirectory = Environment.GetEnvironmentVariable("QUEUELOOM_SCREENSHOT_DIR");
 
-    [Fact]
+    [EmulatorFact(Emulators.RabbitMq)]
     public Task The_app_explores_and_reads_rabbitmq_dead_letters() => UiSession.RunAsync(async () =>
     {
-        if (string.IsNullOrWhiteSpace(Broker))
-        {
-            return;
-        }
-
         var host = Broker.Split(':')[0];
         var port = int.Parse(Broker.Split(':')[1], System.Globalization.CultureInfo.InvariantCulture);
         var vhost = $"billing-{Guid.NewGuid():N}"[..16];

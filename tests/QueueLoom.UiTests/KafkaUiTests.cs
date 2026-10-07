@@ -16,17 +16,12 @@ namespace QueueLoom.UiTests;
 /// </summary>
 public sealed class KafkaUiTests
 {
-    private static readonly string? Servers = Environment.GetEnvironmentVariable("QUEUELOOM_KAFKA");
+    private static readonly string Servers = Environment.GetEnvironmentVariable("QUEUELOOM_KAFKA") ?? string.Empty;
     private static readonly string? ScreenshotDirectory = Environment.GetEnvironmentVariable("QUEUELOOM_SCREENSHOT_DIR");
 
-    [Fact]
+    [EmulatorFact(Emulators.Kafka)]
     public Task The_app_reads_kafka_dead_letter_topics_and_offers_only_what_kafka_can_do() => UiSession.RunAsync(async () =>
     {
-        if (string.IsNullOrWhiteSpace(Servers))
-        {
-            return;
-        }
-
         var run = Guid.NewGuid().ToString("N")[..6];
         var shipments = $"shipments-{run}";
         var topics = new[] { shipments, shipments + ".DLT", $"tracking-{run}" };
