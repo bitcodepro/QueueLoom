@@ -101,8 +101,12 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
         }
         while (!string.IsNullOrEmpty(nextToken));
 
-        var queues = await Task.WhenAll(queueUrls.Select(url => ReadQueueAsync(url, cancellationToken)))
-            .ConfigureAwait(false);
+        // A queue deleted between ListQueues and its GetQueueAttributes (by another tool, a test, a cleanup job) is
+        // simply gone: it is left out, and the other queues are listed. Any other failure still fails the refresh.
+        var queues = (await Task.WhenAll(queueUrls.Select(url => ReadQueueAsync(url, cancellationToken)))
+                .ConfigureAwait(false))
+            .OfType<AwsQueueInfo>()
+            .ToArray();
         var topics = await ReadTopicsAsync(cancellationToken).ConfigureAwait(false);
         _index = new AwsTopologyIndex(queues, topics);
         return _index.ToTopology(TimeProvider.GetUtcNow());
@@ -259,13 +263,26 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             : new SessionAWSCredentials(accessKey.AccessKeyId, accessKey.SecretAccessKey, accessKey.SessionToken);
     }
 
-    private async Task<AwsQueueInfo> ReadQueueAsync(string url, CancellationToken cancellationToken)
+    /// <summary>The queue's settings and counts; null when the queue no longer exists.</summary>
+    private async Task<AwsQueueInfo?> ReadQueueAsync(string url, CancellationToken cancellationToken)
     {
-        var response = await Sqs.GetQueueAttributesAsync(
-                new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["All"] },
-                cancellationToken)
-            .ConfigureAwait(false);
-        return AwsQueueInfo.From(url, response.Attributes ?? []);
+        try
+        {
+            var response = await Sqs.GetQueueAttributesAsync(
+                    new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["All"] },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return AwsQueueInfo.From(url, response.Attributes ?? []);
+        }
+        catch (QueueDoesNotExistException)
+        {
+            return null;
+        }
+        catch (AmazonSQSException exception) when (exception.ErrorCode is "AWS.SimpleQueueService.NonExistentQueue" or "QueueDoesNotExist")
+        {
+            // Older endpoints and emulators report it with this code instead of the modelled exception.
+            return null;
+        }
     }
 
     private async Task<IReadOnlyList<AwsTopicInfo>> ReadTopicsAsync(CancellationToken cancellationToken)
@@ -290,37 +307,69 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             return [];
         }
 
-        return await Task.WhenAll(topicArns.Select(arn => ReadTopicAsync(arn, cancellationToken))).ConfigureAwait(false);
+        // Like queues, a topic or subscription deleted while the refresh reads it is left out; other failures go on.
+        return (await Task.WhenAll(topicArns.Select(arn => ReadTopicAsync(arn, cancellationToken))).ConfigureAwait(false))
+            .OfType<AwsTopicInfo>()
+            .ToArray();
     }
 
-    private async Task<AwsTopicInfo> ReadTopicAsync(string topicArn, CancellationToken cancellationToken)
+    private static bool IsNotFound(AmazonSimpleNotificationServiceException exception) =>
+        exception is Sns.NotFoundException || exception.ErrorCode is "NotFound";
+
+    /// <summary>The topic with its subscriptions; null when the topic no longer exists.</summary>
+    private async Task<AwsTopicInfo?> ReadTopicAsync(string topicArn, CancellationToken cancellationToken)
     {
         var subscriptions = new List<Sns.Subscription>();
         string? nextToken = null;
-        do
+        try
         {
-            var page = await Sns.ListSubscriptionsByTopicAsync(
-                    new Sns.ListSubscriptionsByTopicRequest { TopicArn = topicArn, NextToken = nextToken },
-                    cancellationToken)
-                .ConfigureAwait(false);
-            subscriptions.AddRange(page.Subscriptions ?? []);
-            nextToken = page.NextToken;
+            do
+            {
+                var page = await Sns.ListSubscriptionsByTopicAsync(
+                        new Sns.ListSubscriptionsByTopicRequest { TopicArn = topicArn, NextToken = nextToken },
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                subscriptions.AddRange(page.Subscriptions ?? []);
+                nextToken = page.NextToken;
+            }
+            while (!string.IsNullOrEmpty(nextToken));
         }
-        while (!string.IsNullOrEmpty(nextToken));
+        catch (AmazonSimpleNotificationServiceException exception) when (IsNotFound(exception))
+        {
+            return null;
+        }
 
-        var details = await Task.WhenAll(subscriptions.Select(async subscription =>
+        var read = await Task.WhenAll(subscriptions.Select(async subscription =>
         {
             Dictionary<string, string>? attributes = null;
             if (subscription.SubscriptionArn?.StartsWith("arn:", StringComparison.Ordinal) == true)
             {
-                attributes = (await Sns.GetSubscriptionAttributesAsync(
-                        new Sns.GetSubscriptionAttributesRequest { SubscriptionArn = subscription.SubscriptionArn },
-                        cancellationToken)
-                    .ConfigureAwait(false)).Attributes;
+                try
+                {
+                    attributes = (await Sns.GetSubscriptionAttributesAsync(
+                            new Sns.GetSubscriptionAttributesRequest { SubscriptionArn = subscription.SubscriptionArn },
+                            cancellationToken)
+                        .ConfigureAwait(false)).Attributes;
+                }
+                catch (AmazonSimpleNotificationServiceException exception) when (IsNotFound(exception))
+                {
+                    // Unsubscribed meanwhile: it no longer routes anything.
+                    return null;
+                }
             }
 
-            return (Subscription: subscription, Attributes: attributes ?? []);
+            return ((Sns.Subscription Subscription, Dictionary<string, string> Attributes)?)(subscription, attributes ?? []);
         })).ConfigureAwait(false);
+        var details = read.OfType<(Sns.Subscription Subscription, Dictionary<string, string> Attributes)>().ToArray();
+        int? maximumMessageSize;
+        try
+        {
+            maximumMessageSize = await ReadTopicMaximumMessageSizeAsync(topicArn, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonSimpleNotificationServiceException exception) when (IsNotFound(exception))
+        {
+            return null;
+        }
 
         return AwsTopicInfo.From(topicArn, details.Select(item => new AwsSubscriptionInfo(
             item.Subscription.SubscriptionArn ?? string.Empty,
@@ -336,7 +385,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             RawMessageDelivery = string.Equals(item.Attributes.GetValueOrDefault("RawMessageDelivery"), "true", StringComparison.OrdinalIgnoreCase)
         })) with
         {
-            MaximumMessageSize = await ReadTopicMaximumMessageSizeAsync(topicArn, cancellationToken).ConfigureAwait(false)
+            MaximumMessageSize = maximumMessageSize
         };
     }
 
