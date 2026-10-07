@@ -5,6 +5,12 @@ using System.IO.Compression;
 
 namespace QueueLoom.Tests;
 
+[CollectionDefinition("UpdateRestart recovery events", DisableParallelization = true)]
+public sealed class UpdateRestartRecoveryEventsCollection;
+
+// RecoveryRecorded is process-global and carries no receipt identity. These observers must not overlap
+// another test collection's Restore calls; the production event and other collections remain unchanged.
+[Collection("UpdateRestart recovery events")]
 public sealed partial class AppUpdaterTests
 {
     [Theory]
@@ -91,8 +97,34 @@ public sealed partial class AppUpdaterTests
             Assert.Empty(facts);
             File.WriteAllText(backup, previous);
             UpdateRestart.Restore(receipt);
-            Assert.Equal(new[] { UpdateRestart.RecordedRecovery.Restored }, facts);
+            AssertSingleRestoration(facts);
         }
         finally { UpdateRestart.RecoveryRecorded -= Record; }
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void Diagnostics_RollbackAssertionRejectsMissingOrDuplicateOwnEvents(int successfulRestores)
+    {
+        var target = Target("win-x64");
+        File.WriteAllText(target.Executable, "old");
+        AppUpdater.Install(target, Staging(("QueueLoom.exe", "new")));
+        var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(UpdateRestart.ReceiptPath(target)))!;
+        var facts = new List<UpdateRestart.RecordedRecovery>();
+        void Record(UpdateRestart.RecordedRecovery fact) => facts.Add(fact);
+        UpdateRestart.RecoveryRecorded += Record;
+        try
+        {
+            for (var i = 0; i < successfulRestores; i++) UpdateRestart.Restore(receipt);
+            Assert.Equal(successfulRestores, facts.Count);
+            // Use the same strict assertion as the real rollback test; isolation must not hide missing
+            // callbacks or duplicate callbacks for this receipt's own successful Restore operations.
+            Assert.Throws<Xunit.Sdk.EqualException>(() => AssertSingleRestoration(facts));
+        }
+        finally { UpdateRestart.RecoveryRecorded -= Record; }
+    }
+
+    private static void AssertSingleRestoration(IEnumerable<UpdateRestart.RecordedRecovery> facts) =>
+        Assert.Equal(new[] { UpdateRestart.RecordedRecovery.Restored }, facts);
 }
