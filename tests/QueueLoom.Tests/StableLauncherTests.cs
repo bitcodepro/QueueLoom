@@ -342,6 +342,57 @@ public sealed class StableLauncherTests
         }
     }
 
+    // Another program (an antivirus scan, an indexer) briefly holds the candidate's acknowledgement open. The
+    // launcher reads it again instead of taking the sharing violation for "not acknowledged", which killed a healthy
+    // candidate and rolled the installation back. Held open past the wait, it is absent; a missing one is absent at once.
+    [Theory]
+    [InlineData("briefly-locked")]
+    [InlineData("locked-past-the-wait")]
+    [InlineData("missing")]
+    public void ALockedAcknowledgementIsReadAgainButAMissingOneIsAbsentAtOnce(string acknowledgement)
+    {
+        if (acknowledgement != "missing" && !OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
+        using var fixture = new InstallationFixture();
+        FileStream? scanner = null;
+        var steps = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        // The lock is released from the launcher's own "ack-unreadable" step: the read has met it, then succeeds.
+        // Held past the wait, it is released only after the launcher gave up.
+        var installation = new VersionInstallation(fixture.Launcher, step =>
+        {
+            steps.Enqueue(step);
+            if (step == "ack-unreadable" && acknowledgement == "briefly-locked") scanner?.Dispose();
+        });
+        installation.StagePackage(fixture.Package("next").Path);
+        var selected = installation.SelectForLaunch();
+        Assert.True(selected.OwnsAttempt);
+        if (acknowledgement == "missing")
+        {
+            Assert.False(installation.HasAcknowledgement(selected));
+            Assert.DoesNotContain("ack-unreadable", steps);
+            Assert.DoesNotContain("ack-unreadable-given-up", steps);
+            return;
+        }
+
+        installation.Acknowledge(selected.Version, selected.Attempt!);
+        var path = Path.Combine(installation.Store, "acknowledgements", selected.Attempt + ".ready");
+        scanner = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        try
+        {
+            var acknowledged = installation.HasAcknowledgement(selected);
+            Assert.True(acknowledged == (acknowledgement == "briefly-locked"), "Launcher steps: " + string.Join(", ", steps));
+        }
+        finally
+        {
+            scanner.Dispose();
+        }
+        Assert.Contains("ack-unreadable", steps);
+        Assert.True(steps.Contains("ack-unreadable-given-up") == (acknowledgement != "briefly-locked"), "Launcher steps: " + string.Join(", ", steps));
+        Assert.DoesNotContain("ack-missing", steps);
+        // Once readable, the acknowledgement confirms the candidate either way.
+        installation.Confirm(selected);
+        Assert.False(installation.HasPendingActivation());
+    }
+
     [Fact]
     public void SameAcknowledgementIsIdempotentAfterItsVersionWasConfirmed()
     {
