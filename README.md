@@ -31,6 +31,12 @@ A desktop app for Windows, macOS and Linux for message queues in **Azure Service
 
 Download the package for your system from [Releases](../../releases). No .NET installation is needed. When a new version comes out, QueueLoom offers to update itself: it downloads the package, checks its SHA-256 checksum, installs it and restarts.
 
+The packaged `QueueLoom` executable is a stable launcher. Updates add verified application versions and
+activation records beside the installation, preserving the launch path and previous confirmed versions.
+Keep the bootstrap files and version store with the launcher. Protocol v1 retains committed versions;
+see [launcher recovery, migration and manual launcher updates](docs/stable-launcher.md) for storage and
+first-upgrade limits. Your preferences, credentials and backups stay outside replaceable payloads.
+
 Each package is signed with a [GitHub artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) (Sigstore, no private key involved). It proves that the package was built by this repository's release workflow from the tagged commit. To check a download with the [GitHub CLI](https://cli.github.com/):
 
 ```

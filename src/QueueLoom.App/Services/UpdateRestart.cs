@@ -113,7 +113,9 @@ public static class UpdateRestart
         var receipt = Read(path, id);
         var ready = path + "." + id + ".ready";
         using var handoff = OwnTransaction(path);
-        SafeFileWriter.WriteText(path + ".helper", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        // A legacy updater starts the stable entry and expects that process's PID in its readiness file.
+        var helperPid = QueueLoom.Core.Updates.PayloadLaunch.Current?.LauncherProcessId ?? Environment.ProcessId;
+        SafeFileWriter.WriteText(path + ".helper", helperPid.ToString(System.Globalization.CultureInfo.InvariantCulture),
             narrowGroup: false);
         try
         {

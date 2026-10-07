@@ -108,6 +108,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// <summary>The running installation, or null when QueueLoom runs from a build folder or an unknown system.</summary>
     public static UpdateTarget? CurrentTarget()
     {
+        if (QueueLoom.Core.Updates.PayloadLaunch.Current is { } launched)
+        {
+            var installation = launched.Installation;
+            return new(installation.Rid, installation.Root, installation.Launcher, installation.Bundle);
+        }
         var rid = CurrentRid();
         var executable = Environment.ProcessPath;
         if (rid is null || executable is null || !string.Equals(Path.GetFileNameWithoutExtension(executable), "QueueLoom", StringComparison.Ordinal) ||
@@ -266,6 +271,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         catch (Exception exception)
         {
             var safe = !File.Exists(UpdateRestart.ReceiptPath(target));
+            if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
+            {
+                try { safe &= !new QueueLoom.Core.Updates.VersionInstallation(target.Executable).HasPendingActivation(); }
+                catch (Exception) { safe = false; } // Damaged activation evidence requires recovery before retry.
+            }
             DiagnosticsJournal.Session.Record(diagnosticOperation, DiagnosticStage.Failed, error: exception, updateStage: safe ? UpdatePhase.Installation : UpdatePhase.Recovery);
             throw new UpdateStageException(safe ? UpdatePhase.Installation : UpdatePhase.Recovery,
                 exception.Message, safe, exception);
@@ -275,6 +285,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// <summary>Puts the unpacked files in place; the running ones become ".old". Rolls back on any failure.</summary>
     public static void Install(UpdateTarget target, string staging)
     {
+        if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
+        {
+            new QueueLoom.Core.Updates.VersionInstallation(target.Executable).StagePackage(staging);
+            return;
+        }
         var downloadDirectory = Path.GetDirectoryName(Path.GetFullPath(staging))!;
         var marker = Path.Combine(downloadDirectory, DownloadMarker);
         var id = File.Exists(marker) ? File.ReadAllText(marker) : Guid.NewGuid().ToString("N");
@@ -364,6 +379,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// <summary>Starts the installed version; the caller then closes this one.</summary>
     public static void StartInstalled(UpdateTarget target)
     {
+        if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
+        {
+            StartVersionLauncher(target);
+            return;
+        }
         var operation = DiagnosticsJournal.Session.Begin("Update");
         try
         {
@@ -386,9 +406,37 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         }
     }
 
+    private static void StartVersionLauncher(UpdateTarget target)
+    {
+        var installation = new QueueLoom.Core.Updates.VersionInstallation(target.Executable);
+        installation.EnsureBootstrap();
+        using var parent = Process.GetCurrentProcess();
+        var token = Guid.NewGuid().ToString("N");
+        var ready = Path.Combine(installation.Store, "restart-" + token + ".ready");
+        var start = new ProcessStartInfo(target.Executable) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = target.InstallDirectory };
+        foreach (var argument in new[] { "--launcher-restart", parent.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                     parent.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), token })
+            start.ArgumentList.Add(argument);
+        using var launcher = Process.Start(start) ?? throw new IOException("The stable restart launcher could not start.");
+        var waiting = Stopwatch.StartNew();
+        while (!File.Exists(ready))
+        {
+            if (launcher.HasExited) throw new IOException("The stable restart launcher exited before accepting the handoff.");
+            if (waiting.Elapsed > TimeSpan.FromSeconds(15))
+            {
+                launcher.Kill(entireProcessTree: true);
+                launcher.WaitForExit();
+                throw new IOException("The stable restart launcher did not accept the handoff; the previous version remains available.");
+            }
+            Thread.Sleep(20);
+        }
+    }
+
     /// <summary>Removes what the previous update left behind (the ".old" files and the download).</summary>
     public void CleanUpPreviousUpdate(UpdateTarget? target)
     {
+        if (target is not null && QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
+            new QueueLoom.Core.Updates.VersionInstallation(target.Executable).CleanupStaging();
         if (target is not null && File.Exists(UpdateRestart.ReceiptPath(target)))
         {
             var path = UpdateRestart.ReceiptPath(target);

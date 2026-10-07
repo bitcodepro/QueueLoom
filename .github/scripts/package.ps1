@@ -14,23 +14,59 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $publish = 'artifacts/publish'
+$launcherPublish = 'artifacts/launcher'
 $staging = "artifacts/package-$Rid"
-Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+$artifactRoot = [IO.Path]::GetFullPath('artifacts')
+$staging = [IO.Path]::GetFullPath($staging)
+if ([IO.Path]::GetDirectoryName($staging) -ne $artifactRoot) { throw 'Package staging escaped the artifact directory' }
+Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $staging | Out-Null
 $docs = 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
 $assets = 'src/QueueLoom.App/Assets'
+New-Item -ItemType Directory -Path (Join-Path $staging 'docs') | Out-Null
+Copy-Item -LiteralPath 'docs/stable-launcher.md' -Destination (Join-Path $staging 'docs/stable-launcher.md')
 # Native symbol files are not needed at runtime and triple the download size.
 $files = Get-ChildItem $publish -File | Where-Object { $_.Extension -notin '.pdb', '.dbg', '.dSYM' }
 
+function Write-VersionManifest([string] $Initial) {
+    $metadata = [ordered]@{}
+    $payload = Join-Path $Initial 'payload'
+    Get-ChildItem -LiteralPath $payload -File -Recurse | Sort-Object FullName | ForEach-Object {
+        $relative = [IO.Path]::GetRelativePath($payload, $_.FullName).Replace('\', '/')
+        $mode = if ($IsWindows) { 420 } else { [int][IO.File]::GetUnixFileMode($_.FullName) }
+        $metadata[$relative] = @{ Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); UnixMode = $mode }
+    }
+    $manifest = @{ Protocol = 1; Id = [Guid]::NewGuid().ToString('N'); Rid = $Rid; Version = $Version; Files = $metadata }
+    $path = Join-Path $Initial 'manifest.json'
+    [IO.File]::WriteAllText($path, ($manifest | ConvertTo-Json -Depth 6))
+    return @{ Protocol = 1; Id = $manifest.Id; Rid = $Rid; ManifestSha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); ArchiveSha256 = $null }
+}
+
+function Write-FlatBootstrap {
+    $initial = Join-Path $staging 'bootstrap-content'
+    $payload = Join-Path $initial 'payload'
+    New-Item -ItemType Directory -Path $payload -Force | Out-Null
+    $files | Copy-Item -Destination $payload
+    $descriptor = Write-VersionManifest $initial
+    $archive = Join-Path $staging 'QueueLoom.bootstrap.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($initial, $archive)
+    $descriptor.ArchiveSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText((Join-Path $staging 'QueueLoom.bootstrap.json'), ($descriptor | ConvertTo-Json))
+    # This exact staging subtree was created above by this packaging invocation.
+    Remove-Item -LiteralPath $initial -Recurse -Force
+}
+
 switch -Wildcard ($Rid) {
     'win-*' {
-        $files | Copy-Item -Destination $staging
+        Write-FlatBootstrap
+        Copy-Item -LiteralPath (Join-Path $launcherPublish 'QueueLoom.Launcher.exe') -Destination (Join-Path $staging 'QueueLoom.exe')
         Copy-Item $docs -Destination $staging
         $name = "QueueLoom-$Version-$Rid.zip"
         Compress-Archive -Path "$staging/*" -DestinationPath "artifacts/$name" -Force
     }
     'linux-*' {
-        $files | Copy-Item -Destination $staging
+        Write-FlatBootstrap
+        Copy-Item -LiteralPath (Join-Path $launcherPublish 'QueueLoom.Launcher') -Destination (Join-Path $staging 'QueueLoom')
         Copy-Item $docs -Destination $staging
         Copy-Item "$assets/queueloom-256.png" "$staging/queueloom.png"
         Copy-Item '.github/scripts/install-desktop-entry.sh' -Destination $staging
@@ -44,7 +80,7 @@ switch -Wildcard ($Rid) {
         $bundle = "$staging/QueueLoom.app"
         $macOS = "$bundle/Contents/MacOS"
         New-Item -ItemType Directory -Force $macOS, "$bundle/Contents/Resources" | Out-Null
-        $files | Copy-Item -Destination $macOS
+        Copy-Item -LiteralPath (Join-Path $launcherPublish 'QueueLoom.Launcher') -Destination (Join-Path $macOS 'QueueLoom')
         chmod +x "$macOS/QueueLoom"
         Copy-Item "$assets/queueloom.icns" "$bundle/Contents/Resources/QueueLoom.icns"
         $shortVersion = ($Version -split '-')[0]
@@ -67,8 +103,22 @@ switch -Wildcard ($Rid) {
 </plist>
 "@ | Out-File -Encoding utf8 "$bundle/Contents/Info.plist"
         Copy-Item $docs -Destination $staging
+        # The outer app remains unchanged during updates. Its immutable initial payload makes a single .app
+        # portable; new versions and activation state live beside it, outside its sealed resources.
+        $initial = Join-Path $bundle 'Contents/Resources/initial'
+        $payloadBundle = Join-Path $initial 'payload/QueueLoom.app'
+        New-Item -ItemType Directory -Force (Join-Path $payloadBundle 'Contents/MacOS'), (Join-Path $payloadBundle 'Contents/Resources') | Out-Null
+        $files | Copy-Item -Destination (Join-Path $payloadBundle 'Contents/MacOS')
+        chmod +x (Join-Path $payloadBundle 'Contents/MacOS/QueueLoom')
+        Copy-Item -LiteralPath (Join-Path $bundle 'Contents/Info.plist') -Destination (Join-Path $payloadBundle 'Contents/Info.plist')
+        Copy-Item -LiteralPath (Join-Path $bundle 'Contents/Resources/QueueLoom.icns') -Destination (Join-Path $payloadBundle 'Contents/Resources/QueueLoom.icns')
+        codesign --force --deep --sign - $payloadBundle
+        if ($LASTEXITCODE -ne 0) { throw 'Payload codesign failed' }
+        $descriptor = Write-VersionManifest $initial
+        [IO.File]::WriteAllText((Join-Path $bundle 'Contents/Resources/QueueLoom.bootstrap.json'), ($descriptor | ConvertTo-Json))
         # Apple silicon refuses unsigned code; an ad-hoc signature is enough to start (Gatekeeper still asks once).
-        codesign --force --deep --sign - $bundle
+        # Do not re-sign the nested payload after its digest has been pinned in the manifest.
+        codesign --force --sign - $bundle
         if ($LASTEXITCODE -ne 0) { throw 'codesign failed' }
         $name = "QueueLoom-$Version-$Rid.zip"
         Push-Location $staging
@@ -78,6 +128,8 @@ switch -Wildcard ($Rid) {
             if ($LASTEXITCODE -ne 0) { throw 'ditto failed' }
             zip -q "../$name" $docs
             if ($LASTEXITCODE -ne 0) { throw 'zip failed' }
+            zip -q -r "../$name" docs
+            if ($LASTEXITCODE -ne 0) { throw 'Documentation zip failed' }
         }
         finally {
             Pop-Location

@@ -38,7 +38,8 @@ public static class QueueLoomMcpServer
         Action<ILoggingBuilder>? configureLogging = null,
         Stream? input = null,
         Stream? output = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action? startupReady = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(configureServices);
@@ -73,6 +74,12 @@ public static class QueueLoomMcpServer
         }
 
         using var host = builder.Build();
-        await host.RunAsync(cancellationToken).ConfigureAwait(false);
+        await host.StartAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            startupReady?.Invoke();
+            await host.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally { await host.StopAsync(CancellationToken.None).ConfigureAwait(false); }
     }
 }

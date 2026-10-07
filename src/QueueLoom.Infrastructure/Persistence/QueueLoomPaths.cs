@@ -24,7 +24,9 @@ public sealed record QueueLoomPaths(
         var rootOverride = Environment.GetEnvironmentVariable("QUEUELOOM_DATA_DIRECTORY");
         var persistentPaths = ForRoot(string.IsNullOrWhiteSpace(rootOverride) ? Path.Combine(localData, "QueueLoom") : rootOverride);
         var backupOverride = Environment.GetEnvironmentVariable("QUEUELOOM_BACKUP_DIRECTORY");
-        return ForProgram(persistentPaths, AppContext.BaseDirectory, backupOverride);
+        var launched = QueueLoom.Core.Updates.PayloadLaunch.Current;
+        if (launched is not null && !string.IsNullOrWhiteSpace(backupOverride)) backupOverride = launched.ExternalBackupPath(backupOverride);
+        return ForProgram(persistentPaths, launched?.Installation.DataAnchor ?? AppContext.BaseDirectory, backupOverride);
     }
 
     internal static QueueLoomPaths ForProgram(QueueLoomPaths persistentPaths, string executableDirectory, string? backupOverride)
@@ -45,7 +47,8 @@ public sealed record QueueLoomPaths(
     }
 
     /// <summary>The "backups" folder next to the executable, or beside a macOS application bundle.</summary>
-    public static string ProgramBackupsDirectory => ProgramBackupsDirectoryFor(AppContext.BaseDirectory);
+    public static string ProgramBackupsDirectory => ProgramBackupsDirectoryFor(
+        QueueLoom.Core.Updates.PayloadLaunch.Current?.Installation.DataAnchor ?? AppContext.BaseDirectory);
 
     internal static string ProgramBackupsDirectoryFor(string executableDirectory) =>
         OutsideApplicationBundle(Path.Combine(executableDirectory, "backups"), executableDirectory);
