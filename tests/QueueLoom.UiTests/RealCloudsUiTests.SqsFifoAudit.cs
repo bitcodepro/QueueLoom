@@ -15,11 +15,10 @@ namespace QueueLoom.UiTests;
 
 public sealed partial class RealCloudsUiTests
 {
-    [Fact]
+    [EmulatorFact(Emulators.LocalStack)]
     public Task SqsFifoComposerCopyThenEditedMoveRequiresANewIdentity() => UiSession.RunAsync(async () =>
     {
-        var endpoint = Environment.GetEnvironmentVariable("QUEUELOOM_LOCALSTACK_URL");
-        if (string.IsNullOrWhiteSpace(endpoint)) return;
+        var endpoint = Environment.GetEnvironmentVariable(Emulators.LocalStack)!;
         var root = Path.Combine(Path.GetTempPath(), "queueloom-fifo-audit", Guid.NewGuid().ToString("N"));
         using var sqs = new AmazonSQSClient(new BasicAWSCredentials("test", "test"),
             new AmazonSQSConfig { ServiceURL = endpoint, AuthenticationRegion = "eu-west-1" });

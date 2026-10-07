@@ -26,18 +26,13 @@ public sealed partial class RealCloudsUiTests
     private const string AwsRegion = "eu-central-1";
     private const string GoogleProject = "shipping-dev-2231";
 
-    private static readonly string? LocalStackUrl = Environment.GetEnvironmentVariable("QUEUELOOM_LOCALSTACK_URL");
-    private static readonly string? PubSubHost = Environment.GetEnvironmentVariable("QUEUELOOM_PUBSUB_EMULATOR");
+    private static readonly string LocalStackUrl = Environment.GetEnvironmentVariable("QUEUELOOM_LOCALSTACK_URL") ?? string.Empty;
+    private static readonly string PubSubHost = Environment.GetEnvironmentVariable("QUEUELOOM_PUBSUB_EMULATOR") ?? string.Empty;
     private static readonly string? ScreenshotDirectory = Environment.GetEnvironmentVariable("QUEUELOOM_SCREENSHOT_DIR");
 
-    [Fact]
+    [EmulatorFact([Emulators.LocalStack, Emulators.PubSub])]
     public Task The_app_explores_searches_and_reads_dead_letters_in_aws_and_google_cloud() => UiSession.RunAsync(async () =>
     {
-        if (string.IsNullOrWhiteSpace(LocalStackUrl) || string.IsNullOrWhiteSpace(PubSubHost))
-        {
-            return;
-        }
-
         await SeedAwsAsync();
         await SeedPubSubAsync();
 
