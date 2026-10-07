@@ -349,35 +349,45 @@ public sealed class StableLauncherTests
     [InlineData("briefly-locked")]
     [InlineData("locked-past-the-wait")]
     [InlineData("missing")]
-    public async Task ALockedAcknowledgementIsReadAgainButAMissingOneIsAbsentAtOnce(string acknowledgement)
+    public void ALockedAcknowledgementIsReadAgainButAMissingOneIsAbsentAtOnce(string acknowledgement)
     {
         if (acknowledgement != "missing" && !OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
         using var fixture = new InstallationFixture();
-        var installation = new VersionInstallation(fixture.Launcher);
+        FileStream? scanner = null;
+        var steps = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        // The lock is released from the launcher's own "ack-unreadable" step: the read has met it, then succeeds.
+        // Held past the wait, it is released only after the launcher gave up.
+        var installation = new VersionInstallation(fixture.Launcher, step =>
+        {
+            steps.Enqueue(step);
+            if (step == "ack-unreadable" && acknowledgement == "briefly-locked") scanner?.Dispose();
+        });
         installation.StagePackage(fixture.Package("next").Path);
         var selected = installation.SelectForLaunch();
         Assert.True(selected.OwnsAttempt);
         if (acknowledgement == "missing")
         {
-            var watch = System.Diagnostics.Stopwatch.StartNew();
             Assert.False(installation.HasAcknowledgement(selected));
-            Assert.True(watch.Elapsed < VersionInstallation.AcknowledgementReadWait, "A missing acknowledgement must not be waited for.");
+            Assert.DoesNotContain("ack-unreadable", steps);
+            Assert.DoesNotContain("ack-unreadable-given-up", steps);
             return;
         }
 
         installation.Acknowledge(selected.Version, selected.Attempt!);
         var path = Path.Combine(installation.Store, "acknowledgements", selected.Attempt + ".ready");
-        var held = acknowledgement == "briefly-locked" ? TimeSpan.FromMilliseconds(500) : VersionInstallation.AcknowledgementReadWait * 2;
-        var scanner = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
-        var release = Task.Delay(held).ContinueWith(_ => scanner.Dispose(), TaskScheduler.Default);
+        scanner = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
         try
         {
-            Assert.Equal(acknowledgement == "briefly-locked", installation.HasAcknowledgement(selected));
+            var acknowledged = installation.HasAcknowledgement(selected);
+            Assert.True(acknowledged == (acknowledgement == "briefly-locked"), "Launcher steps: " + string.Join(", ", steps));
         }
         finally
         {
-            await release;
+            scanner.Dispose();
         }
+        Assert.Contains("ack-unreadable", steps);
+        Assert.True(steps.Contains("ack-unreadable-given-up") == (acknowledgement != "briefly-locked"), "Launcher steps: " + string.Join(", ", steps));
+        Assert.DoesNotContain("ack-missing", steps);
         // Once readable, the acknowledgement confirms the candidate either way.
         installation.Confirm(selected);
         Assert.False(installation.HasPendingActivation());

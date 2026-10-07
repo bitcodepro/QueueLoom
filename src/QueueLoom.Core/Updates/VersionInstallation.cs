@@ -298,9 +298,17 @@ public sealed class VersionInstallation
         while (true)
         {
             try { return File.ReadAllText(path) == state.Active.Id + ":" + state.Active.ManifestSha256; }
-            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return false; }
-            catch (IOException) when (wait.Elapsed < AcknowledgementReadWait) { Thread.Sleep(25); }
-            catch (IOException) { return false; }
+            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { _checkpoint?.Invoke("ack-missing"); return false; }
+            catch (IOException) when (wait.Elapsed < AcknowledgementReadWait)
+            {
+                _checkpoint?.Invoke("ack-unreadable");
+                Thread.Sleep(25);
+            }
+            catch (IOException)
+            {
+                _checkpoint?.Invoke("ack-unreadable-given-up");
+                return false;
+            }
         }
     }
 
