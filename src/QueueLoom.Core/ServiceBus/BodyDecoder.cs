@@ -764,8 +764,9 @@ public static class BodyDecoder
 
         public JsonElement Root { get; }
 
-        // A named type that refers to itself without a record or union in between never reads a byte, so the
-        // depth stops it before the stack runs out. Real nesting this deep is not readable as JSON anyway.
+        // A named type that refers to itself without a record or union in between never reads a byte. The depth,
+        // and before it the stack actually left (Windows threads have only 1 MiB), stop it with an ordinary error:
+        // a stack overflow would end the process. Real nesting this deep is not readable as JSON anyway.
         private const int MaximumDepth = 1000;
         private int _depth;
 
@@ -774,7 +775,7 @@ public static class BodyDecoder
         private void Write(Utf8JsonWriter writer, JsonElement schema, AvroReader reader, string? enclosingNamespace)
         {
             CheckOutputBudget(writer);
-            if (++_depth > MaximumDepth)
+            if (++_depth > MaximumDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
             {
                 throw new InvalidDataException("The Avro schema nests too deeply or refers to itself.");
             }

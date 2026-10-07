@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace QueueLoom.Core.Routing;
@@ -56,14 +57,20 @@ public sealed class SqlFilter
 
     private abstract class Node
     {
-        public abstract object? Evaluate(Context context);
+        // A filter can nest, or chain conditions, deeply enough to exhaust the stack, which would end the process.
+        // Running short of stack is reported instead.
+        public object? Evaluate(Context context) => RuntimeHelpers.TryEnsureSufficientExecutionStack()
+            ? EvaluateCore(context)
+            : throw new SqlFilterNotSupportedException("The filter is nested too deeply to evaluate.");
+
+        protected abstract object? EvaluateCore(Context context);
     }
 
     private sealed class Constant(object? value) : Node
     {
         public object? Value { get; } = value;
 
-        public override object? Evaluate(Context context) => Value;
+        protected override object? EvaluateCore(Context context) => Value;
     }
 
     private sealed class Property(string scope, string name) : Node
@@ -75,7 +82,7 @@ public sealed class SqlFilter
         /// Decimal so division stays fractional. Guid, date, time span, character, URI and binary values are left
         /// to Service Bus: how SQL compares them with literals is not something to guess.
         /// </summary>
-        public override object? Evaluate(Context context)
+        protected override object? EvaluateCore(Context context)
         {
             var value = RoutingValue.Normalize(Resolve(context, out _));
             if (value is decimal number && decimal.Truncate(number) == number && number >= long.MinValue && number <= long.MaxValue)
@@ -94,7 +101,7 @@ public sealed class SqlFilter
 
     private sealed class Unary(string op, Node operand) : Node
     {
-        public override object? Evaluate(Context context)
+        protected override object? EvaluateCore(Context context)
         {
             var value = operand.Evaluate(context);
             return (op, value) switch
@@ -113,7 +120,7 @@ public sealed class SqlFilter
 
     private sealed class Logical(string op, Node left, Node right) : Node
     {
-        public override object? Evaluate(Context context)
+        protected override object? EvaluateCore(Context context)
         {
             // A side QueueLoom cannot check does not matter when the other one decides: FALSE AND x, TRUE OR x.
             var a = Side(left, context, out var leftError);
@@ -153,7 +160,7 @@ public sealed class SqlFilter
 
     private sealed class Arithmetic(string op, Node left, Node right) : Node
     {
-        public override object? Evaluate(Context context)
+        protected override object? EvaluateCore(Context context)
         {
             var a = left.Evaluate(context);
             var b = right.Evaluate(context);
@@ -222,7 +229,7 @@ public sealed class SqlFilter
     /// <summary>A comparison, LIKE, IN, IS NULL or EXISTS: the leaves that explain a result.</summary>
     private abstract class Test(string text) : Node
     {
-        public override object? Evaluate(Context context)
+        protected override object? EvaluateCore(Context context)
         {
             var result = Check(context, out var actual);
             context.Steps?.Add(new SqlFilterStep(text, result, actual));
@@ -557,6 +564,11 @@ public sealed class SqlFilter
 
         private SqlFilterSyntaxException Error(string message) => new(message, Peek.Start);
 
+        private void EnsureStack()
+        {
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) throw Error("The filter is nested too deeply.");
+        }
+
         private void Expect(string symbol)
         {
             if (!IsSymbol(symbol))
@@ -588,8 +600,11 @@ public sealed class SqlFilter
             return node;
         }
 
+        // Every nesting step (NOT, parentheses) passes through here; deep enough nesting is a syntax error, not a
+        // stack overflow that would end the process.
         private Node ParseNot()
         {
+            EnsureStack();
             if (IsKeyword("NOT"))
             {
                 _index++;
@@ -698,6 +713,7 @@ public sealed class SqlFilter
 
         private Node ParseUnary()
         {
+            EnsureStack();
             if (Peek.Kind == TokenKind.Symbol && Peek.Text is "-" or "+")
             {
                 return new Unary(Next().Text, ParseUnary());
