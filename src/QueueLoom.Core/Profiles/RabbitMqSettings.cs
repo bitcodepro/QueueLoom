@@ -15,5 +15,19 @@ public sealed record RabbitMqSettings(
     int ManagementPort = 15672,
     bool UseTls = false)
 {
-    public Uri ManagementUri => new($"{(UseTls ? "https" : "http")}://{Host}:{ManagementPort}/");
+    /// <summary>
+    /// The host to connect to: without surrounding spaces, and an IPv6 address without the brackets it may be written
+    /// in ([::1]), which a name lookup would not understand.
+    /// </summary>
+    public string HostName
+    {
+        get
+        {
+            var host = Host.Trim();
+            return host.Length > 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
+        }
+    }
+
+    /// <summary>The management plugin's base URL. An IPv6 address is bracketed there, as URLs require (http://[::1]:15672/).</summary>
+    public Uri ManagementUri => new UriBuilder(UseTls ? "https" : "http", HostName, ManagementPort, "/").Uri;
 }

@@ -65,9 +65,9 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
 
     private static ConnectionFactory CreateAmqpFactory(RabbitMqSettings settings, string password) => new()
     {
-        HostName = settings.Host, Port = settings.AmqpPort, UserName = settings.UserName, Password = password,
+        HostName = settings.HostName, Port = settings.AmqpPort, UserName = settings.UserName, Password = password,
         VirtualHost = settings.VirtualHost, ClientProvidedName = "QueueLoom",
-        Ssl = new SslOption { Enabled = settings.UseTls, ServerName = settings.Host },
+        Ssl = new SslOption { Enabled = settings.UseTls, ServerName = settings.HostName },
         RequestedConnectionTimeout = TimeSpan.FromSeconds(15)
     };
 
