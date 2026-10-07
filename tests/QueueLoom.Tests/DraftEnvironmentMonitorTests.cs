@@ -85,12 +85,16 @@ public sealed partial class ViewModelStateTests
 
     // An A-origin draft opened while a monitor check temporarily holds the connection to B is bound to A, the operator's
     // environment. What the Composer shows (the mismatch warning and the Send button) follows that binding throughout,
-    // as a bound view sees it through change notifications: it never reports a mismatch that the restored connection
-    // would then leave on screen. Sending during the check waits for it and goes to A.
+    // as a bound view sees it: the value read when each change notification arrives. Those notifications must arrive,
+    // and must never show a mismatch that the restored connection would then leave on screen. Either the check ends
+    // without anything else happening (no send, no destination or page change), or the operator sends during the
+    // check: the send waits for it and goes to A.
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task PostReleaseCycle1_AnOperatorDraftOpenedDuringAMonitorCheckStaysSendableAndSendsToTheOperatorEnvironment(bool backup)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task PostReleaseCycle1_AnOperatorDraftOpenedDuringAMonitorCheckStaysSendableAndSendsToTheOperatorEnvironment(bool backup, bool sendDuringCheck)
     {
         var dev = CreateProfile("Development", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
         var test = CreateProfile("Test", EnvironmentKind.Test);
@@ -143,20 +147,36 @@ public sealed partial class ViewModelStateTests
         open.Execute(null);
         vm.SelectedDestination = vm.Destinations.Single(item => item.Reference == queue.Reference);
         Assert.Equal("origin body", vm.DraftBody);
-        // Bound to A while B is held: no mismatch, and Send is offered.
+        var page = vm.CurrentPage;
+        // Bound to A while B is held: opening the draft notified no mismatch, and Send was notified as available.
         Assert.False(vm.HasDraftEnvironmentMismatch);
-        Assert.NotEqual(true, renderedMismatch);
+        Assert.Equal(false, renderedMismatch);
+        Assert.Equal(true, renderedSend);
+
+        if (sendDuringCheck)
+        {
+            // Sending now cancels the check and waits for the connection to return to A before anything is sent.
+            await vm.SendDraftCommand.ExecuteAsync();
+            Assert.Equal([dev.Id], sentFrom);
+            Assert.Equal(dev.Id, workspace.ConnectedProfileId);
+            await vm.ToggleMonitorCommand.ExecuteAsync();
+        }
+        else
+        {
+            // The check ends with nothing else happening: the connection returns to A.
+            await vm.ToggleMonitorCommand.ExecuteAsync();
+            Assert.Equal(dev.Id, workspace.ConnectedProfileId);
+            Assert.Empty(sentFrom);
+            Assert.Equal(page, vm.CurrentPage);
+            Assert.Equal(queue.Reference, vm.SelectedDestination?.Reference);
+        }
+
+        // What is on screen after the check: no mismatch warning and Send available, as last notified and as computed.
+        Assert.Equal(false, renderedMismatch);
+        Assert.Equal(true, renderedSend);
+        Assert.False(vm.HasDraftEnvironmentMismatch);
+        Assert.Equal(string.Empty, vm.DraftEnvironmentWarning);
         Assert.True(vm.SendDraftCommand.CanExecute(null));
-
-        // Sending now cancels the check and waits for the connection to return to A before anything is sent.
-        await vm.SendDraftCommand.ExecuteAsync();
-
-        Assert.Equal([dev.Id], sentFrom);
-        Assert.Equal(dev.Id, workspace.ConnectedProfileId);
-        await vm.ToggleMonitorCommand.ExecuteAsync();
-        Assert.False(vm.HasDraftEnvironmentMismatch);
-        Assert.NotEqual(true, renderedMismatch);
-        if (renderedSend is { } lastRendered) Assert.Equal(vm.SendDraftCommand.CanExecute(null), lastRendered);
     }
 
     // The Composer follows the operator's environment, so the send itself checks the actual connection: if it is not
