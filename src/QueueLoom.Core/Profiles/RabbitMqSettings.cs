@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace QueueLoom.Core.Profiles;
 
 /// <summary>Non-secret settings of a RabbitMQ environment; the password is kept in the secret vault.</summary>
@@ -17,8 +19,10 @@ public sealed record RabbitMqSettings(
 {
     /// <summary>
     /// The host to connect to: without surrounding spaces, and an IPv6 address without the brackets it may be written
-    /// in ([::1]), which a name lookup would not understand.
+    /// in ([::1]), which a name lookup would not understand. Derived, so it is not serialized: profiles and the
+    /// configuration identity hashed from them (scheduled resends, recoverable operations) keep their earlier shape.
     /// </summary>
+    [JsonIgnore]
     public string HostName
     {
         get
