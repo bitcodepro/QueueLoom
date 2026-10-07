@@ -35,7 +35,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         {
             throw new McpException("Reading live messages here needs approval, and no approval is available in this QueueLoom.");
         }
-        var client = server.ClientInfo is { } info ? $"{info.Name} {info.Version}".Trim() : "an MCP client";
+        // The client names itself and the model names the entity: one line each, so neither can add lines of its own.
+        var client = server.ClientInfo is { } info ? ApprovalText.OneLine($"{info.Name} {info.Version}".Trim()) : "an MCP client";
         var decision = await approver.RequestAsync(
             new ApprovalRequest(
                 "Read live messages",
@@ -43,7 +44,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 profile.Environment == EnvironmentKind.Production,
                 $"Requested by: {client}\nEnvironment: {profile.Name} ({profile.EnvironmentDisplayName})\n" +
                 $"{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\n" +
-                $"Up to {count:N0} live message(s) of '{entity.Trim()}' will be received and released at once. " +
+                $"Up to {count:N0} live message(s) of '{ApprovalText.OneLine(entity.Trim())}' will be received and released at once. " +
                 $"{profile.Provider.DisplayName()} counts each read as a delivery, so a redrive or dead-letter policy can move " +
                 "these messages to a dead-letter queue, or, where none is set, discard them for good" +
                 (profile.Provider == MessagingProvider.RabbitMq
