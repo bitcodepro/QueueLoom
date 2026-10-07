@@ -164,6 +164,40 @@ public sealed class StableLauncherTests
     }
 
     [Fact]
+    public async Task LongWindowsPayloadPathLaunchesAndUpgradesFromAShortStableEntry()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows extended-path process launch."); return; }
+        using var fixture = new InstallationFixture(longWindowsPath: true);
+        Assert.True(fixture.Launcher.Length < 260);
+        var installation = new VersionInstallation(fixture.Launcher);
+        Assert.True(installation.SelectForLaunch().Executable.Length >= 260);
+        string[] arguments = ["--payload-fixture", "--mcp", "argument with spaces", "", "embedded\"quote", "trailing\\", "slashes\\\\\"quote", "--exit-7"];
+        var first = await fixture.RunLauncher(arguments);
+        Assert.True(first.Exit == 7, first.Error);
+        using var response = JsonDocument.Parse(first.Output);
+        Assert.Equal(arguments, response.RootElement.GetProperty("args").EnumerateArray().Select(item => item.GetString()));
+        Assert.Contains("client input", first.Output, StringComparison.Ordinal);
+        Assert.Contains("argument with spaces", first.Output, StringComparison.Ordinal);
+        Assert.Equal("fixture stderr", first.Error);
+        var update = fixture.Package("long-path-upgrade");
+        installation.StagePackage(update.Path);
+        var second = await fixture.RunLauncher("--payload-fixture", "--mcp");
+        Assert.True(second.Exit == 0, second.Error);
+        Assert.Contains(update.Descriptor.Id, second.Output, StringComparison.Ordinal);
+        Assert.Contains("client input", second.Output, StringComparison.Ordinal);
+        Assert.Contains(fixture.Launcher.Replace("\\", "\\\\", StringComparison.Ordinal), second.Output, StringComparison.Ordinal);
+        Assert.Contains(fixture.Root.Replace("\\", "\\\\", StringComparison.Ordinal), second.Output, StringComparison.Ordinal);
+        Assert.False(installation.HasPendingActivation());
+        var failed = fixture.Package("long-path-failed-candidate");
+        installation.StagePackage(failed.Path);
+        var fallback = await fixture.RunLauncher("--payload-fixture", "--mcp", "--fail-version=" + failed.Descriptor.Id);
+        Assert.True(fallback.Exit == 0, fallback.Error);
+        Assert.Contains(update.Descriptor.Id, fallback.Output, StringComparison.Ordinal);
+        Assert.Contains("client input", fallback.Output, StringComparison.Ordinal);
+        Assert.False(installation.HasPendingActivation());
+    }
+
+    [Fact]
     public async Task RealLauncherForwardsArgumentsMcpStreamsAndExitCodeThroughFreshInstallAndUpgrade()
     {
         using var fixture = new InstallationFixture();
@@ -453,9 +487,12 @@ public sealed class StableLauncherTests
         public BootstrapDescriptor Initial { get; }
         public byte[] LauncherBytes { get; }
         private static string ExecutableName => OperatingSystem.IsWindows() ? "QueueLoom.exe" : "QueueLoom";
-        public InstallationFixture()
+        public InstallationFixture(bool longWindowsPath = false)
         {
-            Root = Path.Combine(_temporary.Path, "portable installation with spaces");
+            var name = "portable installation with spaces";
+            if (longWindowsPath)
+                name += new string('p', Math.Max(0, 215 - Path.Combine(_temporary.Path, name, ExecutableName).Length));
+            Root = Path.Combine(_temporary.Path, name);
             Directory.CreateDirectory(Root);
             var launcherDirectory = OperatingSystem.IsMacOS() ? Path.Combine(Root, "QueueLoom.app", "Contents", "MacOS") : Root;
             Directory.CreateDirectory(launcherDirectory);
@@ -522,6 +559,11 @@ public sealed class StableLauncherTests
             await process.StandardInput.WriteLineAsync("client input");
             process.StandardInput.Close();
             try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20)); }
+            catch (TimeoutException)
+            {
+                if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
+                throw new TimeoutException($"Launcher timed out. stdout: {await output}; stderr: {await error}");
+            }
             finally { if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); } }
             return (process.ExitCode, await output, await error);
         }

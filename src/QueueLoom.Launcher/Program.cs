@@ -65,15 +65,15 @@ internal static class Program
         start.Environment[VersionInstallation.ContextManifest] = selection.Version.ManifestSha256;
         if (selection.Attempt is null) start.Environment.Remove(VersionInstallation.ContextAttempt);
         else start.Environment[VersionInstallation.ContextAttempt] = selection.Attempt;
-        Process process;
-        try { process = Process.Start(start) ?? throw new IOException("The application process could not start."); }
+        PayloadProcess process;
+        try { process = PayloadProcess.Start(start); }
         catch (Exception failure) when (selection.OwnsAttempt && failure is System.ComponentModel.Win32Exception or IOException)
         {
             installation.Recover(selection);
             return await RunAsync(installation, installation.SelectForLaunch(), args);
         }
         using var child = process;
-        var error = child.StandardError.BaseStream.CopyToAsync(Console.OpenStandardError());
+        var error = child.Error.CopyToAsync(Console.OpenStandardError());
         // A pending MCP candidate must acknowledge before consuming the client's first request or exposing
         // protocol bytes. Otherwise a failed startup could lose that request when falling back.
         if (selection.Attempt is not null)
@@ -84,14 +84,14 @@ internal static class Program
             if (installation.HasAcknowledgement(selection)) installation.Confirm(selection);
             else if (selection.OwnsAttempt)
             {
-                if (!child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
+                if (!child.HasExited) { child.Kill(); await child.WaitForExitAsync(); }
                 await error;
                 installation.Recover(selection);
                 // Reuse the same stable entry's verified known-good payload; preserve the caller's arguments.
                 return await RunAsync(installation, installation.SelectForLaunch(), args);
             }
         }
-        var output = child.StandardOutput.BaseStream.CopyToAsync(Console.OpenStandardOutput());
+        var output = child.Output.CopyToAsync(Console.OpenStandardOutput());
         var input = ForwardInputAsync(child);
         await child.WaitForExitAsync();
         await Task.WhenAll(output, error);
@@ -101,12 +101,12 @@ internal static class Program
         return child.ExitCode;
     }
 
-    private static async Task ForwardInputAsync(Process child)
+    private static async Task ForwardInputAsync(PayloadProcess child)
     {
         try
         {
-            await Console.OpenStandardInput().CopyToAsync(child.StandardInput.BaseStream);
-            child.StandardInput.Close();
+            await Console.OpenStandardInput().CopyToAsync(child.Input);
+            child.Input.Close();
         }
         catch (Exception error) when (error is IOException or ObjectDisposedException or InvalidOperationException) { }
     }

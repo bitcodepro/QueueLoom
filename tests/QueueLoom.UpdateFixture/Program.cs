@@ -67,7 +67,13 @@ if (args.Length > 0 && args[0] == "store")
     var first = Path.Combine(secretRoot, "first-store.pid");
     if (!File.Exists(first))
     {
-        File.WriteAllText(first, Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        // Published whole (temporary file, then rename), so the test never reads a half-written PID. A test can ask
+        // for an unreadable one ("bad-marker") to check its own cleanup when it cannot learn the PID.
+        var pid = File.Exists(Path.Combine(secretRoot, "bad-marker"))
+            ? "not-a-pid"
+            : Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        File.WriteAllText(first + ".tmp", pid);
+        File.Move(first + ".tmp", first);
         var wait = System.Diagnostics.Stopwatch.StartNew();
         while (!File.Exists(Path.Combine(secretRoot, "release-first-store")))
         {

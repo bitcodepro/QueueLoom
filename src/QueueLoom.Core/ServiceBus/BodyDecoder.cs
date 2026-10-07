@@ -113,7 +113,10 @@ public static class BodyDecoder
                 return new DecodedBody(steps, typed.Json, true, note ??
                     (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body."));
             }
-            if (Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf))
+            // Guessing fields without a schema is for bodies that are not text, or that say they are Protobuf. A readable
+            // body whose only hint is a message type (often a "type" property that text and JSON senders set
+            // routinely) is shown as text unless a loaded schema decodes it.
+            if ((!readable || protobufHint) && Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf))
             {
                 steps.Add("Protobuf (no schema)");
                 return new DecodedBody(steps, protobuf, true,
@@ -890,7 +893,7 @@ public static class BodyDecoder
 
             var fullName = type.Contains('.', StringComparison.Ordinal) || string.IsNullOrEmpty(enclosingNamespace)
                 ? type : $"{enclosingNamespace}.{type}";
-            if (!_named.TryGetValue(fullName, out var named))
+            if (!_named.TryGetValue(fullName, out var named) && !TryUniqueShortName(type, out named))
             {
                 throw new FormatException($"The Avro schema refers to an unknown type '{type}'.");
             }
@@ -983,6 +986,28 @@ public static class BodyDecoder
                     Register(inner, space);
                 }
             }
+        }
+
+        /// <summary>
+        /// Lenient producers refer to a named type by its short name from another namespace, which the specification
+        /// does not allow. Accepted only when exactly one registered type has that short name, so it never chooses
+        /// between two same-named types of different namespaces.
+        /// </summary>
+        private bool TryUniqueShortName(string type, out (JsonElement Schema, string? Namespace) named)
+        {
+            named = default;
+            if (type.Contains('.', StringComparison.Ordinal))
+            {
+                return false;
+            }
+            var matches = _named.Where(entry => entry.Key == type || entry.Key.EndsWith("." + type, StringComparison.Ordinal))
+                .Take(2).ToArray();
+            if (matches.Length != 1)
+            {
+                return false;
+            }
+            named = matches[0].Value;
+            return true;
         }
 
         private static string? NamespaceFor(JsonElement schema, string? enclosingNamespace)

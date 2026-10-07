@@ -40,9 +40,23 @@ public sealed class PayloadLaunch
             Environment.GetEnvironmentVariable(VersionInstallation.ContextManifest) ?? "");
         var expected = installation.Verify(version);
         var actual = Environment.ProcessPath ?? throw new InvalidDataException("The payload process path is unavailable.");
-        if (!string.Equals(Path.GetFullPath(actual), expected, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        if (!string.Equals(ProcessIdentityPath(actual), ProcessIdentityPath(expected), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             throw new InvalidDataException("The launch context does not belong to this payload.");
         return new PayloadLaunch(installation, version, Environment.GetEnvironmentVariable(VersionInstallation.ContextAttempt));
+    }
+
+    private static string ProcessIdentityPath(string path)
+    {
+        path = Path.GetFullPath(path);
+        // CreateProcess with an explicit extended path reports that same prefix in Environment.ProcessPath.
+        // Normalize only equivalent DOS/UNC spellings; the verified installation and manifest remain authoritative.
+        if (OperatingSystem.IsWindows())
+        {
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + path[8..];
+            if (path.StartsWith(@"\\?\", StringComparison.Ordinal) && path.Length >= 7 &&
+                char.IsAsciiLetter(path[4]) && path[5] == ':' && path[6] == '\\') return path[4..];
+        }
+        return path;
     }
 
     public string ExternalBackupPath(string directory)

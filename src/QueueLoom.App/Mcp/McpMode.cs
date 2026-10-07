@@ -43,11 +43,11 @@ internal static class McpMode
         if (UsesDesktopApprover(HasDesktopSession()))
         {
             // Avalonia must own the main thread; the server runs beside it and ends the app when the client leaves.
-            App.BackgroundService = () => RunServerAsync(settings, paths, logs, new DesktopApprover());
+            App.BackgroundService = () => RunServerOwningLogsAsync(settings, paths, logs, new DesktopApprover());
             return buildAvaloniaApp().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
         }
 
-        RunServerAsync(settings, paths, logs, new ElicitationApprover()).GetAwaiter().GetResult();
+        RunServerOwningLogsAsync(settings, paths, logs, new ElicitationApprover()).GetAwaiter().GetResult();
         return 0;
     }
 
@@ -65,6 +65,23 @@ internal static class McpMode
         catch (Exception exception) when (exception is ProtoSchemaException or IOException or UnauthorizedAccessException
                                               or System.Text.Json.JsonException)
         {
+        }
+    }
+
+    /// <summary>
+    /// Runs the server and then disposes the file logger, which drains the lines still queued. The logging host only
+    /// receives the instance (AddProvider) and does not dispose it.
+    /// </summary>
+    internal static async Task RunServerOwningLogsAsync(McpServerSettings settings, QueueLoomPaths paths, FileLoggerProvider logs,
+        IOperationApprover approver)
+    {
+        try
+        {
+            await RunServerAsync(settings, paths, logs, approver).ConfigureAwait(false);
+        }
+        finally
+        {
+            logs.Dispose();
         }
     }
 
