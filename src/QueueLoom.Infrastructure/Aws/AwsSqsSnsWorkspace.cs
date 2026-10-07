@@ -101,8 +101,12 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
         }
         while (!string.IsNullOrEmpty(nextToken));
 
-        var queues = await Task.WhenAll(queueUrls.Select(url => ReadQueueAsync(url, cancellationToken)))
-            .ConfigureAwait(false);
+        // A queue deleted between ListQueues and its GetQueueAttributes (by another tool, a test, a cleanup job) is
+        // simply gone: it is left out, and the other queues are listed. Any other failure still fails the refresh.
+        var queues = (await Task.WhenAll(queueUrls.Select(url => ReadQueueAsync(url, cancellationToken)))
+                .ConfigureAwait(false))
+            .OfType<AwsQueueInfo>()
+            .ToArray();
         var topics = await ReadTopicsAsync(cancellationToken).ConfigureAwait(false);
         _index = new AwsTopologyIndex(queues, topics);
         return _index.ToTopology(TimeProvider.GetUtcNow());
@@ -259,13 +263,26 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             : new SessionAWSCredentials(accessKey.AccessKeyId, accessKey.SecretAccessKey, accessKey.SessionToken);
     }
 
-    private async Task<AwsQueueInfo> ReadQueueAsync(string url, CancellationToken cancellationToken)
+    /// <summary>The queue's settings and counts; null when the queue no longer exists.</summary>
+    private async Task<AwsQueueInfo?> ReadQueueAsync(string url, CancellationToken cancellationToken)
     {
-        var response = await Sqs.GetQueueAttributesAsync(
-                new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["All"] },
-                cancellationToken)
-            .ConfigureAwait(false);
-        return AwsQueueInfo.From(url, response.Attributes ?? []);
+        try
+        {
+            var response = await Sqs.GetQueueAttributesAsync(
+                    new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["All"] },
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return AwsQueueInfo.From(url, response.Attributes ?? []);
+        }
+        catch (QueueDoesNotExistException)
+        {
+            return null;
+        }
+        catch (AmazonSQSException exception) when (exception.ErrorCode is "AWS.SimpleQueueService.NonExistentQueue" or "QueueDoesNotExist")
+        {
+            // Older endpoints and emulators report it with this code instead of the modelled exception.
+            return null;
+        }
     }
 
     private async Task<IReadOnlyList<AwsTopicInfo>> ReadTopicsAsync(CancellationToken cancellationToken)
