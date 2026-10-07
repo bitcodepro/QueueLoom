@@ -12,6 +12,39 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
+    [Fact]
+    public async Task PostReleaseCycle1_ScheduledCancellationAfterBrokerAcceptanceIsFailedUnknownAndKeepsBackup()
+    {
+        using var directory = new TemporaryDirectory();
+        using var cancellation = new CancellationTokenSource();
+        var client = new PendingExpiryClient(ServiceBusMessageState.Scheduled, () =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+        await using var azure = new AzureServiceBusWorkspace(new FakeSecretVault(), backupStore:
+            new DeadLetterJsonBackupStore(QueueLoomPaths.ForRoot(directory.Path)));
+        var profile = CreateProfile("Development", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        typeof(AzureServiceBusWorkspace).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(azure, client);
+        typeof(AzureServiceBusWorkspace).GetField("_profile", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(azure, profile);
+        var messages = Enumerable.Range(1, 3).Select(i => new BrowsedMessage(ServiceBusEntityReference.Queue("orders"),
+            ServiceBusSubQueue.Active, i, "pending"u8.ToArray(), new EditableMessageProperties(MessageId: $"m-{i}"),
+            state: ServiceBusMessageState.Scheduled)).ToArray();
+
+        var result = await azure.RemovePendingMessagesAsync(messages, cancellation.Token);
+
+        Assert.Equal([1L], client.Touched);
+        var backup = Assert.Single(await new JsonDeadLetterBackupRepository(QueueLoomPaths.ForRoot(directory.Path)).ListAsync());
+        Assert.Equal("m-1", backup.MessageId);
+        Assert.Equal(profile.Id, backup.ProfileId);
+        Assert.Equal([DeadLetterMessageDeletionOutcome.Failed, DeadLetterMessageDeletionOutcome.Cancelled,
+            DeadLetterMessageDeletionOutcome.Cancelled], result.Messages.Select(item => item.Outcome));
+        Assert.Contains("unknown", result.Messages[0].Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Equal(2, result.CancelledCount);
+        Assert.Equal(0, result.RemovedCount);
+    }
+
     [Theory]
     [InlineData(ServiceBusMessageState.Scheduled)]
     [InlineData(ServiceBusMessageState.Deferred)]

@@ -59,14 +59,14 @@ public sealed partial class MainWindowViewModel
     public bool CanOpenBackupAsDraft =>
         IsConnected &&
         SelectedBackupMessage is { CanOpenAsDraft: true } message &&
-        message.ProfileId == ConnectedProfileId;
+        message.ProfileId == _connectedProfile?.Id;
 
     public string BackupDraftHint => SelectedBackupMessage switch
     {
         null => string.Empty,
         { CanOpenAsDraft: false } message => message.EditLimitText,
         _ when !IsConnected => "Connect the message's environment to open this backup as a draft.",
-        { ProfileId: { } profileId } when profileId != ConnectedProfileId =>
+        { ProfileId: { } profileId } when profileId != _connectedProfile?.Id =>
             "This backup belongs to another environment. Connect that environment to open it as a draft.",
         _ => string.Empty
     };

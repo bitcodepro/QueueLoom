@@ -86,7 +86,7 @@ public sealed partial class MainWindowViewModel
     public bool CanOpenSelectedMessageAsDraft =>
         IsConnected &&
         SelectedMessage is { CanOpenAsDraft: true } message &&
-        (message.ProfileId is null || message.ProfileId == ConnectedProfileId);
+        (message.ProfileId is null || message.ProfileId == _connectedProfile?.Id);
 
     public bool CanPurgeEnvironmentDeadLetters =>
         CanWrite &&

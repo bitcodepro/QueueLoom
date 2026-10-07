@@ -122,8 +122,11 @@ public sealed partial class MainWindowViewModel
 
     public string SendDraftLabel => CanMoveDraftOriginal && DraftMovesOriginal ? "Send and remove original" : "Send message";
 
+    // Compared with the operator's environment, as drafts are bound: a monitor check that temporarily connects to
+    // another environment changes neither the warning nor the Send button. The actual connection is checked again at
+    // the send itself, which waits for such a check to give the connection back.
     public bool HasDraftEnvironmentMismatch =>
-        IsConnected && _draftProfileId != _workspace.ConnectedProfileId;
+        IsConnected && _draftProfileId != _connectedProfile?.Id;
 
     public string DraftEnvironmentWarning => HasDraftEnvironmentMismatch
         ? _draftProfileId.HasValue
@@ -195,7 +198,8 @@ public sealed partial class MainWindowViewModel
         string? originNotice,
         bool isLocalBackup)
     {
-        if (selectedItem.ProfileId is { } profileId && profileId != ConnectedProfileId)
+        // Monitors temporarily switch the broker connection; drafts stay pinned to the operator's environment.
+        if (selectedItem.ProfileId is { } profileId && profileId != _connectedProfile?.Id)
         {
             throw new InvalidOperationException(
                 "This message belongs to another environment. Connect to that environment before opening it as a draft.");
@@ -247,6 +251,12 @@ public sealed partial class MainWindowViewModel
         {
             throw new InvalidOperationException(
                 "This draft belongs to a different environment. Reconnect it or start a new message before sending.");
+        }
+        // Under the workspace gate the connection is the operator's again; never send if it is not the draft's.
+        if (_workspace.ConnectedProfileId != _draftProfileId)
+        {
+            throw new InvalidOperationException(
+                "The connection is not on this draft's environment right now. Try sending again.");
         }
         var draft = BuildDraft();
         // The destination service's limits, before the confirmation and before anything reaches the service.
