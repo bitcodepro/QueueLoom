@@ -17,6 +17,74 @@ public sealed class SharedSqsDeadLetterAuditTests
     private const string QueueArn = "arn:aws:sqs:us-east-1:123:q";
     private const string SharedArn = "arn:aws:sqs:us-east-1:123:shared";
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PostReleaseCycle1_SharedDlqSearchReportsReceiveCapAndReleasesEveryReceipt(bool duplicates)
+    {
+        using var directory = new TemporaryDirectory();
+        var broker = new SearchCapClient(2_000, duplicates);
+        await using var workspace = CreateWorkspace(directory.Path, broker, 2_001);
+        var result = await workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("needle",
+            [new(ServiceBusEntityReference.Queue("q"), ServiceBusSubQueue.DeadLetter, 2_001)]));
+
+        var source = Assert.Single(result.Sources);
+        Assert.Equal(duplicates ? 1 : 0, source.ScannedMessageCount);
+        Assert.Empty(source.Matches);
+        Assert.Equal(2_000, broker.Released.Count);
+        Assert.Equal(2_000, broker.Released.Distinct().Count());
+        Assert.Empty(broker.Deleted);
+        Assert.False(result.HasFailures);
+        Assert.True(source.ScanLimitReached);
+        Assert.False(result.IsComplete);
+    }
+
+    [Fact]
+    public async Task PostReleaseCycle1_SharedDlqSearchIsCompleteWhenThePhysicalQueueRunsDryBeforeTheCap()
+    {
+        using var directory = new TemporaryDirectory();
+        var broker = new SearchCapClient(100, false);
+        await using var workspace = CreateWorkspace(directory.Path, broker, 101);
+        var result = await workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("needle",
+            [new(ServiceBusEntityReference.Queue("q"), ServiceBusSubQueue.DeadLetter, 101)]));
+
+        var source = Assert.Single(result.Sources);
+        Assert.Equal(1, source.ScannedMessageCount);
+        Assert.Equal("needle", Assert.Single(source.Matches).Properties.MessageId);
+        Assert.Equal(101, broker.Released.Distinct().Count());
+        Assert.Empty(broker.Deleted);
+        Assert.False(source.ScanLimitReached);
+        Assert.True(result.IsComplete);
+    }
+
+    private sealed class SearchCapClient(int prefixCount, bool duplicates) : AmazonSQSClient(
+        new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost" })
+    {
+        private int _next;
+        public List<string> Released { get; } = [];
+        public List<string> Deleted { get; } = [];
+        public override Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default)
+        {
+            var messages = new List<Message>();
+            while (messages.Count < (request.MaxNumberOfMessages ?? 10) && _next <= prefixCount)
+            {
+                var i = _next++;
+                messages.Add(new Message
+                {
+                    MessageId = i == prefixCount ? "needle" : duplicates ? "duplicate" : $"other-{i}",
+                    ReceiptHandle = $"receipt-{i}", Body = i == prefixCount ? "needle" : "prefix",
+                    Attributes = new() { ["DeadLetterQueueSourceArn"] = duplicates || i == prefixCount
+                        ? QueueArn : "arn:aws:sqs:us-east-1:123:other" }
+                });
+            }
+            return Task.FromResult(new ReceiveMessageResponse { Messages = messages });
+        }
+        public override Task<ChangeMessageVisibilityBatchResponse> ChangeMessageVisibilityBatchAsync(ChangeMessageVisibilityBatchRequest request, CancellationToken cancellationToken = default)
+        { Released.AddRange(request.Entries.Select(e => e.ReceiptHandle)); return Task.FromResult(new ChangeMessageVisibilityBatchResponse { Failed = [] }); }
+        public override Task<DeleteMessageBatchResponse> DeleteMessageBatchAsync(DeleteMessageBatchRequest request, CancellationToken cancellationToken = default)
+        { Deleted.AddRange(request.Entries.Select(e => e.ReceiptHandle)); return Task.FromResult(new DeleteMessageBatchResponse { Failed = [] }); }
+    }
+
     [Fact]
     public async Task QueueScopedBrowseReturnsOnlyExactPositiveSourceAttribution()
     {

@@ -9,12 +9,72 @@ using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Google;
 using QueueLoom.Infrastructure.Kafka;
 using QueueLoom.Infrastructure.Messaging;
+using QueueLoom.Infrastructure.Persistence;
+using QueueLoom.Tests.Infrastructure;
 
 namespace QueueLoom.Tests;
 
 public sealed class PubSubKafkaStabilityTests
 {
     private const BindingFlags Any = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PostReleaseCycle1_KafkaMultiTargetEmptyPurgeDisposesEveryConsumerAndReportsCleanupFailures(bool failDispose)
+    {
+        using var directory = new TemporaryDirectory();
+        await using var owner = new KafkaWorkspace(new EmptyVault(), backupStore:
+            new DeadLetterJsonBackupStore(QueueLoomPaths.ForRoot(directory.Path)));
+        var index = new KafkaTopologyIndex([
+            new("orders", [0], 0), new("orders.DLT", [0], 0),
+            new("billing", [0], 0), new("billing.DLT", [0], 0)], [".DLT"]);
+        var profile = ViewModelStateTests.CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite)
+            with { Provider = MessagingProvider.Kafka };
+        typeof(KafkaWorkspace).GetField("_index", Any)!.SetValue(owner, index);
+        typeof(LeasedMessagingWorkspace).GetField("_profile", Any)!.SetValue(owner, profile);
+        typeof(LeasedMessagingWorkspace).GetField("_connectionState", Any)!.SetValue(owner, WorkspaceConnectionState.Connected);
+        typeof(LeasedMessagingWorkspace).GetField("_cachedTopology", Any)!.SetValue(owner, index.ToTopology(DateTimeOffset.UtcNow));
+        var consumers = new List<EmptyConsumerProxy>();
+        owner.ConsumerFactory = () =>
+        {
+            var consumer = DispatchProxy.Create<IConsumer<byte[]?, byte[]?>, EmptyConsumerProxy>();
+            var fixture = (EmptyConsumerProxy)(object)consumer;
+            fixture.FailDispose = failDispose;
+            consumers.Add(fixture);
+            return consumer;
+        };
+        var warnings = new List<string>();
+        owner.CleanupWarning += (_, warning) => warnings.Add(warning);
+
+        var result = await owner.PurgeDeadLettersAsync(new DeadLetterPurgeRequest(
+            [ServiceBusEntityReference.Queue("orders"), ServiceBusEntityReference.Queue("billing")],
+            [ServiceBusSubQueue.DeadLetter]));
+        await owner.DisconnectAsync();
+
+        Assert.Equal(2, consumers.Count);
+        Assert.All(consumers, consumer => Assert.Equal(1, consumer.DisposeCount));
+        Assert.Equal(0, result.DeletedCount);
+        Assert.Equal(failDispose, result.HasFailures);
+        Assert.Equal(failDispose ? 2 : 0, warnings.Count);
+        if (failDispose) Assert.All(result.Sources, source => Assert.Contains("cleanup failed", source.Error, StringComparison.Ordinal));
+    }
+
+    public class EmptyConsumerProxy : DispatchProxy
+    {
+        public bool FailDispose { get; set; }
+        public int DisposeCount { get; private set; }
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+        {
+            if (method!.Name == "QueryWatermarkOffsets") return new WatermarkOffsets(0, 0);
+            if (method.Name == "Dispose")
+            {
+                DisposeCount++;
+                if (FailDispose) throw new IOException("Injected consumer disposal failure.");
+            }
+            return null;
+        }
+    }
 
     // A consumer whose Close fails (broker gone) must still be disposed and dropped, or every later operation
     // on the workspace fails while closing the previous channel, and the native consumer leaks.
