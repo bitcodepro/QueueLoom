@@ -1,4 +1,63 @@
 using QueueLoom.App.Services;
+using QueueLoom.Core.Updates;
+
+if (args.Length == 3 && args[0] == "--stage-version")
+{
+    new VersionInstallation(args[1]).StagePackage(args[2]);
+    return 0;
+}
+if (args.Length == 4 && args[0] == "--legacy-handoff")
+{
+    using var storageLock = new FileStream(args[2], FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+    UpdateRestart.Start(new UpdateTarget(VersionInstallation.CurrentRid(), Path.GetDirectoryName(args[1])!, args[1], null));
+    // The legacy sender stays alive after readiness, as the application does until its orderly close.
+    await Task.Delay(int.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
+    return 0;
+}
+
+if (args.Length >= 4 && args[0] == "--version-interrupt")
+{
+    var installation = new VersionInstallation(args[1], point =>
+    {
+        if (point != args[3]) return;
+        File.WriteAllText(args[2] + ".barrier", point);
+        while (true) Thread.Sleep(20); // Only the isolated test process is terminated at this barrier.
+    });
+    switch (args[2])
+    {
+        case "bootstrap": installation.EnsureBootstrap(); break;
+        case "launch": installation.SelectForLaunch(); break;
+        case "cleanup": installation.CleanupStaging(); break;
+        case "ack":
+            var selection = installation.SelectForLaunch();
+            installation.Acknowledge(selection.Version, selection.Attempt!);
+            installation.Confirm(selection);
+            break;
+        default: installation.StagePackage(args[2]); break;
+    }
+    return 0;
+}
+
+if (args.Length > 0 && args[0] == "--payload-fixture")
+{
+    var context = PayloadLaunch.Current;
+    if (args.Contains("--fail-before-ack") || args.Contains("--fail-version=" + Environment.GetEnvironmentVariable(VersionInstallation.ContextVersion))) return 31;
+    if (args.FirstOrDefault(arg => arg.StartsWith("--ack-barrier=", StringComparison.Ordinal)) is { } barrierArgument)
+    {
+        var barrier = barrierArgument["--ack-barrier=".Length..];
+        File.AppendAllText(barrier + ".pids", Environment.ProcessId + "\n");
+        while (!File.Exists(barrier + ".release")) await Task.Delay(10);
+    }
+    context?.Acknowledge();
+    var line = await Console.In.ReadLineAsync();
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+    {
+        args, input = line, launcher = context?.Installation.Launcher,
+        root = context?.Installation.Root, version = Environment.GetEnvironmentVariable(VersionInstallation.ContextVersion)
+    }));
+    Console.Error.Write("fixture stderr");
+    return args.Contains("--exit-7") ? 7 : 0;
+}
 
 // Harmless secret-tool substitute. Its files and process are owned by one isolated test directory.
 if (args.Length > 0 && args[0] == "store")

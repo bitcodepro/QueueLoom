@@ -9,7 +9,7 @@ namespace QueueLoom.App.Services;
 public sealed class LegacyBackupMigration
 {
     public LegacyBackupMigration(QueueLoomPaths paths, string? executableDirectory = null, string? backupOverride = null)
-    { Paths = paths; ExecutableDirectory = executableDirectory ?? AppContext.BaseDirectory; BackupOverride = backupOverride; }
+    { Paths = paths; ExecutableDirectory = executableDirectory ?? QueueLoom.Core.Updates.PayloadLaunch.Current?.Installation.DataAnchor ?? AppContext.BaseDirectory; BackupOverride = backupOverride; }
     internal QueueLoomPaths Paths { get; }
     internal string ExecutableDirectory { get; }
     internal string? BackupOverride { get; }

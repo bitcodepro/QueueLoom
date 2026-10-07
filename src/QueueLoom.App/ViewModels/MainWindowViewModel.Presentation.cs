@@ -69,7 +69,7 @@ public sealed partial class MainWindowViewModel
 
     private static string BuildMcpClientConfig()
     {
-        var process = Environment.ProcessPath ?? "QueueLoom.exe";
+        var process = QueueLoom.Core.Updates.PayloadLaunch.Current?.Installation.Launcher ?? Environment.ProcessPath ?? "QueueLoom.exe";
         var runsThroughDotnet = Path.GetFileNameWithoutExtension(process).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
         string[] arguments = runsThroughDotnet
             ? [Path.Combine(AppContext.BaseDirectory, "QueueLoom.dll"), "--mcp"]

@@ -152,6 +152,10 @@ internal static class McpMode
             {
                 logging.SetMinimumLevel(LogLevel.Information);
                 logging.AddProvider(logs);
+            }, startupReady: () =>
+            {
+                QueueLoom.Core.Updates.PayloadLaunch.Current?.Acknowledge();
+                UpdateRestart.AcknowledgeStartup();
             });
 
     /// <summary>Whether approvals use the desktop window; it does not depend on read-only mode, which only hides change tools.</summary>
