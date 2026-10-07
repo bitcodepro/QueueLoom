@@ -42,9 +42,14 @@ public sealed partial class ViewModelStateTests
         Assert.DoesNotContain("TOP-SECRET-KEY", viewModel.ErrorText, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task PendingRemovalOverTheLimitIsRefusedBeforeAskingForConfirmation()
+    // The limit is written in the operator's culture (1,000 / 1.000 / 1 000); the test expects exactly that.
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("de-DE")]
+    [InlineData("ru-RU")]
+    public async Task PendingRemovalOverTheLimitIsRefusedBeforeAskingForConfirmation(string culture)
     {
+        using var scope = new TestCulture(culture);
         var profile = CreateProfile("Orders", EnvironmentKind.Production, ProfileAccessMode.ReadWrite);
         var orders = ServiceBusEntityReference.Queue("orders");
         var workspace = new FakeWorkspace
@@ -66,7 +71,7 @@ public sealed partial class ViewModelStateTests
         // The workspace refuses more than 1,000 only after the operator typed the production name to confirm.
         Assert.Empty(dialogs.Confirmations);
         Assert.Empty(workspace.PendingRemovals);
-        Assert.Contains("1,000", viewModel.ErrorText, StringComparison.Ordinal);
+        Assert.Contains($"{PendingMessages.MaximumMessages:N0}", viewModel.ErrorText, StringComparison.Ordinal);
     }
 
     [Fact]

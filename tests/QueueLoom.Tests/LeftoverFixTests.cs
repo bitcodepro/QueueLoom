@@ -398,9 +398,14 @@ public sealed class LeftoverFixTests
 
     // Releasing 2,500 messages in chunks of 1,000: the first chunk fails. The other two are still released, and the
     // failure is reported (those messages come back when their deadline ends) instead of stopping at the first chunk.
-    [Fact]
-    public async Task PubSub_AFailedReleaseChunkDoesNotStopTheOthers()
+    // The count is written in the reader's culture (1,000 / 1.000 / 1 000); the test expects exactly that.
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("de-DE")]
+    [InlineData("ru-RU")]
+    public async Task PubSub_AFailedReleaseChunkDoesNotStopTheOthers(string culture)
     {
+        using var scope = new TestCulture(culture);
         var subscriber = new HoldSubscriber { FailFirstRelease = true };
         var channel = PubSubChannel(subscriber, out _);
         var source = ServiceBusEntityReference.Subscription("t", "s");
@@ -411,7 +416,7 @@ public sealed class LeftoverFixTests
         var error = await Assert.ThrowsAsync<IOException>(() => channel.ReleaseAsync(messages, CancellationToken.None));
 
         Assert.Equal(1_500, subscriber.ReleasedAckIds.Count);
-        Assert.Contains("1,000 message(s)", error.Message, StringComparison.Ordinal);
+        Assert.Contains($"{1_000:N0} message(s)", error.Message, StringComparison.Ordinal);
         Assert.Contains("release unavailable", error.Message, StringComparison.Ordinal);
     }
 

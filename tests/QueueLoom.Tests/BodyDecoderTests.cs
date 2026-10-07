@@ -125,7 +125,7 @@ public sealed partial class BodyDecoderTests
         return output.ToArray();
     }
 
-    private static byte[] AvroFile(string schema, string codec, int count, byte[] records)
+    internal static byte[] AvroFile(string schema, string codec, int count, byte[] records)
     {
         var sync = Enumerable.Range(1, 16).Select(value => (byte)value).ToArray();
         var file = new List<byte>("Obj"u8.ToArray()) { 1 };
