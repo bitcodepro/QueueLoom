@@ -235,7 +235,9 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
                 }
             });
 
+            // A topic deleted while the refresh reads its subscriptions is left out (see MapTopicAsync).
             var topics = (await Task.WhenAll(topicTasks).ConfigureAwait(false))
+                .OfType<ServiceBusTopic>()
                 .OrderBy(topic => topic.Name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
