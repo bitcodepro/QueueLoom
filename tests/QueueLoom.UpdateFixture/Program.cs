@@ -194,7 +194,17 @@ if (args.Length > 0 && args[0] == "--update-startup")
     UpdateRestart.AcknowledgeStartup();
     await Task.Delay(1000);
 }
-else File.WriteAllText(Path.Combine(root, "recovered-started.txt"), "Previous application restarted");
+else
+{
+    // A test can hold the restarted previous version before it finishes starting, to check its own cleanup.
+    if (File.Exists(Path.Combine(root, "hold-recovery")))
+    {
+        File.WriteAllText(Path.Combine(root, "recovery-held.txt"), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var held = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(Path.Combine(root, "release-recovery")) && held.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(20);
+    }
+    File.WriteAllText(Path.Combine(root, "recovered-started.txt"), "Previous application restarted");
+}
 return 0;
 
 namespace QueueLoom.App.Services
