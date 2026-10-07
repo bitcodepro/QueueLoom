@@ -43,6 +43,41 @@ public sealed partial class McpServerTests
         Assert.Equal(Forged, Assert.Single(sent.ApplicationProperties).Value);
     }
 
+    // A real line break and the two characters backslash and n are different values, sent differently, so the
+    // approval shows them differently too: a literal backslash is shown doubled. The same holds for a tab and for a
+    // right-to-left override against their written-out spellings.
+    [Fact]
+    public async Task Approval_KeepsRealControlCharactersDistinctFromTheirWrittenSpelling()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var properties = new Dictionary<string, string>
+        {
+            ["realBreak"] = "a" + (char)10 + "b", ["writtenBreak"] = "a\\nb",
+            ["realTab"] = "a" + (char)9 + "b", ["writtenTab"] = "a\\tb",
+            ["realOverride"] = "a" + (char)0x202E + "b", ["writtenOverride"] = "a\\u202Eb",
+            ["backslash"] = "\\"
+        };
+
+        await server.CallAsync("send_message", new()
+        {
+            ["destination"] = "orders", ["body"] = "x", ["reason"] = "Compare spellings",
+            ["applicationProperties"] = properties
+        });
+
+        var details = Assert.Single(server.Approver.Requests).Details;
+        string Shown(string name) => Assert.Single(details.Split((char)10), line => line.StartsWith("  " + name + " = ", StringComparison.Ordinal))[(name.Length + 5)..];
+        Assert.Equal("a\\nb", Shown("realBreak"));
+        Assert.Equal("a\\\\nb", Shown("writtenBreak"));
+        Assert.Equal("a\\tb", Shown("realTab"));
+        Assert.Equal("a\\\\tb", Shown("writtenTab"));
+        Assert.Equal("a\\u202Eb", Shown("realOverride"));
+        Assert.Equal("a\\\\u202Eb", Shown("writtenOverride"));
+        Assert.Equal("\\\\", Shown("backslash"));
+        // What is sent is exactly what was requested.
+        var sent = Assert.Single(server.Workspace.SentMessages).Message.ApplicationProperties.ToDictionary(property => property.Name, property => property.Value);
+        Assert.Equal(properties, sent);
+    }
+
     [Fact]
     public async Task Approval_DeleteShowsTheGivenMessageIdsOnOneLineEach()
     {
