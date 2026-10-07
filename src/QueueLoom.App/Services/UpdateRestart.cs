@@ -107,8 +107,13 @@ public static class UpdateRestart
         return true;
     }
 
+    /// <param name="exitedAcknowledgementWait">After the new application exits, how long an existing but unreadable
+    /// acknowledgement is read again (five seconds by default).</param>
+    /// <param name="checkpoint">Called at observable steps ("child-started", "ack-unreadable",
+    /// "child-exited-awaiting-ack"), so tests can synchronize with them instead of sleeping.</param>
     public static async Task<int> RunAsync(string path, string id, int parentPid, long parentStartTicks,
-        TimeSpan? exitTimeout = null, TimeSpan? startupTimeout = null)
+        TimeSpan? exitTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? exitedAcknowledgementWait = null,
+        Action<string>? checkpoint = null)
     {
         var receipt = Read(path, id);
         var ready = path + "." + id + ".ready";
@@ -150,6 +155,7 @@ public static class UpdateRestart
                     start.ArgumentList.Add(path);
                     start.ArgumentList.Add(id);
                     child = Process.Start(start) ?? throw new IOException("The updated application could not start.");
+                    checkpoint?.Invoke("child-started");
                 }
                 catch (Exception exception) when ((exception is IOException or System.ComponentModel.Win32Exception) &&
                                                   deadline.Elapsed < TimeSpan.FromSeconds(30))
@@ -158,12 +164,13 @@ public static class UpdateRestart
                 }
             }
             var startup = Stopwatch.StartNew();
-            while (!Acknowledged(ready, id))
+            while (!Acknowledged(ready, id, checkpoint))
             {
                 if (child.HasExited)
                 {
                     // It may have acknowledged and then closed while its acknowledgement was briefly held open.
-                    if (await AcknowledgedWithinAsync(ready, id, TimeSpan.FromSeconds(5))) break;
+                    checkpoint?.Invoke("child-exited-awaiting-ack");
+                    if (await AcknowledgedWithinAsync(ready, id, exitedAcknowledgementWait ?? TimeSpan.FromSeconds(5), checkpoint)) break;
                     throw new IOException($"The updated application exited before startup completed ({child.ExitCode}).");
                 }
                 if (startup.Elapsed >= (startupTimeout ?? TimeSpan.FromMinutes(2)))
@@ -414,7 +421,7 @@ public static class UpdateRestart
     /// open (an antivirus scan, an indexer) is read again on the next check, like one still to come: a sharing
     /// violation is not a failed startup, and treating it as one rolled back a healthy update.
     /// </summary>
-    private static bool Acknowledged(string ready, string id)
+    private static bool Acknowledged(string ready, string id, Action<string>? checkpoint)
     {
         try
         {
@@ -422,6 +429,7 @@ public static class UpdateRestart
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            checkpoint?.Invoke("ack-unreadable");
             return false;
         }
     }
@@ -430,12 +438,12 @@ public static class UpdateRestart
     /// After the new application exited: whether it acknowledged first. Only an acknowledgement that exists but
     /// cannot be read yet is waited for; a missing one fails at once.
     /// </summary>
-    private static async Task<bool> AcknowledgedWithinAsync(string ready, string id, TimeSpan wait)
+    private static async Task<bool> AcknowledgedWithinAsync(string ready, string id, TimeSpan wait, Action<string>? checkpoint)
     {
         var watch = Stopwatch.StartNew();
         while (true)
         {
-            if (Acknowledged(ready, id)) return true;
+            if (Acknowledged(ready, id, checkpoint)) return true;
             if (!File.Exists(ready) || watch.Elapsed >= wait) return false;
             await Task.Delay(100);
         }

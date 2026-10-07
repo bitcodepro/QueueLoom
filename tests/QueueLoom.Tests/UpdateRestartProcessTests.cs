@@ -127,11 +127,14 @@ public sealed class UpdateRestartProcessTests : IDisposable
         Assert.True(File.Exists(receipt.Entries.Single().Backup)); // Retained until explicit successful cleanup.
     }
 
-    // Another program (an antivirus scan, an indexer) briefly holds the startup acknowledgement open. The helper
-    // waits for it like for an acknowledgement still to come, instead of treating the sharing violation as a failed
-    // startup: that rolled back a healthy update and killed the new application.
-    [Fact]
-    public async Task ABrieflyLockedAcknowledgementIsWaitedFor_NotRolledBack()
+    // Another program (an antivirus scan, an indexer) holds the startup acknowledgement open while the new
+    // application keeps running. The helper reads it again, like an acknowledgement still to come, instead of taking
+    // the sharing violation for a failed startup: that rolled back a healthy update and killed the new application.
+    // The lock is released only after the helper has met it, and a delayed launch changes nothing.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ALockedAcknowledgementOfARunningApplicationIsReadAgain_NotRolledBack(bool delayedLaunch)
     {
         if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
         var (target, receipt) = ChangedInstallation();
@@ -139,48 +142,41 @@ public sealed class UpdateRestartProcessTests : IDisposable
         var updatedBytes = File.ReadAllBytes(target.Executable);
         // The updated child stays up without acknowledging; this test publishes the acknowledgement and holds it open.
         File.WriteAllText(Path.Combine(_root, "hang-startup"), "hang only the updated startup");
-        var ready = path + "." + receipt.Id + ".ready";
-        File.WriteAllText(ready, receipt.Id);
-        var scanner = new FileStream(ready, FileMode.Open, FileAccess.Read, FileShare.None);
+        using var scanner = HoldAcknowledgement(path, receipt.Id);
+        await DelayLaunchAsync(target, delayedLaunch);
+        var steps = new Checkpoints();
+
+        var running = UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60),
+            checkpoint: steps.Record);
         try
         {
-            var running = UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(30));
-            await Task.Delay(1000);
-            Assert.False(running.IsCompleted, "The helper gave up while the acknowledgement was briefly locked.");
-            await scanner.DisposeAsync();
+            await steps.Reached("ack-unreadable");
+            Assert.True(steps.Saw("child-started"));
+            Assert.False(steps.Saw("child-exited-awaiting-ack"));
+            Assert.False(running.IsCompleted);
+            scanner.Dispose();
 
-            Assert.Equal(0, await running.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.Equal(0, await running.WaitAsync(TimeSpan.FromSeconds(60)));
             Assert.Equal(updatedBytes, File.ReadAllBytes(target.Executable));
             Assert.False(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
             Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
         }
         finally
         {
-            await scanner.DisposeAsync();
-            foreach (var child in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(target.Executable)))
-            {
-                using (child)
-                {
-                    try
-                    {
-                        if (string.Equals(child.MainModule?.FileName, target.Executable, StringComparison.OrdinalIgnoreCase))
-                        {
-                            child.Kill();
-                            await child.WaitForExitAsync();
-                        }
-                    }
-                    catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-                }
-            }
+            scanner.Dispose();
+            await StopUpdatedChildrenAsync(target);
         }
     }
 
-    // The new application acknowledged and closed at once, while its acknowledgement was briefly held open: the
-    // update stays. Held open past the wait, the exit counts as a failed startup and the previous version returns.
+    // The new application acknowledged and exited while its acknowledgement was held open. Released during the
+    // wait that follows the exit, the update stays; held past that wait, the exit is a failed startup and the
+    // previous version returns. Every step is synchronized with the helper, and a delayed launch changes nothing.
     [Theory]
-    [InlineData(1000, 0)]
-    [InlineData(8000, 1)]
-    public async Task AnExitAfterALockedAcknowledgementKeepsTheUpdateOnlyWhenItCanBeRead(int heldMilliseconds, int expected)
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task AnExitAfterALockedAcknowledgementKeepsTheUpdateOnlyWhenItCanBeRead(bool readable, bool delayedLaunch)
     {
         if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
         var (target, receipt) = ChangedInstallation();
@@ -188,31 +184,102 @@ public sealed class UpdateRestartProcessTests : IDisposable
         var updatedBytes = File.ReadAllBytes(target.Executable);
         // The updated child exits at once; the acknowledgement it would have written is this test's, held open.
         File.WriteAllText(Path.Combine(_root, "fail-startup"), "exit the updated startup at once");
-        var ready = path + "." + receipt.Id + ".ready";
-        File.WriteAllText(ready, receipt.Id);
-        var scanner = new FileStream(ready, FileMode.Open, FileAccess.Read, FileShare.None);
-        var release = Task.Delay(heldMilliseconds).ContinueWith(_ => scanner.Dispose(), TaskScheduler.Default);
+        using var scanner = HoldAcknowledgement(path, receipt.Id);
+        await DelayLaunchAsync(target, delayedLaunch);
+        var steps = new Checkpoints();
+
+        // Released: a wait long enough that only the release can end it. Held: a short wait, and the lock outlives it.
+        var running = UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60),
+            exitedAcknowledgementWait: readable ? TimeSpan.FromSeconds(60) : TimeSpan.FromMilliseconds(300), checkpoint: steps.Record);
+        int result;
         try
         {
-            var result = await UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(30));
-
-            Assert.Equal(expected, result);
-            if (expected == 0)
+            if (readable)
             {
-                Assert.Equal(updatedBytes, File.ReadAllBytes(target.Executable));
-                Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
+                await steps.Reached("ack-unreadable-after-exit");
+                Assert.False(running.IsCompleted);
+                scanner.Dispose();
             }
-            else
-            {
-                await WaitFor(Path.Combine(_root, "recovered-started.txt"));
-                Assert.NotEqual(updatedBytes, File.ReadAllBytes(target.Executable));
-                Assert.True(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
-            }
+            result = await running.WaitAsync(TimeSpan.FromSeconds(60));
         }
         finally
         {
-            await release;
+            scanner.Dispose();
         }
+
+        Assert.True(steps.Saw("child-exited-awaiting-ack"));
+        Assert.True(steps.Saw("ack-unreadable-after-exit"));
+        if (readable)
+        {
+            Assert.Equal(0, result);
+            Assert.Equal(updatedBytes, File.ReadAllBytes(target.Executable));
+            Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
+        }
+        else
+        {
+            Assert.Equal(1, result);
+            await WaitFor(Path.Combine(_root, "recovered-started.txt"));
+            Assert.NotEqual(updatedBytes, File.ReadAllBytes(target.Executable));
+            Assert.True(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
+        }
+    }
+
+    /// <summary>Publishes the acknowledgement and holds it open the way a scanner would, until disposed.</summary>
+    private static FileStream HoldAcknowledgement(string receiptPath, string id)
+    {
+        var ready = receiptPath + "." + id + ".ready";
+        File.WriteAllText(ready, id);
+        return new FileStream(ready, FileMode.Open, FileAccess.Read, FileShare.None);
+    }
+
+    /// <summary>Holds the updated executable so the helper's first launch attempts fail and it starts late.</summary>
+    private async Task DelayLaunchAsync(UpdateTarget target, bool delayed)
+    {
+        if (!delayed) return;
+        Start(Fixture, "--hold-lock", target.Executable, "1500");
+        await WaitFor(target.Executable + ".held");
+    }
+
+    private static async Task StopUpdatedChildrenAsync(UpdateTarget target)
+    {
+        foreach (var child in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(target.Executable)))
+        {
+            using (child)
+            {
+                try
+                {
+                    if (string.Equals(child.MainModule?.FileName, target.Executable, StringComparison.OrdinalIgnoreCase))
+                    {
+                        child.Kill();
+                        await child.WaitForExitAsync();
+                    }
+                }
+                catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            }
+        }
+    }
+
+    /// <summary>The helper's checkpoints, with "ack-unreadable-after-exit" for an unreadable read after the child exited.</summary>
+    private sealed class Checkpoints
+    {
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource> _reached = new();
+        private volatile bool _exited;
+
+        public void Record(string step)
+        {
+            if (step == "child-exited-awaiting-ack") _exited = true;
+            Signal(step);
+            if (step == "ack-unreadable" && _exited) Signal("ack-unreadable-after-exit");
+        }
+
+        public bool Saw(string step) => Source(step).Task.IsCompleted;
+
+        public Task Reached(string step) => Source(step).Task.WaitAsync(TimeSpan.FromSeconds(60));
+
+        private void Signal(string step) => Source(step).TrySetResult();
+
+        private TaskCompletionSource Source(string step) =>
+            _reached.GetOrAdd(step, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
     }
 
     [Fact]
