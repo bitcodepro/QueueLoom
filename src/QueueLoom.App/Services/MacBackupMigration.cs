@@ -97,18 +97,18 @@ internal static class MacBackupMigration
             return copied;
         }
         using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var hash = SHA256.HashData(input);
+        var hash = Hash(input, token);
         if (File.Exists(destination))
         {
             using var existing = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (SHA256.HashData(existing).AsSpan().SequenceEqual(hash)) return Verified(0);
+            if (Hash(existing, token).AsSpan().SequenceEqual(hash)) return Verified(0);
             destination = Path.Combine(Path.GetDirectoryName(destination)!,
                 Path.GetFileNameWithoutExtension(destination) + ".recovered-" + Convert.ToHexString(hash) + Path.GetExtension(destination));
             RejectLinks(destination, destinationBoundary);
             if (File.Exists(destination))
             {
                 using var recovered = File.OpenRead(destination);
-                if (SHA256.HashData(recovered).AsSpan().SequenceEqual(hash)) return Verified(0);
+                if (Hash(recovered, token).AsSpan().SequenceEqual(hash)) return Verified(0);
                 throw new IOException("A conflicting recovered backup already exists; the old bundle was retained.");
             }
         }
@@ -117,12 +117,38 @@ internal static class MacBackupMigration
         try
         {
             using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            { input.CopyTo(output); output.Flush(flushToDisk: true); }
+            { Copy(input, output, token); output.Flush(flushToDisk: true); }
             token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, overwrite: false);
             return Verified(1);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    // Hashing and copying check the token between chunks: a first migration of a large backup must not hold the MCP
+    // server's (or the window's) shutdown until the whole file has been read.
+    private static byte[] Hash(Stream stream, CancellationToken token)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81_920];
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            token.ThrowIfCancellationRequested();
+            hash.AppendData(buffer, 0, read);
+        }
+        return hash.GetHashAndReset();
+    }
+
+    private static void Copy(Stream input, Stream output, CancellationToken token)
+    {
+        var buffer = new byte[81_920];
+        int read;
+        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            token.ThrowIfCancellationRequested();
+            output.Write(buffer, 0, read);
+        }
     }
 
     internal sealed record FileStamp(long Length, long ModifiedTicks, long CreatedTicks)
@@ -147,7 +173,17 @@ internal static class MacBackupMigration
         {
             if (sourceStamp is null || !Entries.TryGetValue(Key(source, destination), out var copy) || copy is null ||
                 copy.Source != sourceStamp || string.IsNullOrEmpty(copy.Destination) || copy.Target is null) return false;
-            RejectLinks(copy.Destination, boundary);
+            // A hint naming a place outside the backup folder or a link (a stale entry after the backup folder changed,
+            // or an edited file) is not trusted: the file is verified again and the hint replaced, instead of the whole
+            // migration failing at every start.
+            try
+            {
+                RejectLinks(copy.Destination, boundary);
+            }
+            catch (IOException)
+            {
+                return false;
+            }
             return copy.Target == FileStamp.Read(copy.Destination);
         }
 

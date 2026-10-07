@@ -18,6 +18,7 @@ public sealed class FileLoggerProviderTests
             new InvalidOperationException("Endpoint=sb://x/;SharedAccessKey=abc123"),
             "Connect failed for {Connection}",
             "SharedAccessKeyName=root;SharedAccessKey=secret-value");
+        provider.Flush();
 
         var text = File.ReadAllText(provider.CurrentFilePath);
         Assert.EndsWith("queueloom-20260926.log", provider.CurrentFilePath, StringComparison.Ordinal);
@@ -34,6 +35,7 @@ public sealed class FileLoggerProviderTests
         using var provider = new FileLoggerProvider(directory.Path, LogLevel.Warning, clock: () => Now);
 
         provider.CreateLogger("QueueLoom.Test").LogInformation("routine");
+        provider.Flush();
 
         Assert.False(File.Exists(provider.CurrentFilePath));
     }
@@ -64,5 +66,17 @@ public sealed class FileLoggerProviderTests
         logger.LogError("late message");
 
         Assert.False(File.Exists(provider.CurrentFilePath));
+    }
+
+    [Fact]
+    public void Log_QueuedBeforeDisposeIsFlushed()
+    {
+        using var directory = new TemporaryDirectory();
+        var provider = new FileLoggerProvider(directory.Path, clock: () => Now);
+        provider.CreateLogger("QueueLoom.Test").LogInformation("before dispose");
+        var path = provider.CurrentFilePath;
+        provider.Dispose();
+
+        Assert.Contains("before dispose", File.ReadAllText(path), StringComparison.Ordinal);
     }
 }

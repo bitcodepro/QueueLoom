@@ -192,6 +192,15 @@ internal sealed class WindowFixture : IAsyncDisposable
         await fixture.SettleAsync();
         return fixture;
     }
+
+    public static async Task<WindowFixture> OpenHeldAsync(Func<CancellationToken, Task> gate)
+    {
+        var fixture = new WindowFixture(DemoData.Development);
+        fixture.ProfileRepository.ListAsyncGate = gate;
+        fixture.Window.Show();
+        await fixture.SettleAsync();
+        return fixture;
+    }
     public BatchReplayStore OperationStore { get; }
     public FileActivityJournal ActivityJournal { get; }
 
