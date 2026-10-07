@@ -107,8 +107,20 @@ public static class UpdateRestart
         return true;
     }
 
+    /// <summary>
+    /// Starts the updated application and keeps the update only once it acknowledges its startup with this
+    /// update's ID. Starting the process is not success: an exit, a timeout or an acknowledgement for another ID
+    /// restores the previous version.
+    /// </summary>
+    /// <param name="exitedAcknowledgementWait">After the new application exits, how long an acknowledgement that
+    /// exists but cannot be read (another program holds it open) is read again before the exit counts as a failed
+    /// startup; five seconds by default. A missing acknowledgement, or a readable one for another ID, is not waited for.</param>
+    /// <param name="checkpoint">Called at observable steps, so tests can synchronize with them instead of sleeping:
+    /// "child-started" (the process was created, not yet acknowledged), "ack-unreadable", "ack-mismatch" (readable,
+    /// another ID) and "child-exited-awaiting-ack".</param>
     public static async Task<int> RunAsync(string path, string id, int parentPid, long parentStartTicks,
-        TimeSpan? exitTimeout = null, TimeSpan? startupTimeout = null)
+        TimeSpan? exitTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? exitedAcknowledgementWait = null,
+        Action<string>? checkpoint = null)
     {
         var receipt = Read(path, id);
         var ready = path + "." + id + ".ready";
@@ -150,6 +162,7 @@ public static class UpdateRestart
                     start.ArgumentList.Add(path);
                     start.ArgumentList.Add(id);
                     child = Process.Start(start) ?? throw new IOException("The updated application could not start.");
+                    checkpoint?.Invoke("child-started");
                 }
                 catch (Exception exception) when ((exception is IOException or System.ComponentModel.Win32Exception) &&
                                                   deadline.Elapsed < TimeSpan.FromSeconds(30))
@@ -158,9 +171,15 @@ public static class UpdateRestart
                 }
             }
             var startup = Stopwatch.StartNew();
-            while (!File.Exists(ready) || File.ReadAllText(ready) != id)
+            while (Acknowledgement(ready, id, checkpoint) != AcknowledgementState.Matches)
             {
-                if (child.HasExited) throw new IOException($"The updated application exited before startup completed ({child.ExitCode}).");
+                if (child.HasExited)
+                {
+                    // It may have acknowledged and then closed while its acknowledgement was briefly held open.
+                    checkpoint?.Invoke("child-exited-awaiting-ack");
+                    if (await AcknowledgedWithinAsync(ready, id, exitedAcknowledgementWait ?? TimeSpan.FromSeconds(5), checkpoint)) break;
+                    throw new IOException($"The updated application exited before startup completed ({child.ExitCode}).");
+                }
                 if (startup.Elapsed >= (startupTimeout ?? TimeSpan.FromMinutes(2)))
                     throw new TimeoutException("The updated application did not confirm startup.");
                 await Task.Delay(100);
@@ -402,6 +421,50 @@ public static class UpdateRestart
                 process.StartTime.ToUniversalTime().Ticks == receipt.InstallerStartTicks);
         }
         catch (ArgumentException) { return false; }
+    }
+
+    private enum AcknowledgementState { Missing, Unreadable, OtherId, Matches }
+
+    /// <summary>
+    /// The new application's startup acknowledgement. One that another program briefly holds open (an antivirus
+    /// scan, an indexer) is <see cref="AcknowledgementState.Unreadable"/>, not a failure: the startup loop reads it
+    /// again on its next check, and treating the sharing violation as a failed startup rolled back a healthy update.
+    /// </summary>
+    private static AcknowledgementState Acknowledgement(string ready, string id, Action<string>? checkpoint)
+    {
+        try
+        {
+            if (!File.Exists(ready)) return AcknowledgementState.Missing;
+            if (File.ReadAllText(ready) == id) return AcknowledgementState.Matches;
+            checkpoint?.Invoke("ack-mismatch");
+            return AcknowledgementState.OtherId;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return AcknowledgementState.Missing;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            checkpoint?.Invoke("ack-unreadable");
+            return AcknowledgementState.Unreadable;
+        }
+    }
+
+    /// <summary>
+    /// After the new application exited: whether it had acknowledged. Only an acknowledgement that exists but cannot
+    /// be read is read again, for at most <paramref name="wait"/>; a missing one, or a readable one for another ID,
+    /// answers at once.
+    /// </summary>
+    private static async Task<bool> AcknowledgedWithinAsync(string ready, string id, TimeSpan wait, Action<string>? checkpoint)
+    {
+        var watch = Stopwatch.StartNew();
+        while (true)
+        {
+            var state = Acknowledgement(ready, id, checkpoint);
+            if (state != AcknowledgementState.Unreadable) return state == AcknowledgementState.Matches;
+            if (watch.Elapsed >= wait) return false;
+            await Task.Delay(100);
+        }
     }
 
     private static void TryWriteError(string path, string message)

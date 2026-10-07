@@ -1,11 +1,13 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using QueueLoom.App.Services;
 
 namespace QueueLoom.Tests;
 
 /// <summary>Real processes, isolated installations and real Windows file locks; never application storage.</summary>
-public sealed class UpdateRestartProcessTests : IDisposable
+public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "update process with spaces " + Guid.NewGuid().ToString("N"));
     private readonly List<Process> _processes = [];
@@ -127,6 +129,365 @@ public sealed class UpdateRestartProcessTests : IDisposable
         Assert.True(File.Exists(receipt.Entries.Single().Backup)); // Retained until explicit successful cleanup.
     }
 
+    // Another program (an antivirus scan, an indexer) holds the startup acknowledgement open while the new
+    // application keeps running. The helper reads it again, like an acknowledgement still to come, instead of taking
+    // the sharing violation for a failed startup: that rolled back a healthy update and killed the new application.
+    // The lock is released only after the helper has met it, and a delayed launch changes nothing.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ALockedAcknowledgementOfARunningApplicationIsReadAgain_NotRolledBack(bool delayedLaunch)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        var updatedBytes = File.ReadAllBytes(target.Executable);
+        // The updated child stays up without acknowledging; this test publishes the acknowledgement and holds it open.
+        File.WriteAllText(Path.Combine(_root, "hang-startup"), "hang only the updated startup");
+        using var scanner = HoldAcknowledgement(path, receipt.Id);
+        await DelayLaunchAsync(target, delayedLaunch);
+        var steps = new Checkpoints();
+
+        var running = Own(UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60),
+            checkpoint: steps.Record));
+        try
+        {
+            await steps.Reached("ack-unreadable");
+            Assert.True(steps.Saw("child-started"));
+            Assert.False(steps.Saw("child-exited-awaiting-ack"));
+            Assert.False(running.IsCompleted);
+            scanner.Dispose();
+
+            Assert.Equal(0, await running.WaitAsync(TimeSpan.FromSeconds(60)));
+            Assert.Equal(updatedBytes, File.ReadAllBytes(target.Executable));
+            Assert.False(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
+            Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
+        }
+        finally
+        {
+            scanner.Dispose();
+        }
+    }
+
+    // The new application acknowledged and exited while its acknowledgement was held open. Released during the
+    // wait that follows the exit, the update stays; held past that wait, the exit is a failed startup and the
+    // previous version returns. Every step is synchronized with the helper, and a delayed launch changes nothing.
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task AnExitAfterALockedAcknowledgementKeepsTheUpdateOnlyWhenItCanBeRead(bool readable, bool delayedLaunch)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        var updatedBytes = File.ReadAllBytes(target.Executable);
+        // The updated child exits at once; the acknowledgement it would have written is this test's, held open.
+        File.WriteAllText(Path.Combine(_root, "fail-startup"), "exit the updated startup at once");
+        using var scanner = HoldAcknowledgement(path, receipt.Id);
+        await DelayLaunchAsync(target, delayedLaunch);
+        var steps = new Checkpoints();
+
+        // Released: a wait long enough that only the release can end it. Held: a short wait, and the lock outlives it.
+        var running = Own(UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60),
+            exitedAcknowledgementWait: readable ? TimeSpan.FromSeconds(60) : TimeSpan.FromMilliseconds(300), checkpoint: steps.Record));
+        int result;
+        try
+        {
+            if (readable)
+            {
+                await steps.Reached("ack-unreadable-after-exit");
+                Assert.False(running.IsCompleted);
+                scanner.Dispose();
+            }
+            result = await running.WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        finally
+        {
+            scanner.Dispose();
+        }
+
+        Assert.True(steps.Saw("child-exited-awaiting-ack"));
+        Assert.True(steps.Saw("ack-unreadable-after-exit"));
+        if (readable)
+        {
+            Assert.Equal(0, result);
+            Assert.Equal(updatedBytes, File.ReadAllBytes(target.Executable));
+            Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
+        }
+        else
+        {
+            Assert.Equal(1, result);
+            await WaitFor(Path.Combine(_root, "recovered-started.txt"));
+            Assert.NotEqual(updatedBytes, File.ReadAllBytes(target.Executable));
+            Assert.True(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
+        }
+    }
+
+    // Negative control: the new application exited and the acknowledgement is readable but names another update.
+    // That is a failed startup at once; it is not read again during the post-exit wait, which only covers a held file.
+    [Fact]
+    public async Task AnExitWithAnAcknowledgementForAnotherUpdateRollsBackWithoutWaiting()
+    {
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        var updatedBytes = File.ReadAllBytes(target.Executable);
+        File.WriteAllText(Path.Combine(_root, "fail-startup"), "exit the updated startup at once");
+        File.WriteAllText(path + "." + receipt.Id + ".ready", Guid.NewGuid().ToString("N"));
+        var steps = new Checkpoints();
+
+        // A post-exit wait far longer than the bound below: only an immediate answer can pass.
+        var result = await Own(UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60),
+            exitedAcknowledgementWait: TimeSpan.FromMinutes(10), checkpoint: steps.Record)).WaitAsync(TimeSpan.FromMinutes(2));
+
+        Assert.Equal(1, result);
+        Assert.True(steps.Saw("child-exited-awaiting-ack"));
+        Assert.True(steps.Saw("ack-mismatch"));
+        Assert.False(steps.Saw("ack-unreadable"));
+        await WaitFor(Path.Combine(_root, "recovered-started.txt"));
+        Assert.NotEqual(updatedBytes, File.ReadAllBytes(target.Executable));
+        Assert.True(File.Exists(target.Executable + "." + receipt.Id + ".failed"));
+    }
+
+    // A test fails while the helper's restarted previous version is still starting. Cleanup stops that child, which
+    // the helper launched and never awaited, before any file of the installation is removed, and the test's own
+    // failure stays the reported one. Before, the directory was deleted beneath it and its loader error hid the failure.
+    [Fact]
+    public async Task AFailureWhileRecoveryStartsStopsTheRecoveryBeforeRemovingItsFiles()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows process ownership."); return; }
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        File.WriteAllText(Path.Combine(_root, "fail-startup"), "exit the updated startup at once");
+        File.WriteAllText(Path.Combine(_root, "hold-recovery"), "hold the restarted previous version");
+        var held = Path.Combine(_root, "recovery-held.txt");
+        Process? recovery = null;
+
+        var failure = await Record.ExceptionAsync(() => IsolatedAsync(async () =>
+        {
+            Assert.Equal(1, await Own(UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60))));
+            await WaitFor(held);
+            recovery = Process.GetProcessById(int.Parse(File.ReadAllText(held), System.Globalization.CultureInfo.InvariantCulture));
+            Assert.False(recovery.HasExited);
+            Assert.Fail("A deliberate failure while the restarted previous version is still starting.");
+        }));
+
+        using (recovery)
+        {
+            Assert.Contains("deliberate failure", failure?.Message, StringComparison.Ordinal);
+            Assert.Null(_cleanupFailure);
+            Assert.True(recovery!.HasExited);
+            Assert.Empty(OwnedProcesses());
+            // Nothing was removed while it ran: its executable and dependencies are still in place.
+            Assert.True(File.Exists(target.Executable));
+            Assert.True(File.Exists(Path.Combine(_root, "QueueLoom.Core.dll")));
+            Assert.False(File.Exists(Path.Combine(_root, "recovered-started.txt")));
+        }
+    }
+
+    // A helper run that has not completed within the bound is not finished. Cleanup keeps the installation and fails;
+    // when the test itself failed, that failure is still the one thrown.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task APendingHelperKeepsTheInstallationAndTheTestsOwnFailure(bool testFails)
+    {
+        Installation();
+        var pending = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = Own(pending.Task);
+        _helperBound = TimeSpan.FromMilliseconds(200);
+        try
+        {
+            var thrown = await Record.ExceptionAsync(() => IsolatedAsync(() =>
+                testFails ? throw new InvalidOperationException("The test's own failure.") : Task.CompletedTask));
+
+            Assert.NotNull(thrown);
+            Assert.Contains(testFails ? "test's own failure" : "still pending", thrown.Message, StringComparison.Ordinal);
+            Assert.Contains("still pending", _cleanupFailure?.Message, StringComparison.Ordinal);
+            Assert.True(File.Exists(Path.Combine(_root, "QueueLoom.Core.dll")));
+        }
+        finally
+        {
+            // Completed now, so this test's own cleanup can finish.
+            pending.SetResult(0);
+        }
+    }
+
+    // A process of the installation that has not started loading yet (created suspended, before the runtime or any
+    // marker exists) cannot report its modules. It is still found through its executable path and stopped before
+    // anything is removed; it is not taken for absent.
+    [Fact]
+    public async Task AnInstallationProcessHeldBeforeItLoadsIsStillStopped()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows process ownership."); return; }
+        var target = Installation();
+        using var suspended = StartSuspended(target.Executable);
+        using (var process = Process.GetProcessById(suspended.Id))
+        {
+            // The module list a managed inspection relies on is not available yet.
+            Assert.Throws<System.ComponentModel.Win32Exception>(() => process.MainModule);
+        }
+        Assert.Contains(suspended.Id, OwnedIds());
+
+        await IsolatedAsync(() => Task.CompletedTask);
+
+        Assert.True(suspended.Process.WaitForExit(0));
+        Assert.Empty(OwnedProcesses());
+        Assert.True(File.Exists(target.Executable));
+        Assert.True(File.Exists(Path.Combine(_root, "QueueLoom.Core.dll")));
+    }
+
+    // Negative control: a process of the installation started a child that runs from elsewhere. Cleanup stops the
+    // installation's process only; the outside child keeps running.
+    [Fact]
+    public async Task CleanupStopsOnlyInstallationProcessesNotTheirOutsideChildren()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows process ownership."); return; }
+        var target = Installation();
+        var outsideLock = Path.Combine(_root, "outside.lock");
+        // Not registered with Start: only the installation-process cleanup may stop it.
+        var spawn = new ProcessStartInfo(target.Executable) { UseShellExecute = false, WorkingDirectory = _root };
+        foreach (var argument in new[] { "--spawn-outside", Fixture, "--hold-lock", outsideLock, "120000" }) spawn.ArgumentList.Add(argument);
+        using var parent = Process.Start(spawn)!;
+        await WaitFor(Path.Combine(_root, "spawned.pid"));
+        using var outside = Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(_root, "spawned.pid")), System.Globalization.CultureInfo.InvariantCulture));
+        try
+        {
+            Assert.Contains(parent.Id, OwnedIds());
+            Assert.DoesNotContain(outside.Id, OwnedIds());
+
+            await IsolatedAsync(() => Task.CompletedTask);
+
+            Assert.True(parent.HasExited);
+            Assert.False(outside.HasExited);
+        }
+        finally
+        {
+            if (!outside.HasExited) { outside.Kill(); await outside.WaitForExitAsync(); }
+        }
+    }
+
+    // The restarted previous version publishes its PID marker under a temporary name and renames it when complete.
+    // Held between the two, the marker a reader waits for does not exist yet; once published it parses at once.
+    [Fact]
+    public async Task APidMarkerIsNeverVisibleBeforeItIsComplete()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows process ownership."); return; }
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        File.WriteAllText(Path.Combine(_root, "fail-startup"), "exit the updated startup at once");
+        File.WriteAllText(Path.Combine(_root, "hold-recovery"), "hold the restarted previous version");
+        var gate = Path.Combine(_root, "gate-marker-publication");
+        File.WriteAllText(gate, "hold the marker before it is renamed");
+        var marker = Path.Combine(_root, "recovery-held.txt");
+
+        await IsolatedAsync(async () =>
+        {
+            Assert.Equal(1, await Own(UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0, startupTimeout: TimeSpan.FromSeconds(60))));
+            await WaitFor(marker + ".tmp");
+            Assert.False(File.Exists(marker));
+
+            File.WriteAllText(gate + ".open", "publish");
+            await WaitFor(marker);
+            var id = int.Parse(File.ReadAllText(marker), System.Globalization.CultureInfo.InvariantCulture);
+            Assert.False(File.Exists(marker + ".tmp"));
+            using var recovery = Process.GetProcessById(id);
+            Assert.False(recovery.HasExited);
+        });
+    }
+
+    private int[] OwnedIds()
+    {
+        var owned = OwnedProcesses();
+        try { return owned.Select(process => process.Id).ToArray(); }
+        finally { owned.ForEach(process => process.Dispose()); }
+    }
+
+    /// <summary>Creates the process suspended: it exists, but nothing of it has loaded.</summary>
+    private static SuspendedProcess StartSuspended(string executable)
+    {
+        var info = new StartupInformation { Size = Marshal.SizeOf<StartupInformation>() };
+        if (!CreateProcess(executable, new StringBuilder("\"" + executable + "\""), 0, 0, false, 0x4 /* CREATE_SUSPENDED */, 0,
+                Path.GetDirectoryName(executable), ref info, out var created))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        CloseHandle(created.Thread);
+        CloseHandle(created.Process);
+        return new SuspendedProcess(created.Id, Process.GetProcessById(created.Id));
+    }
+
+    private sealed record SuspendedProcess(int Id, Process Process) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (!Process.HasExited) { Process.Kill(); Process.WaitForExit(); }
+            Process.Dispose();
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StartupInformation
+    {
+        public int Size;
+        public nint Reserved, Desktop, Title;
+        public int X, Y, Width, Height, Columns, Rows, Fill;
+        public uint Flags;
+        public ushort ShowWindow, ReservedBytes;
+        public nint ReservedBuffer, Input, Output, Error;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation { public nint Process, Thread; public int Id, ThreadId; }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcess(string application, StringBuilder commandLine, nint processAttributes, nint threadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool inherit, uint flags, nint environment, string? directory,
+        ref StartupInformation startup, out ProcessInformation created);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint handle);
+
+    /// <summary>Publishes the acknowledgement and holds it open the way a scanner would, until disposed.</summary>
+    private static FileStream HoldAcknowledgement(string receiptPath, string id)
+    {
+        var ready = receiptPath + "." + id + ".ready";
+        File.WriteAllText(ready, id);
+        return new FileStream(ready, FileMode.Open, FileAccess.Read, FileShare.None);
+    }
+
+    /// <summary>Holds the updated executable so the helper's first launch attempts fail and it starts late.</summary>
+    private async Task DelayLaunchAsync(UpdateTarget target, bool delayed)
+    {
+        if (!delayed) return;
+        Start(Fixture, "--hold-lock", target.Executable, "1500");
+        await WaitFor(target.Executable + ".held");
+    }
+
+    /// <summary>The helper's checkpoints, with "ack-unreadable-after-exit" for an unreadable read after the child exited.</summary>
+    private sealed class Checkpoints
+    {
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource> _reached = new();
+        private volatile bool _exited;
+
+        public void Record(string step)
+        {
+            if (step == "child-exited-awaiting-ack") _exited = true;
+            Signal(step);
+            if (step == "ack-unreadable" && _exited) Signal("ack-unreadable-after-exit");
+        }
+
+        public bool Saw(string step) => Source(step).Task.IsCompleted;
+
+        public Task Reached(string step) => Source(step).Task.WaitAsync(TimeSpan.FromSeconds(60));
+
+        private void Signal(string step) => Source(step).TrySetResult();
+
+        private TaskCompletionSource Source(string step) =>
+            _reached.GetOrAdd(step, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+    }
+
     [Fact]
     public async Task WindowsLaunch_RetriesUntilTheExecutableLockIsReleased()
     {
@@ -156,15 +517,18 @@ public sealed class UpdateRestartProcessTests : IDisposable
         File.Copy(Fixture, Path.Combine(staging, Path.GetFileName(target.Executable)));
         AppUpdater.Install(target, staging);
         var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(UpdateRestart.ReceiptPath(target)))!;
-        var holder = Start(Fixture, "--hold-lock", receipt.Entries.Single().Backup!, "1200");
-        await WaitFor(receipt.Entries.Single().Backup! + ".held");
-        var cleaning = UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.FromSeconds(10));
+        // Held until this test releases it, not for a fixed time a slow machine could use up before the check.
+        var backup = receipt.Entries.Single().Backup!;
+        var holder = Start(Fixture, "--hold-lock", backup, "until-released");
+        await WaitFor(backup + ".held");
+        var cleaning = UpdateRestart.CleanAsync(receipt, UpdateRestart.ReceiptPath(target), TimeSpan.FromSeconds(30));
         if (OperatingSystem.IsWindows())
         {
             await Task.Delay(250);
             Assert.False(cleaning.IsCompleted);
-            Assert.True(File.Exists(receipt.Entries.Single().Backup));
+            Assert.True(File.Exists(backup));
         }
+        File.WriteAllText(backup + ".release", "release");
         await cleaning;
         await holder.WaitForExitAsync();
         Assert.False(File.Exists(receipt.Entries.Single().Backup));
@@ -264,36 +628,6 @@ public sealed class UpdateRestartProcessTests : IDisposable
         {
             if (watch.Elapsed > TimeSpan.FromSeconds(15)) throw new TimeoutException(path);
             await Task.Delay(50);
-        }
-    }
-
-    public void Dispose()
-    {
-        foreach (var process in _processes)
-        {
-            if (!process.HasExited) { process.Kill(); process.WaitForExit(); }
-            process.Dispose();
-        }
-        // Fixture startup children exit after one second. Wait for only those belonging to this isolated installation.
-        var marker = Path.Combine(_root, "updated-started.txt");
-        if (File.Exists(marker))
-        {
-            try
-            {
-                using var child = Process.GetProcessById(int.Parse(File.ReadAllText(marker), System.Globalization.CultureInfo.InvariantCulture));
-                if (child.MainModule?.FileName == Path.Combine(_root, Path.GetFileName(Fixture))) { child.Kill(); child.WaitForExit(); }
-            }
-            catch (ArgumentException) { }
-        }
-        var cleanup = Stopwatch.StartNew();
-        while (true)
-        {
-            try { Directory.Delete(_root, true); break; }
-            catch (Exception exception) when ((exception is IOException or UnauthorizedAccessException) && cleanup.Elapsed < TimeSpan.FromSeconds(5))
-            {
-                // Windows may hold image sections briefly after the process exit signal.
-                Thread.Sleep(50);
-            }
         }
     }
 }
