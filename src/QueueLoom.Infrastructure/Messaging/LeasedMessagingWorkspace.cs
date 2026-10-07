@@ -590,7 +590,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         CancellationToken cancellationToken) =>
         (await ReceivePageAsync(channel, limit, held, cancellationToken).ConfigureAwait(false)).Messages;
 
-    // Source messages and total held receipts have separate caps. Only confirmed empty receives establish exhaustion.
+    // Source messages and total held receipts have separate caps. Only confirmed empty receives establish exhaustion:
+    // a source that held exactly `limit` messages and then ran dry is still reported as limit-reached (incomplete),
+    // because the loop stops at the cap without confirming that nothing more is there.
     private static async Task<(List<LeasedMessage> Messages, bool LimitReached)> ReceivePageAsync(
         ILeasedMessageChannel channel,
         int limit,

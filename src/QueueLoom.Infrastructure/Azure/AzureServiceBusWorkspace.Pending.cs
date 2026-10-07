@@ -96,6 +96,7 @@ public sealed partial class AzureServiceBusWorkspace
         catch (OperationCanceledException)
         {
             // Once submitted, cancellation can interrupt the acknowledgement after the broker accepted the request.
+            // An SDK timeout surfaces here as well (TaskCanceledException): its outcome is just as unknown.
             return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Failed,
                 "Scheduled cancellation was attempted, but its broker outcome is unknown. The backup is kept; verify the message before retrying.");
         }
