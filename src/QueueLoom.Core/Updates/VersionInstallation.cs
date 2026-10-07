@@ -291,9 +291,21 @@ public sealed class VersionInstallation
         if (state.Attempt is null) return false;
         var path = AcknowledgementPath(state.Attempt);
         RejectOwnedPath(path);
-        try { return File.ReadAllText(path) == state.Active.Id + ":" + state.Active.ManifestSha256; }
-        catch (IOException) { return false; }
+        // An acknowledgement another program briefly holds open (an antivirus scan, an indexer) is read again: a
+        // sharing violation is not a missing acknowledgement, and reading it as one killed a healthy candidate and
+        // rolled the installation back. A missing file is answered at once.
+        var wait = Stopwatch.StartNew();
+        while (true)
+        {
+            try { return File.ReadAllText(path) == state.Active.Id + ":" + state.Active.ManifestSha256; }
+            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return false; }
+            catch (IOException) when (wait.Elapsed < AcknowledgementReadWait) { Thread.Sleep(25); }
+            catch (IOException) { return false; }
+        }
     }
+
+    /// <summary>How long an acknowledgement that exists but cannot be read is read again before it counts as absent.</summary>
+    internal static readonly TimeSpan AcknowledgementReadWait = TimeSpan.FromSeconds(2);
 
     public void Acknowledge(VersionReference version, string attempt)
     {

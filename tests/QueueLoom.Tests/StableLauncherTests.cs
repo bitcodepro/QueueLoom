@@ -342,6 +342,47 @@ public sealed class StableLauncherTests
         }
     }
 
+    // Another program (an antivirus scan, an indexer) briefly holds the candidate's acknowledgement open. The
+    // launcher reads it again instead of taking the sharing violation for "not acknowledged", which killed a healthy
+    // candidate and rolled the installation back. Held open past the wait, it is absent; a missing one is absent at once.
+    [Theory]
+    [InlineData("briefly-locked")]
+    [InlineData("locked-past-the-wait")]
+    [InlineData("missing")]
+    public async Task ALockedAcknowledgementIsReadAgainButAMissingOneIsAbsentAtOnce(string acknowledgement)
+    {
+        if (acknowledgement != "missing" && !OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.StagePackage(fixture.Package("next").Path);
+        var selected = installation.SelectForLaunch();
+        Assert.True(selected.OwnsAttempt);
+        if (acknowledgement == "missing")
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            Assert.False(installation.HasAcknowledgement(selected));
+            Assert.True(watch.Elapsed < VersionInstallation.AcknowledgementReadWait, "A missing acknowledgement must not be waited for.");
+            return;
+        }
+
+        installation.Acknowledge(selected.Version, selected.Attempt!);
+        var path = Path.Combine(installation.Store, "acknowledgements", selected.Attempt + ".ready");
+        var held = acknowledgement == "briefly-locked" ? TimeSpan.FromMilliseconds(500) : VersionInstallation.AcknowledgementReadWait * 2;
+        var scanner = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        var release = Task.Delay(held).ContinueWith(_ => scanner.Dispose(), TaskScheduler.Default);
+        try
+        {
+            Assert.Equal(acknowledgement == "briefly-locked", installation.HasAcknowledgement(selected));
+        }
+        finally
+        {
+            await release;
+        }
+        // Once readable, the acknowledgement confirms the candidate either way.
+        installation.Confirm(selected);
+        Assert.False(installation.HasPendingActivation());
+    }
+
     [Fact]
     public void SameAcknowledgementIsIdempotentAfterItsVersionWasConfirmed()
     {
