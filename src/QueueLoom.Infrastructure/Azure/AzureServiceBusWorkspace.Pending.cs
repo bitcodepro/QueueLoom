@@ -88,7 +88,17 @@ public sealed partial class AzureServiceBusWorkspace
 
         var scheduledIn = PendingMessages.ScheduledIn(message);
         var sender = _senders.GetOrAdd(scheduledIn.Name, name => GetMessagingClient().CreateSender(name));
-        await sender.CancelScheduledMessageAsync(message.SequenceNumber, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            await sender.CancelScheduledMessageAsync(message.SequenceNumber, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Once submitted, cancellation can interrupt the acknowledgement after the broker accepted the request.
+            return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Failed,
+                "Scheduled cancellation was attempted, but its broker outcome is unknown. The backup is kept; verify the message before retrying.");
+        }
         return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted);
     }
 

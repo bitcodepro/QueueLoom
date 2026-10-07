@@ -195,7 +195,8 @@ public sealed partial class MainWindowViewModel
         string? originNotice,
         bool isLocalBackup)
     {
-        if (selectedItem.ProfileId is { } profileId && profileId != ConnectedProfileId)
+        // Monitors temporarily switch the broker connection; drafts stay pinned to the operator's environment.
+        if (selectedItem.ProfileId is { } profileId && profileId != _connectedProfile?.Id)
         {
             throw new InvalidOperationException(
                 "This message belongs to another environment. Connect to that environment before opening it as a draft.");

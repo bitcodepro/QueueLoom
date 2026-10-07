@@ -199,8 +199,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             try
             {
                 channel = OpenChannel(topology, target.Source, target.SubQueue);
-                var scanned = await ReceiveUpToAsync(channel, request.MaximumMessagesPerTarget, held, cancellationToken)
+                var received = await ReceivePageAsync(channel, request.MaximumMessagesPerTarget, held, cancellationToken)
                     .ConfigureAwait(false);
+                var scanned = received.Messages;
                 var matches = new List<BrowsedMessage>();
                 var undecided = 0;
                 foreach (var message in scanned)
@@ -240,7 +241,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                     scanned.Count,
                     matches,
                     // SQS FIFO hands out no more of a group while the scan holds some of it: the rest stays unseen.
-                    ScanLimitReached: scanned.Count >= request.MaximumMessagesPerTarget ||
+                    ScanLimitReached: received.LimitReached ||
                                       (channel.ReadsOneBatchPerMessageGroup && held.Count > 0),
                     Error: DeadLetterSearchSourceResult.RegexTimeoutError(undecided)));
             }
@@ -586,6 +587,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         ILeasedMessageChannel channel,
         int limit,
         List<LeasedMessage> held,
+        CancellationToken cancellationToken) =>
+        (await ReceivePageAsync(channel, limit, held, cancellationToken).ConfigureAwait(false)).Messages;
+
+    // Source messages and total held receipts have separate caps. Only confirmed empty receives establish exhaustion.
+    private static async Task<(List<LeasedMessage> Messages, bool LimitReached)> ReceivePageAsync(
+        ILeasedMessageChannel channel,
+        int limit,
+        List<LeasedMessage> held,
         CancellationToken cancellationToken)
     {
         if (channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
@@ -619,7 +628,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             }
         }
 
-        return result;
+        return (result, result.Count >= limit || held.Count >= heldLimit);
     }
 
     /// <summary>How many messages of other sources (or repeated deliveries) a purge holds before it stops.</summary>
@@ -866,11 +875,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         finally
         {
             held.Clear();
-            if (channel is IAsyncDisposable disposable)
+            try
             {
-                try { await disposable.DisposeAsync().ConfigureAwait(false); }
-                catch { error = "Channel cleanup failed; verify remaining deliveries before retrying."; }
+                if (channel is IAsyncDisposable asynchronous)
+                    await asynchronous.DisposeAsync().ConfigureAwait(false);
+                else if (channel is IDisposable synchronous)
+                    synchronous.Dispose();
             }
+            catch { error ??= "Channel cleanup failed; verify remaining deliveries before retrying."; }
         }
 
         return error;
