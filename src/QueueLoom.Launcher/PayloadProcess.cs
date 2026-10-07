@@ -48,7 +48,8 @@ internal sealed class PayloadProcess : IDisposable
             error = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
             foreach (var pipe in new[] { input, output, error })
             {
-                // Only the three child pipe ends are inherited. Parent ends must not keep stdin/stdout alive.
+                // Keep parent pipe ends non-inheritable so they cannot keep stdin/stdout alive.
+                // CreateProcess also inherits any other inheritable launcher handles.
                 if (!SetHandleInformation(pipe.SafePipeHandle, 1, 0) || !SetHandleInformation(pipe.ClientSafePipeHandle, 1, 1))
                     throw new Win32Exception(Marshal.GetLastWin32Error());
             }
@@ -72,6 +73,7 @@ internal sealed class PayloadProcess : IDisposable
                     : @"\\?\" + start.FileName;
                 // Process.Start passes a null application name, whose module token remains limited to MAX_PATH.
                 // An explicit name supports the verified long path without changing installation identity or cwd.
+                // lpCurrentDirectory is limited to MAX_PATH; the stable entry's installation.Root is assumed to stay below that limit.
                 if (!CreateProcess(executable, command, 0, 0, true, 0x08000400, block, start.WorkingDirectory, ref info, out child))
                     throw new Win32Exception(Marshal.GetLastWin32Error());
             }
