@@ -473,6 +473,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             StatusText = Profiles.Count == 0
                 ? "Add your first environment to begin"
                 : "Choose an environment and connect";
+            // The saved operations, listed off this thread since construction, are part of a loaded window.
+            await OperationHistoryRefresh.ConfigureAwait(true);
         }, cancellationToken).ConfigureAwait(true);
     }
 
