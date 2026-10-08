@@ -267,7 +267,7 @@ public static partial class ProfileValidator
         {
             errors.Add(new ValidationError(
                 "profile.gcp.emulator.invalid",
-                "The emulator address must be host:port, for example localhost:8085.",
+                "The emulator address must be host:port, for example localhost:8085, or [::1]:8085 for an IPv6 address.",
                 nameof(profile.GooglePubSub)));
         }
     }
@@ -313,7 +313,7 @@ public static partial class ProfileValidator
         if (settings.BootstrapServers.Split(',', StringSplitOptions.TrimEntries).Any(server => !IsHostAndPort(server)))
         {
             errors.Add(new ValidationError("profile.kafka.servers.invalid",
-                "List the servers as host:port separated by commas, for example broker-1:9092,broker-2:9092.", nameof(profile.Kafka)));
+                "List the servers as host:port separated by commas, for example broker-1:9092,broker-2:9092; write an IPv6 address in brackets, for example [::1]:9092.", nameof(profile.Kafka)));
         }
         var usesSasl = profile.Authentication?.Kind == AuthenticationKind.KafkaSaslPassword;
         if (usesSasl && (settings.SaslMechanism is null || string.IsNullOrWhiteSpace(settings.UserName)))
@@ -350,11 +350,29 @@ public static partial class ProfileValidator
     [GeneratedRegex("^[A-Za-z0-9.-]+:[0-9]{1,5}$")]
     private static partial Regex HostAndPortPattern();
 
-    /// <summary>host:port with a port from 1 to 65535, as the RabbitMQ port is checked.</summary>
-    private static bool IsHostAndPort(string value) =>
-        HostAndPortPattern().IsMatch(value) &&
-        int.TryParse(value[(value.LastIndexOf(':') + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var port) &&
-        port is >= 1 and <= 65535;
+    /// <summary>
+    /// host:port with a port from 1 to 65535, as the RabbitMQ port is checked. The host is a name, an IPv4 address, or
+    /// an IPv6 address in brackets ([::1]:9092), as Kafka and gRPC clients take it; without brackets the port could
+    /// not be told from the address.
+    /// </summary>
+    private static bool IsHostAndPort(string value)
+    {
+        string portText;
+        if (value.StartsWith('['))
+        {
+            var close = value.IndexOf("]:", StringComparison.Ordinal);
+            if (close < 2 || Uri.CheckHostName(value[1..close]) != UriHostNameType.IPv6) return false;
+            portText = value[(close + 2)..];
+        }
+        else
+        {
+            if (!HostAndPortPattern().IsMatch(value)) return false;
+            portText = value[(value.LastIndexOf(':') + 1)..];
+        }
+        return portText.Length is >= 1 and <= 5 &&
+               int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port) &&
+               port is >= 1 and <= 65535;
+    }
 
     private static void ValidateAuthentication(
         ServiceBusProfile profile,
