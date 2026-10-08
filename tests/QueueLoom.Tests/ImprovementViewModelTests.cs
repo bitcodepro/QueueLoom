@@ -63,6 +63,7 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(scheduled ? "Scheduled resend" : "Immediate resend", plan.Kind);
         Assert.Equal("Moved", Assert.Single(store.ReadHistory(plan).Items).State);
         Assert.Single(workspace.SentMessages); Assert.Single(workspace.DeleteRequests);
+        await vm.OperationHistoryRefresh;
         Assert.Single(vm.OperationHistory);
         vm.OperationItems[0].IsMarked = true;
         await vm.ContinueOperationCommand.ExecuteAsync();
