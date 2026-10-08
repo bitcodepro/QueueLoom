@@ -163,7 +163,7 @@ public sealed class VersionInstallation
         if (_bundle is not null) throw new InvalidDataException("The initial application bundle is missing.");
         var archive = Path.Combine(Root, ArchiveName);
         RejectLinks(archive, Root);
-        if (_bootstrap.ArchiveSha256 is null || Hash(archive) != _bootstrap.ArchiveSha256)
+        if (_bootstrap.ArchiveSha256 is null || Hash(archive, _checkpoint) != _bootstrap.ArchiveSha256)
             throw new InvalidDataException("The initial payload archive is missing or damaged.");
         var staged = NewStaging();
         Extract(archive, staged);
@@ -192,7 +192,7 @@ public sealed class VersionInstallation
         {
             var archive = Path.Combine(packageDirectory, ArchiveName);
             RejectLinks(archive, Path.GetFullPath(packageDirectory));
-            if (descriptor.ArchiveSha256 is null || Hash(archive) != descriptor.ArchiveSha256)
+            if (descriptor.ArchiveSha256 is null || Hash(archive, _checkpoint) != descriptor.ArchiveSha256)
                 throw new InvalidDataException("The update payload archive is damaged.");
             Extract(archive, staged);
         }
@@ -390,7 +390,7 @@ public sealed class VersionInstallation
             try
             {
                 RejectOwnedPath(file.Path);
-                var envelope = ReadJson<StateEnvelope>(file.Path);
+                var envelope = ReadJson<StateEnvelope>(file.Path, _checkpoint);
                 if (envelope.State is null) throw new InvalidDataException("Activation state is missing.");
                 if (envelope.Sha256 != HashBytes(JsonSerializer.SerializeToUtf8Bytes(envelope.State)))
                     throw new InvalidDataException("Activation record checksum mismatch.");
@@ -441,7 +441,11 @@ public sealed class VersionInstallation
                 RejectOwnedPath(directory);
                 var marker = Path.Combine(directory, ".staging-owner");
                 RejectOwnedPath(marker);
-                if (!IsId(id) || !File.Exists(marker) || File.ReadAllText(marker) != id) continue;
+                // A marker another program holds open leaves its directory for a later launch instead of stopping this one.
+                string owner;
+                try { owner = !IsId(id) || !File.Exists(marker) ? string.Empty : ReadShared(marker, File.ReadAllText, _checkpoint); }
+                catch (InstallationFileBusyException) { continue; }
+                if (owner != id) continue;
                 // Refuse links anywhere before recursively deleting this owned incomplete staging directory.
                 InspectTree(directory, directory);
                 Directory.Delete(directory, recursive: true);
@@ -463,8 +467,8 @@ public sealed class VersionInstallation
         RejectOwnedPath(directory);
         var manifestPath = Path.Combine(directory, "manifest.json");
         RejectOwnedPath(manifestPath);
-        if (Hash(manifestPath) != version.ManifestSha256) throw new InvalidDataException("Payload manifest is missing or changed.");
-        var manifest = ReadJson<PayloadManifest>(manifestPath);
+        if (Hash(manifestPath, _checkpoint) != version.ManifestSha256) throw new InvalidDataException("Payload manifest is missing or changed.");
+        var manifest = ReadJson<PayloadManifest>(manifestPath, _checkpoint);
         if (manifest.Protocol != Protocol || manifest.Id != version.Id || manifest.Rid != Rid || manifest.Files is null || manifest.Files.Count is 0 or > 10000)
             throw new InvalidDataException("Invalid payload manifest.");
         var payload = Path.Combine(directory, "payload");
@@ -475,7 +479,7 @@ public sealed class VersionInstallation
             ValidateRelative(relative);
             if (expected is null || !IsHash(expected.Sha256)) throw new InvalidDataException("Invalid payload digest.");
             var path = Path.Combine(payload, relative.Replace('/', Path.DirectorySeparatorChar));
-            if (Hash(path) != expected.Sha256) throw new InvalidDataException("Payload file is missing or changed.");
+            if (Hash(path, _checkpoint) != expected.Sha256) throw new InvalidDataException("Payload file is missing or changed.");
             if (!OperatingSystem.IsWindows() && (int)File.GetUnixFileMode(path) != expected.UnixMode)
                 throw new InvalidDataException("Payload permissions are changed.");
         }
@@ -503,7 +507,7 @@ public sealed class VersionInstallation
             { input.CopyTo(output); output.Flush(flushToDisk: true); }
         }
         // Permissions are part of the pinned manifest, not inferred from the ZIP's optional host attributes.
-        var manifest = ReadJson<PayloadManifest>(Path.Combine(destination, "manifest.json"));
+        var manifest = ReadJson<PayloadManifest>(Path.Combine(destination, "manifest.json"), _checkpoint);
         if (!OperatingSystem.IsWindows()) foreach (var (name, metadata) in manifest.Files)
         {
             ValidateRelative(name);
@@ -553,11 +557,39 @@ public sealed class VersionInstallation
         return descriptor;
     }
 
-    private static T ReadJson<T>(string path)
+    private static T ReadJson<T>(string path, Action<string>? checkpoint = null)
     {
         if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidDataException("Installation metadata is too large.");
-        return JsonSerializer.Deserialize<T>(File.ReadAllText(path)) ?? throw new InvalidDataException("Installation metadata is empty.");
+        return JsonSerializer.Deserialize<T>(ReadShared(path, File.ReadAllText, checkpoint)) ?? throw new InvalidDataException("Installation metadata is empty.");
     }
+
+    /// <summary>How long an installation file that another program holds open is read again before the launch stops.</summary>
+    internal static readonly TimeSpan BusyFileReadWait = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Reads an installation file that another program (an antivirus scan, an indexer) may briefly hold open. The
+    /// sharing violation is read again, and one that outlasts <see cref="BusyFileReadWait"/> is
+    /// <see cref="InstallationFileBusyException"/>, never an <see cref="IOException"/>: the callers take an
+    /// <see cref="IOException"/> for a damaged payload or state record, and a locked file read that way rolled a
+    /// healthy installation back to its previous version.
+    /// </summary>
+    private static T ReadShared<T>(string path, Func<string, T> read, Action<string>? checkpoint)
+    {
+        var wait = Stopwatch.StartNew();
+        while (true)
+        {
+            try { return read(path); }
+            catch (IOException error) when (IsSharingViolation(error))
+            {
+                if (wait.Elapsed >= BusyFileReadWait) throw new InstallationFileBusyException(path, error);
+                checkpoint?.Invoke("installation-file-busy");
+                Thread.Sleep(25);
+            }
+        }
+    }
+
+    private static bool IsSharingViolation(IOException error) =>
+        OperatingSystem.IsWindows() && (error.HResult & 0xFFFF) is 32 or 33 && error is not FileNotFoundException and not DirectoryNotFoundException;
 
     private static void ValidateReference(VersionReference reference)
     {
@@ -566,7 +598,11 @@ public sealed class VersionInstallation
 
     private static bool IsId(string? id) => id is not null && Guid.TryParseExact(id, "N", out _) && id == id.ToLowerInvariant();
     private static bool IsHash(string? hash) => hash is { Length: 64 } && hash.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
-    private static string Hash(string path) { using var stream = File.OpenRead(path); return HashBytes(SHA256.HashData(stream), alreadyHashed: true); }
+    private static string Hash(string path, Action<string>? checkpoint = null) => ReadShared(path, file =>
+    {
+        using var stream = File.OpenRead(file);
+        return HashBytes(SHA256.HashData(stream), alreadyHashed: true);
+    }, checkpoint);
     private static string HashBytes(ReadOnlySpan<byte> bytes, bool alreadyHashed = false) => Convert.ToHexString(alreadyHashed ? bytes : SHA256.HashData(bytes)).ToLowerInvariant();
 
     private static void ValidateRelative(string path)
@@ -611,3 +647,7 @@ public sealed class VersionInstallation
         catch (Exception error) when (error is ArgumentException or InvalidOperationException) { return false; }
     }
 }
+
+/// <summary>An installation file stayed held open by another program; the file itself is not known to be damaged.</summary>
+public sealed class InstallationFileBusyException(string path, Exception inner)
+    : Exception("Another program is holding '" + Path.GetFileName(path) + "' open; try launching again.", inner);
