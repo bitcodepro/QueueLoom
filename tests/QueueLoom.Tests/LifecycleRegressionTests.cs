@@ -171,6 +171,10 @@ public sealed partial class ViewModelStateTests
             }
         };
         var journal = new QueueLoom.Infrastructure.Persistence.FileActivityJournal(directory.Path);
+        // A slow disk: the journal's background writer is held until the window has closed, so the event is still only
+        // queued when the window goes. Closing the journal (as the app does on shutdown) is what puts it on disk.
+        var slowDisk = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        journal.BeforeEntryWrite = () => slowDisk.Task;
         await using (var viewModel = CreateViewModel(new FakeProfileRepository([development, test], development.Id), workspace,
                          activityJournal: journal))
         {
@@ -196,6 +200,11 @@ public sealed partial class ViewModelStateTests
             await viewModel.ToggleMonitorCommand.ExecuteAsync();
             Assert.Equal(operatorConnected ? development.Id : null, viewModel.ConnectedProfileId);
         }
+        // Still queued: nothing of it on disk yet.
+        Assert.DoesNotContain(new QueueLoom.Infrastructure.Persistence.FileActivityJournal(directory.Path).ReadRecent(),
+            record => record.Action == "DLQ detected");
+        slowDisk.TrySetResult();
+        await journal.DisposeAsync();
 
         // Read back from disk, as a reopened window does.
         var alert = new QueueLoom.Infrastructure.Persistence.FileActivityJournal(directory.Path).ReadRecent()
