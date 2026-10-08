@@ -8,7 +8,9 @@ public sealed partial class MainWindowViewModel
 {
     public bool CanWrite => IsConnected &&
                             _connectedProfile?.CanWrite == true &&
-                            (_writeUnlockProfileId != _workspace.ConnectedProfileId || IsTemporaryWriteUnlockActive);
+                            // The operator's environment: an unlock that expires while a monitor check holds another
+                            // environment shows read-only at once, before the relock gets the connection back.
+                            (_writeUnlockProfileId != _connectedProfile?.Id || IsTemporaryWriteUnlockActive);
 
     private bool IsTemporaryWriteUnlockActive =>
         _writeUnlockExpiresAt is { } expiresAt && Clock.GetUtcNow() < expiresAt;
