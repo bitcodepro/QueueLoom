@@ -143,7 +143,66 @@ public sealed partial class ViewModelStateTests
         // The durable audit record must not pair one environment's ID with another environment's name.
         var named = new[] { development, test }.Single(profile => profile.Id == alert.ProfileId);
         Assert.Equal(named.Name, alert.ProfileName);
+        // And it is the monitored environment, not the operator's.
+        Assert.Equal(test.Id, alert.ProfileId);
         Assert.Equal(development.Id, workspace.ConnectedProfileId);
+    }
+
+    // The window shows the operator's environment during a monitor check, but the activity journal records what
+    // actually happened: an event of the monitored environment is attributed to that environment, by ID and name, both
+    // when the operator is connected to another one and when no environment is connected. Persisted and read back, the
+    // history still names the monitored environment.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MonitorEventsOfAnotherEnvironmentArePersistedUnderThatEnvironment(bool operatorConnected)
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        var development = CreateProfile("Development", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var queue = new ServiceBusQueue("orders", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 1)));
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [queue]),
+            Snapshots =
+            {
+                [development.Id] = Snapshot(development.Id, new DeadLetterEntitySnapshot(queue.Reference, 1)),
+                [test.Id] = Snapshot(test.Id, new DeadLetterEntitySnapshot(queue.Reference, 4))
+            }
+        };
+        var journal = new QueueLoom.Infrastructure.Persistence.FileActivityJournal(directory.Path);
+        await using (var viewModel = CreateViewModel(new FakeProfileRepository([development, test], development.Id), workspace,
+                         activityJournal: journal))
+        {
+            await viewModel.InitializeAsync();
+            if (operatorConnected)
+            {
+                await viewModel.ConnectCommand.ExecuteAsync();
+                await viewModel.ScanAllEnvironmentsCommand.ExecuteAsync();
+                viewModel.SelectedDeadLetterEnvironmentFilter = viewModel.DeadLetterEnvironmentFilters.Single(filter => filter.ProfileId == test.Id);
+                viewModel.SelectedDlqSource = viewModel.FilteredDeadLetterSources.Single();
+                viewModel.MonitorScope = viewModel.MonitorScopes[1];
+                viewModel.MonitorTargetChoice = viewModel.MonitorTargetChoices[1];
+            }
+            else
+            {
+                // Nothing connected: the current-environment monitor checks the selected environment, B.
+                viewModel.SelectedProfile = viewModel.Profiles.Single(profile => profile.Id == test.Id);
+                viewModel.MonitorScope = viewModel.MonitorScopes[0];
+            }
+
+            await viewModel.ToggleMonitorCommand.ExecuteAsync();
+            await WaitUntilAsync(() => journal.ReadRecent().Any(record => record.Action == "DLQ detected"));
+            await viewModel.ToggleMonitorCommand.ExecuteAsync();
+            Assert.Equal(operatorConnected ? development.Id : null, viewModel.ConnectedProfileId);
+        }
+
+        // Read back from disk, as a reopened window does.
+        var alert = new QueueLoom.Infrastructure.Persistence.FileActivityJournal(directory.Path).ReadRecent()
+            .First(record => record.Action == "DLQ detected");
+        Assert.Equal(test.Id, alert.ProfileId);
+        Assert.Equal("Test", alert.ProfileName);
+        Assert.StartsWith("Test · orders", alert.Details, StringComparison.Ordinal);
     }
 
     [Fact]
