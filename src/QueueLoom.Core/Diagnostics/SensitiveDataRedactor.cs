@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Text.RegularExpressions;
 
 namespace QueueLoom.Core.Diagnostics;
@@ -32,12 +33,12 @@ public static class SensitiveDataRedactor
         var raw = exception.GetBaseException().Message;
         if (raw.Length > 5_000)
         {
-            raw = raw[..5_000];
+            raw = TextLimits.Head(raw, 5_000);
         }
         var text = Redact(raw)
             .Replace('\r', ' ')
             .Replace('\n', ' ')
             .Trim();
-        return text.Length > 600 ? text[..600] + "…" : text;
+        return text.Length > 600 ? TextLimits.Head(text, 600) + "…" : text;
     }
 }

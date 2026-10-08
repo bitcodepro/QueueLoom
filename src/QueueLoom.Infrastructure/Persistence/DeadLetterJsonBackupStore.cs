@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -70,7 +71,7 @@ public sealed class DeadLetterJsonBackupStore
         {
             sanitized = "unnamed";
         }
-        return sanitized.Length <= 80 ? sanitized : sanitized[..80];
+        return sanitized.Length <= 80 ? sanitized : TextLimits.Head(sanitized, 80);
     }
 
     internal static string UniqueEntitySegment(ServiceBusEntityReference source)

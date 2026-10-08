@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
@@ -208,7 +209,7 @@ internal static class McpMapping
         var truncated = message.IsBodyTruncated || text.Length > MaximumBodyCharacters;
         if (text.Length > MaximumBodyCharacters)
         {
-            text = text[..MaximumBodyCharacters];
+            text = TextLimits.Head(text, MaximumBodyCharacters);
         }
         var decodedText = decoded?.Text;
         var decodedTruncated = decodedText?.Length > MaximumBodyCharacters;
@@ -243,7 +244,7 @@ internal static class McpMapping
             message.State == ServiceBusMessageState.Unknown ? (message.IsDeadLetter ? "DeadLettered" : "Active") : message.State.ToString(),
             message.State == ServiceBusMessageState.Scheduled ? message.Properties.ScheduledEnqueueTime : null,
             decoded?.Summary,
-            decodedText is null ? null : decodedTruncated ? decodedText[..MaximumBodyCharacters] : decodedText,
+            decodedText is null ? null : decodedTruncated ? TextLimits.Head(decodedText, MaximumBodyCharacters) : decodedText,
             decodedTruncated,
             propertiesTruncated,
             deadLetterTruncated,
@@ -257,7 +258,7 @@ internal static class McpMapping
             return value;
         }
         truncated = true;
-        return value[..maximum];
+        return TextLimits.Head(value, maximum);
     }
 }
 

@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using Microsoft.Extensions.Logging;
 using System.Collections.ObjectModel;
 using QueueLoom.App.Commands;
@@ -319,7 +320,7 @@ public sealed partial class MainWindowViewModel
         }
 
         var environment = SelectedDeadLetterEnvironmentFilter;
-        var name = query.Length > 40 ? query[..40] + "…" : query;
+        var name = query.Length > 40 ? TextLimits.Head(query, 40) + "…" : query;
         if (environment?.ProfileId is not null)
         {
             name += $" · {environment.Name}";
