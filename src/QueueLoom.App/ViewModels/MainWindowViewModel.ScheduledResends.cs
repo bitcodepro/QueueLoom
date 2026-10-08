@@ -35,7 +35,7 @@ public sealed partial class MainWindowViewModel
         RunScheduledResendCommand = new RelayCommand<ScheduledResendItemViewModel>(
             item => _ = RunScheduledNowAsync(item!),
             item => item is not null && !IsBusy);
-        CancelScheduledResendCommand = new RelayCommand<ScheduledResendItemViewModel>(CancelScheduled, item => item is not null);
+        CancelScheduledResendCommand = new RelayCommand<ScheduledResendItemViewModel>(item => _ = CancelScheduledAsync(item), item => item is not null);
         ScheduledResends.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasScheduledResends));
         foreach (var resend in store?.Load() ?? [])
         {
@@ -63,6 +63,30 @@ public sealed partial class MainWindowViewModel
         {
             pending = null;
         }
+        ReportSetAside(aside, pending);
+    }
+
+    /// <summary>As <see cref="ReportSetAsideSchedules"/>, reading the list without holding the window's thread.</summary>
+    private async Task ReportSetAsideSchedulesAsync()
+    {
+        if (_scheduledStore?.TakeSetAsideFile() is not { } aside)
+        {
+            return;
+        }
+        HashSet<Guid>? pending;
+        try
+        {
+            pending = (await _scheduledStore.LoadAsync().ConfigureAwait(true)).Select(resend => resend.Id).ToHashSet();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            pending = null;
+        }
+        ReportSetAside(aside, pending);
+    }
+
+    private void ReportSetAside(string aside, HashSet<Guid>? pending)
+    {
         var lost = pending is null ? [] : ScheduledResends.Where(item => !pending.Contains(item.Resend.Id)).ToArray();
         foreach (var item in lost)
         {
@@ -107,7 +131,8 @@ public sealed partial class MainWindowViewModel
         if (_scheduledStore is not null)
         {
             IReadOnlyList<ScheduledResend> persisted;
-            try { persisted = _scheduledStore.Load(); }
+            // Another window can hold the list for a while: wait for it without holding this window's thread.
+            try { persisted = await _scheduledStore.LoadAsync(cancellationToken).ConfigureAwait(true); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 var error = $"Scheduled resends could not be read: {exception.Message}";
@@ -115,7 +140,7 @@ public sealed partial class MainWindowViewModel
                 return; // Never execute a stale cache after a failed read.
             }
             _scheduledReadError = null;
-            ReportSetAsideSchedules(); // Report lost cached rows before reconciliation removes them.
+            await ReportSetAsideSchedulesAsync().ConfigureAwait(true); // Report lost cached rows before reconciliation removes them.
             var currentIds = persisted.Select(resend => resend.Id).ToHashSet();
             foreach (var item in ScheduledResends.Where(item => !currentIds.Contains(item.Resend.Id)).ToArray())
                 ScheduledResends.Remove(item);
@@ -177,7 +202,7 @@ public sealed partial class MainWindowViewModel
     public Task RunScheduledNowAsync(ScheduledResendItemViewModel item) =>
         RunWorkspaceOperationAsync("Running a scheduled resend", ct => RunScheduledAsync(item, ct), CancellationToken.None, allowCancellation: true);
 
-    private void ScheduleResend(ServiceBusProfile profile, IReadOnlyList<ResendItem> items, ResendOptions options, DateTimeOffset sendAt)
+    private async Task ScheduleResendAsync(ServiceBusProfile profile, IReadOnlyList<ResendItem> items, ResendOptions options, DateTimeOffset sendAt)
     {
         if (ScheduledResends.Count >= ScheduledResend.MaximumPending)
         {
@@ -196,12 +221,12 @@ public sealed partial class MainWindowViewModel
         { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
         try
         {
-            _scheduledStore?.Add(resend);
+            if (_scheduledStore is not null) await _scheduledStore.AddAsync(resend).ConfigureAwait(true);
         }
         finally
         {
             // Also when saving failed after the old list was found damaged and set aside.
-            ReportSetAsideSchedules();
+            await ReportSetAsideSchedulesAsync().ConfigureAwait(true);
         }
         ScheduledResends.Add(CreateScheduledItem(resend));
         UpdateScheduledStatuses();
@@ -246,7 +271,7 @@ public sealed partial class MainWindowViewModel
                 : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
             var current = await _profileRepository.GetAsync(resend.ProfileId, cancellationToken).ConfigureAwait(true);
             environmentGone = current is null || ScheduledResend.IdentityFor(current) != resend.ConfigurationIdentity;
-            claimed = _scheduledStore is null || RemoveScheduled(resend);
+            claimed = _scheduledStore is null || await RemoveScheduledAsync(resend).ConfigureAwait(true);
         }
         if (!claimed || environmentGone)
         {
@@ -293,7 +318,8 @@ public sealed partial class MainWindowViewModel
         _notifications?.Show("QueueLoom", $"Scheduled resend finished: {summary}");
     }
 
-    private void CancelScheduled(ScheduledResendItemViewModel? item)
+    /// <summary>Cancels a scheduled resend; the shared list is updated without holding the window's thread.</summary>
+    public async Task CancelScheduledAsync(ScheduledResendItemViewModel? item)
     {
         if (item is null || !ScheduledResends.Contains(item))
         {
@@ -301,7 +327,7 @@ public sealed partial class MainWindowViewModel
         }
         try
         {
-            if (_scheduledStore is not null && !RemoveScheduled(item.Resend))
+            if (_scheduledStore is not null && !await RemoveScheduledAsync(item.Resend).ConfigureAwait(true))
             {
                 ScheduledResends.Remove(item);
                 StatusText = "The scheduled resend is no longer pending or changed in another window.";
@@ -343,11 +369,11 @@ public sealed partial class MainWindowViewModel
     private ScheduledResendItemViewModel CreateScheduledItem(ScheduledResend resend) =>
         new(resend, RunScheduledResendCommand, CancelScheduledResendCommand);
 
-    private bool RemoveScheduled(ScheduledResend resend)
+    private async Task<bool> RemoveScheduledAsync(ScheduledResend resend)
     {
         try
         {
-            return _scheduledStore?.TryRemove(resend) ?? true;
+            return _scheduledStore is null || await _scheduledStore.TryRemoveAsync(resend).ConfigureAwait(true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -356,7 +382,7 @@ public sealed partial class MainWindowViewModel
         }
         finally
         {
-            ReportSetAsideSchedules();
+            await ReportSetAsideSchedulesAsync().ConfigureAwait(true);
         }
     }
 

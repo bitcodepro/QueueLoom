@@ -21,7 +21,7 @@ public sealed partial class ViewModelStateTests
         await vm.ResendMarkedMessagesCommand.ExecuteAsync();
         var item = Assert.Single(vm.ScheduledResends);
         SetPrivate(vm, "_scheduledStore", new ThrowingScheduledStore());
-        if (cancel) vm.CancelScheduledResendCommand.Execute(item);
+        if (cancel) await vm.CancelScheduledAsync(item);
         else await vm.RunDueScheduledResendsAsync();
         Assert.Empty(workspace.SentMessages);
         Assert.Same(item, Assert.Single(vm.ScheduledResends));
@@ -46,7 +46,7 @@ public sealed partial class ViewModelStateTests
         workspace.SendGate = async () => { started.TrySetResult(true); await release.Task; };
         var run = vm.RunDueScheduledResendsAsync();
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        vm.CancelScheduledResendCommand.Execute(cancelled);
+        await vm.CancelScheduledAsync(cancelled);
         release.SetResult(true);
         await run;
         Assert.Single(workspace.SentMessages);

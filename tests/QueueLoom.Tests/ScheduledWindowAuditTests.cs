@@ -21,7 +21,7 @@ public sealed partial class ViewModelStateTests
         storeA.Save([DueJob(profile)]);
         var a = new FakeWorkspace(); var b = new FakeWorkspace();
         await using var vmA = await Window(storeA, a); await using var vmB = await Window(storeB, b);
-        if (cancel) vmA.CancelScheduledResendCommand.Execute(Assert.Single(vmA.ScheduledResends));
+        if (cancel) await vmA.CancelScheduledAsync(Assert.Single(vmA.ScheduledResends));
         else await vmA.RunDueScheduledResendsAsync();
         await vmB.RunDueScheduledResendsAsync();
         Assert.Empty(b.SentMessages);
@@ -51,7 +51,7 @@ public sealed partial class ViewModelStateTests
             new FakeDialogService(), scheduledResends: store);
         await vm.InitializeAsync(); await vm.ConnectCommand.ExecuteAsync();
         new JsonScheduledResendStore(paths).Save([old, added]);
-        if(cancel) vm.CancelScheduledResendCommand.Execute(Assert.Single(vm.ScheduledResends));
+        if(cancel) await vm.CancelScheduledAsync(Assert.Single(vm.ScheduledResends));
         else await vm.RunDueScheduledResendsAsync();
         Assert.Equal(added.Id, Assert.Single(new JsonScheduledResendStore(paths).Load()).Id);
     }

@@ -388,8 +388,9 @@ public sealed partial class MainWindowViewModel
         IReadOnlyList<ScheduledResend> saved;
         try
         {
-            saved = _scheduledStore?.Load().Where(resend => resend.ProfileId == selected.Id).ToArray()
-                    ?? ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
+            saved = _scheduledStore is not null
+                ? (await _scheduledStore.LoadAsync(cancellationToken).ConfigureAwait(true)).Where(resend => resend.ProfileId == selected.Id).ToArray()
+                : ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
             // Listed here but no longer saved: another window ran or cancelled it. Nothing of it is left to cancel.
             if (_scheduledStore is not null)
             {
@@ -402,12 +403,12 @@ public sealed partial class MainWindowViewModel
             cleanupProblem = exception.Message;
             saved = ScheduledResends.Where(item => item.Resend.ProfileId == selected.Id).Select(item => item.Resend).ToArray();
         }
-        ReportSetAsideSchedules();
+        await ReportSetAsideSchedulesAsync().ConfigureAwait(true);
         foreach (var resend in saved)
         {
             try
             {
-                if (RemoveScheduled(resend))
+                if (await RemoveScheduledAsync(resend).ConfigureAwait(true))
                 {
                     cancelledResends++;
                 }

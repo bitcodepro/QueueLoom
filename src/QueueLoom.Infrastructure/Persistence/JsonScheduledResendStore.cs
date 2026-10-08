@@ -16,18 +16,49 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         Converters = { new JsonStringEnumConverter() }
     };
 
-    private readonly object _gate = new();
+    // Serializes this window's own reads and writes; held across an await, so it is a semaphore, not a lock.
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public string FilePath => Path.Combine(paths.RootDirectory, "scheduled-resends.v2.json");
 
     public IReadOnlyList<ScheduledResend> Load()
     {
-        lock (_gate)
+        _gate.Wait();
+        try
         {
             using var ownership = OwnFile();
             return LoadCore();
         }
+        finally { _gate.Release(); }
     }
+
+    // The cross-process lock is awaited, and the file work runs on the thread pool, so a window's thread is never held
+    // while another window owns the list.
+    public Task<IReadOnlyList<ScheduledResend>> LoadAsync(CancellationToken cancellationToken = default) =>
+        OwnedAsync(LoadCore, cancellationToken);
+
+    public Task AddAsync(ScheduledResend resend, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(resend);
+        return OwnedAsync(() => { AddCore(resend); return true; }, cancellationToken);
+    }
+
+    public Task<bool> TryRemoveAsync(ScheduledResend expected, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        return OwnedAsync(() => TryRemoveCore(expected), cancellationToken);
+    }
+
+    private Task<T> OwnedAsync<T>(Func<T> work, CancellationToken cancellationToken) => Task.Run(async () =>
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var ownership = await CrossProcessFileLock.AcquireAsync(FilePath + ".lock", cancellationToken).ConfigureAwait(false);
+            return work();
+        }
+        finally { _gate.Release(); }
+    }, cancellationToken);
 
     private IReadOnlyList<ScheduledResend> LoadCore()
     {
@@ -54,52 +85,60 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
 
     private string? _setAside;
 
-    public string? TakeSetAsideFile()
-    {
-        lock (_gate)
-        {
-            var aside = _setAside;
-            _setAside = null;
-            return aside;
-        }
-    }
+    public string? TakeSetAsideFile() => Interlocked.Exchange(ref _setAside, null);
 
     public void Save(IReadOnlyList<ScheduledResend> resends)
     {
         ArgumentNullException.ThrowIfNull(resends);
-        lock (_gate)
+        _gate.Wait();
+        try
         {
             using var ownership = OwnFile();
             SaveCore(resends);
         }
+        finally { _gate.Release(); }
     }
 
     public void Add(ScheduledResend resend)
     {
         ArgumentNullException.ThrowIfNull(resend);
-        lock (_gate)
+        _gate.Wait();
+        try
         {
             using var ownership = OwnFile();
-            var current = LoadCore();
-            if (current.Count >= ScheduledResend.MaximumPending || current.Any(item => item.Id == resend.Id))
-                throw new InvalidOperationException("The scheduled list is full or this job already exists. Refresh the pending jobs.");
-            SaveCore(current.Append(resend).ToArray());
+            AddCore(resend);
         }
+        finally { _gate.Release(); }
+    }
+
+    private void AddCore(ScheduledResend resend)
+    {
+        var current = LoadCore();
+        if (current.Count >= ScheduledResend.MaximumPending || current.Any(item => item.Id == resend.Id))
+            throw new InvalidOperationException("The scheduled list is full or this job already exists. Refresh the pending jobs.");
+        SaveCore(current.Append(resend).ToArray());
     }
 
     public bool TryRemove(ScheduledResend expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
-        lock (_gate)
+        _gate.Wait();
+        try
         {
             using var ownership = OwnFile();
-            var current = LoadCore();
-            var job = current.FirstOrDefault(item => item.Id == expected.Id);
-            if (job is null || JsonSerializer.Serialize(ToDocument(job), Options) != JsonSerializer.Serialize(ToDocument(expected), Options))
-                return false;
-            SaveCore(current.Where(item => item.Id != expected.Id).ToArray());
-            return true;
+            return TryRemoveCore(expected);
         }
+        finally { _gate.Release(); }
+    }
+
+    private bool TryRemoveCore(ScheduledResend expected)
+    {
+        var current = LoadCore();
+        var job = current.FirstOrDefault(item => item.Id == expected.Id);
+        if (job is null || JsonSerializer.Serialize(ToDocument(job), Options) != JsonSerializer.Serialize(ToDocument(expected), Options))
+            return false;
+        SaveCore(current.Where(item => item.Id != expected.Id).ToArray());
+        return true;
     }
 
     private CrossProcessFileLock OwnFile() =>
