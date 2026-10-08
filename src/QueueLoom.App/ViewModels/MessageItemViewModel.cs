@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Globalization;
 using QueueLoom.App.Models;
 using System.Text;
@@ -233,7 +234,7 @@ public sealed class MessageItemViewModel : ObservableObject
         var length = Math.Min(Message.Body.Length, PreviewBytes);
         var display = EditableMessageBody.FromBytes(Message.Body.Span[..length]).Content;
         var preview = display.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return preview.Length > 180 ? preview[..180] + "…" : preview;
+        return preview.Length > 180 ? TextLimits.Head(preview, 180) + "…" : preview;
     }
 
     private string CreateApplicationPropertiesJson()
@@ -246,7 +247,7 @@ public sealed class MessageItemViewModel : ObservableObject
                 {
                     type = property.Type.ToString(),
                     value = property.Value.Length > MaxDisplayedPropertyCharacters
-                        ? property.Value[..MaxDisplayedPropertyCharacters] + "… [display truncated]"
+                        ? TextLimits.Head(property.Value, MaxDisplayedPropertyCharacters) + "… [display truncated]"
                         : property.Value
                 },
                 StringComparer.Ordinal);

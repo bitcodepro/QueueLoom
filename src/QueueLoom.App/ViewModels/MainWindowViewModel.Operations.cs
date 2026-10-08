@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Globalization;
 using System.Text.Json;
 using QueueLoom.App.Commands;
@@ -274,7 +275,7 @@ public sealed partial class MainWindowViewModel
         }
 
         var copied = _clipboard is not null && await _clipboard.SetTextAsync(text).ConfigureAwait(true);
-        var preview = text.Length > 80 ? text[..80] + "…" : text;
+        var preview = text.Length > 80 ? TextLimits.Head(text, 80) + "…" : text;
         StatusText = copied ? $"Copied: {preview}" : "The clipboard is unavailable; nothing was copied.";
         _notifications?.Show(
             copied ? "Copied to clipboard" : "Copy failed",
