@@ -155,7 +155,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             var window = SynchronizationContext.Current;
             _activityWriteFailed = exception =>
             {
-                void Report() => ErrorText = $"Activity journal could not be saved: {SanitizeException(exception)}";
+                // A report already on its way when the window closes is dropped: there is no window to show it.
+                void Report()
+                {
+                    if (!_isDisposed) ErrorText = $"Activity journal could not be saved: {SanitizeException(exception)}";
+                }
                 if (window is null) Report(); else window.Post(_ => Report(), null);
             };
             failures.EntryWriteFailed += _activityWriteFailed;

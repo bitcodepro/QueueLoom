@@ -151,3 +151,40 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("disk full", vm.ErrorText, StringComparison.Ordinal);
     }
 }
+
+public sealed partial class ViewModelStateTests
+{
+    // A write failure reported while the window is closing reaches it only after it has closed: it is dropped there,
+    // not shown on a closed window (as UI tests closing their window and deleting its folder would cause).
+    [Fact]
+    public async Task AnActivityWriteFailureArrivingAfterTheWindowClosedIsDropped()
+    {
+        using var directory = new TemporaryDirectory();
+        var window = new QueuedContext();
+        await using var journal = new FileActivityJournal(directory.Path) { BeforeEntryWrite = () => throw new IOException("folder gone") };
+        var profile = CreateProfile("Closing", QueueLoom.Core.Profiles.EnvironmentKind.Development, QueueLoom.Core.Profiles.ProfileAccessMode.ReadWrite);
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(window);
+        QueueLoom.App.ViewModels.MainWindowViewModel vm;
+        try { vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), activityJournal: journal); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+
+        vm.ReportLocalDataProblem("Entry", "written in the background");
+        await journal.WaitForPendingEntriesAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(1, window.Queued);
+        await vm.DisposeAsync();
+        var before = vm.ErrorText;
+
+        window.RunQueued();
+
+        Assert.Equal(before, vm.ErrorText);
+    }
+
+    private sealed class QueuedContext : SynchronizationContext
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _posts = new();
+        public int Queued => _posts.Count;
+        public override void Post(SendOrPostCallback d, object? state) => _posts.Enqueue((d, state));
+        public void RunQueued() { while (_posts.TryDequeue(out var post)) post.Callback(post.State); }
+    }
+}
