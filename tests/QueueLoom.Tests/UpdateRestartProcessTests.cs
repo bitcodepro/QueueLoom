@@ -314,6 +314,41 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
         }
     }
 
+    // A helper run that already completed by faulting with a TimeoutException of its own has finished: its outcome
+    // belongs to the test, and it is not taken for a run still pending after the bound.
+    [Fact]
+    public async Task AHelperThatFaultedWithATimeoutHasCompletedAndIsNotPending()
+    {
+        Installation();
+        _ = Own(Task.FromException<int>(new TimeoutException("The helper's own timeout.")));
+        _helperBound = TimeSpan.FromMilliseconds(200);
+
+        await IsolatedAsync(() => Task.CompletedTask);
+
+        Assert.Null(_cleanupFailure);
+    }
+
+    // After the test itself failed, a directory that cannot be removed is only noted: the test's failure stays the one
+    // reported, not combined with the cleanup's. After a passing test the same error fails it.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ADirectoryThatCannotBeRemovedAfterAFailedTestIsOnlyNoted(bool testFailed)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows sharing violations."); return; }
+        Installation();
+        _deleteBound = TimeSpan.FromMilliseconds(200);
+        var held = Path.Combine(_root, "held by another program");
+        await File.WriteAllTextAsync(held, "x", TestContext.Current.CancellationToken);
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var thrown = await Record.ExceptionAsync(() => RemoveInstallationAsync(testFailed));
+            Assert.Equal(testFailed, thrown is null);
+            if (thrown is not null) Assert.IsAssignableFrom<IOException>(thrown);
+        }
+        Assert.True(File.Exists(held));
+    }
+
     // A process of the installation that has not started loading yet (created suspended, before the runtime or any
     // marker exists) cannot report its modules. It is still found through its executable path and stopped before
     // anything is removed; it is not taken for absent.
