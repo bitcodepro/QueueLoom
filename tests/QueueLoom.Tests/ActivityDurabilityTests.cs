@@ -34,6 +34,8 @@ public sealed partial class ViewModelStateTests
             FileActivityJournal.ForcedToDisk.Value = null;
         }
 
+        // Ordinary entries are written by the journal's background writer: read them once it is done.
+        await journal.WaitForPendingEntriesAsync().WaitAsync(TimeSpan.FromSeconds(30));
         var records = new FileActivityJournal(directory.Path).ReadRecent();
         Assert.Equal(20, records.Count(record => record.Action == "Entry"));
         Assert.Single(records, record => record.Action == "Delete dead letters started");
