@@ -80,9 +80,10 @@ public static partial class DeadLetterCauses
     [GeneratedRegex(@"\b\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?\b|\b\d{1,2}:\d{2}:\d{2}(\.\d+)?\b")]
     private static partial Regex Timestamp();
 
-    // A quote opens after something other than a letter or digit and closes before one: an apostrophe inside a word
-    // ("can't", "customer's", "customers' ") is not a quote, and pairing two of them swallowed the words in between
-    // ("Can't ship order 42, it doesn't exist" became "Can'{value}'t exist"), merging different causes.
+    // A quote opens only when the preceding character is not a letter or number, and closes only when the following
+    // character is not a letter or number. An apostrophe inside a word ("can't", "customer's") is therefore not a
+    // quote; pairing two of them swallowed the words in between ("Can't ship order 42, it doesn't exist" became
+    // "Can'{value}'t exist"), merging different causes.
     [GeneratedRegex(@"(?<![\p{L}\p{N}])(?<quote>['""`])[^'""`\r\n]*\d[^'""`\r\n]*\k<quote>(?![\p{L}\p{N}])")]
     private static partial Regex QuotedWithDigits();
 
