@@ -148,6 +148,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         _dialogs = dialogs;
         _backupRepository = backupRepository;
         _activityJournal = activityJournal;
+        // Ordinary entries are written later on the journal's own thread; one it cannot write is reported here, on the
+        // window's thread when there is one, as a failed synchronous write was.
+        if (activityJournal is IReportsActivityWriteFailures failures)
+        {
+            var window = SynchronizationContext.Current;
+            _activityWriteFailed = exception =>
+            {
+                void Report() => ErrorText = $"Activity journal could not be saved: {SanitizeException(exception)}";
+                if (window is null) Report(); else window.Post(_ => Report(), null);
+            };
+            failures.EntryWriteFailed += _activityWriteFailed;
+        }
         _replayStore = replayStore;
         _backupMigration = backupMigration;
         _clipboard = clipboard;
@@ -742,9 +754,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         catch (Exception error) { _shutdownCompletion.TrySetException(error); }
     }
 
+    private Action<Exception>? _activityWriteFailed;
+
     private async Task DisposeCoreAsync()
     {
         _isDisposed = true;
+        if (_activityJournal is IReportsActivityWriteFailures failures && _activityWriteFailed is not null)
+        {
+            failures.EntryWriteFailed -= _activityWriteFailed;
+        }
         var operationsDrained = _operations.StopAndDrainAsync();
         var commandsDrained = _commands.StopAndDrainAsync();
         _shutdownCancellation.Cancel();

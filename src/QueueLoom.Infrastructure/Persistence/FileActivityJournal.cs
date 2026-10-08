@@ -1,13 +1,35 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using QueueLoom.Core.Abstractions;
 
 namespace QueueLoom.Infrastructure.Persistence;
 
-/// <summary>One durable file per action; a crash cannot corrupt previous records.</summary>
-public sealed class FileActivityJournal(string directory) : IActivityViewJournal
+/// <summary>
+/// One file per action; a crash cannot corrupt previous records. Ordinary entries are written by one background
+/// writer, so the window's thread never waits on the disk for them; the record before a destructive operation is
+/// written and forced to disk before <see cref="Append"/> returns. Closing writes what is queued, waiting at most
+/// <see cref="CloseDeadline"/>.
+/// </summary>
+public sealed class FileActivityJournal(string directory) : IActivityViewJournal, IReportsActivityWriteFailures, IAsyncDisposable, IDisposable
 {
+    // Records to write, in order, and markers a caller waits on until everything before them is written.
+    private readonly Channel<object> _queue = Channel.CreateUnbounded<object>(new UnboundedChannelOptions { SingleReader = true });
+    // Queued but not yet on disk, so reading meanwhile still shows them.
+    private readonly List<ActivityRecord> _pending = [];
+    private readonly object _writerGate = new();
+    private Task? _writer;
+    private bool _closed;
+
+    public event Action<Exception>? EntryWriteFailed;
+
+    /// <summary>How long closing waits for queued entries to be written.</summary>
+    public TimeSpan CloseDeadline { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>Tests hold the writer just before it writes an entry.</summary>
+    internal Func<Task>? BeforeEntryWrite { get; set; }
+
     public DateTimeOffset? ClearViewCutoff => File.Exists(Path.Combine(directory, ".view-cutoff")) &&
         DateTimeOffset.TryParse(File.ReadAllText(Path.Combine(directory, ".view-cutoff")), CultureInfo.InvariantCulture,
             DateTimeStyles.RoundtripKind, out var cutoff) ? cutoff : null;
@@ -23,7 +45,78 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
     }
     public void Append(ActivityRecord record) => Write(record, durable: true);
 
-    public void AppendEntry(ActivityRecord record) => Write(record, durable: false);
+    public void AppendEntry(ActivityRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        lock (_writerGate)
+        {
+            if (!_closed)
+            {
+                lock (_pending) _pending.Add(record);
+                _queue.Writer.TryWrite(record);
+                _writer ??= Task.Run(WriteQueuedEntriesAsync);
+                return;
+            }
+        }
+        // After closing nothing writes the queue any more: write it here, so the entry is not lost.
+        Write(record, durable: false);
+    }
+
+    /// <summary>Completes once every entry queued before this call is written (or failed).</summary>
+    internal Task WaitForPendingEntriesAsync()
+    {
+        var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_writerGate)
+        {
+            if (_closed || _writer is null) return Task.CompletedTask;
+            _queue.Writer.TryWrite(written);
+        }
+        return written.Task;
+    }
+
+    private async Task WriteQueuedEntriesAsync()
+    {
+        await foreach (var item in _queue.Reader.ReadAllAsync().ConfigureAwait(false))
+        {
+            if (item is TaskCompletionSource marker)
+            {
+                marker.TrySetResult();
+                continue;
+            }
+            var record = (ActivityRecord)item;
+            try
+            {
+                if (BeforeEntryWrite is { } hold) await hold().ConfigureAwait(false);
+                Write(record, durable: false);
+            }
+            catch (Exception exception)
+            {
+                // One entry that cannot be written does not stop the ones after it; the window is told.
+                try { EntryWriteFailed?.Invoke(exception); } catch { }
+            }
+            finally
+            {
+                lock (_pending) _pending.Remove(record);
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Task? writer;
+        lock (_writerGate)
+        {
+            if (_closed) return;
+            _closed = true;
+            _queue.Writer.TryComplete();
+            writer = _writer;
+        }
+        if (writer is null) return;
+        try { await writer.WaitAsync(CloseDeadline).ConfigureAwait(false); }
+        catch (TimeoutException) { /* The disk does not answer: closing is not held by it. */ }
+    }
+
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     /// <summary>Tests observe each record forced to disk.</summary>
     internal static readonly AsyncLocal<Action?> ForcedToDisk = new();
@@ -69,7 +162,12 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
             catch (Exception exception) when (exception is JsonException or ArgumentException or NotSupportedException or
                                                   IOException or UnauthorizedAccessException) { }
         }
-        return records.OrderByDescending(r => r.Timestamp).ToArray();
+        lock (_pending)
+        {
+            records.AddRange(_pending.Where(record => cutoff is null || record.Timestamp > cutoff));
+        }
+        // An entry written just now can be both on disk and still queued: it is listed once.
+        return records.Distinct().OrderByDescending(r => r.Timestamp).Take(maximum).ToArray();
     }
 
     /// <summary>
