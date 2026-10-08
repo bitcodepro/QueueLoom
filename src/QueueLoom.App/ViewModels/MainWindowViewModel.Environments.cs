@@ -54,7 +54,12 @@ public sealed partial class MainWindowViewModel
 
     public bool IsConnected => _workspace.ConnectionState == WorkspaceConnectionState.Connected;
 
-    public Guid? ConnectedProfileId => IsConnected ? _workspace.ConnectedProfileId : null;
+    /// <summary>
+    /// The operator's environment. A monitor check of another environment temporarily connects the workspace there;
+    /// what the window shows and offers follows the operator's environment throughout. Work that depends on the actual
+    /// connection reads <c>_workspace.ConnectedProfileId</c> under the workspace gate, which a check gives back first.
+    /// </summary>
+    public Guid? ConnectedProfileId => IsConnected ? _connectedProfile?.Id : null;
 
     public string ConnectedProfileName => IsConnected
         ? _connectedProfile?.Name ?? "Connected environment"
