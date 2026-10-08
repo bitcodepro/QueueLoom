@@ -96,7 +96,7 @@ public sealed partial class ViewModelStateTests
         var row = Assert.Single(vm.ScheduledResends);
 
         await vm.RunDueScheduledResendsAsync();
-        vm.CancelScheduledResendCommand.Execute(row);
+        await vm.CancelScheduledAsync(row);
 
         Assert.Empty(vm.ScheduledResends);
         Assert.Empty(store.Load());
