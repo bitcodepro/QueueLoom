@@ -29,13 +29,17 @@ public sealed partial class MainWindowViewModel
 
     public RelayCommand<ScheduledResendItemViewModel> CancelScheduledResendCommand { get; private set; } = null!;
 
+    /// <summary>The cancellation the command last started; it completes once the shared list is updated.</summary>
+    internal Task PendingScheduledCancellation { get; private set; } = Task.CompletedTask;
+
     private void InitializeScheduledResends(IScheduledResendStore? store)
     {
         _scheduledStore = store;
         RunScheduledResendCommand = new RelayCommand<ScheduledResendItemViewModel>(
             item => _ = RunScheduledNowAsync(item!),
             item => item is not null && !IsBusy);
-        CancelScheduledResendCommand = new RelayCommand<ScheduledResendItemViewModel>(item => _ = CancelScheduledAsync(item), item => item is not null);
+        CancelScheduledResendCommand = new RelayCommand<ScheduledResendItemViewModel>(
+            item => PendingScheduledCancellation = CancelScheduledAsync(item), item => item is not null);
         ScheduledResends.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasScheduledResends));
         foreach (var resend in store?.Load() ?? [])
         {
@@ -153,8 +157,8 @@ public sealed partial class MainWindowViewModel
             }
         }
         // A damaged list can be found by a read elsewhere (the background history cleanup); it is reported here at
-        // the latest.
-        ReportSetAsideSchedules();
+        // the latest, again without holding the window's thread.
+        await ReportSetAsideSchedulesAsync().ConfigureAwait(true);
         UpdateScheduledStatuses();
         var now = Clock.GetUtcNow();
         foreach (var item in ScheduledResends.ToArray())
@@ -202,7 +206,8 @@ public sealed partial class MainWindowViewModel
     public Task RunScheduledNowAsync(ScheduledResendItemViewModel item) =>
         RunWorkspaceOperationAsync("Running a scheduled resend", ct => RunScheduledAsync(item, ct), CancellationToken.None, allowCancellation: true);
 
-    private async Task ScheduleResendAsync(ServiceBusProfile profile, IReadOnlyList<ResendItem> items, ResendOptions options, DateTimeOffset sendAt)
+    private async Task ScheduleResendAsync(ServiceBusProfile profile, IReadOnlyList<ResendItem> items, ResendOptions options, DateTimeOffset sendAt,
+        CancellationToken cancellationToken = default)
     {
         if (ScheduledResends.Count >= ScheduledResend.MaximumPending)
         {
@@ -221,17 +226,24 @@ public sealed partial class MainWindowViewModel
         { ConfigurationIdentity = ScheduledResend.IdentityFor(profile) };
         try
         {
-            if (_scheduledStore is not null) await _scheduledStore.AddAsync(resend).ConfigureAwait(true);
+            // Cancelled while another window holds the list: nothing is saved, so nothing can be sent later.
+            if (_scheduledStore is not null) await _scheduledStore.AddAsync(resend, cancellationToken).ConfigureAwait(true);
         }
         finally
         {
             // Also when saving failed after the old list was found damaged and set aside.
             await ReportSetAsideSchedulesAsync().ConfigureAwait(true);
         }
-        ScheduledResends.Add(CreateScheduledItem(resend));
+        // The background check may already have listed the saved job while this one waited: one row per job.
+        var row = ScheduledResends.FirstOrDefault(item => item.Resend.Id == resend.Id);
+        if (row is null)
+        {
+            row = CreateScheduledItem(resend);
+            ScheduledResends.Add(row);
+        }
         UpdateScheduledStatuses();
-        StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {ScheduledResends[^1].Title}. It is listed on Activity.";
-        AddActivity("Info", "Resend scheduled", $"{profile.Name} · {ScheduledResends[^1].Title} · {sendAt.ToLocalTime():g}", options.Destination);
+        StatusText = $"Scheduled for {sendAt.ToLocalTime():ddd HH:mm}: {row.Title}. It is listed on Activity.";
+        AddActivity("Info", "Resend scheduled", $"{profile.Name} · {row.Title} · {sendAt.ToLocalTime():g}", options.Destination);
     }
 
     private async Task RunScheduledAsync(ScheduledResendItemViewModel item, CancellationToken cancellationToken)
@@ -271,7 +283,8 @@ public sealed partial class MainWindowViewModel
                 : await coordinator.AcquireProfileMutationAsync(cancellationToken).ConfigureAwait(true);
             var current = await _profileRepository.GetAsync(resend.ProfileId, cancellationToken).ConfigureAwait(true);
             environmentGone = current is null || ScheduledResend.IdentityFor(current) != resend.ConfigurationIdentity;
-            claimed = _scheduledStore is null || await RemoveScheduledAsync(resend).ConfigureAwait(true);
+            // Cancelled while waiting for the list: the job stays pending, untouched.
+            claimed = _scheduledStore is null || await RemoveScheduledAsync(resend, cancellationToken).ConfigureAwait(true);
         }
         if (!claimed || environmentGone)
         {
@@ -369,11 +382,11 @@ public sealed partial class MainWindowViewModel
     private ScheduledResendItemViewModel CreateScheduledItem(ScheduledResend resend) =>
         new(resend, RunScheduledResendCommand, CancelScheduledResendCommand);
 
-    private async Task<bool> RemoveScheduledAsync(ScheduledResend resend)
+    private async Task<bool> RemoveScheduledAsync(ScheduledResend resend, CancellationToken cancellationToken = default)
     {
         try
         {
-            return _scheduledStore is null || await _scheduledStore.TryRemoveAsync(resend).ConfigureAwait(true);
+            return _scheduledStore is null || await _scheduledStore.TryRemoveAsync(resend, cancellationToken).ConfigureAwait(true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

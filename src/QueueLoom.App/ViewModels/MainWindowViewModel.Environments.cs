@@ -408,7 +408,7 @@ public sealed partial class MainWindowViewModel
         {
             try
             {
-                if (await RemoveScheduledAsync(resend).ConfigureAwait(true))
+                if (await RemoveScheduledAsync(resend, cancellationToken).ConfigureAwait(true))
                 {
                     cancelledResends++;
                 }

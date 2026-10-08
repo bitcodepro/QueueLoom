@@ -33,7 +33,8 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
     }
 
     // The cross-process lock is awaited, and the file work runs on the thread pool, so a window's thread is never held
-    // while another window owns the list.
+    // while another window owns the list. Cancellation is observed until the lock is owned: a cancelled call changes
+    // nothing. Once owned, the read or change completes, so the list is never left half-updated.
     public Task<IReadOnlyList<ScheduledResend>> LoadAsync(CancellationToken cancellationToken = default) =>
         OwnedAsync(LoadCore, cancellationToken);
 

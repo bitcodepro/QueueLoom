@@ -233,7 +233,7 @@ public sealed partial class ViewModelStateTests
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
 
         await Assert.ThrowsAsync<IOException>(() => (Task)schedule.Invoke(vm,
-            [profile, Array.Empty<ResendItem>(), new ResendOptions(null, ResendMode.Copy, 0), DateTimeOffset.UtcNow.AddDays(1)])!);
+            [profile, Array.Empty<ResendItem>(), new ResendOptions(null, ResendMode.Copy, 0), DateTimeOffset.UtcNow.AddDays(1), CancellationToken.None])!);
         Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
         Assert.Empty(vm.ScheduledResends);
     }

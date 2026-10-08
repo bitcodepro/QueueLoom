@@ -105,7 +105,7 @@ public sealed partial class MainWindowViewModel
         }
         if (options.SendAt is { } sendAt)
         {
-            await ScheduleResendAsync(profile, items, options, sendAt).ConfigureAwait(true);
+            await ScheduleResendAsync(profile, items, options, sendAt, cancellationToken).ConfigureAwait(true);
             using var unmark = BatchMessageUpdates();
             foreach (var item in marked)
             {
