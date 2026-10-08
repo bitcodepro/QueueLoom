@@ -45,6 +45,9 @@ public sealed class HostAndPortIpv6Tests
     [InlineData("[broker]:9092")]
     [InlineData("[10.0.0.5]:9092")]
     [InlineData("[::1]9092")]
+    [InlineData("[[::1]]:9092")]
+    [InlineData("[::1]]:9092")]
+    [InlineData("[[::1]:9092")]
     [InlineData("broker-1")]
     public void KafkaRefusesAmbiguousOrIncompleteAddresses(string servers)
     {
@@ -57,6 +60,7 @@ public sealed class HostAndPortIpv6Tests
     [InlineData("localhost:8085", true)]
     [InlineData("::1:8085", false)]
     [InlineData("[::1]", false)]
+    [InlineData("[[::1]]:8085", false)]
     public void ThePubSubEmulatorAddressFollowsTheSameRules(string emulator, bool valid)
     {
         var codes = Codes(PubSub(emulator));

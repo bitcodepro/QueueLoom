@@ -361,7 +361,11 @@ public static partial class ProfileValidator
         if (value.StartsWith('['))
         {
             var close = value.IndexOf("]:", StringComparison.Ordinal);
-            if (close < 2 || Uri.CheckHostName(value[1..close]) != UriHostNameType.IPv6) return false;
+            // One pair of brackets only: Uri.CheckHostName also accepts an address that is already bracketed, so
+            // "[[::1]]:9092" would otherwise pass and reach the client unusable.
+            if (close < 2) return false;
+            var host = value[1..close];
+            if (host.AsSpan().IndexOfAny('[', ']') >= 0 || Uri.CheckHostName(host) != UriHostNameType.IPv6) return false;
             portText = value[(close + 2)..];
         }
         else
