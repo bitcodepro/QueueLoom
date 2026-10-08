@@ -106,6 +106,38 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(1, vm.SelectedOperationItem?.Item.Index);
     }
 
+    // The window lists the saved operations from its construction on. Initialization ends only after that read, so a
+    // refresh asked for afterwards never overlaps it: without a UI thread to serialize them (as in these tests), two
+    // overlapping reads both added their items, and the operation showed every item twice.
+    [Fact]
+    public async Task OperationHistory_InitializationWaitsForTheFirstReadSoALaterRefreshNeverOverlapsIt()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        store.HoldLists();
+        Task initialized;
+        await using var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        try
+        {
+            await store.ListEntered.Task.WaitAsync(OperationLoadGuard);
+            initialized = vm.InitializeAsync();
+            // Everything else initialization does completes at once with these fakes; only the held list is left.
+            Assert.NotSame(initialized, await Task.WhenAny(initialized, Task.Delay(TimeSpan.FromSeconds(2))));
+        }
+        finally
+        {
+            store.ReleaseLists();
+        }
+
+        await initialized.WaitAsync(OperationLoadGuard);
+        Assert.Equal(2, vm.OperationItems.Count);
+        await vm.RefreshOperationHistoryCommand.ExecuteAsync();
+
+        Assert.Equal([0, 1], vm.OperationItems.Select(item => item.Item.Index));
+    }
+
     /// <summary>The file store, with reads that can be held until released.</summary>
     private sealed class HeldReplayStore(BatchReplayStore inner) : IBatchReplayStore
     {
