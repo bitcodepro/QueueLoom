@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -326,7 +327,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         {
             var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             var line = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-            return line.Length > MaximumErrorCharacters ? line[..MaximumErrorCharacters] + "…" : line;
+            return line.Length > MaximumErrorCharacters ? TextLimits.Head(line, MaximumErrorCharacters) + "…" : line;
         }
         catch (Exception exception) when (exception is IOException or HttpRequestException)
         {

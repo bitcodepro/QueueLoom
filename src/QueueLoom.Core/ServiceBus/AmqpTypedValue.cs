@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -155,7 +156,7 @@ public static class AmqpTypedValue
             : "a dec value has more digits than AMQP carries (a signed 32-bit value with a scale)";
     }
 
-    private static string Short(string text) => text.Length > 40 ? text[..40] + "…" : text;
+    private static string Short(string text) => text.Length > 40 ? TextLimits.Head(text, 40) + "…" : text;
 
     private static bool IsBase64(string text)
     {

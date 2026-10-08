@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
@@ -203,7 +204,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 throw new McpException(string.Join(" ", validation.Errors.Select(error => error.Message)));
             }
 
-            var preview = draft.Body.Content.Length > 600 ? draft.Body.Content[..600] + "…" : draft.Body.Content;
+            var preview = draft.Body.Content.Length > 600 ? TextLimits.Head(draft.Body.Content, 600) + "…" : draft.Body.Content;
             var decision = await RequestApprovalAsync(server, profile, "Send a message",
                 $"One message will be sent to {McpMapping.EntityName(target)}.\n" +
                 // Every value here comes from the model: one line each, so none can imitate the lines around it.
@@ -520,7 +521,7 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
 
         // The reason is written by the model: one bounded line, so it cannot imitate or push away the real details.
         var oneLine = string.Join(' ', reason.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        reason = oneLine.Length > 500 ? oneLine[..500] + "…" : oneLine;
+        reason = oneLine.Length > 500 ? TextLimits.Head(oneLine, 500) + "…" : oneLine;
         // The client names itself: one line, so it cannot add lines of its own.
         var client = server.ClientInfo is { } info ? ApprovalText.OneLine($"{info.Name} {info.Version}".Trim()) : "an MCP client";
         return approver.RequestAsync(

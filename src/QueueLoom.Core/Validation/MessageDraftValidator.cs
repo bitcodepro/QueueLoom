@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -242,7 +243,7 @@ public static class MessageDraftValidator
                     MessageAttributeConventions.AwsDataType(numeric).StartsWith("Number", StringComparison.Ordinal) &&
                     !AwsNumber.IsMatch(numberValue))
                 {
-                    var label = numeric.Name is { Length: > 40 } longName ? longName[..40] + "…" : numeric.Name;
+                    var label = numeric.Name is { Length: > 40 } longName ? TextLimits.Head(longName, 40) + "…" : numeric.Name;
                     errors.Add(new ValidationError(
                         "message.application_property.aws_number_invalid",
                         $"Amazon SQS and SNS send '{label}' as a Number attribute, which only accepts a plain decimal number " +
@@ -290,7 +291,7 @@ public static class MessageDraftValidator
                         "message.application_property.too_long",
                         $"Google Pub/Sub accepts attribute names up to {MaxPubSubAttributeKeyBytes} bytes and values up to " +
                         $"{MaxPubSubAttributeValueBytes.ToString("N0", CultureInfo.InvariantCulture)} bytes; " +
-                        $"'{(name.Length > 40 ? name[..40] + "…" : name)}' is longer.",
+                        $"'{(name.Length > 40 ? TextLimits.Head(name, 40) + "…" : name)}' is longer.",
                         nameof(MessageDraft.ApplicationProperties)));
                 }
             }
@@ -386,7 +387,7 @@ public static class MessageDraftValidator
     private static string? WireTypeError(MessageApplicationProperty property)
     {
         var wire = property.WireType!;
-        var name = property.Name.Length > 40 ? property.Name[..40] + "…" : property.Name;
+        var name = property.Name.Length > 40 ? TextLimits.Head(property.Name, 40) + "…" : property.Name;
         if (wire == AmqpTypedValue.WireType)
         {
             // A RabbitMQ header kept with its exact AMQP types (a table, an array, a void value…): sent as it is.
@@ -401,7 +402,7 @@ public static class MessageDraftValidator
         if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number") ||
             wire.Length > MaxAwsDataTypeLength)
         {
-            return $"'{name}' has wireType '{(wire.Length > 40 ? wire[..40] + "…" : wire)}', which is not an Amazon SQS/SNS " +
+            return $"'{name}' has wireType '{(wire.Length > 40 ? TextLimits.Head(wire, 40) + "…" : wire)}', which is not an Amazon SQS/SNS " +
                    $"custom type: use 'String.<label>' or 'Number.<label>' (up to {MaxAwsDataTypeLength} characters), " +
                    "or remove wireType.";
         }

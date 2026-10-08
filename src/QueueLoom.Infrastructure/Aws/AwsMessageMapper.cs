@@ -1,3 +1,4 @@
+using QueueLoom.Core;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -227,7 +228,7 @@ internal static class AwsMessageMapper
             {
                 throw new InvalidOperationException(
                     $"Amazon SQS and SNS FIFO {name} ({property}) must be at most 128 letters, digits and ASCII punctuation, " +
-                    $"without spaces; '{(value.Length > 40 ? value[..40] + "…" : value)}' is not. Nothing was sent.");
+                    $"without spaces; '{(value.Length > 40 ? TextLimits.Head(value, 40) + "…" : value)}' is not. Nothing was sent.");
             }
         }
     }
