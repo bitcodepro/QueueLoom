@@ -285,6 +285,8 @@ internal sealed class WindowFixture : IAsyncDisposable
     {
         Window.Close();
         await SettleAsync();
+        // Activity entries are written by the journal's background writer: let it finish before the folder goes.
+        await ActivityJournal.DisposeAsync();
         _offlineHttp.Dispose();
         // A preference saved just before closing (the window saves them in the background) may still hold its
         // temporary file open; on Windows that blocks the delete until the save is done.

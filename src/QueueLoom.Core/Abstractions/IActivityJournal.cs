@@ -19,6 +19,13 @@ public interface IActivityJournal
     IReadOnlyList<ActivityRecord> ReadRecent(int maximum = 500);
 }
 
+/// <summary>A journal that writes ordinary entries later, on its own thread: it reports an entry it could not write.</summary>
+public interface IReportsActivityWriteFailures
+{
+    /// <summary>Raised on the writer's thread for an ordinary entry that could not be saved.</summary>
+    event Action<Exception>? EntryWriteFailed;
+}
+
 /// <summary>A reversible display filter. Journal records are retained.</summary>
 public interface IActivityViewJournal : IActivityJournal
 {
