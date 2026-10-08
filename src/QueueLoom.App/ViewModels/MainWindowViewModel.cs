@@ -783,6 +783,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         {
             pending.Add(_writeUnlockTask);
         }
+        // The Monitors history read is linked to the shutdown cancellation, cancelled above.
+        pending.Add(HistoryRefresh);
         var drained = Task.WhenAll(pending);
         // A broker call that ignores cancellation must not keep the window from closing forever.
         var finished = await Task.WhenAny(drained, Task.Delay(ShutdownDrainTimeout, Clock)).ConfigureAwait(true);

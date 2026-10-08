@@ -85,6 +85,97 @@ public sealed partial class ViewModelStateTests
         Assert.Equal("2", viewModel.HistoryNowText);
     }
 
+    // While the new selection's history is read, nothing of the previous selection is shown under it: not its count, graph
+    // or queues. The page says it is reading, then shows the new result, an empty one included.
+    [Theory]
+    [InlineData("environment")]
+    [InlineData("range")]
+    public async Task History_ANewSelectionNeverShowsThePreviousSelectionsSummary(string change)
+    {
+        var (development, workspace) = HistoryEnvironment();
+        var production = CreateProfile("Production orders", EnvironmentKind.Production);
+        var store = new SerializedGatedHistoryStore();
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([development, production], development.Id), workspace,
+            history: store);
+        await viewModel.InitializeAsync();
+        viewModel.SelectedNavigation = viewModel.Navigation.Single(item => item.Key == nameof(NavigationPage.Monitors));
+        var shown = viewModel.HistoryProfile!;
+        store.Reads[0].Gate.SetResult([Sample(shown.Profile, minutesAgo: 1, total: 7, source: "only-in-the-first")]);
+        await viewModel.HistoryRefresh.WaitAsync(HistoryDeadlockGuard);
+        Assert.Equal("7", viewModel.HistoryNowText);
+        Assert.Equal("only-in-the-first", Assert.Single(viewModel.HistorySources).Name);
+
+        if (change == "environment") viewModel.HistoryProfile = viewModel.Profiles.Single(profile => profile.Id != shown.Id);
+        else viewModel.HistoryRange = "Last 6 hours";
+
+        Assert.True(viewModel.IsHistoryLoading);
+        Assert.False(viewModel.HasHistory);
+        Assert.Empty(viewModel.HistoryPoints);
+        Assert.Empty(viewModel.HistorySources);
+        Assert.Equal("—", viewModel.HistoryNowText);
+        Assert.Equal("—", viewModel.HistoryPeakText);
+        Assert.StartsWith("Reading the dead-letter history of " + viewModel.HistoryProfile!.Name, viewModel.HistoryEmptyText,
+            StringComparison.Ordinal);
+
+        if (change == "environment")
+        {
+            store.Reads[1].Gate.SetResult([]);
+            await viewModel.HistoryRefresh.WaitAsync(HistoryDeadlockGuard);
+            Assert.False(viewModel.HasHistory);
+            Assert.StartsWith($"No checks of {viewModel.HistoryProfile.Name} in this period.", viewModel.HistoryEmptyText, StringComparison.Ordinal);
+        }
+        else
+        {
+            store.Reads[1].Gate.SetResult([Sample(shown.Profile, minutesAgo: 1, total: 3)]);
+            await viewModel.HistoryRefresh.WaitAsync(HistoryDeadlockGuard);
+            Assert.Equal("3", viewModel.HistoryNowText);
+        }
+        Assert.False(viewModel.IsHistoryLoading);
+    }
+
+    // The store serializes reads and appends, as the file store does. A read superseded while it waits is cancelled: it no
+    // longer holds up the latest read, nor the next sample a scan or monitor check appends.
+    [Fact]
+    public async Task History_ASupersededReadIsCancelledAndHoldsUpNeitherTheLatestReadNorAnAppend()
+    {
+        var (profile, workspace) = HistoryEnvironment();
+        var store = new SerializedGatedHistoryStore();
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, history: store);
+        await viewModel.InitializeAsync();
+
+        viewModel.SelectedNavigation = viewModel.Navigation.Single(item => item.Key == nameof(NavigationPage.Monitors));
+        await store.Reads[0].Entered.Task.WaitAsync(HistoryDeadlockGuard);
+        viewModel.HistoryRange = "Last 6 hours";
+        viewModel.HistoryRange = "Last 7 days";
+        Assert.Equal(3, store.Reads.Count);
+
+        // The first held the store and the second waited for it. Both were given up, so the latest now has the store.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.Reads[0].Task.WaitAsync(HistoryDeadlockGuard));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.Reads[1].Task.WaitAsync(HistoryDeadlockGuard));
+        await store.Reads[2].Entered.Task.WaitAsync(HistoryDeadlockGuard);
+
+        store.Reads[2].Gate.SetResult([Sample(profile, minutesAgo: 1, total: 5)]);
+        await viewModel.HistoryRefresh.WaitAsync(HistoryDeadlockGuard);
+        Assert.Equal("5", viewModel.HistoryNowText);
+        await store.AppendAsync(Sample(profile, minutesAgo: 0, total: 6)).WaitAsync(HistoryDeadlockGuard);
+    }
+
+    [Fact]
+    public async Task History_ClosingTheWindowCancelsAnOutstandingRead()
+    {
+        var (profile, workspace) = HistoryEnvironment();
+        var store = new SerializedGatedHistoryStore();
+        var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, history: store);
+        await viewModel.InitializeAsync();
+        viewModel.SelectedNavigation = viewModel.Navigation.Single(item => item.Key == nameof(NavigationPage.Monitors));
+        await store.Reads[0].Entered.Task.WaitAsync(HistoryDeadlockGuard);
+
+        await viewModel.DisposeAsync().AsTask().WaitAsync(HistoryDeadlockGuard);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.Reads[0].Task.WaitAsync(HistoryDeadlockGuard));
+        Assert.True(viewModel.HistoryRefresh.IsCompletedSuccessfully);
+    }
+
     private static (ServiceBusProfile Profile, FakeWorkspace Workspace) HistoryEnvironment()
     {
         var profile = CreateProfile("Orders", EnvironmentKind.Development);
@@ -98,8 +189,52 @@ public sealed partial class ViewModelStateTests
         return (profile, workspace);
     }
 
-    private static DeadLetterHistorySample Sample(ServiceBusProfile profile, int minutesAgo, long total) =>
-        new(DateTimeOffset.UtcNow.AddMinutes(-minutesAgo), profile.Id, profile.Name, total, new Dictionary<string, long> { ["orders"] = total });
+    private static DeadLetterHistorySample Sample(ServiceBusProfile profile, int minutesAgo, long total, string source = "orders") =>
+        new(DateTimeOffset.UtcNow.AddMinutes(-minutesAgo), profile.Id, profile.Name, total, new Dictionary<string, long> { [source] = total });
+
+    /// <summary>Serializes reads and appends like the file store; each read waits for its gate and honours cancellation.</summary>
+    private sealed class SerializedGatedHistoryStore : IDeadLetterHistoryStore
+    {
+        private readonly SemaphoreSlim _gate = new(1, 1);
+
+        public List<GatedRead> Reads { get; } = [];
+
+        public async Task AppendAsync(DeadLetterHistorySample sample, CancellationToken cancellationToken = default)
+        {
+            await _gate.WaitAsync(cancellationToken);
+            _gate.Release();
+        }
+
+        public Task<IReadOnlyList<DeadLetterHistorySample>> ReadAsync(Guid profileId, DateTimeOffset since,
+            CancellationToken cancellationToken = default)
+        {
+            var read = new GatedRead();
+            lock (Reads) Reads.Add(read);
+            read.Task = ReadCoreAsync(read, cancellationToken);
+            return read.Task;
+        }
+
+        private async Task<IReadOnlyList<DeadLetterHistorySample>> ReadCoreAsync(GatedRead read, CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                read.Entered.TrySetResult();
+                return await read.Gate.Task.WaitAsync(cancellationToken);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+    }
+
+    private sealed class GatedRead
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<IReadOnlyList<DeadLetterHistorySample>> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<IReadOnlyList<DeadLetterHistorySample>> Task { get; set; } = null!;
+    }
 
     private sealed class GatedHistoryStore : IDeadLetterHistoryStore
     {
