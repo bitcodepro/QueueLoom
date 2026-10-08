@@ -87,6 +87,8 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(plan, Assert.Single(store.List()));
         // Ordinary entries are written by the journal's background writer: check the disk once it is done.
         await journal.WaitForPendingEntriesAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        // Closed before the folder is read and reopened, as the app closes it on shutdown; a later entry is written directly.
+        await journal.DisposeAsync();
         Assert.NotEmpty(Directory.GetFiles(Path.Combine(directory.Path, "activity"), "*.json", SearchOption.AllDirectories));
         await using var reopened = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(),
             replayStore: store, activityJournal: new FileActivityJournal(Path.Combine(directory.Path, "activity")));

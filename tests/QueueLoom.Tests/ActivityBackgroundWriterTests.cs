@@ -188,3 +188,55 @@ public sealed partial class ViewModelStateTests
         public void RunQueued() { while (_posts.TryDequeue(out var post)) post.Callback(post.State); }
     }
 }
+
+public sealed class ActivityPendingReadTests
+{
+    private static readonly TimeSpan DeadlockGuard = TimeSpan.FromSeconds(30);
+
+    private static ActivityRecord Record(string action) =>
+        new(Guid.NewGuid(), new DateTimeOffset(2026, 10, 8, 12, 0, 0, TimeSpan.Zero), "Info", action, "details", null, null, null);
+
+    // The journal's folder does not exist yet (a first start): a queued entry is still listed while the writer is held.
+    [Fact]
+    public async Task AQueuedEntryIsListedBeforeTheJournalFolderExists()
+    {
+        using var root = new TemporaryDirectory();
+        await using var journal = new FileActivityJournal(Path.Combine(root.Path, "activity"));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        journal.BeforeEntryWrite = () => release.Task;
+
+        journal.AppendEntry(Record("first"));
+
+        Assert.False(Directory.Exists(Path.Combine(root.Path, "activity")));
+        Assert.Equal(["first"], journal.ReadRecent().Select(record => record.Action));
+        release.TrySetResult();
+        await journal.WaitForPendingEntriesAsync().WaitAsync(DeadlockGuard);
+        Assert.Equal(["first"], journal.ReadRecent().Select(record => record.Action));
+    }
+
+    // The writer saves and dequeues the entry after the day folders were listed: the entry is in neither the listed
+    // folders nor (read afterwards) the queue. Taking the queue first keeps it listed, exactly once.
+    [Fact]
+    public async Task AnEntryWrittenWhileTheDiskIsReadIsListedOnce()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var journal = new FileActivityJournal(directory.Path);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        journal.BeforeEntryWrite = () => release.Task;
+        journal.AppendEntry(Record("racing"));
+        FileActivityJournal.AfterDaysListed.Value = () =>
+        {
+            release.TrySetResult();
+            journal.WaitForPendingEntriesAsync().WaitAsync(DeadlockGuard).GetAwaiter().GetResult();
+        };
+        try
+        {
+            Assert.Equal(["racing"], journal.ReadRecent().Select(record => record.Action));
+        }
+        finally
+        {
+            FileActivityJournal.AfterDaysListed.Value = null;
+        }
+        Assert.Equal(["racing"], journal.ReadRecent().Select(record => record.Action));
+    }
+}

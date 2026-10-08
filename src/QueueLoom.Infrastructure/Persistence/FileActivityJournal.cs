@@ -147,9 +147,13 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
 
     public IReadOnlyList<ActivityRecord> ReadRecent(int maximum = 500)
     {
-        if (!Directory.Exists(directory)) return [];
+        // Queued entries are taken first: one the writer saves and dequeues while the disk is read is then still in
+        // this snapshot, and a first entry still queued is listed even before the folder exists.
+        ActivityRecord[] queued;
+        lock (_pending) queued = [.. _pending];
         var cutoff = ClearViewCutoff;
-        var records = new List<ActivityRecord>();
+        var records = queued.Where(record => cutoff is null || record.Timestamp > cutoff).ToList();
+        if (!Directory.Exists(directory)) return records.OrderByDescending(r => r.Timestamp).Take(maximum).ToArray();
         foreach (var file in NewestRecordFiles(maximum))
         {
             try
@@ -162,11 +166,7 @@ public sealed class FileActivityJournal(string directory) : IActivityViewJournal
             catch (Exception exception) when (exception is JsonException or ArgumentException or NotSupportedException or
                                                   IOException or UnauthorizedAccessException) { }
         }
-        lock (_pending)
-        {
-            records.AddRange(_pending.Where(record => cutoff is null || record.Timestamp > cutoff));
-        }
-        // An entry written just now can be both on disk and still queued: it is listed once.
+        // An entry written just now can be both on disk and in the queued snapshot: it is listed once.
         return records.Distinct().OrderByDescending(r => r.Timestamp).Take(maximum).ToArray();
     }
 
