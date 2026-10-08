@@ -113,7 +113,7 @@ public sealed partial class ViewModelStateTests
         await windowB.InitializeAsync();
         Assert.Single(windowB.ScheduledResends);
 
-        windowA.CancelScheduledResendCommand.Execute(Assert.Single(windowA.ScheduledResends));
+        await windowA.CancelScheduledAsync(Assert.Single(windowA.ScheduledResends));
         windowB.SelectedProfile = Assert.Single(windowB.Profiles);
         await windowB.DeleteEnvironmentCommand.ExecuteAsync();
 
