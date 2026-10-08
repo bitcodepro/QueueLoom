@@ -68,6 +68,7 @@ public sealed partial class ViewModelStateTests
 
         await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(),
             replayStore: new BatchReplayStore(directory.Path));
+        await viewModel.OperationHistoryRefresh;
         Assert.Equal(uncertain.Id, Assert.Single(viewModel.OperationHistory).Plan.Id);
     }
 

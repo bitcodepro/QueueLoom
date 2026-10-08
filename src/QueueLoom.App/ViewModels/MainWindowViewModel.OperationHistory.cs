@@ -45,15 +45,43 @@ public sealed partial class MainWindowViewModel
         set
         {
             if (!SetProperty(ref _selectedOperation, value)) return;
+            // Cleared at once: ticked items are indexes into the shown operation, so items of the previous one must
+            // never stay listed under the new selection while its own are read.
             SelectedOperationItem = null;
             OperationItems.Clear();
-            try
-            {
-                if (value is not null && _replayStore is not null)
-                    foreach (var item in _replayStore.ReadHistory(value.Plan).Items) OperationItems.Add(new(item));
-            }
-            catch (Exception exception) { ErrorText = SanitizeException(exception); }
+            OperationItemsLoad = LoadOperationItemsAsync(value, ++_operationItemsGeneration, restoreItem: null);
         }
+    }
+
+    private int _operationItemsGeneration;
+    private int _operationHistoryGeneration;
+
+    /// <summary>The latest read of the selected operation's items; tests await it.</summary>
+    internal Task OperationItemsLoad { get; private set; } = Task.CompletedTask;
+
+    /// <summary>The latest read of the operation list (and then of the selected operation's items); tests await it.</summary>
+    internal Task OperationHistoryRefresh { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// Reads an operation's items off the UI thread: up to 1,000 items with several small files each. Only the latest
+    /// selection's read is shown; one that finishes after another selection is dropped.
+    /// </summary>
+    private async Task LoadOperationItemsAsync(OperationHistoryViewModel? operation, int generation, int? restoreItem)
+    {
+        if (operation is null || _replayStore is not { } store) return;
+        OperationHistory history;
+        try
+        {
+            history = await Task.Run(() => store.ReadHistory(operation.Plan)).ConfigureAwait(true);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            if (generation == _operationItemsGeneration && !_isDisposed) ErrorText = SanitizeException(exception);
+            return;
+        }
+        if (generation != _operationItemsGeneration || _isDisposed) return;
+        foreach (var item in history.Items) OperationItems.Add(new(item));
+        if (restoreItem is { } index) SelectedOperationItem = OperationItems.FirstOrDefault(item => item.Item.Index == index);
     }
     public OperationItemViewModel? SelectedOperationItem
     {
@@ -73,7 +101,7 @@ public sealed partial class MainWindowViewModel
     private void InitializeOperationHistory()
     {
         OperationHistory.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasOperationHistory));
-        RefreshOperationHistoryCommand = _commands.Create(_ => { RefreshOperationHistory(); return Task.CompletedTask; }, () => !IsBusy && _replayStore is not null);
+        RefreshOperationHistoryCommand = _commands.Create(_ => { RefreshOperationHistory(); return OperationHistoryRefresh; }, () => !IsBusy && _replayStore is not null);
         ContinueOperationCommand = _commands.Create(token => RunWorkspaceOperationAsync("Continuing unattempted items", ct => RecoverOperationAsync(false, ct), token),
             () => !IsBusy && CanWrite && SelectedOperation is not null);
         RetryRejectedOperationCommand = _commands.Create(token => RunWorkspaceOperationAsync("Retrying proven rejections", ct => RecoverOperationAsync(true, ct), token),
@@ -89,21 +117,42 @@ public sealed partial class MainWindowViewModel
         RefreshOperationHistory();
     }
 
-    private void RefreshOperationHistory()
+    private void RefreshOperationHistory() => OperationHistoryRefresh = RefreshOperationHistoryAsync();
+
+    /// <summary>
+    /// Lists the saved operations off the UI thread (one folder per operation of the retention period), then selects the
+    /// same operation and item again. Only the latest refresh is applied.
+    /// </summary>
+    private async Task RefreshOperationHistoryAsync()
     {
-        if (_replayStore is null) return;
-        var selected = SelectedOperation?.Plan.Id;
-        var selectedItem = SelectedOperationItem?.Item.Index;
+        if (_replayStore is not { } store) return;
+        var generation = ++_operationHistoryGeneration;
+        IReadOnlyList<ReplayPlan> plans;
         try
         {
-            var plans = _replayStore.List();
-            OperationHistory.Clear();
-            foreach (var plan in plans) OperationHistory.Add(new(plan, Profiles.FirstOrDefault(p => p.Id == plan.ProfileId)?.Name));
-            SelectedOperation = OperationHistory.FirstOrDefault(p => p.Plan.Id == selected) ?? OperationHistory.FirstOrDefault();
-            if (SelectedOperation?.Plan.Id == selected)
-                SelectedOperationItem = OperationItems.FirstOrDefault(item => item.Item.Index == selectedItem);
+            plans = await Task.Run(store.List).ConfigureAwait(true);
         }
-        catch (Exception exception) { ErrorText = SanitizeException(exception); }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            if (generation == _operationHistoryGeneration && !_isDisposed) ErrorText = SanitizeException(exception);
+            return;
+        }
+        if (generation != _operationHistoryGeneration || _isDisposed) return;
+        // Read now, not before the list: the operator may have chosen another operation or item meanwhile.
+        var selected = SelectedOperation?.Plan.Id;
+        var selectedItem = SelectedOperationItem?.Item.Index;
+        OperationHistory.Clear();
+        foreach (var plan in plans) OperationHistory.Add(new(plan, Profiles.FirstOrDefault(p => p.Id == plan.ProfileId)?.Name));
+        var operation = OperationHistory.FirstOrDefault(p => p.Plan.Id == selected) ?? OperationHistory.FirstOrDefault();
+        // Set through the field so the item to select again is passed to the one read of the new list's items.
+        if (SetProperty(ref _selectedOperation, operation, nameof(SelectedOperation)))
+        {
+            SelectedOperationItem = null;
+            OperationItems.Clear();
+            OperationItemsLoad = LoadOperationItemsAsync(operation, ++_operationItemsGeneration,
+                operation?.Plan.Id == selected ? selectedItem : null);
+        }
+        await OperationItemsLoad.ConfigureAwait(true);
     }
 
     private async Task RecoverOperationAsync(bool retry, CancellationToken token)
@@ -113,7 +162,9 @@ public sealed partial class MainWindowViewModel
         if (indexes.Length == 0) throw new InvalidOperationException("Tick the items to continue or retry.");
         var profile = _connectedProfile ?? throw new InvalidOperationException("Connect the operation environment.");
         if (plan.ProfileId != profile.Id) throw new InvalidOperationException("Connect the operation's original environment.");
-        var states = _replayStore!.ReadHistory(plan).Items;
+        var store = _replayStore ?? throw new InvalidOperationException("Operation history is not available.");
+        // The plan and the ticked items were taken above; a new selection while this reads does not change them.
+        var states = (await Task.Run(() => store.ReadHistory(plan), token).ConfigureAwait(true)).Items;
         if (indexes.Any(i => retry ? !states[i].CanRetry : !states[i].CanContinue))
             throw new InvalidOperationException("Continue accepts only Pending items. Retry accepts only provider-proven Rejected items. Unknown and confirmed sends cannot be retried.");
         if (!await _dialogs.ConfirmAsync(retry ? "Retry proven rejections" : "Continue unattempted items",
@@ -126,7 +177,7 @@ public sealed partial class MainWindowViewModel
         RecordOperationIntent("Operation recovery started", $"{plan.Id:N} · {indexes.Length} selected items", null);
         try
         {
-            var result = await _replayStore.RunItemsAsync(plan, indexes, retry, _workspace, () => CanWrite, null, token);
+            var result = await store.RunItemsAsync(plan, indexes, retry, _workspace, () => CanWrite, null, token);
             RemoveResentOriginals(result);
             var summary = $"{result.SentCount:N0} of {indexes.Length:N0} acknowledged" +
                           (plan.Mode == ResendMode.Move ? $" · {result.MovedCount:N0} originals removed" : string.Empty) +

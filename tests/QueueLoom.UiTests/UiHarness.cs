@@ -259,6 +259,9 @@ internal sealed class WindowFixture : IAsyncDisposable
     {
         // The Monitors history is read off the UI thread; what it draws is part of a settled window.
         await ViewModel.HistoryRefresh;
+        // So are the saved operations and the selected operation's items.
+        await ViewModel.OperationHistoryRefresh;
+        await ViewModel.OperationItemsLoad;
         for (var i = 0; i < 5; i++)
         {
             Dispatcher.UIThread.RunJobs();
