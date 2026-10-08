@@ -17,6 +17,7 @@ public sealed partial class UpdateRestartProcessTests
     private readonly List<Task> _helpers = [];
     private TimeSpan _helperBound = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan ExitBound = TimeSpan.FromSeconds(10);
+    private TimeSpan _deleteBound = TimeSpan.FromSeconds(5);
 
     /// <summary>Why the last cleanup could not prove completion; null after a cleanup that did.</summary>
     private Exception? _cleanupFailure;
@@ -71,12 +72,13 @@ public sealed partial class UpdateRestartProcessTests
         foreach (var helper in helpers)
         {
             try { await helper.WaitAsync(_helperBound); }
-            catch (TimeoutException)
+            catch (TimeoutException) when (!helper.IsCompleted)
             {
                 // A timeout is not completion: the helper may still start or replace files in the installation.
                 throw new InvalidOperationException($"A helper run was still pending after {_helperBound}; the installation is kept.");
             }
-            catch (Exception) { /* Completed with a failure: its outcome belongs to the test. */ }
+            // Completed with a failure, a TimeoutException of its own included: its outcome belongs to the test.
+            catch (Exception) { }
         }
         foreach (var process in _processes)
         {
@@ -138,19 +140,36 @@ public sealed partial class UpdateRestartProcessTests
         {
             await StopOwnedAsync();
         }
-        catch (Exception failure) when (TestContext.Current.TestState?.Result == TestResult.Failed)
+        catch (Exception failure) when (TestFailed)
         {
             // The test's own failure is reported; this one is only noted, and the installation is kept.
             TestContext.Current.TestOutputHelper?.WriteLine("Cleanup kept the test installation: " + failure.Message);
             return;
         }
         foreach (var process in _processes) process.Dispose();
+        await RemoveInstallationAsync(TestFailed);
+    }
+
+    private static bool TestFailed => TestContext.Current.TestState?.Result == TestResult.Failed;
+
+    /// <summary>
+    /// Removes the stopped installation. A directory still held after <see cref="_deleteBound"/> fails a passing test;
+    /// after a failed one it is only noted, so the test's failure is reported alone rather than combined with it.
+    /// </summary>
+    private async Task RemoveInstallationAsync(bool testFailed)
+    {
         var cleanup = Stopwatch.StartNew();
         while (true)
         {
-            try { Directory.Delete(_root, true); break; }
-            catch (Exception exception) when ((exception is IOException or UnauthorizedAccessException) && cleanup.Elapsed < TimeSpan.FromSeconds(5))
+            try { Directory.Delete(_root, true); return; }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                if (cleanup.Elapsed >= _deleteBound)
+                {
+                    if (!testFailed) throw;
+                    TestContext.Current.TestOutputHelper?.WriteLine("Cleanup could not remove the test installation: " + exception.Message);
+                    return;
+                }
                 // Windows may hold image sections briefly after the process exit signal.
                 await Task.Delay(50);
             }
