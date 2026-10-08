@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="QueueLoom.Tests" />
+    <InternalsVisibleTo Include="QueueLoom.UiTests" />
     <!-- Avalonia 12.1 supports SkiaSharp 4; keep managed and native assets on matching releases. -->
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />

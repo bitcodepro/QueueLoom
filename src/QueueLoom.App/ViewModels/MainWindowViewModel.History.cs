@@ -118,7 +118,8 @@ public sealed partial class MainWindowViewModel
     private void InitializeHistory(IDeadLetterHistoryStore? history) => _history = history;
 
     /// <summary>Records a complete snapshot of a whole environment; partial or single-queue checks would draw false dips.</summary>
-    private void RecordDeadLetterHistory(ProfileItemViewModel profile, DeadLetterSnapshot snapshot)
+    private async Task RecordDeadLetterHistoryAsync(ProfileItemViewModel profile, DeadLetterSnapshot snapshot,
+        CancellationToken cancellationToken)
     {
         if (_history is null || snapshot.HasFailures)
         {
@@ -127,7 +128,8 @@ public sealed partial class MainWindowViewModel
 
         try
         {
-            _history.Append(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name));
+            await _history.AppendAsync(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name), cancellationToken)
+                .ConfigureAwait(true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -141,7 +143,18 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    private void RefreshHistory()
+    private int _historyGeneration;
+
+    /// <summary>The latest history read the window started; tests await it.</summary>
+    internal Task HistoryRefresh { get; private set; } = Task.CompletedTask;
+
+    private void RefreshHistory() => HistoryRefresh = RefreshHistoryAsync();
+
+    /// <summary>
+    /// Reads the history off the UI thread: the shared file's cross-process ownership can be held by another window or
+    /// the MCP server. Only the latest read is shown; one that finishes after a newer request is dropped.
+    /// </summary>
+    private async Task RefreshHistoryAsync()
     {
         if (_historyProfile is not null && !Profiles.Contains(_historyProfile))
         {
@@ -154,21 +167,31 @@ public sealed partial class MainWindowViewModel
             _historyProfile = Profiles.FirstOrDefault(profile => profile.Id == _workspace.ConnectedProfileId) ?? Profiles.FirstOrDefault();
             OnPropertyChanged(nameof(HistoryProfile));
         }
+        var generation = ++_historyGeneration;
         var span = HistorySpans.FirstOrDefault(item => item.Label == HistoryRange).Span;
-        _historyTo = DateTimeOffset.UtcNow;
-        _historyFrom = _historyTo - (span == default ? TimeSpan.FromHours(24) : span);
-        _historySummary = null;
+        var to = DateTimeOffset.UtcNow;
+        var from = to - (span == default ? TimeSpan.FromHours(24) : span);
+        DeadLetterHistorySummary? summary = null;
         if (_history is not null && HistoryProfile is { } profile)
         {
             try
             {
-                _historySummary = DeadLetterHistory.Summarize(_history.Read(profile.Id, _historyFrom), _historyFrom, _historyTo);
+                summary = DeadLetterHistory.Summarize(await _history.ReadAsync(profile.Id, from).ConfigureAwait(true), from, to);
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            // Nothing awaits this read: whatever it fails with is logged here, not lost unobserved.
+            catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 _logger.LogWarning(exception, "The dead-letter history could not be read");
             }
         }
+        if (generation != _historyGeneration || _isDisposed)
+        {
+            return;
+        }
+
+        _historyFrom = from;
+        _historyTo = to;
+        _historySummary = summary;
 
         OnPropertyChanged(nameof(HasHistory));
         OnPropertyChanged(nameof(HistoryPoints));

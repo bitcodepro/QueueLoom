@@ -7,63 +7,84 @@ namespace QueueLoom.Infrastructure.Persistence;
 
 /// <summary>
 /// Dead-letter history in one JSON Lines file. Reads and updates share cross-process ownership. Samples older than
-/// <see cref="DeadLetterHistory.Retention"/> are dropped when the file is rewritten, at most once a day.
+/// <see cref="DeadLetterHistory.Retention"/> are dropped when the file is rewritten, at most once a day. The
+/// cross-process ownership is awaited and the file work runs on the thread pool: the window records a sample after every
+/// monitor check, and waiting for another window or the MCP server synchronously froze it for up to the lock's 30 s.
 /// </summary>
 public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? time = null) : IDeadLetterHistoryStore
 {
-    private readonly object _gate = new();
+    private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private DateTimeOffset _lastCompaction;
 
-    public void Append(DeadLetterHistorySample sample)
+    public async Task AppendAsync(DeadLetterHistorySample sample, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sample);
-        lock (_gate)
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            using var ownership = OwnFile();
-            var samples = WithTail(Load());
-            var previous = samples.LastOrDefault(item => item.ProfileId == sample.ProfileId);
-            if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.Total == sample.Total)
-            {
-                return;
-            }
-
-            var now = _time.GetUtcNow();
-            var oldest = samples.Append(sample).Min(item => item.At);
-            if (now - _lastCompaction > TimeSpan.FromDays(1) && oldest < now - DeadLetterHistory.Retention)
-            {
-                // The valid record of a crash tail (complete but without its newline) is kept too.
-                var kept = samples.Append(sample).Where(item => item.At >= now - DeadLetterHistory.Retention)
-                    .OrderBy(item => item.At).ToArray();
-                // The cache is read again from the rewritten file, whether or not the rewrite succeeds.
-                Reset();
-                Rewrite(kept);
-                _lastCompaction = now;
-                return;
-            }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-            using var stream = new FileStream(file, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
-            AtomicFile.RestrictToCurrentUser(file);
-            // Preserve a crash tail as evidence, but isolate the next complete record from it.
-            if (stream.Length > 0)
-            {
-                stream.Seek(-1, SeekOrigin.End);
-                if (stream.ReadByte() != '\n') stream.WriteByte((byte)'\n');
-            }
-            stream.Seek(0, SeekOrigin.End);
-            stream.Write(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(sample) + "\n"));
-            stream.Flush(flushToDisk: true);
-            // The cache is not changed here: the next Load reads this line from the file like any other appended line.
+            using var ownership = await OwnFileAsync(cancellationToken).ConfigureAwait(false);
+            // Once owned, the sample is written in full: a cancellation must not leave a half-done compaction.
+            await Task.Run(() => AppendOwned(sample), CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
-    public IReadOnlyList<DeadLetterHistorySample> Read(Guid profileId, DateTimeOffset since)
+    private void AppendOwned(DeadLetterHistorySample sample)
     {
-        lock (_gate)
+        var samples = WithTail(Load());
+        var previous = samples.LastOrDefault(item => item.ProfileId == sample.ProfileId);
+        if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.Total == sample.Total)
         {
-            using var ownership = OwnFile();
-            return WithTail(Load()).Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray();
+            return;
+        }
+
+        var now = _time.GetUtcNow();
+        var oldest = samples.Append(sample).Min(item => item.At);
+        if (now - _lastCompaction > TimeSpan.FromDays(1) && oldest < now - DeadLetterHistory.Retention)
+        {
+            // The valid record of a crash tail (complete but without its newline) is kept too.
+            var kept = samples.Append(sample).Where(item => item.At >= now - DeadLetterHistory.Retention)
+                .OrderBy(item => item.At).ToArray();
+            // The cache is read again from the rewritten file, whether or not the rewrite succeeds.
+            Reset();
+            Rewrite(kept);
+            _lastCompaction = now;
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        using var stream = new FileStream(file, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+        AtomicFile.RestrictToCurrentUser(file);
+        // Preserve a crash tail as evidence, but isolate the next complete record from it.
+        if (stream.Length > 0)
+        {
+            stream.Seek(-1, SeekOrigin.End);
+            if (stream.ReadByte() != '\n') stream.WriteByte((byte)'\n');
+        }
+        stream.Seek(0, SeekOrigin.End);
+        stream.Write(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(sample) + "\n"));
+        stream.Flush(flushToDisk: true);
+        // The cache is not changed here: the next Load reads this line from the file like any other appended line.
+    }
+
+    public async Task<IReadOnlyList<DeadLetterHistorySample>> ReadAsync(Guid profileId, DateTimeOffset since,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var ownership = await OwnFileAsync(cancellationToken).ConfigureAwait(false);
+            return await Task.Run<IReadOnlyList<DeadLetterHistorySample>>(
+                () => WithTail(Load()).Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray(),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -195,8 +216,8 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
         }
     }
 
-    private CrossProcessFileLock OwnFile() =>
-        CrossProcessFileLock.AcquireAsync(file + ".lock", CancellationToken.None).GetAwaiter().GetResult();
+    private ValueTask<CrossProcessFileLock> OwnFileAsync(CancellationToken cancellationToken) =>
+        CrossProcessFileLock.AcquireAsync(file + ".lock", cancellationToken);
 
     private void Rewrite(IReadOnlyList<DeadLetterHistorySample> samples)
     {

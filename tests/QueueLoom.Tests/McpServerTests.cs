@@ -204,19 +204,22 @@ public sealed partial class McpServerTests
     {
         private readonly List<DeadLetterHistorySample> _samples = [];
 
-        public void Append(DeadLetterHistorySample sample)
+        public Task AppendAsync(DeadLetterHistorySample sample, CancellationToken cancellationToken = default)
         {
             lock (_samples)
             {
                 _samples.Add(sample);
             }
+            return Task.CompletedTask;
         }
 
-        public IReadOnlyList<DeadLetterHistorySample> Read(Guid profileId, DateTimeOffset since)
+        public Task<IReadOnlyList<DeadLetterHistorySample>> ReadAsync(Guid profileId, DateTimeOffset since,
+            CancellationToken cancellationToken = default)
         {
             lock (_samples)
             {
-                return _samples.Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray();
+                return Task.FromResult<IReadOnlyList<DeadLetterHistorySample>>(
+                    _samples.Where(sample => sample.ProfileId == profileId && sample.At >= since).ToArray());
             }
         }
     }
