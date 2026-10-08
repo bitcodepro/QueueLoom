@@ -73,4 +73,16 @@ public interface IScheduledResendStore
     /// tells the operator, who would otherwise expect those resends to happen.
     /// </summary>
     string? TakeSetAsideFile() => null;
+
+    // The list is shared by every window through a cross-process lock that another window can hold for a while. A
+    // window waits for it with these, never on its own thread. A store that only implements the methods above runs
+    // them on the thread pool.
+    Task<IReadOnlyList<ScheduledResend>> LoadAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(Load, cancellationToken);
+
+    Task AddAsync(ScheduledResend resend, CancellationToken cancellationToken = default) =>
+        Task.Run(() => Add(resend), cancellationToken);
+
+    Task<bool> TryRemoveAsync(ScheduledResend expected, CancellationToken cancellationToken = default) =>
+        Task.Run(() => TryRemove(expected), cancellationToken);
 }

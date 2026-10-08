@@ -159,7 +159,7 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(2, vm.ScheduledResends.Count);
         await File.WriteAllTextAsync(store.FilePath, "[ { broken");
 
-        vm.CancelScheduledResendCommand.Execute(vm.ScheduledResends[0]);
+        await vm.CancelScheduledAsync(vm.ScheduledResends[0]);
 
         var warning = Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
         Assert.Contains(".damaged-", warning.Details, StringComparison.Ordinal);
@@ -229,13 +229,11 @@ public sealed partial class ViewModelStateTests
         var store = new SaveFailingStore(inner);
         await using var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), scheduledResends: store);
         await File.WriteAllTextAsync(inner.FilePath, "[ { broken");
-        var schedule = typeof(MainWindowViewModel).GetMethod("ScheduleResend",
+        var schedule = typeof(MainWindowViewModel).GetMethod("ScheduleResendAsync",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
 
-        var error = Assert.Throws<System.Reflection.TargetInvocationException>(() => schedule.Invoke(vm,
-            [profile, Array.Empty<ResendItem>(), new ResendOptions(null, ResendMode.Copy, 0), DateTimeOffset.UtcNow.AddDays(1)]));
-
-        Assert.IsType<IOException>(error.InnerException);
+        await Assert.ThrowsAsync<IOException>(() => (Task)schedule.Invoke(vm,
+            [profile, Array.Empty<ResendItem>(), new ResendOptions(null, ResendMode.Copy, 0), DateTimeOffset.UtcNow.AddDays(1), CancellationToken.None])!);
         Assert.Single(vm.Activity, item => item.Action == "Scheduled resends not loaded");
         Assert.Empty(vm.ScheduledResends);
     }

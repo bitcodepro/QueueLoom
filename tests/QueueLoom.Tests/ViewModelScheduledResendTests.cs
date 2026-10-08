@@ -80,7 +80,7 @@ public sealed partial class ViewModelStateTests
         dialogs.ResendChoice = dialog => dialog.ToOptions() with { SendAt = DateTimeOffset.UtcNow.AddMinutes(-1) };
         await viewModel.ResendMarkedMessagesCommand.ExecuteAsync();
 
-        viewModel.CancelScheduledResendCommand.Execute(Assert.Single(viewModel.ScheduledResends));
+        await viewModel.CancelScheduledAsync(Assert.Single(viewModel.ScheduledResends));
         await viewModel.RunDueScheduledResendsAsync();
 
         Assert.Empty(viewModel.ScheduledResends);
