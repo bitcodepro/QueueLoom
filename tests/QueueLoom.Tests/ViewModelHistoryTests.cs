@@ -29,6 +29,7 @@ public sealed partial class ViewModelStateTests
 
             await viewModel.ScanCurrentEnvironmentCommand.ExecuteAsync();
             viewModel.SelectedNavigation = viewModel.Navigation.Single(item => item.Key == nameof(NavigationPage.Monitors));
+            await viewModel.HistoryRefresh;
 
             Assert.True(viewModel.HasHistory);
             Assert.Equal(profile.Id, viewModel.HistoryProfile?.Id);
@@ -36,6 +37,7 @@ public sealed partial class ViewModelStateTests
             Assert.Equal("orders", Assert.Single(viewModel.HistorySources).Name);
 
             viewModel.HistoryRange = "Last 6 hours";
+            await viewModel.HistoryRefresh;
             Assert.Single(viewModel.HistoryPoints);
         }
         finally

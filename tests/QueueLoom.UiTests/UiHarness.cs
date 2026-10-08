@@ -132,7 +132,7 @@ internal sealed class WindowFixture : IAsyncDisposable
         History = new JsonLinesDeadLetterHistoryStore(Path.Combine(_dataDirectory, "dlq-history.jsonl"));
         foreach (var sample in profiles.Take(1).SelectMany(profile => DemoData.History(profile, DateTimeOffset.UtcNow)))
         {
-            History.Append(sample);
+            History.AppendAsync(sample).GetAwaiter().GetResult();
         }
         var accessor = new TopLevelAccessor();
         OperationStore = new BatchReplayStore(Path.Combine(_dataDirectory, "operations"));
@@ -257,6 +257,8 @@ internal sealed class WindowFixture : IAsyncDisposable
 
     public async Task SettleAsync()
     {
+        // The Monitors history is read off the UI thread; what it draws is part of a settled window.
+        await ViewModel.HistoryRefresh;
         for (var i = 0; i < 5; i++)
         {
             Dispatcher.UIThread.RunJobs();

@@ -105,9 +105,14 @@ public sealed partial class MainWindowViewModel
           "Counts are recorded by the monitor and by dead-letter scans, at most once a minute, and kept for 30 days."
         : string.Empty;
 
+    /// <summary>The history for the current selection is still being read; nothing of an earlier selection is shown.</summary>
+    public bool IsHistoryLoading => _historyLoading;
+
     public string HistoryEmptyText => HistoryProfile is null
         ? "Choose an environment to see how its dead-letter count changed."
-        : $"No checks of {HistoryProfile.Name} in this period. Start the monitor or scan for dead letters to record counts.";
+        : _historyLoading
+            ? $"Reading the dead-letter history of {HistoryProfile.Name}…"
+            : $"No checks of {HistoryProfile.Name} in this period. Start the monitor or scan for dead letters to record counts.";
 
     public IReadOnlyList<DeadLetterTrendItemViewModel> HistorySources =>
         _historySummary?.Sources.Select(source => new DeadLetterTrendItemViewModel(source.Name, source.Now, source.Change)).ToArray()
@@ -118,7 +123,8 @@ public sealed partial class MainWindowViewModel
     private void InitializeHistory(IDeadLetterHistoryStore? history) => _history = history;
 
     /// <summary>Records a complete snapshot of a whole environment; partial or single-queue checks would draw false dips.</summary>
-    private void RecordDeadLetterHistory(ProfileItemViewModel profile, DeadLetterSnapshot snapshot)
+    private async Task RecordDeadLetterHistoryAsync(ProfileItemViewModel profile, DeadLetterSnapshot snapshot,
+        CancellationToken cancellationToken)
     {
         if (_history is null || snapshot.HasFailures)
         {
@@ -127,7 +133,8 @@ public sealed partial class MainWindowViewModel
 
         try
         {
-            _history.Append(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name));
+            await _history.AppendAsync(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name), cancellationToken)
+                .ConfigureAwait(true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -141,7 +148,23 @@ public sealed partial class MainWindowViewModel
         }
     }
 
-    private void RefreshHistory()
+    private int _historyGeneration;
+    private bool _historyLoading;
+    private CancellationTokenSource? _historyCancellation;
+
+    /// <summary>The latest history read the window started; tests await it.</summary>
+    internal Task HistoryRefresh { get; private set; } = Task.CompletedTask;
+
+    private void RefreshHistory() => HistoryRefresh = RefreshHistoryAsync();
+
+    /// <summary>
+    /// Reads the history off the UI thread: the shared file's cross-process ownership can be held by another window or
+    /// the MCP server. The previous selection's summary is cleared at once, so it is never shown as the new one's. A newer
+    /// request, and closing the window, cancel the read before: the store serializes reads and appends, and a superseded
+    /// read still waiting for the file would hold up the current one and the monitor's next sample. A read that ignores
+    /// cancellation and finishes after a newer request is dropped.
+    /// </summary>
+    private async Task RefreshHistoryAsync()
     {
         if (_historyProfile is not null && !Profiles.Contains(_historyProfile))
         {
@@ -154,22 +177,55 @@ public sealed partial class MainWindowViewModel
             _historyProfile = Profiles.FirstOrDefault(profile => profile.Id == _workspace.ConnectedProfileId) ?? Profiles.FirstOrDefault();
             OnPropertyChanged(nameof(HistoryProfile));
         }
+        var generation = ++_historyGeneration;
+        _historyCancellation?.Cancel();
+        _historyCancellation?.Dispose();
+        _historyCancellation = null;
         var span = HistorySpans.FirstOrDefault(item => item.Label == HistoryRange).Span;
         _historyTo = DateTimeOffset.UtcNow;
         _historyFrom = _historyTo - (span == default ? TimeSpan.FromHours(24) : span);
         _historySummary = null;
-        if (_history is not null && HistoryProfile is { } profile)
+        if (_history is null || HistoryProfile is not { } profile || _isDisposed)
         {
-            try
-            {
-                _historySummary = DeadLetterHistory.Summarize(_history.Read(profile.Id, _historyFrom), _historyFrom, _historyTo);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                _logger.LogWarning(exception, "The dead-letter history could not be read");
-            }
+            _historyLoading = false;
+            NotifyHistoryChanged();
+            return;
         }
 
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCancellation.Token);
+        _historyCancellation = cancellation;
+        _historyLoading = true;
+        NotifyHistoryChanged();
+        var (from, to) = (_historyFrom, _historyTo);
+        DeadLetterHistorySummary? summary = null;
+        try
+        {
+            summary = DeadLetterHistory.Summarize(await _history.ReadAsync(profile.Id, from, cancellation.Token).ConfigureAwait(true), from, to);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Superseded by a newer request or the window closed: that request, if any, shows its own result.
+            return;
+        }
+        // Nothing awaits this read: whatever it fails with is logged here, not lost unobserved.
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _logger.LogWarning(exception, "The dead-letter history could not be read");
+        }
+        if (generation != _historyGeneration || _isDisposed)
+        {
+            return;
+        }
+
+        _historyCancellation = null;
+        cancellation.Dispose();
+        _historyLoading = false;
+        _historySummary = summary;
+        NotifyHistoryChanged();
+    }
+
+    private void NotifyHistoryChanged()
+    {
         OnPropertyChanged(nameof(HasHistory));
         OnPropertyChanged(nameof(HistoryPoints));
         OnPropertyChanged(nameof(HistoryFrom));
@@ -184,5 +240,6 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HistoryEmptyText));
         OnPropertyChanged(nameof(HistorySources));
         OnPropertyChanged(nameof(HasHistorySources));
+        OnPropertyChanged(nameof(IsHistoryLoading));
     }
 }

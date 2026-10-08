@@ -324,7 +324,7 @@ public sealed partial class MainWindowViewModel
                     CaptureMonitorSnapshot(profile, snapshot);
                     if (activeScope != SelectedSourceMonitorScope)
                     {
-                        RecordDeadLetterHistory(profile, snapshot);
+                        await RecordDeadLetterHistoryAsync(profile, snapshot, cancellationToken).ConfigureAwait(true);
                     }
                     isComplete &= !snapshot.HasFailures;
                 }

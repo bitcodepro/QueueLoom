@@ -1,3 +1,4 @@
+using QueueLoom.Tests.Infrastructure;
 using QueueLoom.App.Controls;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;

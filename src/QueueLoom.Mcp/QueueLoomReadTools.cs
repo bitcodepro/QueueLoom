@@ -113,7 +113,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var snapshot = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All, token), cancellationToken)
                 .ConfigureAwait(false);
-            RecordHistory(snapshot, profile.Name);
+            await RecordHistoryAsync(snapshot, profile.Name, cancellationToken).ConfigureAwait(false);
             return new DeadLetterScanInfo(
                 profile.Name,
                 snapshot.CapturedAt,
@@ -122,7 +122,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         });
 
     /// <summary>Records a complete scan only (a partial one would draw a false dip); history is best effort.</summary>
-    private void RecordHistory(DeadLetterSnapshot snapshot, string environmentName)
+    private async Task RecordHistoryAsync(DeadLetterSnapshot snapshot, string environmentName, CancellationToken cancellationToken)
     {
         if (History is null || snapshot.HasFailures)
         {
@@ -130,7 +130,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         }
         try
         {
-            History.Append(DeadLetterHistorySample.FromSnapshot(snapshot, environmentName));
+            await History.AppendAsync(DeadLetterHistorySample.FromSnapshot(snapshot, environmentName), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -156,7 +156,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
             var to = DateTimeOffset.UtcNow;
             var from = to.AddHours(-hours);
-            var summary = DeadLetterHistory.Summarize(history.Read(profile.Id, from), from, to, maximumPoints: 48, maximumSources: 10);
+            var summary = DeadLetterHistory.Summarize(await history.ReadAsync(profile.Id, from, cancellationToken).ConfigureAwait(false), from, to, maximumPoints: 48, maximumSources: 10);
             return summary is null
                 ? new DeadLetterHistoryInfo(profile.Name, from, to, 0, null, null, null, null, [], [],
                     "Nothing was recorded in this period. History grows while a QueueLoom monitor runs or when dead letters are scanned.")

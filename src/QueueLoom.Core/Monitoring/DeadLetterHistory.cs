@@ -56,9 +56,9 @@ public sealed record DeadLetterHistorySummary(
 public interface IDeadLetterHistoryStore
 {
     /// <summary>Keeps the sample unless the same environment was recorded less than a minute ago with the same total.</summary>
-    void Append(DeadLetterHistorySample sample);
+    Task AppendAsync(DeadLetterHistorySample sample, CancellationToken cancellationToken = default);
 
-    IReadOnlyList<DeadLetterHistorySample> Read(Guid profileId, DateTimeOffset since);
+    Task<IReadOnlyList<DeadLetterHistorySample>> ReadAsync(Guid profileId, DateTimeOffset since, CancellationToken cancellationToken = default);
 }
 
 public static class DeadLetterHistory
