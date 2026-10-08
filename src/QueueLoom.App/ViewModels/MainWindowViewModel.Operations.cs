@@ -231,8 +231,9 @@ public sealed partial class MainWindowViewModel
     private ActivityRecord MakeActivity(string level, string action, string details, ServiceBusEntityReference? source, DateTimeOffset? timestamp = null)
     {
         // The ID and the name name the same environment: the one the workspace is talking to. During a monitor check
-        // of another environment that is the monitored one, while _connectedProfile still holds the operator's.
-        var profileId = ConnectedProfileId;
+        // of another environment that is the monitored one, while _connectedProfile (and ConnectedProfileId, which
+        // the window shows) still hold the operator's. The journal records what actually happened.
+        var profileId = IsConnected ? _workspace.ConnectedProfileId : null;
         var profileName = profileId is not { } id ? null
             : _connectedProfile?.Id == id ? _connectedProfile.Name
             : Profiles.FirstOrDefault(profile => profile.Id == id)?.Name;
