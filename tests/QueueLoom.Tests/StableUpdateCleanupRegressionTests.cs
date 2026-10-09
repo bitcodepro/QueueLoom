@@ -13,7 +13,7 @@ using InstallationFixture = QueueLoom.Tests.StableLauncherTests.InstallationFixt
 
 namespace QueueLoom.Tests;
 
-public sealed class StableUpdateCleanupRegressionTests
+public sealed partial class StableUpdateCleanupRegressionTests
 {
     [Theory]
     [InlineData(false)]

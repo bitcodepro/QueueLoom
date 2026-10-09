@@ -166,7 +166,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             }
             return true;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             return false;
         }
@@ -468,18 +468,22 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             foreach (var path in records)
             {
                 if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out _)) continue;
-                ValidateStableCleanupPaths(installation, path);
-                FileStream ownership;
-                try { ownership = UpdateRestart.OwnTransaction(path); }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
-                using var retainedOwnership = ownership;
-                if (!File.Exists(path)) continue;
-                UpdateRestart.Receipt? receipt;
-                try { receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path)); }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
-                catch (JsonException error) { throw new InvalidDataException("The download cleanup receipt is damaged.", error); }
-                if (receipt is null) throw new InvalidDataException("The download cleanup receipt is empty.");
-                CleanStableDownload(installation, target, receipt, path);
+                try
+                {
+                    // Reject links before opening the lease or reading the receipt.
+                    ValidateStableCleanupPaths(installation, path);
+                    using var retainedOwnership = UpdateRestart.OwnTransaction(path);
+                    if (!File.Exists(path)) continue;
+                    var receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path));
+                    if (receipt is null) continue;
+                    CleanStableDownload(installation, target, receipt, path);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or
+                                                   JsonException or InvalidDataException)
+                {
+                    // Retain invalid, stale or busy evidence. It cannot authorize deleting a download
+                    // or prevent other transactions and update discovery from making progress.
+                }
             }
         }
         if (target is not null && File.Exists(UpdateRestart.ReceiptPath(target)))
