@@ -68,14 +68,15 @@ public static class BodyDecoder
             {
                 var gzip = IsGzip(span);
                 var (bytes, truncated) = Decompress(current, gzip);
-                if (bytes is null)
+                if (bytes is not null)
                 {
-                    break;
+                    steps.Add(gzip ? "gzip" : "zlib");
+                    note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown." : null;
+                    current = bytes;
+                    continue;
                 }
-                steps.Add(gzip ? "gzip" : "zlib");
-                note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown." : null;
-                current = bytes;
-                continue;
+                // Not compressed after all: a few Base64 prefixes ("XG", "HK", "8O", "hC") are also a valid zlib header.
+                // The other layers are still tried.
             }
 
             if (IsAvroContainer(span))
