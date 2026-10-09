@@ -155,7 +155,7 @@ public sealed partial class MainWindowViewModel
     private void NewMessage()
     {
         _draftSourceMessage = null;
-        _draftSubjectSource = null;
+        _draftSourceProperties = null;
         _draftSourceIsLocalBackup = false;
         BindDraftToConnectedEnvironment();
         DraftBody = "{\n  \"event\": \"example\"\n}";
@@ -207,7 +207,7 @@ public sealed partial class MainWindowViewModel
         var selected = selectedItem.Message;
         var draft = selected.CreateDraft();
         _draftSourceMessage = selected;
-        _draftSubjectSource = selected.Properties;
+        _draftSourceProperties = selected.Properties;
         _draftSourceIsLocalBackup = isLocalBackup;
         BindDraftToConnectedEnvironment();
         DraftBody = draft.Body.Content;
@@ -461,9 +461,21 @@ public sealed partial class MainWindowViewModel
             TimeToLive = timeToLive,
             ScheduledEnqueueTime = scheduledEnqueueTime
         };
+        // The AMQP envelope has no field of its own, so it comes from the message the draft was opened from, also after a
+        // move cleared the original: sending the draft again must not publish a gzip body without its encoding.
+        if (_draftSourceProperties is { } source)
+        {
+            properties = properties with
+            {
+                AmqpType = source.AmqpType,
+                AmqpAppId = source.AmqpAppId,
+                AmqpContentEncoding = source.AmqpContentEncoding,
+                AmqpPriority = source.AmqpPriority
+            };
+        }
         // Where the subject came from outlives the original: after a move the original is gone, but sending the draft
         // again must still publish a native-only subject natively, not as a new Subject attribute.
-        if (_draftSubjectSource is { NativeSubject: { } nativeSubject } subjectSource)
+        if (_draftSourceProperties is { NativeSubject: { } nativeSubject } subjectSource)
         {
             // The Subject field shows the attribute, or the native SNS subject when there is no attribute. An edit is
             // what the operator wants published, natively too; untouched, the native subject is published as it was
