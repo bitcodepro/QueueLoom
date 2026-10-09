@@ -509,7 +509,8 @@ public sealed partial class MainWindowViewModel
         return new MessageDraft(
             new EditableMessageBody(DraftBody ?? string.Empty, DraftBodyFormat),
             properties,
-            applicationProperties) { KafkaEnvelope = _draftSourceMessage?.KafkaEnvelope };
+            applicationProperties) { KafkaEnvelope = _draftSourceMessage?.KafkaEnvelope,
+                LegacyAmqpBrokerHeaders = _draftSourceMessage?.LegacyAmqpBrokerHeaders ?? false };
     }
 
     private string? NormalizeDraftProperty(string? value, string? original)
