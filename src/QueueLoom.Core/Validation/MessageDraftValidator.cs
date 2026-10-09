@@ -48,7 +48,9 @@ public static class MessageDraftValidator
         ValidateApplicationProperties(draft.ApplicationProperties, errors);
         if (draft.Properties is not null && draft.ApplicationProperties is not null)
         {
-            ValidateProviderAttributes(draft.Properties, draft.ApplicationProperties, errors, rules, string.IsNullOrEmpty(draft.Body.Content));
+            ValidateProviderAttributes(draft.Properties, draft.ApplicationProperties, errors, rules,
+                // Decoded: whitespace-only Base64 is zero bytes. Invalid Base64 is not "empty"; it has its own error above.
+                draft.Body.TryGetBytes(out var bodyBytes) && bodyBytes.Length == 0);
         }
         // The total size, once everything it is computed from is known to be valid. Checked here, so the composer,
         // resends, scheduled resends and replays refuse an oversized message before anything is sent or scheduled.

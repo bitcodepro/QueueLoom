@@ -19,6 +19,7 @@ public sealed class PubSubUnpublishableTests
     public static TheoryData<string, MessageDraft> Unpublishable => new()
     {
         { "empty", new MessageDraft(EditableMessageBody.Empty) },
+        { "whitespace Base64", new MessageDraft(new EditableMessageBody(" \r\n\t", MessageBodyFormat.Base64)) },
         { "goog", Draft("googTraceId") },
         { "GOOG", Draft("GOOG-trace") },
         { "blank name", Draft("") },
@@ -49,12 +50,16 @@ public sealed class PubSubUnpublishableTests
     [InlineData("data only")]
     [InlineData("attribute only")]
     [InlineData("google-like but allowed")]
+    [InlineData("whitespace text")]
+    [InlineData("Base64 data")]
     public async Task MessagesPubSubAcceptsAreStillPublished(string shape)
     {
         var draft = shape switch
         {
             "data only" => new MessageDraft(new EditableMessageBody("x", MessageBodyFormat.Text)),
             "attribute only" => Draft("tenant"),
+            "whitespace text" => new MessageDraft(new EditableMessageBody(" ", MessageBodyFormat.Text)),
+            "Base64 data" => new MessageDraft(new EditableMessageBody("AQID", MessageBodyFormat.Base64)),
             _ => Draft("go-trace"),
         };
         Assert.True(MessageDraftValidator.Validate(draft, MessagingProvider.GooglePubSub).IsValid);
@@ -64,6 +69,17 @@ public sealed class PubSubUnpublishableTests
         await Send(owner, draft);
 
         Assert.Equal(1, publisher.Calls);
+    }
+
+    // Malformed Base64 keeps its own error; it is not reported as an empty message.
+    [Fact]
+    public void MalformedBase64KeepsItsOwnErrorOnly()
+    {
+        var result = MessageDraftValidator.Validate(new MessageDraft(new EditableMessageBody("not base64!", MessageBodyFormat.Base64)),
+            MessagingProvider.GooglePubSub);
+
+        Assert.Contains(result.Errors, error => error.Code == "message.body.base64_invalid");
+        Assert.DoesNotContain(result.Errors, error => error.Code == "message.pubsub.unpublishable");
     }
 
     private static MessageDraft Draft(string attribute) => new(EditableMessageBody.Empty,
