@@ -252,7 +252,7 @@ public sealed class LeftoverGapRegressionTests
     [Theory]
     [InlineData(ApplicationPropertyType.String, "hello", "Number.x")]
     [InlineData(ApplicationPropertyType.Binary, "AQID", "String.x")]
-    [InlineData(ApplicationPropertyType.Binary, "AQID", "Binary.png")]
+    [InlineData(ApplicationPropertyType.String, "AQID", "Binary.png")]
     [InlineData(ApplicationPropertyType.Int32, "7", "String.Array")]
     [InlineData(ApplicationPropertyType.Boolean, "true", "Number.flag")]
     [InlineData(ApplicationPropertyType.String, "v", "Custom.label")]
@@ -277,6 +277,7 @@ public sealed class LeftoverGapRegressionTests
     [InlineData(ApplicationPropertyType.Int64, "7", "Number.1")]
     [InlineData(ApplicationPropertyType.Decimal, "7.5", "Number.float")]
     [InlineData(ApplicationPropertyType.String, "1e100", "Number.big")]
+    [InlineData(ApplicationPropertyType.Binary, "AQID", "Binary.png")]
     public void WireType_ReadFromAwsStaysValid(ApplicationPropertyType type, string value, string wireType)
     {
         var draft = new MessageDraft(EditableMessageBody.Empty, EditableMessageProperties.Empty,

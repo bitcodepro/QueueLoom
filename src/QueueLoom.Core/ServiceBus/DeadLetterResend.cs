@@ -22,7 +22,8 @@ public sealed record ResendItem(BrowsedMessage Original, ServiceBusEntityReferen
     public ResendItem WithNewMessageId() => this with
     {
         Message = new MessageDraft(Message.Body, Message.Properties with { MessageId = Guid.NewGuid().ToString("N") },
-            Message.ApplicationProperties) { KafkaEnvelope = Message.KafkaEnvelope, LegacyAmqpMetadata = Message.LegacyAmqpMetadata }
+            Message.ApplicationProperties) { KafkaEnvelope = Message.KafkaEnvelope, LegacyAmqpMetadata = Message.LegacyAmqpMetadata,
+                LegacyAmqpBrokerHeaders = Message.LegacyAmqpBrokerHeaders }
     };
 }
 
