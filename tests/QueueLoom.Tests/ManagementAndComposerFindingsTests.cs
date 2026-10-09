@@ -283,4 +283,29 @@ public sealed partial class ViewModelStateTests
         // Either the intended 1.5 seconds is sent, or the ambiguous text is refused; never 15 seconds.
         Assert.DoesNotContain(workspace.SentMessages, request => request.Message.Properties.TimeToLive == TimeSpan.FromSeconds(15));
     }
+
+    // A TTL too long for a TimeSpan ("1e300") passed the positive-and-finite check and then failed in TimeSpan.FromSeconds
+    // with an OverflowException, reported as an unexpected error instead of the composer's own TTL message.
+    [Theory]
+    [InlineData("1e300")]
+    [InlineData("1e15")]
+    public async Task Composer_ATimeToLiveTooLongForATimeSpanIsRefusedAsATimeToLive(string text)
+    {
+        var profile = CreateProfile("Orders", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var workspace = new FakeWorkspace();
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.Destinations.Add(new DestinationItemViewModel(ServiceBusEntityReference.Queue("orders")));
+        viewModel.NewMessageCommand.Execute(null);
+        viewModel.SelectedDestination = viewModel.Destinations.Last();
+        viewModel.DraftTimeToLiveSeconds = text;
+
+        await viewModel.SendDraftCommand.ExecuteAsync();
+
+        Assert.Empty(workspace.SentMessages);
+        Assert.Contains("TTL", viewModel.ErrorText, StringComparison.Ordinal);
+        Assert.DoesNotContain("TimeSpan", viewModel.ErrorText, StringComparison.Ordinal);
+    }
 }
