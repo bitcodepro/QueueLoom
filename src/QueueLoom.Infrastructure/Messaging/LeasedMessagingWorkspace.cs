@@ -708,6 +708,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
 
             progress?.Report(new DeadLetterPurgeProgress(target.Source, target.SubQueue, targetNumber, targetCount,
                 backedUp, deleted, DeadLetterPurgeStage.Completed));
+            // SQS FIFO hands out no more of a group while other sources' messages of it are held here, so running dry is
+            // not the end: this source's messages behind them were never seen.
+            if (result is null && deleted < maximumMessages && channel.ReadsOneBatchPerMessageGroup && outstanding.Count > 0)
+            {
+                result = new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
+                    $"Stopped early: SQS FIFO hands out no more of a message group while messages of other sources in it are held, so messages " +
+                    $"of this source may remain in {channel.PhysicalName}. Move or delete those messages, then purge again.");
+            }
             result ??= new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
                 LimitReached: deleted >= maximumMessages);
         }
@@ -803,6 +811,17 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 }
 
                 progress?.Report(new DeadLetterMessageDeletionProgress(source, subQueue, queueNumber, queueCount, scanned, deleted));
+            }
+            // SQS FIFO hands out no more of a group while this scan holds some of it (as the search accounts for): running
+            // dry then does not mean the selected messages are gone, only that they were not reached.
+            if (channel.ReadsOneBatchPerMessageGroup && held.Count > 0)
+            {
+                foreach (var key in pending.Where(key => !attempted.Contains(key)))
+                {
+                    outcomes[key] = (DeadLetterMessageDeletionOutcome.NotFound,
+                        "Not reached: SQS FIFO hands out no more of a message group while earlier messages of it are held, so it may still be " +
+                        "in the queue. Delete or move the messages before it, then try again.");
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
