@@ -174,7 +174,8 @@ public sealed partial class MainWindowViewModel
         }
         if (_historyProfile is null)
         {
-            _historyProfile = Profiles.FirstOrDefault(profile => profile.Id == _workspace.ConnectedProfileId) ?? Profiles.FirstOrDefault();
+            // The operator's environment, not the workspace's: a monitor check of another one switches the workspace briefly.
+            _historyProfile = Profiles.FirstOrDefault(profile => profile.Id == ConnectedProfileId) ?? Profiles.FirstOrDefault();
             OnPropertyChanged(nameof(HistoryProfile));
         }
         var generation = ++_historyGeneration;

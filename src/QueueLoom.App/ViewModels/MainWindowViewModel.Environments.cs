@@ -720,7 +720,9 @@ public sealed partial class MainWindowViewModel
 
     private void UpdateProfileConnectionStates()
     {
-        var connectedProfileId = IsConnected ? _workspace.ConnectedProfileId : null;
+        // The operator's environment: during a monitor check of another one (for example when temporary write access
+        // expires mid-check) the workspace is on the monitored environment, which the list must not show as connected.
+        var connectedProfileId = ConnectedProfileId;
         foreach (var profile in Profiles)
         {
             profile.UpdateConnectionState(profile.Id == connectedProfileId);
