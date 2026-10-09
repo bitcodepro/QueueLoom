@@ -16,10 +16,25 @@ if (args.Length == 3 && args[0] == "--stage-version")
     new VersionInstallation(args[1]).StagePackage(args[2]);
     return 0;
 }
-if (args.Length == 4 && args[0] == "--legacy-handoff")
+if (args.Length is 4 or 5 && args[0] == "--legacy-handoff")
 {
     using var storageLock = new FileStream(args[2], FileMode.Create, FileAccess.ReadWrite, FileShare.None);
-    UpdateRestart.Start(new UpdateTarget(VersionInstallation.CurrentRid(), Path.GetDirectoryName(args[1])!, args[1], null));
+    var helperPid = UpdateRestart.Start(new UpdateTarget(VersionInstallation.CurrentRid(), Path.GetDirectoryName(args[1])!, args[1], null));
+    using var helper = System.Diagnostics.Process.GetProcessById(helperPid);
+    PublishMarker(args[2] + ".helper.json", System.Text.Json.JsonSerializer.Serialize(new
+    {
+        Pid = helper.Id, StartTicks = helper.StartTime.ToUniversalTime().Ticks
+    }));
+    if (args.Length == 5)
+    {
+        // Keep the sender (and therefore its waiting helper) alive until the smoke owns the helper handle.
+        var claiming = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(args[4]))
+        {
+            if (claiming.Elapsed > TimeSpan.FromSeconds(15)) return 71;
+            await Task.Delay(10);
+        }
+    }
     // The legacy sender stays alive after readiness, as the application does until its orderly close.
     await Task.Delay(int.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture));
     return 0;
@@ -190,7 +205,28 @@ if (args.Length > 0 && args[0] == "--hold-lock")
     else await Task.Delay(int.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture));
     return 0;
 }
-if (UpdateRestart.HandleArguments(args, out var code)) return code;
+if (UpdateRestart.HandleArguments(args, out var code))
+{
+    // Fixture-only gate after the real helper has removed the receipt, before its process exits.
+    // Production binaries do not read this environment variable or contain this gate.
+    if (args[0] == "--update-helper" && code == 0 &&
+        Environment.GetEnvironmentVariable("QUEUELOOM_SMOKE_FIXTURE_GATE") is { } gate)
+    {
+        PublishMarker(gate + ".helper.json", System.Text.Json.JsonSerializer.Serialize(new
+        {
+            Pid = Environment.ProcessId, StartTicks = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks,
+            Receipt = args[1], Executable = Environment.ProcessPath
+        }));
+        var wait = System.Diagnostics.Stopwatch.StartNew();
+        while (!File.Exists(gate + ".release"))
+        {
+            if (wait.Elapsed > TimeSpan.FromSeconds(60)) return 71;
+            await Task.Delay(10);
+        }
+        return int.Parse(File.ReadAllText(gate + ".release"), System.Globalization.CultureInfo.InvariantCulture);
+    }
+    return code;
+}
 var root = AppContext.BaseDirectory;
 // An ordinary launch of this harmless fixture stands in for startup that needs the parent's storage lock.
 try
@@ -208,7 +244,12 @@ if (args.Length > 0 && args[0] == "--update-startup")
     if (File.Exists(Path.Combine(root, "hang-startup"))) await Task.Delay(Timeout.Infinite);
     File.WriteAllText(Path.Combine(root, "updated-started.txt"), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
     UpdateRestart.AcknowledgeStartup();
-    await Task.Delay(1000);
+    if (Environment.GetEnvironmentVariable("QUEUELOOM_SMOKE_FIXTURE_GATE") is { } gate)
+    {
+        PublishMarker(gate + ".gui.pid", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        await Task.Delay(TimeSpan.FromSeconds(60)); // Stopped by the smoke script's bounded installation cleanup.
+    }
+    else await Task.Delay(1000);
 }
 else
 {
