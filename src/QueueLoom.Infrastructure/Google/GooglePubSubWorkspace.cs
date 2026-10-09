@@ -429,7 +429,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                     catch (RpcException exception) when (attempt < HoldAttempts && IsTransient(exception.StatusCode)
                                                          && !cancellationToken.IsCancellationRequested)
                     {
-                        await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
+                        await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), owner.TimeProvider, cancellationToken).ConfigureAwait(false);
                     }
                 }
             }

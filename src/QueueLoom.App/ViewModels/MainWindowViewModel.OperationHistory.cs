@@ -69,6 +69,10 @@ public sealed partial class MainWindowViewModel
     private async Task LoadOperationItemsAsync(OperationHistoryViewModel? operation, int generation, int? restoreItem)
     {
         if (operation is null || _replayStore is not { } store) return;
+        // Every read is an operation of the window, superseded ones included: closing waits for all that were admitted
+        // and admits none once it started, so no read of plan files outlives the window.
+        using var lifetime = _operations.TryEnter();
+        if (lifetime is null) return;
         OperationHistory history;
         try
         {
@@ -126,6 +130,9 @@ public sealed partial class MainWindowViewModel
     private async Task RefreshOperationHistoryAsync()
     {
         if (_replayStore is not { } store) return;
+        // A refresh started by a resend's or recovery's finally after closing began is refused before any file is read.
+        using var lifetime = _operations.TryEnter();
+        if (lifetime is null) return;
         var generation = ++_operationHistoryGeneration;
         IReadOnlyList<ReplayPlan> plans;
         try
