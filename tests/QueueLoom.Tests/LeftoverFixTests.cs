@@ -386,8 +386,12 @@ public sealed class LeftoverFixTests
     {
         using var cancellation = new CancellationTokenSource();
         var subscriber = new HoldSubscriber { HoldFailures = int.MaxValue };
-        subscriber.OnHoldFailure = count => { if (count == failuresBeforeCancel) cancellation.CancelAfter(TimeSpan.FromMilliseconds(50)); }; // lands inside the 200 ms+ back-off
-        var channel = PubSubChannel(subscriber, out _);
+        var failures = 0;
+        subscriber.OnHoldFailure = count => failures = count;
+        // Cancelled as the back-off after the chosen failure starts, so it always lands inside that wait. A 50 ms timer
+        // racing the 200 ms back-off let a slow runner reach the next hold attempt first.
+        var clock = new BackoffClock(() => { if (failures == failuresBeforeCancel) cancellation.Cancel(); });
+        var channel = PubSubChannel(subscriber, out _, clock);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => channel.ReceiveAsync(10, cancellation.Token));
 
@@ -420,9 +424,20 @@ public sealed class LeftoverFixTests
         Assert.Contains("release unavailable", error.Message, StringComparison.Ordinal);
     }
 
-    private static ILeasedMessageChannel PubSubChannel(HoldSubscriber subscriber, out GooglePubSubWorkspace workspace)
+    /// <summary>The system clock, telling the test when a back-off wait starts.</summary>
+    private sealed class BackoffClock(Action waitStarting) : TimeProvider
     {
-        workspace = new GooglePubSubWorkspace(new EmptyVault());
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            waitStarting();
+            return System.CreateTimer(callback, state, dueTime, period);
+        }
+    }
+
+    private static ILeasedMessageChannel PubSubChannel(HoldSubscriber subscriber, out GooglePubSubWorkspace workspace,
+        TimeProvider? clock = null)
+    {
+        workspace = new GooglePubSubWorkspace(new EmptyVault(), clock);
         typeof(GooglePubSubWorkspace).GetField("_subscriber", Any)!.SetValue(workspace, subscriber);
         var type = typeof(GooglePubSubWorkspace).GetNestedType("PubSubChannel", BindingFlags.NonPublic)!;
         return (ILeasedMessageChannel)Activator.CreateInstance(type, Any, null,
