@@ -68,7 +68,9 @@ public sealed class ActivityBackgroundWriterTests
     public async Task ClosingWritesEveryQueuedEntry()
     {
         using var directory = new TemporaryDirectory();
-        var journal = new FileActivityJournal(directory.Path);
+        // The bounded close is covered by ClosingWaitsOnlyBoundedForAStuckWriter. Here the deadline is not under test:
+        // fifty files on a slow CI disk can take longer than the 5 s production default.
+        var journal = new FileActivityJournal(directory.Path) { CloseDeadline = DeadlockGuard };
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         journal.BeforeEntryWrite = () => release.Task;
         for (var index = 0; index < 50; index++) journal.AppendEntry(Record($"entry {index}", index));

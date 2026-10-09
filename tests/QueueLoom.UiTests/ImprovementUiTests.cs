@@ -26,8 +26,7 @@ public sealed class ImprovementUiTests
         var check = fixture.Window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.DataContext is OperationItemViewModel);
         check.IsChecked = true;
         var continuing = fixture.ViewModel.ContinueOperationCommand.ExecuteAsync();
-        await fixture.SettleAsync();
-        var review = fixture.Window.OwnedWindows.OfType<ConfirmDialogWindow>().Single();
+        var review = await fixture.ConfirmDialogAsync();
         Assert.Contains("Saved bodies", ((ConfirmDialogViewModel)review.DataContext!).Message, StringComparison.Ordinal);
         Confirm(review); await continuing; await fixture.SettleAsync();
         Assert.Equal("Sent", fixture.OperationStore.ReadHistory(plan).Items[0].State);
@@ -35,8 +34,7 @@ public sealed class ImprovementUiTests
         await Save(fixture.Window, "operation-history.png");
 
         var clearing = fixture.ViewModel.ClearActivityViewCommand.ExecuteAsync();
-        await fixture.SettleAsync();
-        var clearDialog = fixture.Window.OwnedWindows.OfType<ConfirmDialogWindow>().Single();
+        var clearDialog = await fixture.ConfirmDialogAsync();
         Assert.Contains("operation/retry history", ((ConfirmDialogViewModel)clearDialog.DataContext!).Message, StringComparison.Ordinal);
         var newer = new ActivityItemViewModel(DateTimeOffset.UtcNow, "Info", "Concurrent arrival", "kept");
         fixture.ViewModel.Activity.Insert(0, newer);
