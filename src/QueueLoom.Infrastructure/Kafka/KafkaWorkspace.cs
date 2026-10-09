@@ -333,6 +333,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         return producer;
     }
 
+    /// <summary>
+    /// How long a read waits without any record or partition end while the range is unfinished. Every assigned partition
+    /// ends with a partition EOF, so waiting is safe; past this the read is a timeout, never an exhausted topic.
+    /// </summary>
+    internal TimeSpan IdleFetchLimit { get; init; } = RequestTimeout;
+
     /// <summary>Test seam: replaces the SDK consumer of this workspace when set.</summary>
     internal Func<IConsumer<byte[]?, byte[]?>>? ConsumerFactory { get; set; }
 
@@ -506,14 +512,21 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             var consumer = Open();
             var messages = new List<LeasedMessage>();
+            var idle = System.Diagnostics.Stopwatch.StartNew();
             while (messages.Count < limit && _finished.Count < _end.Count)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = consumer.Consume(TimeSpan.FromSeconds(1));
                 if (result is null)
                 {
-                    break;
+                    // A slow fetch, not the end: unfinished partitions still end with a partition EOF. An empty page here
+                    // was taken for an exhausted topic, ending a browse early and reporting a purge as complete.
+                    if (idle.Elapsed < owner.IdleFetchLimit) continue;
+                    if (messages.Count > 0) break;
+                    throw new TimeoutException(
+                        $"Kafka sent nothing from '{topic.Name}' for {owner.IdleFetchLimit.TotalSeconds:N0} s before the end of the range. Retry reading the topic.");
                 }
+                idle.Restart();
                 var partition = result.Partition.Value;
                 if (_finished.Contains(partition))
                 {

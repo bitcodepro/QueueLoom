@@ -164,6 +164,46 @@ public sealed class PubSubKafkaStabilityTests
         }
     }
 
+    // Consume(1 s) answers null when a fetch takes longer, as on a slow or remote cluster. Reading a range stopped at the
+    // first such answer and returned an empty page although the topic was not read to its end; two of those counted as an
+    // exhausted source, so a browse ended early and a purge reported itself complete. Unfinished partitions are now waited
+    // for (they always end with a partition EOF), and a cluster that sends nothing for too long is a timeout, not an end.
+    [Fact]
+    public async Task Kafka_SlowFetchesDoNotEndARangeEarly()
+    {
+        await using var owner = new KafkaWorkspace(new EmptyVault());
+        var fixture = new Fixture { SlowFetches = 3 };
+        owner.ConsumerFactory = fixture.Create;
+        var channel = NewChannel(owner, out _);
+        try
+        {
+            var page = await channel.ReceiveAsync(10, CancellationToken.None);
+
+            Assert.Equal([0L, 1L, 2L], page.Select(message => message.Message.Position!.Value.Offset));
+        }
+        finally
+        {
+            ((IDisposable)channel).Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Kafka_AClusterThatSendsNothingIsATimeoutNotAnEmptyTopic()
+    {
+        await using var owner = new KafkaWorkspace(new EmptyVault()) { IdleFetchLimit = TimeSpan.Zero };
+        var fixture = new Fixture { Silent = true };
+        owner.ConsumerFactory = fixture.Create;
+        var channel = NewChannel(owner, out _);
+        try
+        {
+            await Assert.ThrowsAsync<TimeoutException>(() => channel.ReceiveAsync(10, CancellationToken.None));
+        }
+        finally
+        {
+            ((IDisposable)channel).Dispose();
+        }
+    }
+
     private sealed class CancellingHandler(CancellationTokenSource cancellation) : HttpMessageHandler
     {
         public int Calls { get; private set; }
@@ -196,8 +236,13 @@ public sealed class PubSubKafkaStabilityTests
         public bool FailClose { get; init; }
         public byte[] Body { get; init; } = "body"u8.ToArray();
         public bool FailWatermarksOnce { get; set; }
+        /// <summary>Empty fetches before each record, as a slow cluster answers Consume(1 s) with null.</summary>
+        public int SlowFetches { get; init; }
+        /// <summary>Never delivers a record.</summary>
+        public bool Silent { get; init; }
         public bool Disposed { get; private set; }
         private long _position = -1;
+        private int _slow;
 
         public IConsumer<byte[]?, byte[]?> Create()
         {
@@ -228,6 +273,9 @@ public sealed class PubSubKafkaStabilityTests
                     foreach (var assignment in (IEnumerable<TopicPartitionOffset>)args[0]!) _position = assignment.Offset.Value;
                     return null;
                 case "Consume":
+                    if (Silent) return null;
+                    if (_position >= 0 && _position < 3 && _slow++ < SlowFetches) return null;
+                    _slow = 0;
                     if (_position < 0 || _position >= 3) return null;
                     var offset = _position++;
                     return new ConsumeResult<byte[]?, byte[]?>
