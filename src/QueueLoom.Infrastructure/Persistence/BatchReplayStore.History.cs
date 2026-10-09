@@ -89,7 +89,8 @@ public sealed partial class BatchReplayStore
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 var payload = new ReplayPayload(item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToArray(),
                     $"{item.Original.Source.Path} / {item.Original.SubQueue} / {item.Original.SequenceNumber} / {item.Original.Properties.MessageId}")
-                { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata, Destination = item.Destination,
+                { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata,
+                    HasClassifiedAmqpHeaders = !item.Message.LegacyAmqpBrokerHeaders, Destination = item.Destination,
                     Original = item.Key };
                 await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.message.json"), JsonSerializer.Serialize(payload), token);
                 await WriteItemMetadata(folder, index, payload, item.Destination, token);

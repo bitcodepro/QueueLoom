@@ -403,7 +403,10 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             originalBodySize: ReadInt64(root, "bodySize"))
         {
             KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null,
-            // Older backups carry no queue ownership evidence; their counters may be producer-owned.
+            // Preserve the historical send policy without claiming unknown counters are broker-owned.
+            LegacyAmqpBrokerHeaders = ReadOptionalString(root, "provider") == "RabbitMq" &&
+                (!root.TryGetProperty("brokerOwnedHeaders", out _) ||
+                 root.TryGetProperty("legacyAmqpBrokerHeaders", out var legacy) && legacy.ValueKind == JsonValueKind.True),
             BrokerOwnedHeaders = root.TryGetProperty("brokerOwnedHeaders", out var owned) && owned.ValueKind == JsonValueKind.Array
                 ? owned.EnumerateArray().Select(name => name.GetString() ?? throw new InvalidDataException("Invalid broker header name."))
                     .ToHashSet(StringComparer.Ordinal)

@@ -231,12 +231,11 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "deadLetterReason", message.DeadLetterReason);
             WriteString(writer, "deadLetterErrorDescription", message.DeadLetterErrorDescription);
             WriteApplicationProperties(writer, message.ApplicationProperties);
-            if (message.BrokerOwnedHeaders.Count > 0)
-            {
-                writer.WriteStartArray("brokerOwnedHeaders");
-                foreach (var name in message.BrokerOwnedHeaders.Order(StringComparer.Ordinal)) writer.WriteStringValue(name);
-                writer.WriteEndArray();
-            }
+            // An explicit empty array distinguishes new classic-queue copies from legacy backups.
+            writer.WriteStartArray("brokerOwnedHeaders");
+            foreach (var name in message.BrokerOwnedHeaders.Order(StringComparer.Ordinal)) writer.WriteStringValue(name);
+            writer.WriteEndArray();
+            if (message.LegacyAmqpBrokerHeaders) writer.WriteBoolean("legacyAmqpBrokerHeaders", true);
             WriteBody(writer, message.Body);
             if (message.KafkaEnvelope is not null)
             {

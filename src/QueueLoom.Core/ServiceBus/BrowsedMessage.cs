@@ -99,6 +99,8 @@ public sealed record BrowsedMessage
     /// reader cannot establish that; a header listed here is not part of the message's stable identity.
     /// </summary>
     public IReadOnlySet<string> BrokerOwnedHeaders { get; init; } = EmptyNames;
+    /// <summary>Compatibility policy for RabbitMQ backups without header ownership evidence.</summary>
+    public bool LegacyAmqpBrokerHeaders { get; init; }
 
     private static readonly IReadOnlySet<string> EmptyNames = new HashSet<string>(StringComparer.Ordinal);
 
@@ -122,6 +124,7 @@ public sealed record BrowsedMessage
         // Ownership is established by the reader, not by a name prefix. Keep bookkeeping visible in the browse
         // and backup, but leave it out of every outgoing draft (including editor, replay and scheduled copies).
         return new MessageDraft(EditableMessageBody.FromBytes(_body), Properties,
-            ApplicationProperties.Where(property => !BrokerOwnedHeaders.Contains(property.Name))) { KafkaEnvelope = KafkaEnvelope };
+            ApplicationProperties.Where(property => !BrokerOwnedHeaders.Contains(property.Name)))
+            { KafkaEnvelope = KafkaEnvelope, LegacyAmqpBrokerHeaders = LegacyAmqpBrokerHeaders };
     }
 }

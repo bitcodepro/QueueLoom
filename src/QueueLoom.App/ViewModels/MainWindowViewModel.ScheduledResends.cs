@@ -183,6 +183,7 @@ public sealed partial class MainWindowViewModel
             if (a with { Message = MessageDraft.Empty } != b with { Message = MessageDraft.Empty } ||
                 a.Message.Body != b.Message.Body || a.Message.Properties != b.Message.Properties ||
                 a.Message.LegacyAmqpMetadata != b.Message.LegacyAmqpMetadata ||
+                a.Message.LegacyAmqpBrokerHeaders != b.Message.LegacyAmqpBrokerHeaders ||
                 !a.Message.ApplicationProperties.SequenceEqual(b.Message.ApplicationProperties) ||
                 !SameKafkaEnvelope(a.Message.KafkaEnvelope, b.Message.KafkaEnvelope)) return false;
         }

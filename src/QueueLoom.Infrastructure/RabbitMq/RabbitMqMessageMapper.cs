@@ -112,7 +112,7 @@ internal static class RabbitMqMessageMapper
 
         foreach (var property in message.ApplicationProperties)
         {
-            if (DeathHeaders.Contains(property.Name))
+            if (DeathHeaders.Contains(property.Name) || message.LegacyAmqpBrokerHeaders && property.Name == "x-delivery-count")
             {
                 continue;
             }
