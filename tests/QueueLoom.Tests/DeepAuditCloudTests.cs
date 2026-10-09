@@ -24,7 +24,7 @@ public sealed class DeepAuditCloudTests
         typeof(GooglePubSubWorkspace).GetField("_publisher", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(owner, publisher);
         typeof(GooglePubSubWorkspace).GetField("_projectId", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(owner, "project-a");
         var task = (Task)typeof(GooglePubSubWorkspace).GetMethod("SendCoreAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(owner, [new ServiceBusTopology(DateTimeOffset.UtcNow), ServiceBusEntityReference.Topic(destination), MessageDraft.Empty, CancellationToken.None])!;
+            .Invoke(owner, [new ServiceBusTopology(DateTimeOffset.UtcNow), ServiceBusEntityReference.Topic(destination), new MessageDraft(new EditableMessageBody("x", MessageBodyFormat.Text)), CancellationToken.None])!;
         await task;
         Assert.Equal(expected, publisher.PublishedTopic);
     }

@@ -230,6 +230,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         {
             pubsubMessage.Attributes[property.Name] = property.Value;
         }
+        if (QueueLoom.Core.Validation.MessageDraftValidator.PubSubPublishProblem(pubsubMessage.Data.IsEmpty, pubsubMessage.Attributes.Keys) is { } refused)
+        {
+            throw new DeliveryRejectedException(refused + " Nothing was sent.");
+        }
         var orderingKey = new[] { message.Properties.SessionId, message.Properties.PartitionKey }
             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         if (orderingKey is not null)
