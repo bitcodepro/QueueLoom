@@ -52,7 +52,8 @@ public static class MessageSizeLimits
         {
             var dataType = MessageAttributeConventions.AwsDataType(property);
             attributes[property.Name] = Utf8(property.Name) + Utf8(dataType) +
-                                        (dataType == "Binary" ? Base64Length(property.Value) : Utf8(property.Value));
+                                        (dataType == "Binary" || dataType.StartsWith("Binary.", StringComparison.Ordinal)
+                                            ? Base64Length(property.Value) : Utf8(property.Value));
         }
         // SQS and SNS bodies are text: a binary body is sent in its base64 form.
         return Utf8(draft.Body.Content) + attributes.Values.Sum();

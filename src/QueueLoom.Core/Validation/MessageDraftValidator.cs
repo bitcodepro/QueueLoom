@@ -408,8 +408,8 @@ public static class MessageDraftValidator
     /// <summary>
     /// The wire type QueueLoom keeps is an SQS/SNS custom DataType label it has no type for ("String.Array",
     /// "Number.1"), and it is only sent while the property still has the type it was read with: "String.x" with
-    /// String, "Number.x" with Int64, Decimal or a numeric String. A label that contradicts the type (typed into the
-    /// raw editor, or kept after the type was changed there) would either be sent with a value the service refuses
+    /// String, "Number.x" with Int64, Decimal or a numeric String, "Binary.x" with Binary. A label that contradicts
+    /// the type (typed into the raw editor, or kept after the type was changed there) would either be sent with a value the service refuses
     /// or be silently dropped while the draft and the routing preview still show it, so it is refused instead.
     /// </summary>
     private static string? WireTypeError(MessageApplicationProperty property)
@@ -427,12 +427,17 @@ public static class MessageDraftValidator
         }
         var separator = wire.IndexOf('.', StringComparison.Ordinal);
         var prefix = separator > 0 ? wire[..separator] : wire;
-        if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number") ||
+        if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number" or "Binary") ||
             wire.Length > MaxAwsDataTypeLength)
         {
             return $"'{name}' has wireType '{(wire.Length > 40 ? TextLimits.Head(wire, 40) + "…" : wire)}', which is not an Amazon SQS/SNS " +
-                   $"custom type: use 'String.<label>' or 'Number.<label>' (up to {MaxAwsDataTypeLength} characters), " +
+                   $"custom type: use 'String.<label>', 'Number.<label>' or 'Binary.<label>' (up to {MaxAwsDataTypeLength} characters), " +
                    "or remove wireType.";
+        }
+        if (!HasAwsDataTypeCharacters(wire))
+        {
+            return $"'{name}' has a wireType containing a character Amazon SQS/SNS does not accept. " +
+                   "Use valid Unicode text without forbidden control characters, or remove wireType.";
         }
         if (prefix == "String" && property.Type != ApplicationPropertyType.String)
         {
@@ -445,12 +450,34 @@ public static class MessageDraftValidator
             return $"'{name}' has wireType '{wire}' but type {property.Type}: a Number wire type needs type Int64, Decimal " +
                    $"or String. Remove wireType to send it as {property.Type}.";
         }
+        if (prefix == "Binary" && property.Type != ApplicationPropertyType.Binary)
+        {
+            return $"'{name}' has wireType '{wire}' but type {property.Type}: a Binary wire type needs type Binary. " +
+                   $"Remove wireType to send it as {property.Type}, or set the type back to Binary.";
+        }
         if (prefix == "Number" && property.Type == ApplicationPropertyType.String && !AwsNumber.IsMatch(property.Value))
         {
             return $"'{name}' has wireType '{wire}' but its value is not a number, which Amazon SQS and SNS refuse for " +
                    "a Number attribute. Remove wireType to send it as text, or enter a number.";
         }
         return null;
+    }
+
+    // AWS DataType labels follow message-body Unicode rules, independently of attribute-name restrictions.
+    private static bool HasAwsDataTypeCharacters(string value)
+    {
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (char.IsHighSurrogate(character))
+            {
+                if (++index == value.Length || !char.IsLowSurrogate(value[index])) return false;
+                continue; // Every valid surrogate pair is in U+10000..U+10FFFF.
+            }
+            if (char.IsLowSurrogate(character) || character is '\ufffe' or '\uffff' ||
+                character < ' ' && character is not ('\t' or '\n' or '\r')) return false;
+        }
+        return true;
     }
 
     private static bool HasValidValue(ApplicationPropertyType type, string value) => type switch
