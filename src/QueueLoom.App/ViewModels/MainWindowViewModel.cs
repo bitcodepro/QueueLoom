@@ -790,6 +790,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         }
         // The Monitors history read is linked to the shutdown cancellation, cancelled above.
         pending.Add(HistoryRefresh);
+        // So are the operation history reads a resend, recovery or selection started without awaiting them: they read
+        // plan files, and must not go on reading after the window is gone.
+        pending.Add(OperationHistoryRefresh);
+        pending.Add(OperationItemsLoad);
         var drained = Task.WhenAll(pending);
         // A broker call that ignores cancellation must not keep the window from closing forever.
         var finished = await Task.WhenAny(drained, Task.Delay(ShutdownDrainTimeout, Clock)).ConfigureAwait(true);

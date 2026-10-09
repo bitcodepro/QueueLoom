@@ -138,6 +138,41 @@ public sealed partial class ViewModelStateTests
         Assert.Equal([0, 1], vm.OperationItems.Select(item => item.Item.Index));
     }
 
+    // A refresh started after a resend or recovery (fire and forget) reads plan.json files off the window's thread.
+    // Closing the window did not wait for it, so the read went on after shutdown; a test removing its folder then hit
+    // "plan.json is being used by another process". Closing now waits for the outstanding list and items reads.
+    [Fact]
+    public async Task OperationHistory_ClosingTheWindowWaitsForAnOutstandingRead()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        await vm.InitializeAsync();
+
+        Task closed;
+        store.HoldReads();
+        try
+        {
+            // Selecting another operation reads its items without any command awaiting it.
+            vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
+            await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            closed = vm.DisposeAsync().AsTask();
+            // The items are still being read: closing has not finished, whatever else it had to do.
+            Assert.NotSame(closed, await Task.WhenAny(closed, Task.Delay(TimeSpan.FromSeconds(2))));
+        }
+        finally
+        {
+            store.ReleaseReads();
+        }
+
+        await closed.WaitAsync(OperationLoadGuard);
+        Assert.True(vm.OperationHistoryRefresh.IsCompleted);
+        Assert.True(vm.OperationItemsLoad.IsCompleted);
+    }
+
     /// <summary>The file store, with reads that can be held until released.</summary>
     private sealed class HeldReplayStore(BatchReplayStore inner) : IBatchReplayStore
     {
