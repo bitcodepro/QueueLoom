@@ -98,11 +98,56 @@ public sealed class StartupAcknowledgementTests
         Assert.Single(failures);
     }
 
+    [Fact]
+    public async Task NoRetryStartsWhenTheRetryDelayOvershootsTheCutoff()
+    {
+        var clock = new SteppedClock();
+        var calls = 0;
+        var failures = new List<Exception>();
+        var run = StartupAcknowledgement.RunAsync(() =>
+        {
+            calls++;
+            clock.Advance(TimeSpan.FromSeconds(19)); // Fails just before the 20 s cutoff, so a retry delay is allowed.
+            throw new IOException("busy");
+        }, failures.Add, clock);
+
+        Assert.True(clock.TimerCreated.Wait(TimeSpan.FromSeconds(10)));
+        clock.Advance(TimeSpan.FromSeconds(2)); // The delay resumes past the cutoff.
+        clock.FireTimers();
+
+        Assert.False(await run);
+        Assert.Equal(1, calls);
+        Assert.IsType<IOException>(Assert.Single(failures));
+    }
+
     private sealed class SteppedClock : TimeProvider
     {
+        private readonly List<(TimerCallback Callback, object? State)> _timers = [];
         private long _ticks;
+        public SemaphoreSlim TimerCreated { get; } = new(0);
         public void Advance(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            lock (_timers) _timers.Add((callback, state));
+            TimerCreated.Release();
+            return new NoTimer();
+        }
+
+        public void FireTimers()
+        {
+            (TimerCallback Callback, object? State)[] due;
+            lock (_timers) { due = [.. _timers]; _timers.Clear(); }
+            foreach (var (callback, state) in due) callback(state);
+        }
+
+        private sealed class NoTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
     }
 }

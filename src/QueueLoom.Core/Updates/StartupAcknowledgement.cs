@@ -19,16 +19,28 @@ public static class StartupAcknowledgement
         TimeProvider? time = null, TimeSpan? budget = null, CancellationToken cancellationToken = default)
     {
         time ??= TimeProvider.System;
+        var limit = budget ?? Budget;
         var started = time.GetTimestamp();
+        Exception? transient = null;
         while (true)
         {
+            var expired = false;
             try
             {
-                return await Task.Run(acknowledge, cancellationToken).ConfigureAwait(false);
+                // The cutoff is checked where the attempt would begin: a delay or a queued worker can overshoot it.
+                var result = await Task.Run(() =>
+                {
+                    if (transient is not null && time.GetElapsedTime(started) >= limit) { expired = true; return false; }
+                    return acknowledge();
+                }, cancellationToken).ConfigureAwait(false);
+                if (!expired) return result;
+                failed(transient!);
+                return false;
             }
             catch (Exception error) when (error is IOException or InstallationFileBusyException &&
-                time.GetElapsedTime(started) + RetryDelay < (budget ?? Budget))
+                time.GetElapsedTime(started) + RetryDelay < limit)
             {
+                transient = error;
                 await Task.Delay(RetryDelay, time, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception error) when (error is not OutOfMemoryException)
