@@ -48,7 +48,9 @@ public static class MessageDraftValidator
         ValidateApplicationProperties(draft.ApplicationProperties, errors);
         if (draft.Properties is not null && draft.ApplicationProperties is not null)
         {
-            ValidateProviderAttributes(draft.Properties, draft.ApplicationProperties, errors, rules);
+            ValidateProviderAttributes(draft.Properties, draft.ApplicationProperties, errors, rules,
+                // Decoded: whitespace-only Base64 is zero bytes. Invalid Base64 is not "empty"; it has its own error above.
+                draft.Body.TryGetBytes(out var bodyBytes) && bodyBytes.Length == 0);
         }
         // The total size, once everything it is computed from is known to be valid. Checked here, so the composer,
         // resends, scheduled resends and replays refuse an oversized message before anything is sent or scheduled.
@@ -232,7 +234,8 @@ public static class MessageDraftValidator
         EditableMessageProperties properties,
         IReadOnlyList<MessageApplicationProperty> applicationProperties,
         ICollection<ValidationError> errors,
-        MessagingProvider rules)
+        MessagingProvider rules,
+        bool draftBodyIsEmpty)
     {
         if (rules == MessagingProvider.AmazonSqsSns)
         {
@@ -275,6 +278,10 @@ public static class MessageDraftValidator
             {
                 attributes[property.Name] = property.Value ?? string.Empty;
             }
+            if (PubSubPublishProblem(draftBodyIsEmpty, attributes.Keys) is { } problem)
+            {
+                errors.Add(new ValidationError("message.pubsub.unpublishable", problem, nameof(MessageDraft.ApplicationProperties)));
+            }
             if (attributes.Count > MaxPubSubAttributes)
             {
                 errors.Add(new ValidationError(
@@ -297,6 +304,26 @@ public static class MessageDraftValidator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Why Google Pub/Sub would refuse a publish with this data and these attribute keys, or null. A message needs non-empty
+    /// data or at least one attribute, and attribute keys must be non-empty and must not begin with "goog" (any case).
+    /// Refused before sending, such a message is a proven non-delivery, not an RPC failure of unknown outcome.
+    /// </summary>
+    public static string? PubSubPublishProblem(bool dataIsEmpty, IEnumerable<string> attributeKeys)
+    {
+        var keys = attributeKeys.ToArray();
+        if (dataIsEmpty && keys.Length == 0)
+        {
+            return "Google Pub/Sub needs a message body or at least one attribute; this message has neither.";
+        }
+        var reserved = keys.FirstOrDefault(key => key.Length == 0 || key.StartsWith("goog", StringComparison.OrdinalIgnoreCase));
+        return reserved is null
+            ? null
+            : reserved.Length == 0
+                ? "Google Pub/Sub does not accept an attribute without a name."
+                : $"Google Pub/Sub does not accept attribute names that begin with \"goog\" ('{(reserved.Length > 40 ? TextLimits.Head(reserved, 40) + "…" : reserved)}').";
     }
 
     /// <summary>Whether SQS and SNS accept <paramref name="name"/> as a message attribute name.</summary>
