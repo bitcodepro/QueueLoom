@@ -68,7 +68,11 @@ public sealed partial class AzureServiceBusWorkspace
         Persistence.DeadLetterJsonBackupSession backupSession,
         CancellationToken cancellationToken)
     {
-        if (message.Source.Kind == ServiceBusEntityKind.Queue)
+        // A queue that requires sessions opens no receiver without one, and accepting the message's session would take a
+        // lock a consumer may hold. Cancelling by sequence number needs neither, so such a queue is handled like a topic:
+        // the browsed message is backed up and cancelled. Only the topology already read says so: asking the management
+        // API would make cancelling need Manage rights, which a Listen and Send key does not have.
+        if (message.Source.Kind == ServiceBusEntityKind.Queue && TryGetRequiresSession(_cachedTopology, message.Source) != true)
         {
             // Check that the sequence number still belongs to the same scheduled message before cancelling it.
             await using var peeker = GetMessagingClient().CreateReceiver(message.Source.Name);
