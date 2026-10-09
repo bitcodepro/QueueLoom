@@ -119,6 +119,9 @@ public sealed record BrowsedMessage
                 "This message body exceeds the safe editor limit and was only retained as a preview.");
         }
 
-        return new MessageDraft(EditableMessageBody.FromBytes(_body), Properties, ApplicationProperties) { KafkaEnvelope = KafkaEnvelope };
+        // Ownership is established by the reader, not by a name prefix. Keep bookkeeping visible in the browse
+        // and backup, but leave it out of every outgoing draft (including editor, replay and scheduled copies).
+        return new MessageDraft(EditableMessageBody.FromBytes(_body), Properties,
+            ApplicationProperties.Where(property => !BrokerOwnedHeaders.Contains(property.Name))) { KafkaEnvelope = KafkaEnvelope };
     }
 }

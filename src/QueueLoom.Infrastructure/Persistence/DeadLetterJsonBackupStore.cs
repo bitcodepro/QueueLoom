@@ -231,6 +231,12 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "deadLetterReason", message.DeadLetterReason);
             WriteString(writer, "deadLetterErrorDescription", message.DeadLetterErrorDescription);
             WriteApplicationProperties(writer, message.ApplicationProperties);
+            if (message.BrokerOwnedHeaders.Count > 0)
+            {
+                writer.WriteStartArray("brokerOwnedHeaders");
+                foreach (var name in message.BrokerOwnedHeaders.Order(StringComparer.Ordinal)) writer.WriteStringValue(name);
+                writer.WriteEndArray();
+            }
             WriteBody(writer, message.Body);
             if (message.KafkaEnvelope is not null)
             {

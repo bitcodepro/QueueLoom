@@ -402,7 +402,12 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             deadLetterErrorDescription: ReadOptionalString(root, "deadLetterErrorDescription"),
             originalBodySize: ReadInt64(root, "bodySize"))
         {
-            KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null
+            KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null,
+            // Older backups carry no queue ownership evidence; their counters may be producer-owned.
+            BrokerOwnedHeaders = root.TryGetProperty("brokerOwnedHeaders", out var owned) && owned.ValueKind == JsonValueKind.Array
+                ? owned.EnumerateArray().Select(name => name.GetString() ?? throw new InvalidDataException("Invalid broker header name."))
+                    .ToHashSet(StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal)
         };
     }
 

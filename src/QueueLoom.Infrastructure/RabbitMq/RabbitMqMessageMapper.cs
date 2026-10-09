@@ -16,7 +16,11 @@ internal static class RabbitMqMessageMapper
     internal const string AppIdProperty = "amqp-app-id";
 
     /// <summary>Headers RabbitMQ writes when it dead-letters a message. They are shown, but not copied when resending.</summary>
-    private static readonly string[] BrokerHeaderPrefixes = ["x-death", "x-first-death-", "x-last-death-", "x-delivery-count"];
+    private static readonly HashSet<string> DeathHeaders = new(StringComparer.Ordinal)
+    {
+        "x-death", "x-first-death-queue", "x-first-death-reason", "x-first-death-exchange",
+        "x-last-death-queue", "x-last-death-reason", "x-last-death-exchange"
+    };
 
     public static BrowsedMessage FromAmqp(
         ReadOnlyMemory<byte> body,
@@ -108,23 +112,20 @@ internal static class RabbitMqMessageMapper
 
         foreach (var property in message.ApplicationProperties)
         {
+            if (DeathHeaders.Contains(property.Name))
+            {
+                continue;
+            }
             if (property.WireType == AmqpTypedValue.WireType)
             {
                 // Written back with exactly the AMQP types and bytes it was read with (see AmqpTypedValue).
-                if (!BrokerHeaderPrefixes.Any(prefix => property.Name.StartsWith(prefix, StringComparison.Ordinal)))
-                {
-                    properties.Headers[property.Name] = FromTyped(property.Name, property.Value);
-                }
+                properties.Headers[property.Name] = FromTyped(property.Name, property.Value);
                 continue;
             }
             // Historical persisted drafts have no separate envelope. Keep their prior interpretation,
             // including the ambiguity of a single user header with one of these names.
             if (message.LegacyAmqpMetadata && property.Name == TypeProperty) { properties.Type = property.Value; continue; }
             if (message.LegacyAmqpMetadata && property.Name == AppIdProperty) { properties.AppId = property.Value; continue; }
-            if (BrokerHeaderPrefixes.Any(prefix => property.Name.StartsWith(prefix, StringComparison.Ordinal)))
-            {
-                continue;
-            }
             properties.Headers[property.Name] = ToHeaderValue(property);
         }
         return properties;
