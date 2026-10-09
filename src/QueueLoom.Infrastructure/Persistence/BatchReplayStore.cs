@@ -11,6 +11,8 @@ public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProp
 {
     public KafkaEnvelope? KafkaEnvelope { get; init; }
     public bool HasSeparatedAmqpMetadata { get; init; }
+    // Introduced with header ownership classification, independently of basic metadata separation.
+    public bool HasClassifiedAmqpHeaders { get; init; }
     public ServiceBusEntityReference? Destination { get; init; }
     public DeadLetterMessageKey? Original { get; init; }
 }
@@ -52,12 +54,14 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
                     // Replay means send now. TTL remains explicit; enqueue timestamps are broker-owned.
                     ScheduledEnqueueTime = null
                 };
-                var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope };
+                var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope,
+                    LegacyAmqpMetadata = draft.LegacyAmqpMetadata, LegacyAmqpBrokerHeaders = draft.LegacyAmqpBrokerHeaders };
                 // The destination service's limits: a Pub/Sub ordering key or RabbitMQ message ID is not held to Azure's.
                 var validation = MessageDraftValidator.Validate(prepared, provider);
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin)
-                    { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata };
+                    { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata,
+                        HasClassifiedAmqpHeaders = !draft.LegacyAmqpBrokerHeaders };
                 await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
                 await WriteItemMetadata(folder, count - 1, payload, destination, token);
             }
@@ -178,5 +182,6 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         ?? throw new InvalidDataException("Invalid replay payload");
 
     private static MessageDraft ToDraft(ReplayPayload payload) => new(payload.Body, payload.Properties, payload.ApplicationProperties)
-        { KafkaEnvelope = payload.KafkaEnvelope, LegacyAmqpMetadata = !payload.HasSeparatedAmqpMetadata };
+        { KafkaEnvelope = payload.KafkaEnvelope, LegacyAmqpMetadata = !payload.HasSeparatedAmqpMetadata,
+            LegacyAmqpBrokerHeaders = !payload.HasClassifiedAmqpHeaders };
 }

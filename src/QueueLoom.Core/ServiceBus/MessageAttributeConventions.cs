@@ -37,7 +37,8 @@ public static class MessageAttributeConventions
         if (property.WireType is { } wire &&
             (wire.StartsWith("String.", StringComparison.Ordinal) && property.Type == ApplicationPropertyType.String ||
              wire.StartsWith("Number.", StringComparison.Ordinal) &&
-             property.Type is ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or ApplicationPropertyType.String))
+             property.Type is ApplicationPropertyType.Int64 or ApplicationPropertyType.Decimal or ApplicationPropertyType.String ||
+             wire.StartsWith("Binary.", StringComparison.Ordinal) && property.Type == ApplicationPropertyType.Binary))
         {
             return wire;
         }

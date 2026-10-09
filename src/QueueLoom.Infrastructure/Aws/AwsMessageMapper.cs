@@ -263,7 +263,7 @@ internal static class AwsMessageMapper
     {
         // The DataType choice lives in Core, so the size check before sending counts exactly what is sent.
         var dataType = MessageAttributeConventions.AwsDataType(property);
-        return dataType == "Binary"
+        return dataType == "Binary" || dataType.StartsWith("Binary.", StringComparison.Ordinal)
             ? (dataType, null, Convert.FromBase64String(property.Value))
             : (dataType, property.Value, null);
     }
@@ -289,7 +289,8 @@ internal static class AwsMessageMapper
         if (parts[0] == "Binary")
         {
             return new MessageApplicationProperty(name, ApplicationPropertyType.Binary,
-                Convert.ToBase64String(binaryValue?.ToArray() ?? []));
+                Convert.ToBase64String(binaryValue?.ToArray() ?? []))
+                { WireType = label is { Length: > 0 } ? dataType : null };
         }
 
         var value = stringValue ?? string.Empty;
@@ -298,7 +299,13 @@ internal static class AwsMessageMapper
             Enum.TryParse<ApplicationPropertyType>(label, ignoreCase: false, out var labelled) &&
             Enum.IsDefined(labelled) && labelled != ApplicationPropertyType.Binary)
         {
-            return new MessageApplicationProperty(name, labelled, value);
+            var typed = new MessageApplicationProperty(name, labelled, value);
+            // A familiar suffix alone is not our convention: String.Int32 is still the producer's String,
+            // and Number.String is still a Number. Recognize only the base/label pairs we actually write.
+            if (MessageAttributeConventions.AwsDataType(typed) == dataType)
+            {
+                return typed;
+            }
         }
 
         // A label QueueLoom has no type for is remembered, so a resent copy carries the same type again.

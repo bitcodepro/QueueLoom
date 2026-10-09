@@ -12,7 +12,7 @@ public sealed record MessageApplicationProperty(
     /// <summary>
     /// The service's own type label when QueueLoom has no equivalent type, kept so a resent copy carries it again:
     /// an SNS "String.Array" (its value is the JSON array text) or another producer's custom SQS label such as
-    /// "Number.1" or "String.customer". Null for QueueLoom's own types.
+    /// "Number.1", "String.customer" or "Binary.png". Null for QueueLoom's own compatible base/type pairs.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? WireType { get; init; }
