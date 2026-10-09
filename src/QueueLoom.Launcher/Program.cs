@@ -20,14 +20,9 @@ internal static class Program
                 installation.RejectOwnedPath(ready);
                 using (var file = new FileStream(ready, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { file.WriteByte(1); file.Flush(flushToDisk: true); }
-                try
-                {
-                    using var parent = Process.GetProcessById(int.Parse(args[1], CultureInfo.InvariantCulture));
-                    var start = long.Parse(args[2], CultureInfo.InvariantCulture);
-                    if (!OperatingSystem.IsWindows() || parent.StartTime.ToUniversalTime().Ticks == start)
-                        await parent.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(2));
-                }
-                catch (ArgumentException) { /* Already stopped. */ }
+                if (!await RestartHandoff.WaitForParentAsync(int.Parse(args[1], CultureInfo.InvariantCulture),
+                        long.Parse(args[2], CultureInfo.InvariantCulture)))
+                    await Console.Error.WriteLineAsync("QueueLoom is still closing; starting the new version anyway.");
                 args = [];
             }
             var selection = installation.SelectForLaunch();
