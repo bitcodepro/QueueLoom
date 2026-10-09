@@ -75,6 +75,14 @@ public sealed partial class AzureServiceBusWorkspace
         {
             var existing = await GetUnchangedRuleAsync(administration, topic, subscription, rule.Original, rule.Name, cancellationToken)
                 .ConfigureAwait(false);
+            // The editor shows a SQL filter or action as its expression only; rebuilding it would drop parameters set
+            // elsewhere (amount > @min with @min = 100), so such a rule is refused rather than saved without them.
+            if ((existing.Filter as SqlRuleFilter)?.Parameters.Count > 0 || (existing.Action as SqlRuleAction)?.Parameters.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Rule {rule.Name} of {topic} / {subscription} uses SQL parameters, which QueueLoom cannot edit; nothing was saved. " +
+                    "Change it with the Azure portal, CLI or SDK.");
+            }
             existing.Filter = ToFilter(rule);
             existing.Action = string.IsNullOrWhiteSpace(rule.Action) ? null : new SqlRuleAction(rule.Action);
             await AdministerRule(() => administration.UpdateRuleAsync(topic, subscription, existing, cancellationToken)).ConfigureAwait(false);
