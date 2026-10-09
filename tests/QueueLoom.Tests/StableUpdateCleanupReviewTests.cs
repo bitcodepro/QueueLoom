@@ -12,6 +12,82 @@ namespace QueueLoom.Tests;
 public sealed partial class StableUpdateCleanupRegressionTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Review_MalformedDownloadPathsCannotAuthorizeDeletionOrBlockDiscovery(bool embeddedNull)
+    {
+        using var fixture = new InstallationFixture();
+        using var downloads = new TemporaryDirectory();
+        using var http = new HttpClient(new PackageHandler(Archive(fixture.Package("malformed-path-review").Path)));
+        var journal = new DiagnosticsJournal();
+        var updater = new AppUpdater(http, downloads.Path, journal);
+        var target = AppUpdater.TargetFor(VersionInstallation.CurrentRid(), fixture.Launcher);
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.EnsureBootstrap();
+        var (directory, receipt) = await ReviewDownload(updater, target);
+        var invalidDirectory = embeddedNull ? Path.Combine(downloads.Path, "bad\0-" + receipt.Id) : "bad-" + receipt.Id;
+        var invalid = receipt with { DownloadDirectory = invalidDirectory };
+        var json = JsonSerializer.Serialize(invalid); // NUL must reach production through valid escaped JSON.
+        var path = WriteReviewReceipt(installation, invalid, json);
+        var snapshot = ReviewSnapshot(directory);
+        var (foreignDirectory, _) = await ReviewDownload(updater, target);
+        var foreignSnapshot = ReviewSnapshot(foreignDirectory);
+        await AssertReviewCleanupAndDiscovery(updater, target, installation);
+        Assert.Equal(json, File.ReadAllText(path));
+        Assert.Equal(snapshot, ReviewSnapshot(directory));
+        Assert.Equal(foreignSnapshot, ReviewSnapshot(foreignDirectory));
+        AssertRejectedCleanupDiagnostic(journal);
+    }
+
+    [Fact]
+    public async Task Review_LinkedCleanupFolderCannotAuthorizeDeletionOrBlockDiscovery()
+    {
+        using var fixture = new InstallationFixture();
+        using var downloads = new TemporaryDirectory();
+        using var external = new TemporaryDirectory();
+        using var http = new HttpClient(new PackageHandler(Archive(fixture.Package("linked-folder-review").Path)));
+        var journal = new DiagnosticsJournal();
+        var updater = new AppUpdater(http, downloads.Path, journal);
+        var target = AppUpdater.TargetFor(VersionInstallation.CurrentRid(), fixture.Launcher);
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.EnsureBootstrap();
+        var (directory, receipt) = await ReviewDownload(updater, target);
+        File.WriteAllText(Path.Combine(external.Path, receipt.Id + ".json"), JsonSerializer.Serialize(receipt));
+        File.WriteAllText(Path.Combine(external.Path, "keep"), "external data");
+        var externalSnapshot = ReviewSnapshot(external.Path);
+        var snapshot = ReviewSnapshot(directory);
+        var folder = Path.Combine(installation.Store, "download-cleanup");
+        await CreateCleanupReviewLink(folder, external.Path);
+        try
+        {
+            using var releases = new HttpClient(new CleanupReviewReleaseHandler());
+            using var checker = new GitHubUpdateChecker(releases, "1.0.0");
+            for (var launch = 0; launch < 3; launch++)
+            {
+                updater.CleanUpPreviousUpdate(target);
+                Assert.Equal(new Version(9, 1, 0), (await checker.CheckAsync())!.Version);
+            }
+            Assert.Equal(externalSnapshot, ReviewSnapshot(external.Path));
+            Assert.Equal(snapshot, ReviewSnapshot(directory));
+            AssertRejectedCleanupDiagnostic(journal);
+        }
+        finally { RemoveCleanupReviewLink(folder, installation.Store); }
+        // Once the invalid folder is removed, newly recorded valid transactions still clean normally.
+        await AssertReviewCleanupAndDiscovery(updater, target, installation);
+        Assert.Equal(externalSnapshot, ReviewSnapshot(external.Path));
+        Assert.Equal(snapshot, ReviewSnapshot(directory));
+    }
+
+    private static void AssertRejectedCleanupDiagnostic(DiagnosticsJournal journal)
+    {
+        using var report = JsonDocument.Parse(journal.Capture().Json);
+        Assert.Contains(report.RootElement.GetProperty("Events").EnumerateArray(), item =>
+            item.GetProperty("Kind").GetString() == "Update" && item.GetProperty("Stage").GetString() == "Failed" &&
+            item.GetProperty("Outcome").GetString() == "Rejected" && item.GetProperty("UpdateStage").GetString() == "Recovery" &&
+            item.GetProperty("Errors").GetArrayLength() > 0);
+    }
+
+    [Theory]
     [InlineData("{")]
     [InlineData("null")]
     [InlineData("{}")]
