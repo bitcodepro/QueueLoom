@@ -153,11 +153,13 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     public static Uri PackageUri(string tag, string version, string rid) =>
         new($"{ReleasesDownload}/{Uri.EscapeDataString(tag)}/{PackageName(version, rid)}");
 
-    /// <summary>False when the program folder cannot be written (for example under Program Files).</summary>
+    /// <summary>Whether the update destination is writable: the version store for stable installations.</summary>
     public static bool CanInstall(UpdateTarget target)
     {
         try
         {
+            if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
+                return new QueueLoom.Core.Updates.VersionInstallation(target.Executable).CanStagePackage();
             var probe = Path.Combine(target.InstallDirectory, $".queueloom-update-{Guid.NewGuid():N}");
             using (File.Create(probe, 1, FileOptions.DeleteOnClose))
             {
@@ -287,7 +289,26 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     {
         if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
         {
-            new QueueLoom.Core.Updates.VersionInstallation(target.Executable).StagePackage(staging);
+            var installation = new QueueLoom.Core.Updates.VersionInstallation(target.Executable);
+            var download = StableDownloadReceipt(installation, target, staging);
+            if (download is null) { installation.StagePackage(staging); return; }
+            var (stableReceipt, path) = download.Value;
+            using var stableOwnership = UpdateRestart.OwnTransaction(path);
+            if (File.Exists(path)) throw new IOException("This download already has an installation cleanup transaction.");
+            QueueLoom.Core.IO.SafeFileWriter.WriteText(path, JsonSerializer.Serialize(stableReceipt), narrowGroup: false);
+            try { installation.StagePackage(staging); }
+            finally
+            {
+                // StagePackage copies into the immutable store; its source is disposable even after failure.
+                // Keep the receipt if the download is busy so a later startup retries only this transaction.
+                try
+                {
+                    stableReceipt = stableReceipt with { InstallerPid = 0, InstallerStartTicks = 0 };
+                    QueueLoom.Core.IO.SafeFileWriter.WriteText(path, JsonSerializer.Serialize(stableReceipt), narrowGroup: false);
+                    CleanStableDownload(installation, target, stableReceipt, path);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            }
             return;
         }
         var downloadDirectory = Path.GetDirectoryName(Path.GetFullPath(staging))!;
@@ -436,7 +457,31 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     public void CleanUpPreviousUpdate(UpdateTarget? target)
     {
         if (target is not null && QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
-            new QueueLoom.Core.Updates.VersionInstallation(target.Executable).CleanupStaging();
+        {
+            var installation = new QueueLoom.Core.Updates.VersionInstallation(target.Executable);
+            installation.CleanupStaging();
+            var folder = Path.Combine(installation.Store, "download-cleanup");
+            installation.RejectOwnedPath(folder);
+            string[] records;
+            try { records = Directory.Exists(folder) ? Directory.GetFiles(folder, "*.json") : []; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { records = []; }
+            foreach (var path in records)
+            {
+                if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out _)) continue;
+                ValidateStableCleanupPaths(installation, path);
+                FileStream ownership;
+                try { ownership = UpdateRestart.OwnTransaction(path); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
+                using var retainedOwnership = ownership;
+                if (!File.Exists(path)) continue;
+                UpdateRestart.Receipt? receipt;
+                try { receipt = JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path)); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
+                catch (JsonException error) { throw new InvalidDataException("The download cleanup receipt is damaged.", error); }
+                if (receipt is null) throw new InvalidDataException("The download cleanup receipt is empty.");
+                CleanStableDownload(installation, target, receipt, path);
+            }
+        }
         if (target is not null && File.Exists(UpdateRestart.ReceiptPath(target)))
         {
             var path = UpdateRestart.ReceiptPath(target);
@@ -461,6 +506,66 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             if (UpdateRestart.InstallerIsAlive(receipt)) return;
             // Startup was successful. Retry only the backups recorded by this update.
             UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero).GetAwaiter().GetResult();
+        }
+    }
+
+    private static (UpdateRestart.Receipt Receipt, string Path)? StableDownloadReceipt(
+        QueueLoom.Core.Updates.VersionInstallation installation, UpdateTarget target, string staging)
+    {
+        var source = Path.GetFullPath(staging);
+        var directory = Path.GetDirectoryName(source)!;
+        var marker = Path.Combine(directory, DownloadMarker);
+        if (Path.GetFileName(source) != "files" || !File.Exists(marker)) return null;
+        QueueLoom.Core.Updates.VersionInstallation.RejectLinks(marker, Path.GetDirectoryName(directory)!);
+        var id = File.ReadAllText(marker);
+        if (!Guid.TryParseExact(id, "N", out _)) throw new InvalidDataException("Invalid update download marker.");
+        if (!Path.GetFileName(directory).EndsWith("-" + id, StringComparison.Ordinal)) return null;
+        if (!installation.CanStagePackage()) throw new IOException("The version store is not writable.");
+        var folder = Path.Combine(installation.Store, "download-cleanup");
+        installation.RejectOwnedPath(folder);
+        if (OperatingSystem.IsWindows()) Directory.CreateDirectory(folder);
+        else Directory.CreateDirectory(folder, PrivateDirectoryMode);
+        var path = Path.Combine(folder, id + ".json");
+        ValidateStableCleanupPaths(installation, path);
+        using var installer = Process.GetCurrentProcess();
+        return (new UpdateRestart.Receipt(id, target, directory, [], InstallerPid: installer.Id,
+            InstallerStartTicks: installer.StartTime.ToUniversalTime().Ticks), path);
+    }
+
+    private static void ValidateStableCleanupPaths(QueueLoom.Core.Updates.VersionInstallation installation, string path)
+    {
+        var id = Path.GetFileNameWithoutExtension(path);
+        foreach (var entry in new[] { path, path + ".handoff", path + ".helper", path + "." + id + ".ready",
+                     path + "." + id + ".download-cleaned", path + "." + id + ".download-cleaned.tmp" })
+            installation.RejectOwnedPath(entry);
+    }
+
+    private static void CleanStableDownload(QueueLoom.Core.Updates.VersionInstallation installation, UpdateTarget target,
+        UpdateRestart.Receipt receipt, string path)
+    {
+        if (receipt.Target != target || !Guid.TryParseExact(receipt.Id, "N", out _) ||
+            Path.GetFileName(path) != receipt.Id + ".json" || receipt.Entries is not { Length: 0 } ||
+            receipt.Recovered || receipt.BundleBackupDirectories is not null || string.IsNullOrEmpty(receipt.DownloadDirectory) ||
+            !Path.GetFileName(receipt.DownloadDirectory).EndsWith("-" + receipt.Id, StringComparison.Ordinal))
+            throw new InvalidDataException("The download cleanup receipt does not match this installation.");
+        ValidateStableCleanupPaths(installation, path);
+        if (UpdateRestart.InstallerIsAlive(receipt)) return;
+        try
+        {
+            ValidateDownloadTree(receipt.DownloadDirectory, Path.GetDirectoryName(receipt.DownloadDirectory)!);
+            UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero).GetAwaiter().GetResult();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+
+    private static void ValidateDownloadTree(string directory, string boundary)
+    {
+        QueueLoom.Core.Updates.VersionInstallation.RejectLinks(directory, boundary);
+        if (!Directory.Exists(directory)) return;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        {
+            QueueLoom.Core.Updates.VersionInstallation.RejectLinks(entry, boundary);
+            if (Directory.Exists(entry)) ValidateDownloadTree(entry, boundary);
         }
     }
 
