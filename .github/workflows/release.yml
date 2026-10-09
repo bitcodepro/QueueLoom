@@ -8,8 +8,9 @@ on:
   push:
     tags: ['v*']
 
+# Only the publish job writes; the test job runs restore and the whole suite and needs no write token.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -36,8 +37,11 @@ jobs:
       - name: Read version from tag
         id: version
         shell: pwsh
+        # The tag name comes through env: a ref name may contain quotes and ; and must never become script text.
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          $tag = '${{ github.ref_name }}'
+          $tag = $env:TAG
           $version = $tag.TrimStart('v')
           if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
             throw "Tag '$tag' is not a semantic version such as v1.2.3 or v1.2.3-rc.1."
@@ -86,7 +90,10 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          PRERELEASE: ${{ needs.test.outputs.prerelease }}
         run: |
-          flags=(--verify-tag --generate-notes --title '${{ github.ref_name }}' --repo '${{ github.repository }}')
-          if [ '${{ needs.test.outputs.prerelease }}' = 'true' ]; then flags+=(--prerelease); fi
-          gh release create '${{ github.ref_name }}' packages/* "${flags[@]}"
+          flags=(--verify-tag --generate-notes --title "$TAG" --repo "$REPO")
+          if [ "$PRERELEASE" = 'true' ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" packages/* "${flags[@]}"
