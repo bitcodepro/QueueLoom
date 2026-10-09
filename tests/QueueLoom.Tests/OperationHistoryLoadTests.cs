@@ -173,11 +173,84 @@ public sealed partial class ViewModelStateTests
         Assert.True(vm.OperationItemsLoad.IsCompleted);
     }
 
+    // A read superseded by another selection is still reading: closing waits for it too, not only for the latest one.
+    [Fact]
+    public async Task OperationHistory_ClosingWaitsForASupersededRead()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        await vm.InitializeAsync();
+
+        Task closed;
+        Task superseded;
+        store.HoldReads();
+        try
+        {
+            vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
+            await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            superseded = vm.OperationItemsLoad;
+            vm.SelectedOperation = null;
+            Assert.NotSame(superseded, vm.OperationItemsLoad);
+            closed = vm.DisposeAsync().AsTask();
+            // The superseded read is still held: closing has not finished.
+            Assert.NotSame(closed, await Task.WhenAny(closed, Task.Delay(TimeSpan.FromSeconds(2))));
+            Assert.False(superseded.IsCompleted);
+        }
+        finally
+        {
+            store.ReleaseReads();
+        }
+
+        await closed.WaitAsync(OperationLoadGuard);
+        Assert.True(superseded.IsCompleted);
+    }
+
+    // A recovery still running when closing starts refreshes the history in its finally. That refresh is refused before
+    // it reads any plan file, and closing still waits for the recovery itself.
+    [Fact]
+    public async Task OperationHistory_ARefreshAfterClosingStartedReadsNothing()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(),
+            new FakeDialogService { ConfirmResult = true }, replayStore: store);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        await vm.RefreshOperationHistoryCommand.ExecuteAsync();
+        foreach (var item in vm.OperationItems) item.IsMarked = true;
+
+        Task closed;
+        int listsBeforeClosing;
+        store.HoldRuns();
+        try
+        {
+            _ = vm.ContinueOperationCommand.ExecuteAsync();
+            await store.RunEntered.Task.WaitAsync(OperationLoadGuard);
+            listsBeforeClosing = store.Lists;
+            closed = vm.DisposeAsync().AsTask();
+        }
+        finally
+        {
+            store.ReleaseRuns();
+        }
+
+        await closed.WaitAsync(OperationLoadGuard);
+        Assert.Equal(listsBeforeClosing, store.Lists);
+    }
+
     /// <summary>The file store, with reads that can be held until released.</summary>
     private sealed class HeldReplayStore(BatchReplayStore inner) : IBatchReplayStore
     {
         private readonly ManualResetEventSlim _reads = new(true);
         private readonly ManualResetEventSlim _lists = new(true);
+        private readonly ManualResetEventSlim _runs = new(true);
+        private int _listCount;
         private int _releaseAfterNext;
 
         public BatchReplayStore Inner => inner;
@@ -189,6 +262,11 @@ public sealed partial class ViewModelStateTests
         /// <summary>The next read completes at once, and then releases the held one, so the held one finishes last.</summary>
         public void ReleaseReadsAfterNext() => Interlocked.Exchange(ref _releaseAfterNext, 1);
         public void HoldLists() { ListEntered = new(TaskCreationOptions.RunContinuationsAsynchronously); _lists.Reset(); }
+        public TaskCompletionSource RunEntered { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void HoldRuns() { RunEntered = new(TaskCreationOptions.RunContinuationsAsynchronously); _runs.Reset(); }
+        public void ReleaseRuns() => _runs.Set();
+        /// <summary>How many times the operation list was read.</summary>
+        public int Lists => Volatile.Read(ref _listCount);
         public void ReleaseLists() => _lists.Set();
 
         public string RootDirectory => inner.RootDirectory;
@@ -208,6 +286,7 @@ public sealed partial class ViewModelStateTests
 
         public IReadOnlyList<ReplayPlan> List()
         {
+            Interlocked.Increment(ref _listCount);
             ListEntered.TrySetResult();
             if (!_lists.Wait(OperationLoadGuard)) throw new TimeoutException("The held list was never released.");
             return inner.List();
@@ -227,8 +306,15 @@ public sealed partial class ViewModelStateTests
         public Task ActivateScheduledAsync(ReplayPlan plan, CancellationToken token) => inner.ActivateScheduledAsync(plan, token);
 
         public Task<ResendResult> RunItemsAsync(ReplayPlan plan, IReadOnlyList<int> indexes, bool retryRejected,
-            IServiceBusWorkspace workspace, Func<bool> canWrite, IProgress<ResendProgress>? progress, CancellationToken token) =>
-            inner.RunItemsAsync(plan, indexes, retryRejected, workspace, canWrite, progress, token);
+            IServiceBusWorkspace workspace, Func<bool> canWrite, IProgress<ResendProgress>? progress, CancellationToken token)
+        {
+            RunEntered.TrySetResult();
+            return Task.Run(async () =>
+            {
+                if (!_runs.Wait(OperationLoadGuard)) throw new TimeoutException("The held run was never released.");
+                return await inner.RunItemsAsync(plan, indexes, retryRejected, workspace, canWrite, progress, CancellationToken.None);
+            });
+        }
 
         public Task<ReplayProgress> RunAsync(ReplayPlan plan, IServiceBusWorkspace workspace, Func<bool> canWrite,
             IProgress<ReplayProgress>? progress, CancellationToken token) => inner.RunAsync(plan, workspace, canWrite, progress, token);
