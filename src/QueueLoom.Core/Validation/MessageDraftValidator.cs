@@ -408,8 +408,8 @@ public static class MessageDraftValidator
     /// <summary>
     /// The wire type QueueLoom keeps is an SQS/SNS custom DataType label it has no type for ("String.Array",
     /// "Number.1"), and it is only sent while the property still has the type it was read with: "String.x" with
-    /// String, "Number.x" with Int64, Decimal or a numeric String. A label that contradicts the type (typed into the
-    /// raw editor, or kept after the type was changed there) would either be sent with a value the service refuses
+    /// String, "Number.x" with Int64, Decimal or a numeric String, "Binary.x" with Binary. A label that contradicts
+    /// the type (typed into the raw editor, or kept after the type was changed there) would either be sent with a value the service refuses
     /// or be silently dropped while the draft and the routing preview still show it, so it is refused instead.
     /// </summary>
     private static string? WireTypeError(MessageApplicationProperty property)
@@ -427,11 +427,11 @@ public static class MessageDraftValidator
         }
         var separator = wire.IndexOf('.', StringComparison.Ordinal);
         var prefix = separator > 0 ? wire[..separator] : wire;
-        if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number") ||
+        if (separator <= 0 || separator == wire.Length - 1 || prefix is not ("String" or "Number" or "Binary") ||
             wire.Length > MaxAwsDataTypeLength)
         {
             return $"'{name}' has wireType '{(wire.Length > 40 ? TextLimits.Head(wire, 40) + "…" : wire)}', which is not an Amazon SQS/SNS " +
-                   $"custom type: use 'String.<label>' or 'Number.<label>' (up to {MaxAwsDataTypeLength} characters), " +
+                   $"custom type: use 'String.<label>', 'Number.<label>' or 'Binary.<label>' (up to {MaxAwsDataTypeLength} characters), " +
                    "or remove wireType.";
         }
         if (prefix == "String" && property.Type != ApplicationPropertyType.String)
@@ -444,6 +444,11 @@ public static class MessageDraftValidator
         {
             return $"'{name}' has wireType '{wire}' but type {property.Type}: a Number wire type needs type Int64, Decimal " +
                    $"or String. Remove wireType to send it as {property.Type}.";
+        }
+        if (prefix == "Binary" && property.Type != ApplicationPropertyType.Binary)
+        {
+            return $"'{name}' has wireType '{wire}' but type {property.Type}: a Binary wire type needs type Binary. " +
+                   $"Remove wireType to send it as {property.Type}, or set the type back to Binary.";
         }
         if (prefix == "Number" && property.Type == ApplicationPropertyType.String && !AwsNumber.IsMatch(property.Value))
         {
