@@ -154,7 +154,10 @@ internal static class McpMode
                 logging.AddProvider(logs);
             }, startupReady: () =>
             {
-                QueueLoom.Core.Updates.PayloadLaunch.Current?.Acknowledge();
+                // Same retry as the desktop window: a busy file must not cost this healthy version its confirmation.
+                if (QueueLoom.Core.Updates.PayloadLaunch.Current is { } launch)
+                    QueueLoom.Core.Updates.StartupAcknowledgement.RunAsync(launch.Acknowledge,
+                        error => Console.Error.WriteLine("Startup acknowledgement failed: " + error.Message)).GetAwaiter().GetResult();
                 UpdateRestart.AcknowledgeStartup();
             });
 

@@ -88,7 +88,11 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var versionAcknowledged = QueueLoom.Core.Updates.PayloadLaunch.Current?.Acknowledge() == true;
+        // Off the UI thread and never thrown: the acknowledgement hashes the whole payload and may wait for a busy file,
+        // and an escaped exception would end this healthy version and make the launcher roll it back.
+        var launch = QueueLoom.Core.Updates.PayloadLaunch.Current;
+        var versionAcknowledged = launch is not null && await QueueLoom.Core.Updates.StartupAcknowledgement.RunAsync(
+            launch.Acknowledge, error => _logger?.LogError(error, "Startup acknowledgement failed"));
         if (!UpdateRestart.AcknowledgeStartup() && !versionAcknowledged) await CheckForUpdatesAsync();
     }
 
