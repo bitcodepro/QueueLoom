@@ -388,9 +388,14 @@ public sealed class LeftoverFixTests
         var subscriber = new HoldSubscriber { HoldFailures = int.MaxValue };
         var failures = 0;
         subscriber.OnHoldFailure = count => failures = count;
-        // Cancelled as the back-off after the chosen failure starts, so it always lands inside that wait. A 50 ms timer
-        // racing the 200 ms back-off let a slow runner reach the next hold attempt first.
-        var clock = new BackoffClock(() => { if (failures == failuresBeforeCancel) cancellation.Cancel(); });
+        // No real time: the back-off after the chosen failure never elapses and is cancelled as it starts; an earlier
+        // back-off elapses at once. A 50 ms timer racing the 200 ms back-off let a slow runner reach the next attempt.
+        var clock = new BackoffClock(() =>
+        {
+            if (failures != failuresBeforeCancel) return true;
+            cancellation.Cancel();
+            return false;
+        });
         var channel = PubSubChannel(subscriber, out _, clock);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => channel.ReceiveAsync(10, cancellation.Token));
@@ -424,14 +429,25 @@ public sealed class LeftoverFixTests
         Assert.Contains("release unavailable", error.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>The system clock, telling the test when a back-off wait starts.</summary>
-    private sealed class BackoffClock(Action waitStarting) : TimeProvider
+    /// <summary>
+    /// A clock with no real waits: as a wait starts, the test decides whether it elapses at once (true) or never (false,
+    /// so only a cancellation can end it).
+    /// </summary>
+    private sealed class BackoffClock(Func<bool> waitStarting) : TimeProvider
     {
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
-            waitStarting();
-            return System.CreateTimer(callback, state, dueTime, period);
+            if (waitStarting()) ThreadPool.QueueUserWorkItem(_ => callback(state));
+            return new IdleTimer();
         }
+    }
+
+    /// <summary>A timer that never fires by itself.</summary>
+    internal sealed class IdleTimer : ITimer
+    {
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+        public void Dispose() { }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private static ILeasedMessageChannel PubSubChannel(HoldSubscriber subscriber, out GooglePubSubWorkspace workspace,

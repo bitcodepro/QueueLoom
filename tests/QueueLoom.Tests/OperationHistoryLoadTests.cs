@@ -150,6 +150,8 @@ public sealed partial class ViewModelStateTests
         await PrepareReplayRegression(store.Inner, profile);
         await PrepareReplayRegression(store.Inner, profile);
         var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        var clock = new DrainClock(vm.ShutdownDrainTimeout);
+        vm.Clock = clock;
         await vm.InitializeAsync();
 
         Task closed;
@@ -160,8 +162,9 @@ public sealed partial class ViewModelStateTests
             vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
             await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
             closed = vm.DisposeAsync().AsTask();
-            // The items are still being read: closing has not finished, whatever else it had to do.
-            Assert.NotSame(closed, await Task.WhenAny(closed, Task.Delay(TimeSpan.FromSeconds(2))));
+            // Closing has reached its drain, whose time limit never elapses here: the held read is what it waits for.
+            await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
+            Assert.False(closed.IsCompleted);
         }
         finally
         {
@@ -183,6 +186,8 @@ public sealed partial class ViewModelStateTests
         await PrepareReplayRegression(store.Inner, profile);
         await PrepareReplayRegression(store.Inner, profile);
         var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        var clock = new DrainClock(vm.ShutdownDrainTimeout);
+        vm.Clock = clock;
         await vm.InitializeAsync();
 
         Task closed;
@@ -196,8 +201,9 @@ public sealed partial class ViewModelStateTests
             vm.SelectedOperation = null;
             Assert.NotSame(superseded, vm.OperationItemsLoad);
             closed = vm.DisposeAsync().AsTask();
-            // The superseded read is still held: closing has not finished.
-            Assert.NotSame(closed, await Task.WhenAny(closed, Task.Delay(TimeSpan.FromSeconds(2))));
+            // Closing has reached its drain (whose time limit never elapses here) and waits for the superseded read.
+            await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
+            Assert.False(closed.IsCompleted);
             Assert.False(superseded.IsCompleted);
         }
         finally
@@ -226,11 +232,12 @@ public sealed partial class ViewModelStateTests
         foreach (var item in vm.OperationItems) item.IsMarked = true;
 
         Task closed;
+        Task recovery;
         int listsBeforeClosing;
         store.HoldRuns();
         try
         {
-            _ = vm.ContinueOperationCommand.ExecuteAsync();
+            recovery = vm.ContinueOperationCommand.ExecuteAsync();
             await store.RunEntered.Task.WaitAsync(OperationLoadGuard);
             listsBeforeClosing = store.Lists;
             closed = vm.DisposeAsync().AsTask();
@@ -241,7 +248,85 @@ public sealed partial class ViewModelStateTests
         }
 
         await closed.WaitAsync(OperationLoadGuard);
+        // The recovery and whatever refresh its finally started have ended: a late read, had it been admitted, has
+        // happened by now and would be counted.
+        await recovery.WaitAsync(OperationLoadGuard);
+        await vm.OperationHistoryRefresh.WaitAsync(OperationLoadGuard);
         Assert.Equal(listsBeforeClosing, store.Lists);
+    }
+
+    // Closing stays bounded: a read that never ends does not keep the window open past its drain time limit.
+    [Fact]
+    public async Task OperationHistory_ClosingGivesUpOnAReadThatNeverEndsAtItsTimeLimit()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        var clock = new DrainClock(vm.ShutdownDrainTimeout);
+        vm.Clock = clock;
+        await vm.InitializeAsync();
+
+        store.HoldReads();
+        try
+        {
+            vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
+            await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            var closed = vm.DisposeAsync().AsTask();
+            await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
+            Assert.False(closed.IsCompleted);
+
+            clock.ElapseDrainLimit();
+
+            await closed.WaitAsync(OperationLoadGuard);
+            Assert.False(vm.OperationItemsLoad.IsCompleted);
+        }
+        finally
+        {
+            store.ReleaseReads();
+        }
+    }
+
+    /// <summary>
+    /// The window's clock without real time: its waits never elapse by themselves. The shutdown drain's time limit says
+    /// when it starts, and elapses only when the test says so.
+    /// </summary>
+    private sealed class DrainClock(TimeSpan drainLimit) : TimeProvider
+    {
+        private readonly List<(TimerCallback Callback, object? State)> _drainTimers = [];
+        private bool _elapsed;
+
+        public TaskCompletionSource DrainWaitStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (dueTime == drainLimit)
+            {
+                bool elapsed;
+                lock (_drainTimers)
+                {
+                    elapsed = _elapsed;
+                    if (!elapsed) _drainTimers.Add((callback, state));
+                }
+                DrainWaitStarted.TrySetResult();
+                // Once the limit has passed, every later wait for it (closing has more than one) has passed too.
+                if (elapsed) ThreadPool.QueueUserWorkItem(_ => callback(state));
+            }
+            return new LeftoverFixTests.IdleTimer();
+        }
+
+        public void ElapseDrainLimit()
+        {
+            (TimerCallback Callback, object? State)[] timers;
+            lock (_drainTimers)
+            {
+                _elapsed = true;
+                timers = [.. _drainTimers];
+            }
+            foreach (var (callback, state) in timers) callback(state);
+        }
     }
 
     /// <summary>The file store, with reads that can be held until released.</summary>
