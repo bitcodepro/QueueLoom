@@ -434,6 +434,11 @@ public static class MessageDraftValidator
                    $"custom type: use 'String.<label>', 'Number.<label>' or 'Binary.<label>' (up to {MaxAwsDataTypeLength} characters), " +
                    "or remove wireType.";
         }
+        if (!HasAwsDataTypeCharacters(wire))
+        {
+            return $"'{name}' has a wireType containing a character Amazon SQS/SNS does not accept. " +
+                   "Use valid Unicode text without forbidden control characters, or remove wireType.";
+        }
         if (prefix == "String" && property.Type != ApplicationPropertyType.String)
         {
             return $"'{name}' has wireType '{wire}' but type {property.Type}: a String wire type needs type String. " +
@@ -456,6 +461,23 @@ public static class MessageDraftValidator
                    "a Number attribute. Remove wireType to send it as text, or enter a number.";
         }
         return null;
+    }
+
+    // AWS DataType labels follow message-body Unicode rules, independently of attribute-name restrictions.
+    private static bool HasAwsDataTypeCharacters(string value)
+    {
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (char.IsHighSurrogate(character))
+            {
+                if (++index == value.Length || !char.IsLowSurrogate(value[index])) return false;
+                continue; // Every valid surrogate pair is in U+10000..U+10FFFF.
+            }
+            if (char.IsLowSurrogate(character) || character is '\ufffe' or '\uffff' ||
+                character < ' ' && character is not ('\t' or '\n' or '\r')) return false;
+        }
+        return true;
     }
 
     private static bool HasValidValue(ApplicationPropertyType type, string value) => type switch
