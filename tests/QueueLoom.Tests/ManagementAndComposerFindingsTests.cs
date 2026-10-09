@@ -308,4 +308,39 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("TTL", viewModel.ErrorText, StringComparison.Ordinal);
         Assert.DoesNotContain("TimeSpan", viewModel.ErrorText, StringComparison.Ordinal);
     }
+
+    // A scheduled time typed without an offset was read as UTC, while the resend dialog reads the same text as local time:
+    // "2026-08-11 14:30" scheduled the message two hours late for an operator at UTC+2. A time without an offset is now
+    // refused, and one with an offset (or Z) is sent as that instant.
+    [Theory]
+    [InlineData("2026-08-11 14:30", null)]
+    [InlineData("2026-08-11T14:30:00", null)]
+    [InlineData("2026-08-11T14:30:00Z", "2026-08-11T14:30:00+00:00")]
+    [InlineData("2026-08-11T14:30:00+02:00", "2026-08-11T14:30:00+02:00")]
+    public async Task Composer_AScheduledTimeWithoutAnOffsetIsRefused(string text, string? expected)
+    {
+        var profile = CreateProfile("Orders", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var workspace = new FakeWorkspace();
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.Destinations.Add(new DestinationItemViewModel(ServiceBusEntityReference.Queue("orders")));
+        viewModel.NewMessageCommand.Execute(null);
+        viewModel.SelectedDestination = viewModel.Destinations.Last();
+        viewModel.DraftScheduledEnqueueTime = text;
+
+        await viewModel.SendDraftCommand.ExecuteAsync();
+
+        if (expected is null)
+        {
+            Assert.Empty(workspace.SentMessages);
+            Assert.Contains("offset", viewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            var sent = Assert.Single(workspace.SentMessages).Message.Properties.ScheduledEnqueueTime;
+            Assert.Equal(DateTimeOffset.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), sent);
+        }
+    }
 }
