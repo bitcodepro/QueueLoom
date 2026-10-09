@@ -46,7 +46,11 @@ internal static class RabbitMqMessageMapper
             ReplyTo: properties.IsReplyToPresent() ? properties.ReplyTo : null,
             TimeToLive: timeToLive,
             AmqpType: properties.IsTypePresent() ? properties.Type : null,
-            AmqpAppId: properties.IsAppIdPresent() ? properties.AppId : null);
+            AmqpAppId: properties.IsAppIdPresent() ? properties.AppId : null,
+            // Published again with the message: a gzip body without its encoding reaches consumers as plain bytes, and a
+            // message on a priority queue without its priority loses its place.
+            AmqpContentEncoding: properties.IsContentEncodingPresent() ? properties.ContentEncoding : null,
+            AmqpPriority: properties.IsPriorityPresent() ? properties.Priority : null);
 
         var deliveryCount = headers.TryGetValue("x-delivery-count", out var count) && ToLong(count) is { } deliveries
             ? (int)Math.Min(deliveries, int.MaxValue)
@@ -89,6 +93,14 @@ internal static class RabbitMqMessageMapper
             Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
             Headers = new Dictionary<string, object?>(StringComparer.Ordinal)
         };
+        if (draft.AmqpContentEncoding is not null)
+        {
+            properties.ContentEncoding = draft.AmqpContentEncoding;
+        }
+        if (draft.AmqpPriority is { } priority)
+        {
+            properties.Priority = priority;
+        }
         if (draft.TimeToLive is { } timeToLive)
         {
             properties.Expiration = ((long)timeToLive.TotalMilliseconds).ToString(CultureInfo.InvariantCulture);

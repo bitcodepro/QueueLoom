@@ -358,7 +358,10 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadOptionalTimeSpan(root, "timeToLive") is { } ttl && ttl != TimeSpan.MaxValue ? ttl : null,
             ReadOptionalDateTimeOffset(root, "scheduledEnqueueTimeUtc") is { } scheduled && scheduled != default ? scheduled : null,
             ReadOptionalString(root, "amqpType"),
-            ReadOptionalString(root, "amqpAppId")) { NativeSubject = ReadOptionalString(root, "nativeSubject") };
+            ReadOptionalString(root, "amqpAppId"),
+            ReadOptionalString(root, "amqpContentEncoding"),
+            root.TryGetProperty("amqpPriority", out var priority) && priority.ValueKind == JsonValueKind.Number &&
+            priority.TryGetByte(out var amqpPriority) ? amqpPriority : null) { NativeSubject = ReadOptionalString(root, "nativeSubject") };
         var applicationProperties = root.TryGetProperty("applicationProperties", out var values) &&
                                     values.ValueKind == JsonValueKind.Array
             ? values.EnumerateArray().Select(value => new MessageApplicationProperty(

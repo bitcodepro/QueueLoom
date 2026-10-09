@@ -158,6 +158,7 @@ public static class MessageDraftValidator
                 ValidateBytes(properties.ReplyTo, nameof(properties.ReplyTo), errors, MaxAmqpShortStringBytes, shortString);
                 ValidateBytes(properties.AmqpType, nameof(properties.AmqpType), errors, MaxAmqpShortStringBytes, shortString);
                 ValidateBytes(properties.AmqpAppId, nameof(properties.AmqpAppId), errors, MaxAmqpShortStringBytes, shortString);
+                ValidateBytes(properties.AmqpContentEncoding, nameof(properties.AmqpContentEncoding), errors, MaxAmqpShortStringBytes, shortString);
                 // RabbitMQ refuses a per-message expiration above 10 years (rabbit_misc:check_expiry) and closes the channel.
                 if (properties.TimeToLive is { } rabbitTtl && (long)rabbitTtl.TotalMilliseconds > MaxRabbitMqExpirationMilliseconds)
                 {

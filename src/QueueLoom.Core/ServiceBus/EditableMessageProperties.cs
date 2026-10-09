@@ -14,7 +14,9 @@ public sealed record EditableMessageProperties(
     TimeSpan? TimeToLive = null,
     DateTimeOffset? ScheduledEnqueueTime = null,
     string? AmqpType = null,
-    string? AmqpAppId = null)
+    string? AmqpAppId = null,
+    string? AmqpContentEncoding = null,
+    byte? AmqpPriority = null)
 {
     public static EditableMessageProperties Empty { get; } = new();
 

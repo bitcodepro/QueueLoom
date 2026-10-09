@@ -212,6 +212,11 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "transactionPartitionKey", properties.TransactionPartitionKey);
             WriteString(writer, "amqpType", properties.AmqpType);
             WriteString(writer, "amqpAppId", properties.AmqpAppId);
+            WriteString(writer, "amqpContentEncoding", properties.AmqpContentEncoding);
+            if (properties.AmqpPriority is { } priority)
+            {
+                writer.WriteNumber("amqpPriority", priority);
+            }
             if (properties.NativeSubject is not null)
             {
                 // The SNS Publish Subject of an unwrapped notification, restored apart from the attributes.

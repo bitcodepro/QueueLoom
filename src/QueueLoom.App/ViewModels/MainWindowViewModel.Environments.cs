@@ -666,7 +666,7 @@ public sealed partial class MainWindowViewModel
             _draftProfileId = null;
             _draftProfileName = null;
             _draftSourceMessage = null;
-            _draftSubjectSource = null;
+            _draftSourceProperties = null;
             _draftSourceIsLocalBackup = false;
             SelectedDestination = null;
             DraftOriginNotice = draftNotice;

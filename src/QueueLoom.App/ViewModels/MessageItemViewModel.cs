@@ -296,6 +296,8 @@ public sealed class MessageItemViewModel : ObservableObject
                     broker.TransactionPartitionKey,
                     broker.AmqpType,
                     broker.AmqpAppId,
+                    broker.AmqpContentEncoding,
+                    broker.AmqpPriority,
                     broker.TimeToLive,
                     broker.ScheduledEnqueueTime
                 },

@@ -57,8 +57,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private string _backupStatus = "Open the Backups page to inspect local purge backups.";
     private DestinationItemViewModel? _selectedDestination;
     private BrowsedMessage? _draftSourceMessage;
-    /// <summary>The properties the draft's subject was read from; kept after a move clears the original.</summary>
-    private EditableMessageProperties? _draftSubjectSource;
+    /// <summary>
+    /// The properties of the message the draft was opened from, kept after a move clears the original: where its subject
+    /// came from, and its AMQP envelope, which has no Composer field of its own.
+    /// </summary>
+    private EditableMessageProperties? _draftSourceProperties;
     private bool _draftSourceIsLocalBackup;
     private bool _isBusy;
     private string _statusText = "Ready";
