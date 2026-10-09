@@ -35,11 +35,12 @@ public sealed record DeadLetterHistorySample(
 
 public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count);
 
-/// <param name="Start">Count at the first sample of the period.</param>
-/// <param name="Now">Count at the last sample.</param>
-public sealed record DeadLetterSourceTrend(string Name, long Start, long Now)
+/// <param name="Start">Count at the first sample of the period; null when that sample kept only larger queues.</param>
+/// <param name="Now">Count at the last sample; null when that sample kept only larger queues.</param>
+public sealed record DeadLetterSourceTrend(string Name, long? Start, long? Now)
 {
-    public long Change => Now - Start;
+    /// <summary>Null when either end is unknown: a queue below a truncated sample's top is not known to be empty.</summary>
+    public long? Change => Start is { } start && Now is { } now ? now - start : null;
 }
 
 public sealed record DeadLetterHistorySummary(
@@ -101,12 +102,21 @@ public static class DeadLetterHistory
         var peak = points.MaxBy(point => point.Count)!;
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => new DeadLetterSourceTrend(name, first.Sources.GetValueOrDefault(name), last.Sources.GetValueOrDefault(name)))
-            .OrderByDescending(source => source.Now)
-            .ThenByDescending(source => Math.Abs(source.Change))
+            .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name)))
+            .OrderByDescending(source => source.Now ?? -1)
+            .ThenByDescending(source => Math.Abs(source.Change ?? 0))
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(maximumSources)
             .ToArray();
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length);
     }
+
+    /// <summary>
+    /// A queue's count in a sample. A sample keeps at most <see cref="DeadLetterHistorySample.MaximumSources"/> queues, the
+    /// largest: missing from a sample that kept fewer, the queue was empty; missing from a full one, its count is unknown.
+    /// </summary>
+    private static long? CountIn(DeadLetterHistorySample sample, string name) =>
+        sample.Sources.TryGetValue(name, out var count) ? count
+        : sample.Sources.Count < DeadLetterHistorySample.MaximumSources ? 0
+        : null;
 }

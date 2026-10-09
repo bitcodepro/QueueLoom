@@ -87,7 +87,10 @@ public sealed record ForwardingInfo(
 
 public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count);
 
-public sealed record DeadLetterTrendInfo(string Source, long Start, long Now, long Change);
+/// <param name="Start">Null when the first sample kept only larger queues, so this one's count then is unknown.</param>
+/// <param name="Now">Null when the last sample kept only larger queues.</param>
+/// <param name="Change">Null when either end is unknown.</param>
+public sealed record DeadLetterTrendInfo(string Source, long? Start, long? Now, long? Change);
 
 /// <param name="Note">Why there is nothing to show, when nothing was recorded.</param>
 public sealed record DeadLetterHistoryInfo(
