@@ -340,7 +340,9 @@ public sealed partial class AzureServiceBusWorkspace
                         await receiver.CompleteMessageAsync(message, CancellationToken.None).ConfigureAwait(false);
                         return (Exception?)null;
                     }
-                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    // Settlement is not cancellable, so an OperationCanceledException here is the SDK timing out
+                    // (TaskCanceledException): this source's settlement error, never a reason to lose the whole purge.
+                    catch (Exception exception) when (exception is not OutOfMemoryException)
                     {
                         return exception;
                     }
@@ -371,7 +373,9 @@ public sealed partial class AzureServiceBusWorkspace
                 deleted,
                 $"Cancelled safely after backing up {backedUp:N0} and deleting {deleted:N0} messages.");
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        // Not cancelled by the caller (that is handled above): an OperationCanceledException here is an SDK timeout,
+        // for example on a receive. It is this source's error; the sources purged before it keep their results.
+        catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return new DeadLetterPurgeSourceResult(source, subQueue, deleted, exception.Message);
         }
