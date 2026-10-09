@@ -270,6 +270,21 @@ internal sealed class WindowFixture : IAsyncDisposable
         Dispatcher.UIThread.RunJobs();
     }
 
+    /// <summary>
+    /// The single confirmation dialog, once a command that does background work before asking has opened it.
+    /// A fixed settle is too short for that work on a loaded runner.
+    /// </summary>
+    public async Task<QueueLoom.App.Views.ConfirmDialogWindow> ConfirmDialogAsync()
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (true)
+        {
+            await SettleAsync();
+            var dialogs = Window.OwnedWindows.OfType<QueueLoom.App.Views.ConfirmDialogWindow>().ToList();
+            if (dialogs.Count > 0 || DateTime.UtcNow > deadline) return dialogs.Single();
+        }
+    }
+
     /// <summary>Peeks the "orders" DLQ and selects its first message, as an operator would.</summary>
     public async Task OpenDeadLettersAsync()
     {
