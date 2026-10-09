@@ -87,16 +87,21 @@ public sealed class CycleTwoKafkaPagingRegressionTests
     [Fact]
     public async Task CycleTwoKafka_ConsumeTimeoutCannotPublishAnApparentlyExhaustedPage()
     {
-        var broker = new ConsumerFixture([0, 1, 2], 1) { ReturnNullOnce = true };
-        await Assert.ThrowsAsync<TimeoutException>(() => Read(broker, new(BrowseStartKind.Newest), 100));
+        // A fetch that comes back empty once is waited out (the partition still ends with its EOF): the page is complete.
+        var slow = new ConsumerFixture([0, 1, 2], 1) { ReturnNullOnce = true };
+        Assert.Equal(3, (await Read(slow, new(BrowseStartKind.Newest), 100)).Count);
+        // Nothing within the idle limit is a timeout, never a page that looks exhausted.
+        var silent = new ConsumerFixture([0, 1, 2], 1) { ReturnNullOnce = true };
+        await Assert.ThrowsAsync<TimeoutException>(() => Read(silent, new(BrowseStartKind.Newest), 100, idleFetchLimit: TimeSpan.Zero));
         // The broker still has every record; an explicit retry reads them without commits or deletion.
-        Assert.Equal(3, (await Read(broker, new(BrowseStartKind.Newest), 100)).Count);
-        Assert.Empty(broker.Commits);
+        Assert.Equal(3, (await Read(silent, new(BrowseStartKind.Newest), 100)).Count);
+        Assert.Empty(silent.Commits);
     }
 
-    private static async Task<IReadOnlyList<LeasedMessage>> Read(ConsumerFixture fixture, BrowseStart start, int count, CancellationToken token = default)
+    private static async Task<IReadOnlyList<LeasedMessage>> Read(ConsumerFixture fixture, BrowseStart start, int count, CancellationToken token = default,
+        TimeSpan? idleFetchLimit = null)
     {
-        await using var owner = new KafkaWorkspace(new EmptyVault());
+        await using var owner = new KafkaWorkspace(new EmptyVault()) { IdleFetchLimit = idleFetchLimit ?? TimeSpan.FromSeconds(15) };
         var type = typeof(KafkaWorkspace).GetNestedType("KafkaChannel", BindingFlags.NonPublic)!;
         var topic = new KafkaTopicInfo("isolated", Enumerable.Range(0, fixture.Partitions).ToArray(), fixture.High);
         var channel = (ILeasedMessageChannel)Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,

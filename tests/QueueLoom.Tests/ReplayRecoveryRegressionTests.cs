@@ -105,6 +105,10 @@ public sealed partial class ViewModelStateTests
             caller == "restore" ? vm.RestoreFilteredBackupsCommand : vm.ResumeReplayCommand;
         Assert.True(command.CanExecute(null));
         await command.ExecuteAsync();
+        // Each command refreshes the operation history in its finally without awaiting it. These tests run without the
+        // window's UI thread, so a refresh still running would overlap the next one on another thread and could replace
+        // the items ticked below; it ends first.
+        await vm.OperationHistoryRefresh;
         Assert.Equal("Review batch replay", Assert.Single(dialogs.Confirmations).Title);
         var reopened = new BatchReplayStore(directory.Path);
         var plan = Assert.Single(reopened.List());
@@ -113,6 +117,7 @@ public sealed partial class ViewModelStateTests
         workspace.OnSend = null;
         // Resume must not automatically retry the proven rejection or any later Pending item.
         await vm.ResumeReplayCommand.ExecuteAsync();
+        await vm.OperationHistoryRefresh;
         Assert.Single(workspace.SentMessages);
         await vm.RefreshOperationHistoryCommand.ExecuteAsync();
         vm.OperationItems[0].IsMarked = true;

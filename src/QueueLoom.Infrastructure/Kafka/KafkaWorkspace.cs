@@ -333,6 +333,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         return producer;
     }
 
+    /// <summary>
+    /// How long a read waits without any record or partition end while the range is unfinished. Every assigned partition
+    /// ends with a partition EOF, so waiting is safe; past this the read is a timeout, never an exhausted topic.
+    /// </summary>
+    internal TimeSpan IdleFetchLimit { get; init; } = RequestTimeout;
+
     /// <summary>Test seam: replaces the SDK consumer of this workspace when set.</summary>
     internal Func<IConsumer<byte[]?, byte[]?>>? ConsumerFactory { get; set; }
 
@@ -506,20 +512,24 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             var consumer = Open();
             var messages = new List<LeasedMessage>();
+            // Progress is a record or the end of a partition still being read. A slow fetch (null), or a record written
+            // after a finished partition's end, is not: it neither resets the limit nor escapes it.
+            var progressAt = owner.TimeProvider.GetTimestamp();
             while (messages.Count < limit && _finished.Count < _end.Count)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = consumer.Consume(TimeSpan.FromSeconds(1));
-                if (result is null)
+                if (result is null || _finished.Contains(result.Partition.Value))
                 {
-                    break;
+                    // A slow fetch is not the end: unfinished partitions still end with a partition EOF. An empty page here
+                    // was taken for an exhausted topic, ending a browse early and reporting a purge as complete.
+                    if (owner.TimeProvider.GetElapsedTime(progressAt) < owner.IdleFetchLimit) continue;
+                    if (messages.Count > 0) break;
+                    throw new TimeoutException(
+                        $"Kafka sent nothing from '{topic.Name}' for {owner.IdleFetchLimit.TotalSeconds:N0} s before the end of the range. Retry reading the topic.");
                 }
+                progressAt = owner.TimeProvider.GetTimestamp();
                 var partition = result.Partition.Value;
-                if (_finished.Contains(partition))
-                {
-                    // Written after reading started; this read stops at the end it saw.
-                    continue;
-                }
                 if (result.IsPartitionEOF || result.Offset.Value >= _end[partition])
                 {
                     _finished.Add(partition);
