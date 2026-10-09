@@ -269,11 +269,13 @@ public sealed partial class ViewModelStateTests
         vm.Clock = clock;
         await vm.InitializeAsync();
 
+        Task read = Task.CompletedTask;
         store.HoldReads();
         try
         {
             vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
             await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            read = vm.OperationItemsLoad;
             var closed = vm.DisposeAsync().AsTask();
             await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
             Assert.False(closed.IsCompleted);
@@ -281,11 +283,13 @@ public sealed partial class ViewModelStateTests
             clock.ElapseDrainLimit();
 
             await closed.WaitAsync(OperationLoadGuard);
-            Assert.False(vm.OperationItemsLoad.IsCompleted);
+            Assert.False(read.IsCompleted);
         }
         finally
         {
+            // The read this test let outlive closing ends before its folder is removed, also when an assertion failed.
             store.ReleaseReads();
+            await read.WaitAsync(OperationLoadGuard);
         }
     }
 
