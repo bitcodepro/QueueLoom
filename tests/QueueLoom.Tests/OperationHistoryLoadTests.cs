@@ -138,11 +138,208 @@ public sealed partial class ViewModelStateTests
         Assert.Equal([0, 1], vm.OperationItems.Select(item => item.Item.Index));
     }
 
+    // A refresh started after a resend or recovery (fire and forget) reads plan.json files off the window's thread.
+    // Closing the window did not wait for it, so the read went on after shutdown; a test removing its folder then hit
+    // "plan.json is being used by another process". Closing now waits for the outstanding list and items reads.
+    [Fact]
+    public async Task OperationHistory_ClosingTheWindowWaitsForAnOutstandingRead()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        var clock = new DrainClock(vm.ShutdownDrainTimeout);
+        vm.Clock = clock;
+        await vm.InitializeAsync();
+
+        Task closed;
+        store.HoldReads();
+        try
+        {
+            // Selecting another operation reads its items without any command awaiting it.
+            vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
+            await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            closed = vm.DisposeAsync().AsTask();
+            // Closing has reached its drain, whose time limit never elapses here: the held read is what it waits for.
+            await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
+            Assert.False(closed.IsCompleted);
+        }
+        finally
+        {
+            store.ReleaseReads();
+        }
+
+        await closed.WaitAsync(OperationLoadGuard);
+        Assert.True(vm.OperationHistoryRefresh.IsCompleted);
+        Assert.True(vm.OperationItemsLoad.IsCompleted);
+    }
+
+    // A read superseded by another selection is still reading: closing waits for it too, not only for the latest one.
+    [Fact]
+    public async Task OperationHistory_ClosingWaitsForASupersededRead()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        var clock = new DrainClock(vm.ShutdownDrainTimeout);
+        vm.Clock = clock;
+        await vm.InitializeAsync();
+
+        Task closed;
+        Task superseded;
+        store.HoldReads();
+        try
+        {
+            vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
+            await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            superseded = vm.OperationItemsLoad;
+            vm.SelectedOperation = null;
+            Assert.NotSame(superseded, vm.OperationItemsLoad);
+            closed = vm.DisposeAsync().AsTask();
+            // Closing has reached its drain (whose time limit never elapses here) and waits for the superseded read.
+            await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
+            Assert.False(closed.IsCompleted);
+            Assert.False(superseded.IsCompleted);
+        }
+        finally
+        {
+            store.ReleaseReads();
+        }
+
+        await closed.WaitAsync(OperationLoadGuard);
+        Assert.True(superseded.IsCompleted);
+    }
+
+    // A recovery still running when closing starts refreshes the history in its finally. That refresh is refused before
+    // it reads any plan file, and closing still waits for the recovery itself.
+    [Fact]
+    public async Task OperationHistory_ARefreshAfterClosingStartedReadsNothing()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(),
+            new FakeDialogService { ConfirmResult = true }, replayStore: store);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        await vm.RefreshOperationHistoryCommand.ExecuteAsync();
+        foreach (var item in vm.OperationItems) item.IsMarked = true;
+
+        Task closed;
+        Task recovery;
+        int listsBeforeClosing;
+        store.HoldRuns();
+        try
+        {
+            recovery = vm.ContinueOperationCommand.ExecuteAsync();
+            await store.RunEntered.Task.WaitAsync(OperationLoadGuard);
+            listsBeforeClosing = store.Lists;
+            closed = vm.DisposeAsync().AsTask();
+        }
+        finally
+        {
+            store.ReleaseRuns();
+        }
+
+        await closed.WaitAsync(OperationLoadGuard);
+        // The recovery and whatever refresh its finally started have ended: a late read, had it been admitted, has
+        // happened by now and would be counted.
+        await recovery.WaitAsync(OperationLoadGuard);
+        await vm.OperationHistoryRefresh.WaitAsync(OperationLoadGuard);
+        Assert.Equal(listsBeforeClosing, store.Lists);
+    }
+
+    // Closing stays bounded: a read that never ends does not keep the window open past its drain time limit.
+    [Fact]
+    public async Task OperationHistory_ClosingGivesUpOnAReadThatNeverEndsAtItsTimeLimit()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new HeldReplayStore(new BatchReplayStore(directory.Path));
+        await PrepareReplayRegression(store.Inner, profile);
+        await PrepareReplayRegression(store.Inner, profile);
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(), replayStore: store);
+        var clock = new DrainClock(vm.ShutdownDrainTimeout);
+        vm.Clock = clock;
+        await vm.InitializeAsync();
+
+        Task read = Task.CompletedTask;
+        store.HoldReads();
+        try
+        {
+            vm.SelectedOperation = vm.OperationHistory.Single(operation => operation != vm.SelectedOperation);
+            await store.ReadEntered.Task.WaitAsync(OperationLoadGuard);
+            read = vm.OperationItemsLoad;
+            var closed = vm.DisposeAsync().AsTask();
+            await clock.DrainWaitStarted.Task.WaitAsync(OperationLoadGuard);
+            Assert.False(closed.IsCompleted);
+
+            clock.ElapseDrainLimit();
+
+            await closed.WaitAsync(OperationLoadGuard);
+            Assert.False(read.IsCompleted);
+        }
+        finally
+        {
+            // The read this test let outlive closing ends before its folder is removed, also when an assertion failed.
+            store.ReleaseReads();
+            await read.WaitAsync(OperationLoadGuard);
+        }
+    }
+
+    /// <summary>
+    /// The window's clock without real time: its waits never elapse by themselves. The shutdown drain's time limit says
+    /// when it starts, and elapses only when the test says so.
+    /// </summary>
+    private sealed class DrainClock(TimeSpan drainLimit) : TimeProvider
+    {
+        private readonly List<(TimerCallback Callback, object? State)> _drainTimers = [];
+        private bool _elapsed;
+
+        public TaskCompletionSource DrainWaitStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (dueTime == drainLimit)
+            {
+                bool elapsed;
+                lock (_drainTimers)
+                {
+                    elapsed = _elapsed;
+                    if (!elapsed) _drainTimers.Add((callback, state));
+                }
+                DrainWaitStarted.TrySetResult();
+                // Once the limit has passed, every later wait for it (closing has more than one) has passed too.
+                if (elapsed) ThreadPool.QueueUserWorkItem(_ => callback(state));
+            }
+            return new LeftoverFixTests.IdleTimer();
+        }
+
+        public void ElapseDrainLimit()
+        {
+            (TimerCallback Callback, object? State)[] timers;
+            lock (_drainTimers)
+            {
+                _elapsed = true;
+                timers = [.. _drainTimers];
+            }
+            foreach (var (callback, state) in timers) callback(state);
+        }
+    }
+
     /// <summary>The file store, with reads that can be held until released.</summary>
     private sealed class HeldReplayStore(BatchReplayStore inner) : IBatchReplayStore
     {
         private readonly ManualResetEventSlim _reads = new(true);
         private readonly ManualResetEventSlim _lists = new(true);
+        private readonly ManualResetEventSlim _runs = new(true);
+        private int _listCount;
         private int _releaseAfterNext;
 
         public BatchReplayStore Inner => inner;
@@ -154,6 +351,11 @@ public sealed partial class ViewModelStateTests
         /// <summary>The next read completes at once, and then releases the held one, so the held one finishes last.</summary>
         public void ReleaseReadsAfterNext() => Interlocked.Exchange(ref _releaseAfterNext, 1);
         public void HoldLists() { ListEntered = new(TaskCreationOptions.RunContinuationsAsynchronously); _lists.Reset(); }
+        public TaskCompletionSource RunEntered { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void HoldRuns() { RunEntered = new(TaskCreationOptions.RunContinuationsAsynchronously); _runs.Reset(); }
+        public void ReleaseRuns() => _runs.Set();
+        /// <summary>How many times the operation list was read.</summary>
+        public int Lists => Volatile.Read(ref _listCount);
         public void ReleaseLists() => _lists.Set();
 
         public string RootDirectory => inner.RootDirectory;
@@ -173,6 +375,7 @@ public sealed partial class ViewModelStateTests
 
         public IReadOnlyList<ReplayPlan> List()
         {
+            Interlocked.Increment(ref _listCount);
             ListEntered.TrySetResult();
             if (!_lists.Wait(OperationLoadGuard)) throw new TimeoutException("The held list was never released.");
             return inner.List();
@@ -192,8 +395,15 @@ public sealed partial class ViewModelStateTests
         public Task ActivateScheduledAsync(ReplayPlan plan, CancellationToken token) => inner.ActivateScheduledAsync(plan, token);
 
         public Task<ResendResult> RunItemsAsync(ReplayPlan plan, IReadOnlyList<int> indexes, bool retryRejected,
-            IServiceBusWorkspace workspace, Func<bool> canWrite, IProgress<ResendProgress>? progress, CancellationToken token) =>
-            inner.RunItemsAsync(plan, indexes, retryRejected, workspace, canWrite, progress, token);
+            IServiceBusWorkspace workspace, Func<bool> canWrite, IProgress<ResendProgress>? progress, CancellationToken token)
+        {
+            RunEntered.TrySetResult();
+            return Task.Run(async () =>
+            {
+                if (!_runs.Wait(OperationLoadGuard)) throw new TimeoutException("The held run was never released.");
+                return await inner.RunItemsAsync(plan, indexes, retryRejected, workspace, canWrite, progress, CancellationToken.None);
+            });
+        }
 
         public Task<ReplayProgress> RunAsync(ReplayPlan plan, IServiceBusWorkspace workspace, Func<bool> canWrite,
             IProgress<ReplayProgress>? progress, CancellationToken token) => inner.RunAsync(plan, workspace, canWrite, progress, token);

@@ -440,6 +440,16 @@ public sealed partial class MainWindowViewModel
                 throw new InvalidOperationException(
                     "Scheduled enqueue time must be an ISO 8601 timestamp, for example 2026-08-11T14:30:00Z.");
             }
+            // Without an offset the text names no instant: read as UTC here, but as local time in the resend dialog, it
+            // was scheduled hours early or late. The operator says which: Z, or an offset such as +02:00.
+            if (DateTime.TryParse(DraftScheduledEnqueueTime, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out var named) &&
+                named.Kind == DateTimeKind.Unspecified)
+            {
+                throw new InvalidOperationException(
+                    "Scheduled enqueue time needs a time zone offset: add Z for UTC or an offset such as +02:00, " +
+                    "for example 2026-08-11T14:30:00Z.");
+            }
             scheduledEnqueueTime = scheduledAt;
         }
 
