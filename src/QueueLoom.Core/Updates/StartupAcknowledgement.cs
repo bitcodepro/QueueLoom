@@ -1,13 +1,17 @@
 namespace QueueLoom.Core.Updates;
 
 /// <summary>
-/// Confirms a launcher attempt away from the UI thread. A busy file or a contended installation lock is retried
-/// within <see cref="Budget"/>, which stays well inside the launcher's 60 s deadline; any other failure is reported,
-/// never thrown, so an unexpected error cannot crash a healthy payload into a rollback.
+/// Confirms a launcher attempt away from the UI thread. A busy file or a contended installation lock is retried;
+/// any other failure is reported, never thrown, so an unexpected error cannot crash a healthy payload into a rollback.
 /// </summary>
+/// <remarks>
+/// <see cref="Budget"/> is a retry cutoff, not a bound on total duration: no new attempt starts once it has passed,
+/// but an attempt already running may still wait up to 30 s for the installation lock and then hash the payload.
+/// The cutoff is kept low so that last attempt can still finish inside the launcher's 60 s deadline.
+/// </remarks>
 public static class StartupAcknowledgement
 {
-    public static readonly TimeSpan Budget = TimeSpan.FromSeconds(40);
+    public static readonly TimeSpan Budget = TimeSpan.FromSeconds(20);
     public static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(500);
 
     /// <returns>The acknowledgement's result, or false when it could not be completed.</returns>
