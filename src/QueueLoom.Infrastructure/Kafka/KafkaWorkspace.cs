@@ -512,27 +512,24 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             var consumer = Open();
             var messages = new List<LeasedMessage>();
-            var idle = System.Diagnostics.Stopwatch.StartNew();
+            // Progress is a record or the end of a partition still being read. A slow fetch (null), or a record written
+            // after a finished partition's end, is not: it neither resets the limit nor escapes it.
+            var progressAt = owner.TimeProvider.GetTimestamp();
             while (messages.Count < limit && _finished.Count < _end.Count)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = consumer.Consume(TimeSpan.FromSeconds(1));
-                if (result is null)
+                if (result is null || _finished.Contains(result.Partition.Value))
                 {
-                    // A slow fetch, not the end: unfinished partitions still end with a partition EOF. An empty page here
+                    // A slow fetch is not the end: unfinished partitions still end with a partition EOF. An empty page here
                     // was taken for an exhausted topic, ending a browse early and reporting a purge as complete.
-                    if (idle.Elapsed < owner.IdleFetchLimit) continue;
+                    if (owner.TimeProvider.GetElapsedTime(progressAt) < owner.IdleFetchLimit) continue;
                     if (messages.Count > 0) break;
                     throw new TimeoutException(
                         $"Kafka sent nothing from '{topic.Name}' for {owner.IdleFetchLimit.TotalSeconds:N0} s before the end of the range. Retry reading the topic.");
                 }
-                idle.Restart();
+                progressAt = owner.TimeProvider.GetTimestamp();
                 var partition = result.Partition.Value;
-                if (_finished.Contains(partition))
-                {
-                    // Written after reading started; this read stops at the end it saw.
-                    continue;
-                }
                 if (result.IsPartitionEOF || result.Offset.Value >= _end[partition])
                 {
                     _finished.Add(partition);

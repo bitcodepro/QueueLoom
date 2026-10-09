@@ -204,6 +204,87 @@ public sealed class PubSubKafkaStabilityTests
         }
     }
 
+    // Records of a partition already read to its end (written after reading started) are not progress: while another
+    // partition makes none, they neither reset the idle limit nor keep the read from timing out. Partition 0 ends at offset
+    // 1 and keeps receiving newer records; partition 1 sends nothing. The clock advances two seconds with every fetch.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Kafka_RecordsOfAFinishedPartitionDoNotHoldOffTheIdleLimit(bool slowFetchesBetween)
+    {
+        var clock = new FetchClock();
+        await using var owner = new KafkaWorkspace(new EmptyVault(), clock);
+        var fixture = new TwoPartitionFixture(clock, slowFetchesBetween);
+        owner.ConsumerFactory = fixture.Create;
+        var type = typeof(KafkaWorkspace).GetNestedType("KafkaChannel", BindingFlags.NonPublic)!;
+        var channel = (ILeasedMessageChannel)Activator.CreateInstance(type, Any, null,
+            [owner, new KafkaTopicInfo("isolated", [0, 1], 2), ServiceBusEntityReference.Queue("isolated"), ServiceBusSubQueue.Active, null], null)!;
+        try
+        {
+            // The record read is handed over once nothing progressed for the limit, not held until cancelled.
+            var page = await channel.ReceiveAsync(10, CancellationToken.None);
+            Assert.Equal([(0, 0L)], page.Select(message => (message.Message.Position!.Value.Partition, message.Message.Position!.Value.Offset)));
+            Assert.InRange(clock.Elapsed, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(19));
+
+            // Nothing more arrives from the unfinished partition: a timeout, never an exhausted topic.
+            await Assert.ThrowsAsync<TimeoutException>(() => channel.ReceiveAsync(10, CancellationToken.None));
+        }
+        finally
+        {
+            ((IDisposable)channel).Dispose();
+        }
+    }
+
+    /// <summary>A clock that only moves when a fetch says so.</summary>
+    internal sealed class FetchClock : TimeProvider
+    {
+        private long _ticks;
+        public TimeSpan Elapsed => TimeSpan.FromTicks(Interlocked.Read(ref _ticks));
+        public void Advance(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+    }
+
+    /// <summary>Partition 0 holds offset 0 within the range and gains newer records; partition 1 never answers.</summary>
+    internal sealed class TwoPartitionFixture(FetchClock clock, bool slowFetchesBetween)
+    {
+        private long _next;
+        private bool _slow;
+
+        public IConsumer<byte[]?, byte[]?> Create()
+        {
+            var consumer = DispatchProxy.Create<IConsumer<byte[]?, byte[]?>, TwoPartitionProxy>();
+            ((TwoPartitionProxy)(object)consumer).Fixture = this;
+            return consumer;
+        }
+
+        public object? Invoke(string method)
+        {
+            switch (method)
+            {
+                case "QueryWatermarkOffsets":
+                    return new WatermarkOffsets(0, 1);
+                case "Consume":
+                    clock.Advance(TimeSpan.FromSeconds(2));
+                    if (_next > 0 && slowFetchesBetween && (_slow = !_slow)) return null;
+                    var offset = _next++;
+                    return new ConsumeResult<byte[]?, byte[]?>
+                    {
+                        Topic = "isolated", Partition = 0, Offset = offset,
+                        Message = new() { Value = "body"u8.ToArray(), Timestamp = new Timestamp(DateTime.UnixEpoch), Headers = new Headers() }
+                    };
+                default:
+                    return null;
+            }
+        }
+    }
+
+    public class TwoPartitionProxy : DispatchProxy
+    {
+        internal TwoPartitionFixture Fixture { get; set; } = null!;
+        protected override object? Invoke(MethodInfo? method, object?[]? args) => Fixture.Invoke(method!.Name);
+    }
+
     private sealed class CancellingHandler(CancellationTokenSource cancellation) : HttpMessageHandler
     {
         public int Calls { get; private set; }
