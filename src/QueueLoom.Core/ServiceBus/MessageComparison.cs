@@ -187,6 +187,8 @@ public static class MessageComparison
             ["Scheduled enqueue"] = properties.ScheduledEnqueueTime?.ToString("O", CultureInfo.InvariantCulture),
             ["AMQP type"] = properties.AmqpType,
             ["AMQP app ID"] = properties.AmqpAppId,
+            ["AMQP content encoding"] = properties.AmqpContentEncoding,
+            ["AMQP priority"] = properties.AmqpPriority?.ToString(CultureInfo.InvariantCulture),
             ["Enqueued"] = message.EnqueuedAt?.ToString("O", CultureInfo.InvariantCulture),
             ["Delivery count"] = message.DeliveryCount.ToString(CultureInfo.InvariantCulture),
             ["Dead-letter reason"] = message.DeadLetterReason,

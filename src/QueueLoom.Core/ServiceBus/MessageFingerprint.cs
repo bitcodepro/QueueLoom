@@ -79,6 +79,17 @@ public static class MessageFingerprint
             Add(property.WireType);
             Add(property.Value);
         }
+        // Added only when present, so the fingerprint of every message without them is what it was before they were read.
+        if (properties.AmqpContentEncoding is { } encoding)
+        {
+            Add("amqp-content-encoding");
+            Add(encoding);
+        }
+        if (properties.AmqpPriority is { } priority)
+        {
+            Add("amqp-priority");
+            Add(priority.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         return Convert.ToHexString(hash.GetHashAndReset())[..16].ToLowerInvariant();
     }
 }

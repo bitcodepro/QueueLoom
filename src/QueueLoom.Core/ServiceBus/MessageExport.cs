@@ -96,6 +96,11 @@ public static class MessageExport
             WriteOptional(writer, "replyTo", properties.ReplyTo);
             WriteOptional(writer, "amqpType", properties.AmqpType);
             WriteOptional(writer, "amqpAppId", properties.AmqpAppId);
+            WriteOptional(writer, "amqpContentEncoding", properties.AmqpContentEncoding);
+            if (properties.AmqpPriority is { } priority)
+            {
+                writer.WriteNumber("amqpPriority", priority);
+            }
             WriteOptional(writer, "replyToSessionId", properties.ReplyToSessionId);
             WriteOptional(writer, "partitionKey", properties.PartitionKey);
             WriteOptional(writer, "transactionPartitionKey", properties.TransactionPartitionKey);
