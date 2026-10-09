@@ -5,12 +5,14 @@ using QueueLoom.Core.Monitoring;
 namespace QueueLoom.App.ViewModels;
 
 /// <summary>A row under the history chart: a dead-letter queue and how its count changed over the period.</summary>
-public sealed record DeadLetterTrendItemViewModel(string Name, long Now, long Change)
+public sealed record DeadLetterTrendItemViewModel(string Name, long? Now, long? Change)
 {
-    public string NowText => Now.ToString("N0", CultureInfo.CurrentCulture);
+    // Unknown when a sample kept only the largest queues and this one was not among them.
+    public string NowText => Now?.ToString("N0", CultureInfo.CurrentCulture) ?? "—";
 
     public string ChangeText => Change switch
     {
+        null => "not tracked for the whole period",
         > 0 => $"+{Change:N0}",
         < 0 => $"−{-Change:N0}",
         _ => "no change"
