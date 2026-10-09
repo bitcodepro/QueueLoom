@@ -417,7 +417,15 @@ public sealed partial class MainWindowViewModel
             {
                 throw new InvalidOperationException("TTL must be a positive number of seconds.");
             }
-            timeToLive = TimeSpan.FromSeconds(seconds);
+            try
+            {
+                timeToLive = TimeSpan.FromSeconds(seconds);
+            }
+            catch (Exception exception) when (exception is OverflowException or ArgumentOutOfRangeException)
+            {
+                // Finite and positive is not enough: "1e15" seconds does not fit in a TimeSpan.
+                throw new InvalidOperationException("TTL is too long to be a time span; enter a number of seconds a broker can keep.");
+            }
         }
 
         DateTimeOffset? scheduledEnqueueTime = null;
