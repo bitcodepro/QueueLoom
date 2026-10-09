@@ -510,20 +510,38 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
             // Chunks acknowledged before a failure are gone; only the rest are reported as not settled.
             var acknowledged = 0;
-            try
+            foreach (var chunk in messages.Chunk(1_000))
             {
-                foreach (var chunk in messages.Chunk(1_000))
+                try
                 {
                     await owner.Subscriber.AcknowledgeAsync(subscription, chunk.Select(message => message.LeaseHandle), cancellationToken)
                         .ConfigureAwait(false);
                     acknowledged += chunk.Length;
                 }
-                return [];
+                catch (RpcException exception)
+                {
+                    // An exactly-once subscription names the ack IDs that failed; the rest of that request were acknowledged.
+                    // Without such details the whole chunk counts as not settled.
+                    var failedIds = FailedAckIds(exception);
+                    var unsettled = failedIds is null ? chunk : chunk.Where(message => failedIds.Contains(message.LeaseHandle));
+                    return unsettled.Concat(messages.Skip(acknowledged + chunk.Length)).ToList();
+                }
             }
-            catch (RpcException)
-            {
-                return messages.Skip(acknowledged).ToList();
-            }
+            return [];
+        }
+
+        /// <summary>
+        /// The ack IDs an exactly-once Acknowledge reports as failed (TRANSIENT_FAILURE_* or PERMANENT_FAILURE_* in its
+        /// ErrorInfo metadata, as Google.Cloud.PubSub.V1's own AckError reads them), or null when it reports none.
+        /// </summary>
+        private static HashSet<string>? FailedAckIds(RpcException exception)
+        {
+            var failed = exception.GetErrorInfo()?.Metadata
+                .Where(entry => entry.Value.StartsWith("TRANSIENT_FAILURE_", StringComparison.Ordinal) ||
+                                entry.Value.StartsWith("PERMANENT_FAILURE_", StringComparison.Ordinal))
+                .Select(entry => entry.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            return failed is { Count: > 0 } ? failed : null;
         }
 
         private bool BelongsToSource(PubsubMessage message)
