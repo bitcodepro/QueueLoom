@@ -4,43 +4,39 @@ using QueueLoom.Tests.Infrastructure;
 
 namespace QueueLoom.Tests;
 
-public sealed class WindowsUpdateSmokeTests
+public sealed partial class WindowsUpdateSmokeTests
 {
     [Theory]
-    [InlineData(0)]
-    [InlineData(7)]
-    public async Task StableSmokeWaitsForTheActualHelperAfterReceiptDeletionAndChecksItsExit(int helperExit)
+    [InlineData(0, false, false)]
+    [InlineData(7, false, false)]
+    [InlineData(0, true, false)]
+    [InlineData(7, false, true)]
+    public async Task StableSmokeWaitsForTheActualHelperAfterReceiptDeletionAndChecksItsExit(int helperExit, bool gateGuiMarker, bool diagnosticsUnavailable)
     {
         if (!OperatingSystem.IsWindows()) { Assert.Skip("The packaged GUI smoke script requires Windows."); return; }
         using var fixture = new StableLauncherTests.InstallationFixture();
         using var gateDirectory = new TemporaryDirectory();
         var gate = Path.Combine(gateDirectory.Path, "helper exit gate");
-        // The framework-dependent launcher shares the already installed fixture's Core assembly.
-        // Copy only launcher-specific files so this test never overwrites a DLL mapped by the old process.
-        var package = Path.Combine(gateDirectory.Path, "stable package");
-        Directory.CreateDirectory(package);
-        foreach (var file in Directory.GetFiles(fixture.Root).Where(file =>
-                     Path.GetFileName(file) == "QueueLoom.exe" || Path.GetFileName(file).StartsWith("QueueLoom.Launcher.", StringComparison.Ordinal) ||
-                     Path.GetFileName(file).StartsWith("QueueLoom.bootstrap.", StringComparison.Ordinal)))
-            File.Copy(file, Path.Combine(package, Path.GetFileName(file)));
-        var repository = FindRepository();
-        var start = new ProcessStartInfo("pwsh")
-        {
-            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = repository,
-            RedirectStandardOutput = true, RedirectStandardError = true
-        };
-        foreach (var argument in new[] { "-NoProfile", "-File", Path.Combine(repository, ".github", "scripts", "smoke-update.ps1"),
-                     "-Executable", Path.Combine(AppContext.BaseDirectory, "UpdateFixture", "QueueLoom.UpdateFixture.exe"),
-                     "-FixtureDirectory", Path.Combine(AppContext.BaseDirectory, "UpdateFixture"), "-StablePackageDirectory", package })
-            start.ArgumentList.Add(argument);
+        var start = SmokeStart(fixture, gateDirectory, diagnosticsUnavailable);
         start.Environment["QUEUELOOM_SMOKE_FIXTURE_GATE"] = gate;
-        using var script = Process.Start(start)!;
+        if (diagnosticsUnavailable) start.Environment["QUEUELOOM_SMOKE_DIAGNOSTICS_FAILURE"] = "1";
+        if (gateGuiMarker) File.WriteAllText(gate + ".gui-marker", "hold");
+        using var script = StartPowerShell(start);
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = ReadOutput(script, waiting);
         var error = script.StandardError.ReadToEndAsync();
         var exited = script.WaitForExitAsync();
         try
         {
+            if (gateGuiMarker)
+            {
+                await WaitForSmokeMarker(gate + ".gui.pid.tmp", script);
+                using var startup = JsonDocument.Parse(File.ReadAllText(gate + ".gui-startup.json"));
+                var ready = startup.RootElement.GetProperty("Receipt").GetString() + "." + startup.RootElement.GetProperty("Id").GetString() + ".ready";
+                Assert.False(File.Exists(ready)); // No helper completion may precede the closed GUI marker.
+                Assert.False(File.Exists(gate + ".helper.json"));
+                File.WriteAllText(gate + ".gui-marker.open", "open");
+            }
             var deadline = Stopwatch.StartNew();
             while (!File.Exists(gate + ".helper.json") && !script.HasExited && deadline.Elapsed < TimeSpan.FromSeconds(30))
                 await Task.Delay(10);
@@ -68,7 +64,7 @@ public sealed class WindowsUpdateSmokeTests
                 Console.WriteLine($"Receipt removed with helper PID {helperPid} (start ticks {helperTicks}) and GUI PID {guiPid} sharing {executable}.");
             }
             finally { foreach (var process in matching) process.Dispose(); }
-            File.WriteAllText(gate + ".release", helperExit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            PublishRelease(gate + ".release", helperExit);
             await exited.WaitAsync(TimeSpan.FromSeconds(30));
             var detail = await output + await error;
             Console.WriteLine(detail);
@@ -87,7 +83,8 @@ public sealed class WindowsUpdateSmokeTests
         finally
         {
             // Release only this test's gate; give the script's own scoped cleanup a chance to finish.
-            if (!File.Exists(gate + ".release")) File.WriteAllText(gate + ".release", "0");
+            if (gateGuiMarker && !File.Exists(gate + ".gui-marker.open")) File.WriteAllText(gate + ".gui-marker.open", "open");
+            if (!File.Exists(gate + ".release")) PublishRelease(gate + ".release", 0);
             try { await exited.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (TimeoutException) { if (!script.HasExited) script.Kill(entireProcessTree: true); await exited; }
             await Task.WhenAll(output, error);

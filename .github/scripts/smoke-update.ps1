@@ -17,11 +17,16 @@ $sender = $null
 $helperLauncher = $null
 $helper = $null
 function Get-SmokeProcesses {
-    # Restrict diagnostics to this invocation's exact random installation and sender PID.
-    Get-CimInstance Win32_Process -Filter "Name = 'QueueLoom.exe' OR Name = 'QueueLoom.UpdateFixture.exe'" | Where-Object {
-        ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) -or
-        ($null -ne $sender -and $_.ProcessId -eq $sender.Id)
-    } | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, CreationDate
+    try {
+        # Diagnostics are best effort and restricted to this exact installation and sender PID.
+        Get-CimInstance Win32_Process -Filter "Name = 'QueueLoom.exe' OR Name = 'QueueLoom.UpdateFixture.exe'" | Where-Object {
+            ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) -or
+            ($null -ne $sender -and $_.ProcessId -eq $sender.Id)
+        } | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, CreationDate
+    } catch {
+        # Never replace a helper failure or GUI assertion with a diagnostics-only CIM error.
+        [pscustomobject]@{ Diagnostics = 'Unavailable'; ErrorType = $_.Exception.GetType().Name }
+    }
 }
 function Start-Isolated([string] $Path, [string[]] $Arguments) {
     $start = [Diagnostics.ProcessStartInfo]::new($Path)
@@ -74,10 +79,16 @@ try {
             Start-Sleep -Milliseconds 50
         }
         $identity = [IO.File]::ReadAllText($identityPath) | ConvertFrom-Json
-        $helperLauncher = [Diagnostics.Process]::GetProcessById($identity.Pid)
-        $null = $helperLauncher.Handle
-        if ($helperLauncher.StartTime.ToUniversalTime().Ticks -ne $identity.StartTicks -or $helperLauncher.Path -ne $exe) {
-            throw 'Legacy handoff published an unexpected restart helper identity.'
+        $candidate = [Diagnostics.Process]::GetProcessById($identity.Pid)
+        try {
+            $null = $candidate.Handle
+            if ($candidate.StartTime.ToUniversalTime().Ticks -ne $identity.StartTicks -or $candidate.Path -ne $exe) {
+                throw 'Legacy handoff published an unexpected restart helper identity.'
+            }
+            $helperLauncher = $candidate # Register for cleanup only after proving ownership.
+            $candidate = $null
+        } finally {
+            if ($null -ne $candidate) { $candidate.Dispose() } # Rejected identities must never be killed.
         }
         # Start returns the stable entry's PID. Its direct payload child runs --update-helper.
         # The sender remains alive until claimed, so this helper cannot finish or be replaced during capture.
@@ -86,12 +97,20 @@ try {
             $_.CommandLine.Contains('--update-helper') -and $_.CommandLine.Contains($receiptPath) -and $_.CommandLine.Contains($id)
         })
         if ($payloads.Count -ne 1) { throw "Expected one restart helper payload; found $($payloads.Count)." }
-        $helper = [Diagnostics.Process]::GetProcessById($payloads[0].ProcessId)
-        # Retain the real payload handle and verify the observed birth time before releasing the sender.
-        $null = $helper.Handle
-        if ($helper.Path -ne $payloads[0].ExecutablePath -or
-            ($helper.StartTime.ToUniversalTime() - $payloads[0].CreationDate.ToUniversalTime()).Duration().TotalMilliseconds -gt 1) {
-            throw 'The restart helper payload identity changed during capture.'
+        $candidate = [Diagnostics.Process]::GetProcessById($payloads[0].ProcessId)
+        try {
+            $null = $candidate.Handle
+            # CIM formats the OS birth time at microsecond precision; allow 5 ms for provider conversion.
+            # This tolerance is never ownership proof alone: PID, live verified parent, installation path,
+            # helper command/receipt/ID and the retained process handle must all agree while the sender waits.
+            if ($payloads[0].ParentProcessId -ne $helperLauncher.Id -or $candidate.Path -ne $payloads[0].ExecutablePath -or
+                ($candidate.StartTime.ToUniversalTime() - $payloads[0].CreationDate.ToUniversalTime()).Duration().TotalMilliseconds -gt 5) {
+                throw 'The restart helper payload identity changed during capture.'
+            }
+            $helper = $candidate
+            $candidate = $null
+        } finally {
+            if ($null -ne $candidate) { $candidate.Dispose() }
         }
         [IO.File]::WriteAllText($claimed, 'claimed')
     } else {
