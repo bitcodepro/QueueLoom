@@ -133,6 +133,47 @@ public sealed class AzureRuleConcurrencyTests
         Assert.Same(shown, saved.Original);
     }
 
+    // A rule created elsewhere with SQL parameters (amount > @min with @min = 100) was shown as its expression only, and
+    // saving the edit rebuilt the filter and action without them: Service Bus then refused it, or it evaluated without the
+    // parameter. QueueLoom does not edit parameters, so it refuses the save and leaves the rule as it is.
+    [Theory]
+    [InlineData("filter")]
+    [InlineData("action")]
+    public async Task Replace_RefusesARuleWithSqlParametersAndLeavesItUnchanged(string where)
+    {
+        var filter = new SqlRuleFilter("amount > @min");
+        var action = new SqlRuleAction("SET tier = @tier");
+        if (where == "filter") filter.Parameters["@min"] = 100L;
+        else action.Parameters["@tier"] = "gold";
+        var administration = new RulesAdministration();
+        administration.Rules["large"] = ServiceBusModelFactory.RuleProperties("large", filter, action);
+        await using var workspace = Connected(administration);
+        var read = AzureServiceBusWorkspace.ToRule(administration.Rules["large"]);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.SaveSubscriptionRuleAsync("orders", "billing",
+            read with { SqlExpression = "amount > @min AND region = 'EU'", Original = read }, replace: true));
+
+        Assert.Contains("SQL parameters", error.Message, StringComparison.Ordinal);
+        Assert.Contains("nothing was saved", error.Message, StringComparison.Ordinal);
+        Assert.Empty(administration.Writes);
+        var kept = administration.Rules["large"];
+        Assert.Equal(where == "filter" ? 1 : 0, ((SqlRuleFilter)kept.Filter).Parameters.Count);
+        Assert.Equal(where == "action" ? 1 : 0, ((SqlRuleAction)kept.Action).Parameters.Count);
+    }
+
+    [Fact]
+    public async Task Replace_StillSavesARuleWithoutParameters()
+    {
+        var administration = new RulesAdministration();
+        administration.Rules["eu"] = ServiceBusModelFactory.RuleProperties("eu", new SqlRuleFilter("region = 'EU'"), null);
+        await using var workspace = Connected(administration);
+
+        await workspace.SaveSubscriptionRuleAsync("orders", "billing",
+            new SubscriptionRule("eu", RuleFilterKind.Sql, "region = 'FR'") { Original = AsRead }, replace: true);
+
+        Assert.Equal(["update eu"], administration.Writes);
+    }
+
     private static AzureServiceBusWorkspace Connected(RulesAdministration administration)
     {
         var workspace = new AzureServiceBusWorkspace(new DeepAuditCloudTests.EmptyVault());
