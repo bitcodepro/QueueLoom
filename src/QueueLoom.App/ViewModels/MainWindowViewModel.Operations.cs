@@ -30,7 +30,7 @@ public sealed partial class MainWindowViewModel
     private bool _browseHeldGroups;
     private decimal? _purgeLimitPerSource = 1000;
     private bool _hasDlqScan;
-    public string GlobalDlqDisplay => _hasDlqScan ? GlobalDlqSourceCount.ToString("N0", CultureInfo.CurrentCulture) : "—";
+    public string GlobalDlqDisplay => _hasDlqScan ? QueueLoom.Core.Monitoring.DeadLetterCountText.Format(GlobalDlqSourceCount, GlobalDlqCountQuality) : "—";
     public decimal? PurgeLimitPerSource
     {
         get => _purgeLimitPerSource;

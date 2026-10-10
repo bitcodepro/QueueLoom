@@ -110,7 +110,7 @@ public sealed partial class AzureServiceBusWorkspace
         _cachedTopology = null;
         foreach (var result in results.Where(result => result.IsSuccessful))
         {
-            _previousDeadLetterCounts[$"{result.Source.Path}|{result.SubQueue}"] = 0;
+            _previousDeadLetterCounts[$"{result.Source.Path}|{result.SubQueue}"] = new DeadLetterMeasurement(0, DeadLetterCountQuality.Exact);
         }
 
         return new DeadLetterPurgeResult(

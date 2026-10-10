@@ -32,9 +32,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private readonly INotificationService? _notifications;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _workspaceGate = new(1, 1);
-    private readonly Dictionary<string, long> _previousDlqCounts = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _monitorBaseline = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _lastDlqMeasurements = new(StringComparer.Ordinal);
+    // Counts keep their quality: a sampled (lower-bound) count is never compared with others as if it were exact.
+    private readonly Dictionary<string, DeadLetterMeasurement> _previousDlqCounts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeadLetterMeasurement> _monitorBaseline = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeadLetterMeasurement> _lastDlqMeasurements = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _monitorIncomparable = new(StringComparer.Ordinal);
+    // Each scanned environment's total quality: a zero row is not listed, but its approximate or sampled zero still
+    // keeps the overall count from reading as exact.
+    private readonly Dictionary<Guid, DeadLetterCountQuality> _dlqScanQualities = [];
     private readonly Dictionary<string, MonitorNotificationItemViewModel> _monitorNotifications = new(StringComparer.Ordinal);
     private readonly List<EntityItemViewModel> _allEntities = [];
 
@@ -236,7 +241,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && SupportsTransferDeadLetter);
         BrowseDlqSourceCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
-            () => !IsBusy && SelectedDlqSource is { Count: > 0 });
+            () => !IsBusy && SelectedDlqSource is { CanBrowse: true });
         PurgeEnvironmentDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Purging environment dead letters", PurgeEnvironmentDeadLettersAsync, token),
             () => !IsBusy && CanPurgeEnvironmentDeadLetters);

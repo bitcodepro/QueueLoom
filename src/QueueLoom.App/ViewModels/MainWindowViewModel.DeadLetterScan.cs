@@ -26,12 +26,12 @@ public sealed partial class MainWindowViewModel
             .Distinct()
             .Count();
         StatusText = snapshot.HasFailures
-            ? $"Partial scan in {profile.Name} · {snapshot.TotalCount:N0} known messages · {failedSources} source errors"
-            : $"Found {snapshot.TotalCount:N0} dead-letter messages in {profile.Name}";
+            ? $"Partial scan in {profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalQuality)} known messages · {failedSources} source errors"
+            : $"Found {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalQuality)} dead-letter messages in {profile.Name}";
         AddActivity(
             snapshot.HasFailures ? "Error" : snapshot.TotalCount > 0 ? "Warning" : "Success",
             snapshot.HasFailures ? "Partial DLQ scan" : "DLQ scan",
-            $"{profile.Name} · {snapshot.TotalCount:N0} known messages · {failedSources} source errors");
+            $"{profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalQuality)} known messages · {failedSources} source errors");
     }
 
     private async Task ScanAllEnvironmentsAsync(CancellationToken cancellationToken)
@@ -54,12 +54,20 @@ public sealed partial class MainWindowViewModel
         var resultsGenerationBeforeScan = _messageResultsGeneration;
         _lastDlqMeasurements.Clear();
         DeadLetterSources.Clear();
+        // Coverage of this sweep only: an environment counts once it was scanned; one that failed or was not reached is
+        // unknown, so the overall count is never an exact 0 left over from an earlier scan.
+        _dlqScanQualities.Clear();
+        foreach (var environment in Profiles)
+        {
+            _dlqScanQualities[environment.Id] = DeadLetterCountQuality.Unknown;
+        }
         ApplyDeadLetterEnvironmentFilter();
         var scanFailures = 0;
         var successfulEnvironments = 0;
         var partialFailures = 0;
         var restoreFailed = false;
         var total = 0L;
+        var totalQuality = DeadLetterCountQuality.Exact;
         _lastDlqScanHadFailures = false;
 
         try
@@ -79,6 +87,7 @@ public sealed partial class MainWindowViewModel
                     await RecordDeadLetterHistoryAsync(profile, snapshot, cancellationToken).ConfigureAwait(true);
                     UpdateDeadLetterRows(profile, snapshot, replaceExisting: false);
                     total = checked(total + snapshot.TotalCount);
+                    totalQuality = DeadLetterCountQualities.Combine(totalQuality, snapshot.TotalQuality);
                     successfulEnvironments++;
                     if (snapshot.HasFailures)
                     {
@@ -90,6 +99,7 @@ public sealed partial class MainWindowViewModel
                 {
                     scanFailures++;
                     _lastDlqScanHadFailures = true;
+                    totalQuality = DeadLetterCountQualities.Combine(totalQuality, DeadLetterCountQuality.Unknown);
                     AddActivity("Error", "Environment scan failed", $"{profile.Name} · {SanitizeException(exception)}");
                 }
             }
@@ -177,13 +187,14 @@ public sealed partial class MainWindowViewModel
             SortDeadLetterSources(selectedProfileId, selectedEntity, selectedSubQueue);
         }
 
+        var totalText = DeadLetterCountText.Format(total, totalQuality);
         StatusText = scanFailures == 0 && partialFailures == 0 && !restoreFailed
-            ? $"All environments scanned · {total:N0} dead-letter messages"
-            : $"Partial global scan · {total:N0} known messages · {scanFailures} scan errors · {partialFailures} environments with source errors · restore {(restoreFailed ? "failed" : "ok")}";
+            ? $"All environments scanned · {totalText} dead-letter messages"
+            : $"Partial global scan · {totalText} known messages · {scanFailures} scan errors · {partialFailures} environments with source errors · restore {(restoreFailed ? "failed" : "ok")}";
         AddActivity(
             scanFailures == 0 && partialFailures == 0 && !restoreFailed ? (total > 0 ? "Warning" : "Success") : "Error",
             scanFailures == 0 && partialFailures == 0 && !restoreFailed ? "Global DLQ scan" : "Partial global DLQ scan",
-            $"{successfulEnvironments}/{Profiles.Count} scanned · {partialFailures} partial · restore {(restoreFailed ? "failed" : "ok")} · {total:N0} known messages");
+            $"{successfulEnvironments}/{Profiles.Count} scanned · {partialFailures} partial · restore {(restoreFailed ? "failed" : "ok")} · {totalText} known messages");
         NotifyStatistics();
     }
 
@@ -194,6 +205,10 @@ public sealed partial class MainWindowViewModel
         ServiceBusEntityReference? replaceEntity = null)
     {
         _hasDlqScan = true;
+        if (replaceEntity is null)
+        {
+            _dlqScanQualities[profile.Id] = snapshot.TotalQuality;
+        }
         OnPropertyChanged(nameof(GlobalDlqDisplay));
         var selectedProfileId = SelectedDlqSource?.ProfileId;
         var selectedEntity = SelectedDlqSource?.Entity;
@@ -216,7 +231,7 @@ public sealed partial class MainWindowViewModel
             }
         }
 
-        var previousCounts = new Dictionary<string, long?>(StringComparer.Ordinal);
+        var previousCounts = new Dictionary<string, DeadLetterMeasurement?>(StringComparer.Ordinal);
         foreach (var entity in snapshot.Entities)
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
@@ -225,19 +240,29 @@ public sealed partial class MainWindowViewModel
                 : null;
             if (entity.IsSuccessful && entity.Count.HasValue)
             {
-                _previousDlqCounts[key] = entity.Count.Value;
+                _previousDlqCounts[key] = DeadLetterMeasurement.Of(entity);
             }
         }
 
-        foreach (var entity in snapshot.Entities.Where(item => item.Count > 0 || !item.IsSuccessful))
+        // A sampled queue that showed nothing stays listed: its "none seen" is not proof that it is empty.
+        foreach (var entity in snapshot.Entities.Where(item => item.Count > 0 || !item.IsSuccessful || item.CountIsLowerBound))
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
+            // The change is shown only between two exact counts; anything involving a sample is unknown.
+            var previous = previousCounts[key];
             var withHistory = new DeadLetterEntitySnapshot(
                 entity.Entity,
                 entity.Count,
-                previousCounts[key],
+                previous?.Count,
                 entity.Error,
-                entity.SubQueue);
+                entity.SubQueue)
+            {
+                CountQuality = entity.CountQuality,
+                PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
+                MeasuredAt = entity.MeasuredAt,
+                MeasuredFrom = entity.MeasuredFrom,
+                PreviousMeasuredFrom = previous?.MeasuredFrom
+            };
             DeadLetterSources.Add(new DlqSourceItemViewModel(
                 profile.Id,
                 profile.Name,
@@ -256,7 +281,7 @@ public sealed partial class MainWindowViewModel
         foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
         {
             var key = $"{profileId:N}|{entity.Entity.Path}|{entity.SubQueue}";
-            _lastDlqMeasurements[key] = entity.Count!.Value;
+            _lastDlqMeasurements[key] = DeadLetterMeasurement.Of(entity);
         }
     }
 

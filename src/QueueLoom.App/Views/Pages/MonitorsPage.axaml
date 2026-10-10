@@ -96,7 +96,7 @@
                     <Grid ColumnDefinitions="*,Auto">
                       <TextBlock Text="{Binding SourceName}" FontWeight="SemiBold"
                                  TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceName}" />
-                      <TextBlock Grid.Column="1" Text="{Binding Count, StringFormat={}{0:N0}}" FontWeight="Bold"
+                      <TextBlock Grid.Column="1" Text="{Binding CountText}" FontWeight="Bold"
                                  Classes="danger" Margin="10,0,0,0" />
                     </Grid>
                     <TextBlock Grid.Row="1" Text="{Binding EnvironmentName}" Classes="muted" FontSize="11" />
@@ -175,7 +175,7 @@
 
             <StackPanel Grid.Column="2" Spacing="10">
               <TextBlock Text="LARGEST DEAD-LETTER QUEUES" Classes="eyebrow" />
-              <TextBlock Text="The queues were empty at the last check." Classes="muted"
+              <TextBlock Text="{Binding HistoryNoSourcesText}" Classes="muted"
                          IsVisible="{Binding !HasHistorySources}" TextWrapping="Wrap" />
               <ItemsControl ItemsSource="{Binding HistorySources}" IsVisible="{Binding HasHistorySources}">
                 <ItemsControl.ItemTemplate>

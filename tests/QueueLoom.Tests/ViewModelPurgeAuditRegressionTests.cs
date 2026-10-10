@@ -22,14 +22,14 @@ public sealed partial class ViewModelStateTests
         await vm.InitializeAsync();
         await vm.ScanAllEnvironmentsCommand.ExecuteAsync();
         var bRow = vm.DeadLetterSources.Single(row => row.ProfileId == b.Id);
-        var counts = (Dictionary<string,long>)GetPurgePrivate(vm, "_previousDlqCounts")!;
+        var counts = (Dictionary<string, DeadLetterMeasurement>)GetPurgePrivate(vm, "_previousDlqCounts")!;
         var key = $"{b.Id:N}|{source.Path}|{ServiceBusSubQueue.DeadLetter}";
-        counts[key] = 7;
+        counts[key] = new DeadLetterMeasurement(7, false);
         var now = DateTimeOffset.UtcNow;
         typeof(MainWindowViewModel).GetMethod("ApplyCompletedPurgeToDeadLetterRows", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(vm, [new DeadLetterPurgeResult(a.Id, now, now, [new DeadLetterPurgeSourceResult(source, ServiceBusSubQueue.DeadLetter, 3)], Path.GetTempPath())]);
         Assert.Same(bRow, Assert.Single(vm.DeadLetterSources));
-        Assert.Equal(7, counts[key]);
+        Assert.Equal(new DeadLetterMeasurement(7, false), counts[key]);
     }
 
     private static object? GetPurgePrivate(MainWindowViewModel vm, string name) => typeof(MainWindowViewModel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm);

@@ -7,15 +7,29 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>A row under the history chart: a dead-letter queue and how its count changed over the period.</summary>
 public sealed record DeadLetterTrendItemViewModel(string Name, long? Now, long? Change)
 {
+    /// <summary>Now (or the period's start) is only a lower bound: a sampled Pub/Sub queue.</summary>
+    public bool IsLowerBound { get; init; }
+
+    public DeadLetterCountQuality NowQuality { get; init; }
+
+    /// <summary>Exact, or estimated when either end of the period was an estimate.</summary>
+    public DeadLetterCountQuality ChangeQuality { get; init; }
+
+    public bool NowIsLowerBound
+    {
+        get => NowQuality == DeadLetterCountQuality.LowerBound;
+        init { if (value) NowQuality = DeadLetterCountQuality.LowerBound; }
+    }
+
     // Unknown when a sample kept only the largest queues and this one was not among them.
-    public string NowText => Now?.ToString("N0", CultureInfo.CurrentCulture) ?? "—";
+    public string NowText => DeadLetterCountText.Format(Now, NowQuality);
 
     public string ChangeText => Change switch
     {
+        null when IsLowerBound => "unknown: counted by sampling",
         null => "not tracked for the whole period",
-        > 0 => $"+{Change:N0}",
-        < 0 => $"−{-Change:N0}",
-        _ => "no change"
+        0 => ChangeQuality == DeadLetterCountQuality.Estimated ? "about the same" : "no change",
+        { } change => DeadLetterCountText.FormatChange(change, ChangeQuality)
     };
 
     public bool IsRising => Change > 0;
@@ -80,23 +94,21 @@ public sealed partial class MainWindowViewModel
 
     public DateTimeOffset HistoryTo => _historyTo;
 
-    public string HistoryNowText => _historySummary is { } summary ? summary.Now.ToString("N0", CultureInfo.CurrentCulture) : "—";
+    public string HistoryNowText => _historySummary is { } summary
+        ? DeadLetterCountText.Format(summary.Now, summary.NowQuality)
+        : "—";
 
     public string HistoryPeakText => _historySummary is { } summary
-        ? summary.Peak.Count.ToString("N0", CultureInfo.CurrentCulture)
+        ? DeadLetterCountText.Format(summary.Peak.Count, summary.Peak.Quality)
         : "—";
 
     public string HistoryPeakTime => _historySummary is { } summary
         ? summary.Peak.At.ToLocalTime().ToString("ddd d MMM, HH:mm", CultureInfo.CurrentCulture)
         : string.Empty;
 
-    public string HistoryChangeText => _historySummary?.Change switch
-    {
-        null => "—",
-        > 0 and var change => $"+{change:N0}",
-        < 0 and var change => $"−{-change:N0}",
-        _ => "0"
-    };
+    public string HistoryChangeText => _historySummary is { Change: { } change } summary
+        ? change == 0 ? "0" : DeadLetterCountText.FormatChange(change, summary.ChangeQuality)
+        : "\u2014";
 
     public bool IsHistoryRising => _historySummary?.Change > 0;
 
@@ -104,7 +116,16 @@ public sealed partial class MainWindowViewModel
 
     public string HistoryFootnote => _historySummary is { } summary
         ? $"{summary.SampleCount:N0} check{(summary.SampleCount == 1 ? string.Empty : "s")} in this period. " +
-          "Counts are recorded by the monitor and by dead-letter scans, at most once a minute, and kept for 30 days."
+          "Counts are recorded by the monitor and by dead-letter scans, at most once a minute, and kept for 30 days." +
+          (summary.Points.Any(point => point.IsLowerBound)
+              ? " A count marked + includes a queue counted by reading it (no exact count is available): further growth is unknown."
+              : string.Empty) +
+          (summary.Points.Any(point => point.Quality == DeadLetterCountQuality.Estimated)
+              ? " A count marked \u2248 includes an approximate or delayed count (SQS, Pub/Sub Cloud Monitoring)."
+              : string.Empty) +
+          (summary.Points.Any(point => point.Quality == DeadLetterCountQuality.Unqualified)
+              ? " Counts recorded by an older QueueLoom are shown without saying whether they were exact."
+              : string.Empty)
         : string.Empty;
 
     /// <summary>The history for the current selection is still being read; nothing of an earlier selection is shown.</summary>
@@ -117,10 +138,16 @@ public sealed partial class MainWindowViewModel
             : $"No checks of {HistoryProfile.Name} in this period. Start the monitor or scan for dead letters to record counts.";
 
     public IReadOnlyList<DeadLetterTrendItemViewModel> HistorySources =>
-        _historySummary?.Sources.Select(source => new DeadLetterTrendItemViewModel(source.Name, source.Now, source.Change)).ToArray()
+        _historySummary?.Sources.Select(source => new DeadLetterTrendItemViewModel(source.Name, source.Now, source.Change)
+            { IsLowerBound = source.StartIsLowerBound || source.NowIsLowerBound, NowQuality = source.NowQuality, ChangeQuality = source.ChangeQuality }).ToArray()
         ?? [];
 
     public bool HasHistorySources => _historySummary?.Sources.Count > 0;
+
+    /// <summary>Shown without source rows: an empty list only proves empty queues when the last count was exact.</summary>
+    public string HistoryNoSourcesText => _historySummary is { } summary && !DeadLetterCountQualities.ProvesEmpty(summary.NowQuality)
+        ? "No dead letters were counted at the last check, but that count was not exact: the queues are not known to be empty."
+        : "The queues were empty at the last check.";
 
     private void InitializeHistory(IDeadLetterHistoryStore? history) => _history = history;
 
@@ -243,6 +270,7 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(HistoryEmptyText));
         OnPropertyChanged(nameof(HistorySources));
         OnPropertyChanged(nameof(HasHistorySources));
+        OnPropertyChanged(nameof(HistoryNoSourcesText));
         OnPropertyChanged(nameof(IsHistoryLoading));
     }
 }

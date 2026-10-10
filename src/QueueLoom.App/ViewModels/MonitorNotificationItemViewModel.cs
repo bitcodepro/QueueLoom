@@ -12,6 +12,7 @@ public sealed class MonitorNotificationItemViewModel(
     DateTimeOffset firstDetectedAt) : ObservableObject
 {
     private long _count = count;
+    private QueueLoom.Core.Monitoring.DeadLetterCountQuality _countQuality;
     private DateTimeOffset _lastDetectedAt = firstDetectedAt;
 
     public string Key { get; } = key;
@@ -28,8 +29,41 @@ public sealed class MonitorNotificationItemViewModel(
     public long Count
     {
         get => _count;
-        set => SetProperty(ref _count, value);
+        set
+        {
+            if (SetProperty(ref _count, value)) OnPropertyChanged(nameof(CountText));
+        }
     }
+
+    /// <summary>How far the shown count can be trusted (a sample is a lower bound; SQS and Cloud Monitoring estimate).</summary>
+    public QueueLoom.Core.Monitoring.DeadLetterCountQuality CountQuality
+    {
+        get => _countQuality;
+        set
+        {
+            if (SetProperty(ref _countQuality, value))
+            {
+                OnPropertyChanged(nameof(CountText));
+                OnPropertyChanged(nameof(CountIsLowerBound));
+            }
+        }
+    }
+
+    /// <summary>When the shown count was true, when the service says (a Cloud Monitoring point); older counts never overrule it.</summary>
+    public DateTimeOffset? LastMeasuredAt { get; set; }
+
+    /// <summary>What the count was taken from, when not the source itself (a Pub/Sub reader subscription).</summary>
+    public string? MeasuredFrom { get; set; }
+
+    /// <summary>Approximate zeros seen in a row: one alone does not resolve the notification.</summary>
+    public int UnconfirmedClearChecks { get; set; }
+
+    /// <summary>The service time of the last approximate zero counted: the same point read twice confirms nothing.</summary>
+    public DateTimeOffset? LastClearPointAt { get; set; }
+
+    public bool CountIsLowerBound => CountQuality == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound;
+
+    public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);
 
     public DateTimeOffset LastDetectedAt
     {

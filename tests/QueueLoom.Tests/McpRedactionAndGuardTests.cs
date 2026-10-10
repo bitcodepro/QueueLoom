@@ -215,12 +215,136 @@ public sealed class McpRedactionAndGuardTests
         Assert.DoesNotContain("\n\n\n\n", details, StringComparison.Ordinal);
     }
 
+    // Count quality in the public tools: an approximate zero is not proof of empty, an approximate count says so, and
+    // a period without history has unknown values rather than exact nulls.
+    private static readonly ServiceBusQueue Estimated = new(
+        "orders",
+        new ServiceBusEntityRuntime(new ServiceBusMessageCounts(active: 0, deadLetter: 0)) { CountsAreEstimates = true },
+        ServiceBusEntityStatus.Active);
+
+    [Fact]
+    public async Task ExplainDeadLetters_DoesNotCallAnApproximateZeroEmpty()
+    {
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Estimated]) { HasMessageCounts = true } };
+
+        var (result, text, _) = await CallAsync(workspace, "explain_dead_letters", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains("not known to be empty", text, StringComparison.Ordinal);
+        Assert.Contains("\"countQuality\":\"estimated\"", text.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // An exact positive count whose read failed is not an empty queue.
+    [Fact]
+    public async Task ExplainDeadLetters_DoesNotCallAFailedReadEmpty()
+    {
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Orders]) { HasMessageCounts = true },
+            CleanupOperationGate = _ => throw new TimeoutException("The read timed out.")
+        };
+
+        var (result, text, _) = await CallAsync(workspace, "explain_dead_letters", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains("could not be read", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("are empty", text, StringComparison.Ordinal);
+    }
+
+    // The emulator's capped sample is at least the cap: get_entities says so, as scan_dead_letters does.
+    [Theory]
+    [InlineData(999, "exact")]
+    [InlineData(1000, "lowerBound")]
+    public async Task GetEntities_CallsACappedEmulatorSampleALowerBound(long sampled, string quality)
+    {
+        var runtime = await QueueLoom.Infrastructure.Azure.AzureServiceBusWorkspace.SampleEmulatorRuntimeAsync(
+            Orders.Reference, false, null, null, (_, _, _) => Task.FromResult(sampled), CancellationToken.None);
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [new ServiceBusQueue("orders", runtime, ServiceBusEntityStatus.Active)]) };
+
+        var (result, text, _) = await CallAsync(workspace, "get_entities", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains($"\"countQuality\":\"{quality}\"", text.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // A configured dead-letter target that cannot be seen (another account or region; a Pub/Sub dead-letter topic
+    // with no subscription) stays a dead-letter source of unknown count: never a zero, never left out.
+    public static TheoryData<string> UnobservableDeadLetterTargets => ["sqs", "sns", "pubsub"];
+
+    private static ServiceBusTopology UnobservableTopology(string provider) => provider switch
+    {
+        "sqs" => new QueueLoom.Infrastructure.Aws.AwsTopologyIndex(
+            [new QueueLoom.Infrastructure.Aws.AwsQueueInfo("orders", "http://localhost/orders", "arn:aws:sqs:us-east-1:123:orders",
+                false, 0, 0, 0, "arn:aws:sqs:eu-west-1:999:orders-dlq", null, null)], []).ToTopology(DateTimeOffset.UtcNow) with { HasMessageCounts = true },
+        "sns" => new QueueLoom.Infrastructure.Aws.AwsTopologyIndex([],
+            [QueueLoom.Infrastructure.Aws.AwsTopicInfo.From("arn:aws:sns:us-east-1:123:events",
+                [new QueueLoom.Infrastructure.Aws.AwsSubscriptionInfo("arn:aws:sns:us-east-1:123:events:1", "https", "https://example.invalid/hook",
+                    "arn:aws:sqs:eu-west-1:999:events-dlq")])]).ToTopology(DateTimeOffset.UtcNow) with { HasMessageCounts = true },
+        _ => QueueLoom.Infrastructure.Google.GooglePubSubTopology.Build("project-a", ["events"],
+            [new global::Google.Cloud.PubSub.V1.Subscription
+            {
+                Name = "projects/project-a/subscriptions/worker",
+                Topic = "projects/project-a/topics/events",
+                DeadLetterPolicy = new global::Google.Cloud.PubSub.V1.DeadLetterPolicy { DeadLetterTopic = "projects/project-a/topics/events-dlq", MaxDeliveryAttempts = 5 }
+            }],
+            DateTimeOffset.UtcNow, undelivered: new Dictionary<string, long> { ["worker"] = 0 }).Topology
+    };
+
+    [Theory]
+    [MemberData(nameof(UnobservableDeadLetterTargets))]
+    public async Task AnUnobservableDeadLetterTargetIsUnknownNotZero(string provider)
+    {
+        var topology = UnobservableTopology(provider);
+        var source = topology.Queues.Cast<object>().Concat(topology.Topics.SelectMany(topic => topic.Subscriptions)).Single() switch
+        {
+            ServiceBusQueue queue => (queue.HasDeadLetterQueue, queue.Runtime),
+            ServiceBusSubscription subscription => (subscription.HasDeadLetterQueue, subscription.Runtime),
+            _ => throw new InvalidOperationException()
+        };
+        Assert.True(source.HasDeadLetterQueue);
+        Assert.Equal(DeadLetterCountQuality.Unknown, DeadLetterCountQualities.OfReported(source.Runtime));
+
+        var workspace = new FakeWorkspace { Topology = topology };
+        var (_, entities, _) = await CallAsync(workspace, "get_entities", new());
+        var (_, explained, _) = await CallAsync(workspace, "explain_dead_letters", new());
+
+        Assert.Contains("\"countQuality\":\"unknown\"", entities.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not known to be empty", explained, StringComparison.Ordinal);
+        Assert.DoesNotContain("No dead-letter queue holds messages", explained, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetEntities_SaysApproximateCountsAreEstimates()
+    {
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Estimated]) };
+
+        var (result, text, _) = await CallAsync(workspace, "get_entities", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains("estimated", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetDeadLetterHistory_WithoutRecordsHasUnknownValues()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Orders]) };
+        var store = new QueueLoom.Infrastructure.Persistence.JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+
+        var (result, text, _) = await CallAsync(workspace, "get_dead_letter_history", new(), history: store);
+
+        Assert.True(result.IsError != true, text);
+        Assert.DoesNotContain("\"exact\"", text, StringComparison.Ordinal);
+        Assert.Contains("unknown", text, StringComparison.Ordinal);
+    }
+
     private static async Task<(CallToolResult Result, string Text, CapturingApprover Approver)> CallAsync(
         IServiceBusWorkspace workspace,
         string tool,
         Dictionary<string, object?> arguments,
         bool approve = true,
-        ServiceBusProfile? profile = null)
+        ServiceBusProfile? profile = null,
+        IDeadLetterHistoryStore? history = null)
     {
         profile ??= CreateProfile("Development", EnvironmentKind.Development);
         var approver = new CapturingApprover(approve);
@@ -234,6 +358,7 @@ public sealed class McpRedactionAndGuardTests
                 services.AddSingleton<IProfileRepository>(new FakeProfileRepository([profile], profile.Id));
                 services.AddSingleton(workspace);
                 services.AddSingleton<IOperationApprover>(approver);
+                if (history is not null) services.AddSingleton(history);
             },
             input: clientToServer.Reader.AsStream(),
             output: serverToClient.Writer.AsStream(),

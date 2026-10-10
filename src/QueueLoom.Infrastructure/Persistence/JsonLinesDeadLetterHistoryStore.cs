@@ -37,7 +37,9 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
     {
         var samples = WithTail(Load());
         var previous = samples.LastOrDefault(item => item.ProfileId == sample.ProfileId);
-        if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.Total == sample.Total)
+        // Within a minute an unchanged sample adds nothing; a quality change (exact 100, then an estimated or sampled 100)
+        // is a change and is kept.
+        if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.RecordsTheSameAs(sample))
         {
             return;
         }

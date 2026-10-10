@@ -1,15 +1,29 @@
+using System.Text.Json.Serialization;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Core.Monitoring;
 
 /// <summary>Dead-letter counts of one environment at one moment, from a complete monitor check or scan.</summary>
 /// <param name="Sources">Non-empty dead-letter queues by display name ("orders", "orders (transfer)"); the largest only.</param>
+/// <param name="TotalQuality">
+/// How far the total can be trusted. Always written by this version; a sample without it was recorded before count
+/// quality was kept, and is read as <see cref="DeadLetterCountQuality.Unqualified"/>, never as exact.
+/// </param>
+/// <param name="SourceQualities">
+/// Sources whose count is not exact, kept in Sources or not (a sampled queue that showed nothing is listed here, so it
+/// is never read back as a proven 0); null when every counted source was exact.
+/// </param>
 public sealed record DeadLetterHistorySample(
     DateTimeOffset At,
     Guid ProfileId,
     string Environment,
     long Total,
-    IReadOnlyDictionary<string, long> Sources)
+    IReadOnlyDictionary<string, long> Sources,
+    DeadLetterCountQuality? TotalQuality = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, DeadLetterCountQuality>? SourceQualities = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, DeadLetterObservation>? SourceObservations = null)
 {
     public const int MaximumSources = 25;
 
@@ -24,8 +38,69 @@ public sealed record DeadLetterHistorySample(
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(MaximumSources)
             .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
-        return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources);
+        // Every source that is not exact, kept in Sources or not: an estimated or sampled zero is never read back as a
+        // proven empty queue.
+        var qualities = snapshot.Entities
+            .Where(entity => entity.CountQuality != DeadLetterCountQuality.Exact)
+            .GroupBy(SourceName, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => DeadLetterCountQualities.Combine(group.Select(entity => entity.CountQuality)),
+                StringComparer.Ordinal);
+        // When and through what a count was taken, where the service says (a Cloud Monitoring point's time, a Pub/Sub
+        // reader, an SQS dead-letter queue): counts of different targets are never compared later.
+        var observations = snapshot.Entities
+            .Where(entity => entity.MeasuredAt is not null || entity.MeasuredFrom is not null)
+            .GroupBy(SourceName, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => new DeadLetterObservation(
+                group.Select(entity => entity.MeasuredAt).Min(),
+                group.Select(entity => entity.MeasuredFrom).Distinct(StringComparer.Ordinal).Count() == 1 ? group.First().MeasuredFrom : string.Join(",",
+                    group.Select(entity => entity.MeasuredFrom).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))),
+                StringComparer.Ordinal);
+        return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources,
+            snapshot.TotalQuality, qualities.Count == 0 ? null : qualities, observations.Count == 0 ? null : observations);
     }
+
+    /// <summary>The total's quality; an old sample without one is unqualified.</summary>
+    [JsonIgnore]
+    public DeadLetterCountQuality Quality => TotalQuality ?? DeadLetterCountQuality.Unqualified;
+
+    [JsonIgnore]
+    public bool TotalIsLowerBound => Quality == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>A source's quality: as recorded, else exact (or, in an old sample, unqualified).</summary>
+    public DeadLetterCountQuality QualityOf(string source) =>
+        SourceQualities?.TryGetValue(source, out var quality) == true ? quality
+        : TotalQuality is null ? DeadLetterCountQuality.Unqualified
+        : DeadLetterCountQuality.Exact;
+
+    public bool IsLowerBound(string source) => QualityOf(source) == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>Sources recorded as lower bounds, including any that showed nothing.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> LowerBoundSources =>
+        SourceQualities?.Where(pair => pair.Value == DeadLetterCountQuality.LowerBound).Select(pair => pair.Key) ?? [];
+
+    /// <summary>Every source recorded as not exact, an estimated or sampled zero included.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> QualifiedSources => SourceQualities?.Keys ?? [];
+
+    /// <summary>What a source's count was taken from, when recorded.</summary>
+    /// <summary>Every source this sample recorded a count, quality or observation of.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> RecordedSources =>
+        Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Distinct(StringComparer.Ordinal);
+
+    public string? TargetOf(string source) => SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom : null;
+
+    /// <summary>Same counts, qualities, sources and observations: a later sample adds nothing.</summary>
+    public bool RecordsTheSameAs(DeadLetterHistorySample other) =>
+        Total == other.Total && TotalQuality == other.TotalQuality &&
+        Same(SourceQualities, other.SourceQualities) && Same(SourceObservations, other.SourceObservations);
+
+    private static bool Same<T>(IReadOnlyDictionary<string, T>? first, IReadOnlyDictionary<string, T>? second) =>
+        (first ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .SequenceEqual((second ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal));
 
     public static string SourceName(DeadLetterEntitySnapshot entity) =>
         entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
@@ -33,14 +108,45 @@ public sealed record DeadLetterHistorySample(
             : entity.Entity.DisplayName;
 }
 
-public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count);
+/// <summary>When a count was true and what it was taken from, where the service says.</summary>
+public sealed record DeadLetterObservation(DateTimeOffset? MeasuredAt, string? MeasuredFrom);
+
+public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count)
+{
+    public DeadLetterCountQuality Quality { get; init; }
+
+    /// <summary>The count is only a lower bound.</summary>
+    public bool IsLowerBound => Quality == DeadLetterCountQuality.LowerBound;
+}
 
 /// <param name="Start">Count at the first sample of the period; null when that sample kept only larger queues.</param>
 /// <param name="Now">Count at the last sample; null when that sample kept only larger queues.</param>
 public sealed record DeadLetterSourceTrend(string Name, long? Start, long? Now)
 {
-    /// <summary>Null when either end is unknown: a queue below a truncated sample's top is not known to be empty.</summary>
-    public long? Change => Start is { } start && Now is { } now ? now - start : null;
+    public DeadLetterCountQuality StartQuality { get; init; }
+
+    public DeadLetterCountQuality NowQuality { get; init; }
+
+    public bool StartIsLowerBound => StartQuality == DeadLetterCountQuality.LowerBound;
+
+    public bool NowIsLowerBound => NowQuality == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>What the first count was taken from (a Pub/Sub reader, an SQS dead-letter queue), when recorded.</summary>
+    public string? StartMeasuredFrom { get; init; }
+
+    public string? NowMeasuredFrom { get; init; }
+
+    /// <summary>
+    /// Null when either end is unknown (a queue below a truncated sample's top is not known to be empty), a lower bound,
+    /// unqualified, or a count of another target: see <see cref="DeadLetterMeasurement.Difference"/>.
+    /// </summary>
+    public long? Change => Start is { } start && Now is { } now
+        ? DeadLetterMeasurement.Difference(new DeadLetterMeasurement(start, StartQuality) { MeasuredFrom = StartMeasuredFrom },
+            new DeadLetterMeasurement(now, NowQuality) { MeasuredFrom = NowMeasuredFrom })?.Count
+        : null;
+
+    /// <summary>Exact between exact counts, estimated when either end is an estimate.</summary>
+    public DeadLetterCountQuality ChangeQuality => DeadLetterCountQualities.Combine(StartQuality, NowQuality);
 }
 
 public sealed record DeadLetterHistorySummary(
@@ -51,7 +157,25 @@ public sealed record DeadLetterHistorySummary(
     IReadOnlyList<DeadLetterSourceTrend> Sources,
     int SampleCount)
 {
-    public long Change => Now - Start;
+    public DeadLetterCountQuality NowQuality { get; init; }
+
+    public DeadLetterCountQuality StartQuality { get; init; }
+
+    public bool NowIsLowerBound => NowQuality == DeadLetterCountQuality.LowerBound;
+
+    public bool StartIsLowerBound => StartQuality == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>A queue that was counted through another target at the end than at the start: the totals are not comparable.</summary>
+    public bool TargetsChanged { get; init; }
+
+    /// <summary>
+    /// Null when either total is a lower bound or unqualified, or a queue changed target; see <see cref="ChangeQuality"/>
+    /// for an estimate.
+    /// </summary>
+    public long? Change => TargetsChanged ? null :
+        DeadLetterMeasurement.Difference(new DeadLetterMeasurement(Start, StartQuality), new DeadLetterMeasurement(Now, NowQuality))?.Count;
+
+    public DeadLetterCountQuality ChangeQuality => DeadLetterCountQualities.Combine(StartQuality, NowQuality);
 }
 
 public interface IDeadLetterHistoryStore
@@ -81,34 +205,85 @@ public static class DeadLetterHistory
     {
         ArgumentNullException.ThrowIfNull(samples);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumPoints, 2);
-        var inRange = samples.Where(sample => sample.At >= from && sample.At <= to).OrderBy(sample => sample.At).ToArray();
+        // Freshness is judged over every sample given, before the range cuts away the context; and a count measured
+        // before the range began is not one of its observations: without the newer one that superseded it (left
+        // outside the range), it could otherwise come back as the latest.
+        var inRange = Fresh(samples.OrderBy(sample => sample.At))
+            .Where(sample => sample.At >= from && sample.At <= to)
+            .Where(sample => sample.SourceObservations is not { } observations ||
+                             observations.Values.All(observation => observation.MeasuredAt is not { } at || at >= from))
+            .ToArray();
         if (inRange.Length == 0)
         {
             return null;
         }
 
-        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total)).ToArray();
+        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total) { Quality = sample.Quality }).ToArray();
         if (points.Length > maximumPoints)
         {
             var bucket = (to - from).Ticks / maximumPoints + 1;
+            // A bucket keeps its highest count, with the weakest quality of its samples.
             points = points
                 .GroupBy(point => (point.At - from).Ticks / bucket)
-                .Select(group => group.MaxBy(point => point.Count)!)
+                .Select(group => group.MaxBy(point => point.Count)! with { Quality = DeadLetterCountQualities.Combine(group.Select(point => point.Quality)) })
                 .ToArray();
         }
 
         var first = inRange[0];
         var last = inRange[^1];
-        var peak = points.MaxBy(point => point.Count)!;
+        // An uncertain point anywhere in the period may hide a higher real count: the peak is no more certain than any point.
+        var peak = points.MaxBy(point => point.Count)! with { Quality = DeadLetterCountQualities.Combine(points.Select(point => point.Quality)) };
+        // Sampled queues are listed even when nothing was seen in them: their count is unknown, not zero.
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
+            .Concat(last.LowerBoundSources).Concat(first.LowerBoundSources)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name)))
+            .Select(name => (Name: name, Start: CountIn(first, name), Now: CountIn(last, name)))
+            // A count a sample did not keep is unknown, never exact.
+            .Select(source => new DeadLetterSourceTrend(source.Name, source.Start, source.Now)
+            {
+                StartQuality = source.Start is null ? DeadLetterCountQuality.Unknown : first.QualityOf(source.Name),
+                NowQuality = source.Now is null ? DeadLetterCountQuality.Unknown : last.QualityOf(source.Name),
+                StartMeasuredFrom = first.TargetOf(source.Name),
+                NowMeasuredFrom = last.TargetOf(source.Name)
+            })
             .OrderByDescending(source => source.Now ?? -1)
             .ThenByDescending(source => Math.Abs(source.Change ?? 0))
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(maximumSources)
             .ToArray();
-        return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length);
+        // As strict as a source's own change: a known reader against a missing one is another target too.
+        // Every source either sample recorded anything of (a count, a quality or an observation), whether or not its
+        // count was zero or below the kept largest.
+        var targetsChanged = first.RecordedSources.Intersect(last.RecordedSources, StringComparer.Ordinal)
+            .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal));
+        return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
+            { NowQuality = last.Quality, StartQuality = first.Quality, TargetsChanged = targetsChanged };
+    }
+
+    /// <summary>
+    /// Leaves out a sample that holds an observation older than one already recorded for the same source and target:
+    /// another process (or a restart) with its own cache can record a delayed point after a newer one.
+    /// </summary>
+    private static IEnumerable<DeadLetterHistorySample> Fresh(IEnumerable<DeadLetterHistorySample> ordered)
+    {
+        var latest = new Dictionary<(string Source, string? Target), DateTimeOffset>();
+        foreach (var sample in ordered)
+        {
+            var observations = sample.SourceObservations ?? new Dictionary<string, DeadLetterObservation>();
+            if (observations.Any(pair => pair.Value.MeasuredAt is { } at &&
+                                         latest.TryGetValue((pair.Key, pair.Value.MeasuredFrom), out var newer) && at < newer))
+            {
+                continue;
+            }
+            foreach (var (source, observation) in observations)
+            {
+                if (observation.MeasuredAt is { } at)
+                {
+                    latest[(source, observation.MeasuredFrom)] = at;
+                }
+            }
+            yield return sample;
+        }
     }
 
     /// <summary>

@@ -66,8 +66,8 @@ public sealed partial class AzureServiceBusWorkspace
     {
         if (_isEmulator)
         {
-            return [CreateSnapshot(source, ServiceBusSubQueue.DeadLetter,
-                        await SampleEmulatorCountAsync(source, SubQueue.DeadLetter, cancellationToken).ConfigureAwait(false), null)];
+            var sampled = await SampleEmulatorCountAsync(source, SubQueue.DeadLetter, cancellationToken).ConfigureAwait(false);
+            return [CreateSnapshot(source, ServiceBusSubQueue.DeadLetter, sampled, null, EmulatorSampleQuality(sampled))];
         }
         var administration = GetAdministrationClient();
         long deadLetters;
@@ -106,19 +106,17 @@ public sealed partial class AzureServiceBusWorkspace
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
         long? count,
-        string? error)
+        string? error,
+        DeadLetterCountQuality quality = DeadLetterCountQuality.Exact)
     {
         var key = $"{source.Path}|{subQueue}";
-        long? previous = null;
-        if (_previousDeadLetterCounts.TryGetValue(key, out var value))
-        {
-            previous = value;
-        }
+        _previousDeadLetterCounts.TryGetValue(key, out var previous);
         if (count.HasValue)
         {
-            _previousDeadLetterCounts[key] = count.Value;
+            _previousDeadLetterCounts[key] = new DeadLetterMeasurement(count.Value, quality);
         }
 
-        return new DeadLetterEntitySnapshot(source, count, previous, error, subQueue);
+        return new DeadLetterEntitySnapshot(source, count, previous?.Count, error, subQueue)
+            { CountQuality = quality, PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact };
     }
 }

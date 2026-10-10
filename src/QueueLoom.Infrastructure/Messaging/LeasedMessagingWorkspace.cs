@@ -24,7 +24,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
     private readonly DeadLetterJsonBackupStore _backupStore;
     private readonly AsyncOperationGate _operationGate = new();
     private readonly SemaphoreSlim _topologyGate = new(1, 1);
-    private readonly ConcurrentDictionary<string, long> _previousDeadLetterCounts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DeadLetterMeasurement> _previousDeadLetterCounts = new(StringComparer.Ordinal);
     private ServiceBusProfile? _profile;
     private ServiceBusTopology? _cachedTopology;
     private WorkspaceConnectionState _connectionState;
@@ -93,7 +93,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 await OpenAsync(profile, cancellationToken).ConfigureAwait(false);
                 _profile = profile;
                 _cachedTopology = null;
-                _previousDeadLetterCounts.Clear();
+                // Observations are kept per environment across reconnects (a global sweep reconnects each one): a
+                // delayed point fetched after a reconnect must not overrule what was already seen.
                 _connectionState = WorkspaceConnectionState.Connected;
             }
             catch
@@ -489,7 +490,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 continue;
             }
             long count;
-            if (source.Runtime.CountsUnavailable)
+            // Sampled by reading: what was seen, never the queue's proven size (nor, when nothing was seen, proof of empty).
+            var sampled = source.Runtime.CountsUnavailable;
+            if (sampled)
             {
                 try
                 {
@@ -506,10 +509,33 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 count = source.Runtime.MessageCounts.DeadLetter;
             }
 
-            var key = source.Reference.Path;
-            long? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
-            _previousDeadLetterCounts[key] = count;
-            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous));
+            // Per environment and its configuration: an edited profile (another project, region or account) keeps
+            // its ID but is not the place the earlier observations came from.
+            var key = $"{ConnectedConfigurationIdentity}|{source.Reference.Path}";
+            DeadLetterMeasurement? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
+            var quality = sampled ? DeadLetterCountQuality.LowerBound
+                : source.Runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated
+                : DeadLetterCountQuality.Exact;
+            // A sample is true now; a reported count as of its own time (a Cloud Monitoring point can be minutes old).
+            var current = new DeadLetterMeasurement(count, quality)
+            {
+                MeasuredAt = sampled ? TimeProvider.GetUtcNow() : source.Runtime.DeadLetterCountMeasuredAt,
+                MeasuredFrom = source.Runtime.DeadLetterCountSource
+            };
+            if (previous is { } newer && DeadLetterMeasurement.SameTarget(current, newer) && DeadLetterMeasurement.IsOlder(current, newer))
+            {
+                // Older than what this source already showed: the newer observation stands, it is not overruled.
+                current = newer;
+            }
+            _previousDeadLetterCounts[key] = current;
+            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, current.Count, previous?.Count)
+            {
+                CountQuality = current.Quality,
+                PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
+                MeasuredAt = current.MeasuredAt,
+                MeasuredFrom = current.MeasuredFrom,
+                PreviousMeasuredFrom = previous?.MeasuredFrom
+            });
         }
 
         return new DeadLetterSnapshot(profile.Id, TimeProvider.GetUtcNow(), snapshots);
@@ -537,7 +563,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         }
     }
 
-    internal const int SampleLimit = 1_000;
+    internal const int SampleLimit = DeadLetterCountText.SampleLimit;
 
     /// <summary>Read-only provider management calls also retain clients until their entire scope finishes.</summary>
     protected async ValueTask<IDisposable> EnterReadOperationAsync(CancellationToken cancellationToken)

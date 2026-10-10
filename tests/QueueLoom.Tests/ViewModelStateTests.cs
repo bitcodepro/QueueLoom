@@ -971,6 +971,9 @@ public sealed partial class ViewModelStateTests
 
         public bool FailNextConnection { get; set; }
 
+        /// <summary>Thrown once by the next GetDeadLetterSnapshotAsync, as a whole-environment failure.</summary>
+        public Exception? SnapshotFailure { get; set; }
+
         public bool WaitForConnectionCancellation { get; set; }
 
         public bool WaitForSnapshotCancellation { get; set; }
@@ -1259,6 +1262,11 @@ public sealed partial class ViewModelStateTests
                 }
             }
 
+            if (SnapshotFailure is { } failure)
+            {
+                SnapshotFailure = null;
+                throw failure;
+            }
             var profileId = ConnectedProfileId ?? throw new InvalidOperationException("Not connected.");
             return Snapshots.TryGetValue(profileId, out var snapshot)
                 ? snapshot

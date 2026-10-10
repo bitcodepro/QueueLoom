@@ -244,7 +244,8 @@ public sealed class MultiProviderTests
         var events = result.Topology.Topics.Single(topic => topic.Name == "events");
         Assert.True(events.Subscriptions.Single(item => item.Name == "billing").HasDeadLetterQueue);
         var shipping = events.Subscriptions.Single(item => item.Name == "shipping");
-        Assert.False(shipping.HasDeadLetterQueue);
+        Assert.True(shipping.HasDeadLetterQueue);
+        Assert.NotNull(shipping.Runtime.DeadLetterCountError);
         Assert.Contains("no subscription to read them from", shipping.Note);
         Assert.Equal("Holds dead letters of billing",
             result.Topology.Topics.Single(topic => topic.Name == "events-dlq").Subscriptions.Single().Note);
@@ -252,6 +253,25 @@ public sealed class MultiProviderTests
         Assert.All(result.Topology.Topics.SelectMany(topic => topic.Subscriptions),
             subscription => Assert.True(subscription.Runtime.CountsUnavailable));
         Assert.False(result.Topology.HasMessageCounts);
+    }
+
+    // A dead-letter reader with no Cloud Monitoring series yet has no count: it is sampled by reading, never shown as 0.
+    [Fact]
+    public void Pubsub_dead_letter_reader_missing_from_cloud_monitoring_is_sampled_not_zero()
+    {
+        const string project = "orders-prod-4821";
+        var deadLetterTopic = new TopicName(project, "events-dlq").ToString();
+        var subscriptions = new[]
+        {
+            Subscription(project, "billing", "events", deadLetterTopic),
+            Subscription(project, "dlq-reader", "events-dlq", null)
+        };
+
+        var result = GooglePubSubTopology.Build(project, ["events", "events-dlq"], subscriptions, DateTimeOffset.UnixEpoch,
+            new Dictionary<string, long> { ["billing"] = 12 });
+
+        var billing = result.Topology.Topics.Single(topic => topic.Name == "events").Subscriptions.Single(item => item.Name == "billing").Runtime;
+        Assert.True(billing.CountsUnavailable);
     }
 
     [Fact]
@@ -276,6 +296,7 @@ public sealed class MultiProviderTests
         Assert.False(billing.CountsUnavailable);
         Assert.Equal(12, billing.MessageCounts.Active);
         Assert.Equal(4, billing.MessageCounts.DeadLetter);
+        Assert.True(billing.CountsAreEstimates); // Cloud Monitoring series are sampled and delayed.
         var shipping = events.Subscriptions.Single(item => item.Name == "shipping").Runtime;
         Assert.Equal(0, shipping.MessageCounts.Active);
         Assert.False(shipping.CountsUnavailable);

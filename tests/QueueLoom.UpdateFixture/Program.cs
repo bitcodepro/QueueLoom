@@ -143,7 +143,8 @@ if (args.Length == 6 && args[0] == "--append-history")
     }
     File.WriteAllText(args[3] + ".started", "started");
     await store.AppendAsync(new QueueLoom.Core.Monitoring.DeadLetterHistorySample(DateTimeOffset.UtcNow, profile,
-        "Test", long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), new Dictionary<string, long>()));
+        "Test", long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), new Dictionary<string, long>(),
+        QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact));
     File.WriteAllText(args[3] + ".done", "done");
     return 0;
 }

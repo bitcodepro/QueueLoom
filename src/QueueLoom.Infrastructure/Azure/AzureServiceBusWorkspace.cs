@@ -37,7 +37,7 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
     private readonly AsyncOperationGate _operationGate = new();
     private readonly SemaphoreSlim _topologyGate = new(1, 1);
     private readonly ConcurrentDictionary<string, ServiceBusSender> _senders = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, long> _previousDeadLetterCounts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DeadLetterMeasurement?> _previousDeadLetterCounts = new(StringComparer.Ordinal);
 
     private ServiceBusClient? _client;
     private ServiceBusAdministrationClient? _administration;

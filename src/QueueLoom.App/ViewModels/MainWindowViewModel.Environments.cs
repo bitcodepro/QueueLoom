@@ -636,6 +636,7 @@ public sealed partial class MainWindowViewModel
         }
         ApplyDeadLetterEnvironmentFilter();
 
+        _dlqScanQualities.Remove(profileId);
         var keyPrefix = $"{profileId:N}|";
         foreach (var key in _previousDlqCounts.Keys.Where(key => key.StartsWith(keyPrefix, StringComparison.Ordinal)).ToArray())
         {

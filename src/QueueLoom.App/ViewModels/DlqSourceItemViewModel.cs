@@ -45,12 +45,23 @@ public sealed class DlqSourceItemViewModel(
 
     public long Count => Snapshot.Count ?? 0;
 
-    public string Delta => Snapshot.Change switch
+    public bool CountIsLowerBound => Snapshot.CountIsLowerBound;
+
+    /// <summary>Messages are there, or may be: a sampled queue that showed nothing can still be opened to look.</summary>
+    public bool CanBrowse => Count > 0 || Snapshot.CountIsLowerBound;
+
+    public DeadLetterCountQuality CountQuality => Snapshot.CountQuality;
+
+    public string CountText => DeadLetterCountText.Format(Snapshot.Count ?? 0, Snapshot.CountQuality);
+
+    public string? CountNote => DeadLetterCountText.Note(Snapshot.CountQuality);
+
+    public string Delta => Snapshot.CountIsLowerBound || Snapshot.PreviousIsLowerBound ? "unknown" : Snapshot.Change switch
     {
-        > 0 => $"+{Snapshot.Change}",
-        < 0 => Snapshot.Change.ToString()!,
-        0 => "±0",
-        _ => "new"
+        0 => Snapshot.ChangeQuality == DeadLetterCountQuality.Estimated ? "\u2248\u00b10" : "\u00b10",
+        { } change => DeadLetterCountText.FormatChange(change, Snapshot.ChangeQuality),
+        // A previous count that cannot be compared (another reader or dead-letter queue, an unknown count) is not "new".
+        _ => Snapshot.PreviousCount is null ? "new" : "unknown"
     };
 
     public string Error => Snapshot.Error ?? string.Empty;

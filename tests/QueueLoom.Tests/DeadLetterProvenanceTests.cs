@@ -1,0 +1,319 @@
+using System.Reflection;
+using QueueLoom.App.ViewModels;
+using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Monitoring;
+using QueueLoom.Core.Profiles;
+using QueueLoom.Core.ServiceBus;
+using QueueLoom.Infrastructure.Messaging;
+using QueueLoom.Infrastructure.Persistence;
+using QueueLoom.Mcp;
+using QueueLoom.Tests.Infrastructure;
+
+namespace QueueLoom.Tests;
+
+// When and through what a count was taken travels with it: from the workspace to the scan, history and MCP. Counts of
+// another target are never compared, an older point never overrules a newer one, and an approximate-zero confirmation
+// needs two fresh, consecutive zeros.
+public sealed partial class ViewModelStateTests
+{
+    // Reader A says ≈10, then reader B says ≈500: no change of ≈+490 anywhere.
+    [Fact]
+    public async Task ACountThroughAnotherReaderIsComparedWithNothing()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var workspace = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 10, Reader = "reader-a" };
+        await workspace.ConnectAsync(ReportedProfile());
+        var before = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        workspace.Count = 500;
+        workspace.Reader = "reader-b";
+        var after = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+
+        var entity = Assert.Single(after.Entities);
+        Assert.Equal("reader-b", entity.MeasuredFrom);
+        Assert.Equal("reader-a", entity.PreviousMeasuredFrom);
+        Assert.Null(entity.Change);
+        Assert.Equal("unknown", new DlqSourceItemViewModel(Guid.NewGuid(), "Test", "TEST", default, entity).Delta);
+        Assert.Equal("reader-b", McpMapping.ToInfo(entity).MeasuredFrom);
+
+        using var store = new TemporaryDirectory();
+        var history = new JsonLinesDeadLetterHistoryStore(Path.Combine(store.Path, "history.jsonl"));
+        await history.AppendAsync(DeadLetterHistorySample.FromSnapshot(before, "Test"));
+        await history.AppendAsync(DeadLetterHistorySample.FromSnapshot(after, "Test") with { At = after.CapturedAt.AddMinutes(2) });
+        var summary = DeadLetterHistory.Summarize(await history.ReadAsync(before.ProfileId, before.CapturedAt.AddMinutes(-1)),
+            before.CapturedAt.AddMinutes(-1), after.CapturedAt.AddMinutes(5))!;
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+        Assert.Null(Assert.Single(summary.Sources).Change);
+    }
+
+    // ≈100 measured at 10:00, then ≈0 measured at 09:55 (read later): the newer observation stands.
+    [Fact]
+    public async Task AnOlderPointNeverOverrulesANewerObservation()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        await using var workspace = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        await workspace.ConnectAsync(ReportedProfile());
+        await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        workspace.Count = 0;
+        workspace.At = tenOClock.AddMinutes(-5);
+
+        var entity = Assert.Single((await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All)).Entities);
+
+        Assert.Equal(100, entity.Count);
+        Assert.Equal(tenOClock, entity.MeasuredAt);
+        Assert.Equal(DeadLetterCountQuality.Estimated, entity.CountQuality);
+    }
+
+    // A global sweep reconnects each environment: what was seen before the reconnect still stands against a delayed point.
+    [Fact]
+    public async Task AReconnectDoesNotLetAnOlderPointOverruleANewerOne()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        await using var workspace = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        var profile = ReportedProfile();
+        await workspace.ConnectAsync(profile);
+        await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await workspace.ConnectAsync(profile);
+        workspace.Count = 0;
+        workspace.At = tenOClock.AddMinutes(-5);
+
+        var snapshot = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name));
+
+        var entity = Assert.Single(snapshot.Entities);
+        Assert.Equal(100, entity.Count);
+        Assert.Equal(tenOClock, entity.MeasuredAt);
+        Assert.Equal(100, Assert.Single(await store.ReadAsync(profile.Id, DateTimeOffset.MinValue)).Total);
+    }
+
+    // An edited environment keeps its ID but is another place: what the old configuration showed does not stand in.
+    [Fact]
+    public async Task AnEditedEnvironmentIsNotComparedWithItsEarlierConfiguration()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        await using var workspace = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        var profile = ReportedProfile();
+        await workspace.ConnectAsync(profile);
+        await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await workspace.ConnectAsync(profile with { Kafka = new("other-broker.invalid:9092") });
+        workspace.Count = 0;
+        workspace.At = tenOClock.AddMinutes(-5);
+
+        var entity = Assert.Single((await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All)).Entities);
+
+        Assert.Equal(0, entity.Count);
+        Assert.Null(entity.PreviousCount);
+    }
+
+    // Two processes (or a restart) each with their own cache: the delayed point the second records is left out of the
+    // history summary, not shown as a drop of 100.
+    [Fact]
+    public async Task ADelayedPointFromAnotherWriterIsLeftOutOfHistory()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var profile = ReportedProfile();
+        await using var first = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        await using var second = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 0, Reader = "reader", At = tenOClock.AddMinutes(-5) };
+        await first.ConnectAsync(profile);
+        await second.ConnectAsync(profile);
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        var newer = await first.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(newer, profile.Name));
+        var delayed = await second.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(delayed, profile.Name) with { At = newer.CapturedAt.AddMinutes(1) });
+
+        var summary = DeadLetterHistory.Summarize(await store.ReadAsync(profile.Id, DateTimeOffset.MinValue),
+            tenOClock.AddMinutes(-10), newer.CapturedAt.AddMinutes(5))!;
+
+        Assert.Equal(100, summary.Now);
+        Assert.Equal(0, summary.Change);
+        Assert.DoesNotContain(summary.Points, point => point.Count == 0);
+    }
+
+    // The total is as strict as a source: a count through a reader and one without a reader do not compare, either way.
+    [Theory]
+    [InlineData("reader-a", null)]
+    [InlineData(null, "reader-a")]
+    public void ATotalAcrossAKnownAndAMissingReaderHasNoChange(string? before, string? after)
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(long count, string? reader, DateTimeOffset when) => DeadLetterHistorySample.FromSnapshot(
+            new DeadLetterSnapshot(profileId, when, [new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), count) { MeasuredFrom = reader }]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([Sample(10, before, at), Sample(500, after, at.AddMinutes(1))], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+        Assert.Null(Assert.Single(summary.Sources).Change);
+    }
+
+    private static DeadLetterHistorySample Observed(Guid profileId, DateTimeOffset capturedAt, params DeadLetterEntitySnapshot[] entities) =>
+        DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, capturedAt, entities), "Test");
+
+    private static DeadLetterEntitySnapshot EstimatedThrough(string queue, long count, string reader, DateTimeOffset? measuredAt = null) =>
+        new(ServiceBusEntityReference.Queue(queue), count) { CountQuality = DeadLetterCountQuality.Estimated, MeasuredFrom = reader, MeasuredAt = measuredAt };
+
+    // A narrower range must not bring back a delayed point the wider one rejected: the newer observation it lost to
+    // is outside the range, but the delayed point was measured before the range began.
+    [Theory]
+    [InlineData(24)]
+    [InlineData(6)]
+    public async Task ANarrowerRangeDoesNotResurrectASupersededPoint(int hours)
+    {
+        using var directory = new TemporaryDirectory();
+        var profileId = Guid.NewGuid();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        await store.AppendAsync(Observed(profileId, tenOClock, EstimatedThrough("orders", 100, "reader", tenOClock)));
+        await store.AppendAsync(Observed(profileId, tenOClock.AddMinutes(5), EstimatedThrough("orders", 0, "reader", tenOClock.AddMinutes(-5))));
+        var to = tenOClock.AddHours(6).AddMinutes(2);
+        var from = to.AddHours(-hours);
+
+        var summary = DeadLetterHistory.Summarize(await store.ReadAsync(profileId, from), from, to);
+
+        if (hours == 24)
+        {
+            Assert.Equal(100, summary!.Now);
+        }
+        else
+        {
+            Assert.Null(summary);
+        }
+    }
+
+    // An estimated zero is still recorded through its reader: a change of reader to or from zero has no total change.
+    [Theory]
+    [InlineData(100, 0)]
+    [InlineData(0, 100)]
+    public void AReaderChangeToOrFromZeroHasNoTotalChange(long before, long after)
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+
+        var summary = DeadLetterHistory.Summarize(
+            [Observed(profileId, at, EstimatedThrough("orders", before, "reader-a")), Observed(profileId, at.AddMinutes(1), EstimatedThrough("orders", after, "reader-b"))],
+            at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+    }
+
+    // A source below the 25 largest kept is still compared by its reader.
+    [Fact]
+    public void AReaderChangeBelowTheKeptLargestHasNoTotalChange()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(DateTimeOffset when, long small, string reader) => Observed(profileId, when,
+            [.. Enumerable.Range(1, DeadLetterHistorySample.MaximumSources).Select(index => new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue($"large-{index:00}"), 1000)),
+             EstimatedThrough("small", small, reader)]);
+
+        var summary = DeadLetterHistory.Summarize([Sample(at, 10, "reader-a"), Sample(at.AddMinutes(1), 20, "reader-b")], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+    }
+
+    // A count rebuilt after a delete keeps whose count it was: a later read through another reader is no change of it.
+    [Fact]
+    public void ACountWithoutItsReaderIsNotComparedWithOneThroughAReader()
+    {
+        var rebuilt = new DeadLetterMeasurement(5, DeadLetterCountQuality.Estimated);
+        var later = new DeadLetterMeasurement(500, DeadLetterCountQuality.Estimated) { MeasuredFrom = "reader-b" };
+
+        Assert.Null(DeadLetterMeasurement.Difference(rebuilt, later));
+        Assert.NotNull(DeadLetterMeasurement.Difference(rebuilt, new DeadLetterMeasurement(7, DeadLetterCountQuality.Exact)));
+    }
+
+    // ≈40, ≈0, then an unreadable source (or a sampled zero), then ≈0: not two consecutive zeros, so still open. The
+    // same zero point read twice is not a second zero either.
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("thrown")]
+    [InlineData("sampled")]
+    [InlineData("same point")]
+    public async Task AnInterruptedOrRepeatedZeroDoesNotResolve(string interruption)
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var at = DateTimeOffset.UtcNow;
+        DeadLetterSnapshot Of(DeadLetterEntitySnapshot entity) => Snapshot(dev.Id, entity);
+        DeadLetterEntitySnapshot Estimated(long count, DateTimeOffset when) =>
+            new(Orders, count) { CountQuality = DeadLetterCountQuality.Estimated, MeasuredAt = when, MeasuredFrom = "reader" };
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Of(Estimated(40, at)) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        async Task Check() => await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        await Check();
+
+        workspace.Snapshots[dev.Id] = Of(Estimated(0, at.AddMinutes(1)));
+        await Check();
+        workspace.Snapshots[dev.Id] = interruption switch
+        {
+            "failed" => Of(new DeadLetterEntitySnapshot(Orders, null, null, "timed out")),
+            "thrown" => workspace.Snapshots[dev.Id],
+            "sampled" => Of(new DeadLetterEntitySnapshot(Orders, 0) { CountIsLowerBound = true, MeasuredAt = at.AddMinutes(2), MeasuredFrom = "reader" }),
+            _ => Of(Estimated(0, at.AddMinutes(1)))
+        };
+        if (interruption == "thrown")
+        {
+            workspace.SnapshotFailure = new TimeoutException("The whole environment timed out.");
+        }
+        await Check();
+        if (interruption != "same point")
+        {
+            workspace.Snapshots[dev.Id] = Of(Estimated(0, at.AddMinutes(3)));
+            await Check();
+        }
+
+        Assert.Single(vm.MonitorNotifications);
+    }
+
+    // A sweep in which an environment could not be scanned (or after an earlier exact one) never shows an exact 0.
+    [Fact]
+    public async Task AFailedEnvironmentInAGlobalScanIsUnknownNotZero()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, new DeadLetterEntitySnapshot(Orders, 0)) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ScanAllEnvironmentsCommand.ExecuteAsync();
+        Assert.Equal("0", vm.GlobalDlqDisplay);
+
+        workspace.FailNextConnection = true;
+        await vm.ScanAllEnvironmentsCommand.ExecuteAsync();
+
+        Assert.Equal("unknown", vm.GlobalDlqDisplay);
+    }
+
+    private static ServiceBusProfile ReportedProfile() =>
+        ServiceBusProfile.CreateNew("Reported", EnvironmentKind.Test, new(AuthenticationKind.KafkaNone)) with { Provider = MessagingProvider.Kafka, Kafka = new("broker.invalid:9092") };
+
+    // Reports an estimated dead-letter count through a reader at a point in time, as Pub/Sub's Cloud Monitoring does.
+    private sealed class ReportedDeadLetterWorkspace(QueueLoomPaths paths) : LeasedMessagingWorkspace(new DeadLetterJsonBackupStore(paths), null)
+    {
+        public long Count { get; set; }
+        public string? Reader { get; set; }
+        public DateTimeOffset? At { get; set; }
+        public override MessagingProvider Provider => MessagingProvider.Kafka;
+        protected override Task OpenAsync(ServiceBusProfile profile, CancellationToken token) => Task.CompletedTask;
+        protected override ValueTask CloseAsync() => ValueTask.CompletedTask;
+        protected override Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken token) => Task.FromResult(new ServiceBusTopology(DateTimeOffset.UtcNow,
+        [
+            new ServiceBusQueue("orders", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: Count))
+                { CountsAreEstimates = true, DeadLetterCountSource = Reader, DeadLetterCountMeasuredAt = At })
+        ]));
+        protected override ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue) =>
+            throw new InvalidOperationException("A reported count is never sampled.");
+        protected override Task SendCoreAsync(ServiceBusTopology topology, ServiceBusEntityReference destination, MessageDraft message, CancellationToken token) =>
+            throw new InvalidOperationException("This read-only fixture cannot send.");
+    }
+}

@@ -380,17 +380,26 @@ public sealed partial class MainWindowViewModel
                      .ToArray())
         {
             var remaining = Math.Max(0, row.Count - deletedPerQueue[(row.Entity, row.Snapshot.SubQueue)]);
-            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = remaining;
+            // What a sample showed, minus what was deleted, is still only a lower bound.
+            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(remaining, row.Snapshot.CountQuality)
+                { MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom };
             var index = DeadLetterSources.IndexOf(row);
             DeadLetterSources.RemoveAt(index);
-            if (remaining > 0)
+            if (remaining > 0 || row.CountIsLowerBound)
             {
                 DeadLetterSources.Insert(index, new DlqSourceItemViewModel(
                     row.ProfileId,
                     row.ProfileName,
                     row.EnvironmentLabel,
                     row.EnvironmentTone,
-                    new DeadLetterEntitySnapshot(row.Entity, remaining, row.Count, null, row.Snapshot.SubQueue),
+                    new DeadLetterEntitySnapshot(row.Entity, remaining, row.CountIsLowerBound ? null : row.Count, null, row.Snapshot.SubQueue)
+                    {
+                        CountQuality = row.Snapshot.CountQuality,
+                        PreviousQuality = row.Snapshot.CountQuality,
+                        MeasuredAt = row.Snapshot.MeasuredAt,
+                        MeasuredFrom = row.Snapshot.MeasuredFrom,
+                        PreviousMeasuredFrom = row.Snapshot.MeasuredFrom
+                    },
                     row.QueueKindLabel.ToLowerInvariant()));
             }
         }
