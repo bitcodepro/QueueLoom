@@ -128,7 +128,7 @@ public sealed partial class ViewModelStateTests
         await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(delayed, profile.Name) with { At = newer.CapturedAt.AddMinutes(1) });
 
         var summary = DeadLetterHistory.Summarize(await store.ReadAsync(profile.Id, DateTimeOffset.MinValue),
-            newer.CapturedAt.AddMinutes(-1), newer.CapturedAt.AddMinutes(5))!;
+            tenOClock.AddMinutes(-10), newer.CapturedAt.AddMinutes(5))!;
 
         Assert.Equal(100, summary.Now);
         Assert.Equal(0, summary.Change);
@@ -151,6 +151,73 @@ public sealed partial class ViewModelStateTests
         Assert.True(summary.TargetsChanged);
         Assert.Null(summary.Change);
         Assert.Null(Assert.Single(summary.Sources).Change);
+    }
+
+    private static DeadLetterHistorySample Observed(Guid profileId, DateTimeOffset capturedAt, params DeadLetterEntitySnapshot[] entities) =>
+        DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, capturedAt, entities), "Test");
+
+    private static DeadLetterEntitySnapshot EstimatedThrough(string queue, long count, string reader, DateTimeOffset? measuredAt = null) =>
+        new(ServiceBusEntityReference.Queue(queue), count) { CountQuality = DeadLetterCountQuality.Estimated, MeasuredFrom = reader, MeasuredAt = measuredAt };
+
+    // A narrower range must not bring back a delayed point the wider one rejected: the newer observation it lost to
+    // is outside the range, but the delayed point was measured before the range began.
+    [Theory]
+    [InlineData(24)]
+    [InlineData(6)]
+    public async Task ANarrowerRangeDoesNotResurrectASupersededPoint(int hours)
+    {
+        using var directory = new TemporaryDirectory();
+        var profileId = Guid.NewGuid();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        await store.AppendAsync(Observed(profileId, tenOClock, EstimatedThrough("orders", 100, "reader", tenOClock)));
+        await store.AppendAsync(Observed(profileId, tenOClock.AddMinutes(5), EstimatedThrough("orders", 0, "reader", tenOClock.AddMinutes(-5))));
+        var to = tenOClock.AddHours(6).AddMinutes(2);
+        var from = to.AddHours(-hours);
+
+        var summary = DeadLetterHistory.Summarize(await store.ReadAsync(profileId, from), from, to);
+
+        if (hours == 24)
+        {
+            Assert.Equal(100, summary!.Now);
+        }
+        else
+        {
+            Assert.Null(summary);
+        }
+    }
+
+    // An estimated zero is still recorded through its reader: a change of reader to or from zero has no total change.
+    [Theory]
+    [InlineData(100, 0)]
+    [InlineData(0, 100)]
+    public void AReaderChangeToOrFromZeroHasNoTotalChange(long before, long after)
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+
+        var summary = DeadLetterHistory.Summarize(
+            [Observed(profileId, at, EstimatedThrough("orders", before, "reader-a")), Observed(profileId, at.AddMinutes(1), EstimatedThrough("orders", after, "reader-b"))],
+            at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+    }
+
+    // A source below the 25 largest kept is still compared by its reader.
+    [Fact]
+    public void AReaderChangeBelowTheKeptLargestHasNoTotalChange()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(DateTimeOffset when, long small, string reader) => Observed(profileId, when,
+            [.. Enumerable.Range(1, DeadLetterHistorySample.MaximumSources).Select(index => new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue($"large-{index:00}"), 1000)),
+             EstimatedThrough("small", small, reader)]);
+
+        var summary = DeadLetterHistory.Summarize([Sample(at, 10, "reader-a"), Sample(at.AddMinutes(1), 20, "reader-b")], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
     }
 
     // A count rebuilt after a delete keeps whose count it was: a later read through another reader is no change of it.

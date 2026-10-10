@@ -86,6 +86,11 @@ public sealed record DeadLetterHistorySample(
     public IEnumerable<string> QualifiedSources => SourceQualities?.Keys ?? [];
 
     /// <summary>What a source's count was taken from, when recorded.</summary>
+    /// <summary>Every source this sample recorded a count, quality or observation of.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> RecordedSources =>
+        Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Distinct(StringComparer.Ordinal);
+
     public string? TargetOf(string source) => SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom : null;
 
     /// <summary>Same counts, qualities, sources and observations: a later sample adds nothing.</summary>
@@ -200,7 +205,14 @@ public static class DeadLetterHistory
     {
         ArgumentNullException.ThrowIfNull(samples);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumPoints, 2);
-        var inRange = Fresh(samples.Where(sample => sample.At >= from && sample.At <= to).OrderBy(sample => sample.At)).ToArray();
+        // Freshness is judged over every sample given, before the range cuts away the context; and a count measured
+        // before the range began is not one of its observations: without the newer one that superseded it (left
+        // outside the range), it could otherwise come back as the latest.
+        var inRange = Fresh(samples.OrderBy(sample => sample.At))
+            .Where(sample => sample.At >= from && sample.At <= to)
+            .Where(sample => sample.SourceObservations is not { } observations ||
+                             observations.Values.All(observation => observation.MeasuredAt is not { } at || at >= from))
+            .ToArray();
         if (inRange.Length == 0)
         {
             return null;
@@ -240,8 +252,9 @@ public static class DeadLetterHistory
             .Take(maximumSources)
             .ToArray();
         // As strict as a source's own change: a known reader against a missing one is another target too.
-        var targetsChanged = first.Sources.Keys.Concat(first.LowerBoundSources)
-            .Intersect(last.Sources.Keys.Concat(last.LowerBoundSources), StringComparer.Ordinal)
+        // Every source either sample recorded anything of (a count, a quality or an observation), whether or not its
+        // count was zero or below the kept largest.
+        var targetsChanged = first.RecordedSources.Intersect(last.RecordedSources, StringComparer.Ordinal)
             .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal));
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
             { NowQuality = last.Quality, StartQuality = first.Quality, TargetsChanged = targetsChanged };
