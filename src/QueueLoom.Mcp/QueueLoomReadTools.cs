@@ -279,7 +279,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
 
     [McpServerTool(Name = "search_dead_letters", Title = "Search dead letters", ReadOnly = true, Idempotent = true)]
     [Description("Searches every dead-letter queue of the environment: text in the Message ID, Correlation ID, subject, " +
-                 "application properties or body (first 1 MiB), a /regular expression/, or a condition on a field of the JSON body. " +
+                 "application properties or the whole body, a /regular expression/, or a condition on a field of the JSON body. " +
                  "Results are capped like peek_messages (the *Truncated fields say when) and can be passed to delete_dead_letter_messages. " +
                  "Like peek_messages, it reads every scanned message, which counts as a delivery on SQS, on Pub/Sub with a dead-letter policy and on RabbitMQ quorum queues up to 4.2.")]
     public Task<MessageListInfo> SearchDeadLettersAsync(

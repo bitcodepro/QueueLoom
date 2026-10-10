@@ -31,21 +31,20 @@ public sealed class HistoryIncrementalTests
             }
         }
         var store = new JsonLinesDeadLetterHistoryStore(file, new Clock());
-        // One full read (parsing everything) is the yardstick, so a slow machine does not make the check flaky.
-        var fullRead = Stopwatch.StartNew();
         store.Read(Profile, Now.AddHours(-1));
-        fullRead.Stop();
+        var fullRead = store.LinesParsed;
 
-        var watch = Stopwatch.StartNew();
         for (var check = 1; check <= 20; check++)
         {
             store.Append(Sample(Now.AddMinutes(check), check));
         }
-        watch.Stop();
 
-        // Re-parsing on every append costs about 20 full reads; checking that the file is unchanged costs far less.
-        Assert.True(watch.Elapsed < fullRead.Elapsed * 6, $"20 appends took {watch.Elapsed}; one full read took {fullRead.Elapsed}.");
+        // Counted, not timed: re-parsing on every append would parse about 20 full files; the incremental read parses
+        // only the twenty appended lines (CI's wall clock made a 6x time ratio flaky).
+        Assert.Equal(30 * 24 * 60, fullRead);
         Assert.Equal(Enumerable.Range(1, 20).Select(value => (long)value), store.Read(Profile, Now).Select(sample => sample.Total));
+        // Each append's load parses the line the previous append wrote, and the read above the last one.
+        Assert.Equal(fullRead + 20, store.LinesParsed);
     }
 
     // Another process appends and later compacts the shared file: each read still shows exactly what the file holds.
