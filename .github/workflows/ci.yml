@@ -20,6 +20,10 @@ on:
         type: choice
         options: [auto, patch, minor, major]
         default: auto
+      image_cache_benchmark:
+        description: Measure pinned image pull/save/local-load and corrupt-cache fallback (no cache writes)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -94,17 +98,44 @@ jobs:
         with:
           dotnet-version: 10.0.4xx
 
+      - name: Test runtime image cache validation and fallback
+        run: |
+          python3 -B -m unittest discover -s .github/scripts/tests -v
+          python3 -O -B -m unittest discover -s .github/scripts/tests -v
+
+      # The archive contains only six public images and integrity metadata, never Docker credentials.
+      # Exact key only: an application commit cannot invalidate the image lock cache.
+      - name: Restore pinned runtime images
+        id: runtime-image-cache
+        continue-on-error: true
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
+        with:
+          path: ${{ runner.temp }}/queueloom-emulator-images-v1
+          key: queueloom-runtime-images-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/emulator-images.lock.json') }}
+
+      - name: Load and verify runtime images, or pull pinned images
+        id: prepare-runtime-images
+        env:
+          WRITE_IMAGE_ARCHIVE: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.runtime-image-cache.outputs.cache-hit != 'true' }}
+        run: >-
+          python3 -B .github/scripts/emulator_image_cache.py prepare
+          --cache-dir '${{ runner.temp }}/queueloom-emulator-images-v1'
+          --write-archive "$WRITE_IMAGE_ARCHIVE"
+          --report '${{ runner.temp }}/runtime-image-metrics.json'
+
       - name: Start LocalStack, the Pub/Sub emulator, RabbitMQ, Kafka and the Service Bus emulator
         run: |
-          docker run -d --name localstack -p 4566:4566 -e SERVICES=sqs,sns localstack/localstack:4.14
+          docker run --pull=never --platform=linux/amd64 -d --name localstack -p 4566:4566 -e SERVICES=sqs,sns "$QUEUELOOM_LOCALSTACK_IMAGE"
           # 5672 belongs to the Service Bus emulator, so RabbitMQ listens on 5673 (management on 15673).
-          docker run -d --name rabbitmq -p 5673:5672 -p 15673:15672 rabbitmq:4-management
-          docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.2
-          docker run -d --name pubsub -p 8085:8085 gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+          docker run --pull=never --platform=linux/amd64 -d --name rabbitmq -p 5673:5672 -p 15673:15672 "$QUEUELOOM_RABBITMQ_IMAGE"
+          docker run --pull=never --platform=linux/amd64 -d --name kafka -p 9092:9092 "$QUEUELOOM_KAFKA_IMAGE"
+          docker run --pull=never --platform=linux/amd64 -d --name pubsub -p 8085:8085 "$QUEUELOOM_PUBSUB_IMAGE" \
             gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=queueloom-test
           docker network create servicebus
-          docker run -d --name sqlserver --network servicebus -e ACCEPT_EULA=Y -e 'MSSQL_SA_PASSWORD=QueueLoom!Test123' \
-            mcr.microsoft.com/mssql/server:2022-latest
+          docker run --pull=never --platform=linux/amd64 -d --name sqlserver --network servicebus -e ACCEPT_EULA=Y -e 'MSSQL_SA_PASSWORD=QueueLoom!Test123' \
+            "$QUEUELOOM_SQLSERVER_IMAGE"
 
       - name: Restore and build (locked)
         run: |
@@ -114,10 +145,10 @@ jobs:
       - name: Wait for the emulators
         run: |
           # The Service Bus emulator needs SQL Server up; the build above gave it time to start.
-          docker run -d --name servicebus --network servicebus -p 5672:5672 -p 5300:5300 \
+          docker run --pull=never --platform=linux/amd64 -d --name servicebus --network servicebus -p 5672:5672 -p 5300:5300 \
             -e SQL_SERVER=sqlserver -e 'MSSQL_SA_PASSWORD=QueueLoom!Test123' -e ACCEPT_EULA=Y \
             -v "$PWD/tests/QueueLoom.IntegrationTests/ServiceBusEmulatorConfig.json:/ServiceBus_Emulator/ConfigFiles/Config.json" \
-            mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
+            "$QUEUELOOM_SERVICEBUS_IMAGE"
           for attempt in $(seq 1 90); do
             if curl -sf http://localhost:4566/_localstack/health | grep -q '"sqs": "\(available\|running\)"' &&
                curl -sf http://localhost:8085 >/dev/null &&
@@ -148,6 +179,50 @@ jobs:
         with:
           name: test-results-emulators
           path: TestResults
+
+      - name: Save verified runtime images (trusted main only)
+        if: >-
+          success() && github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          steps.runtime-image-cache.outputs.cache-hit != 'true' &&
+          steps.prepare-runtime-images.outputs.save-ready == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/queueloom-emulator-images-v1
+          key: queueloom-runtime-images-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/emulator-images.lock.json') }}
+
+      - name: Upload runtime image preparation measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-image-metrics
+          path: ${{ runner.temp }}/runtime-image-metrics.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Explicit, bounded test on a disposable runner. It never writes a GitHub cache.
+  # A local archive load is not a measurement of downloading a warm GitHub cache.
+  runtime-image-benchmark:
+    name: Runtime image cold/local-warm benchmark
+    if: github.event_name == 'workflow_dispatch' && inputs.image_cache_benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Measure all six images and invalid-cache fallback
+        run: >-
+          python3 -B .github/scripts/emulator_image_cache.py benchmark
+          --cache-dir '${{ runner.temp }}/queueloom-image-benchmark'
+          --report '${{ runner.temp }}/runtime-image-benchmark.json'
+      - name: Upload image benchmark measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-image-benchmark
+          path: ${{ runner.temp }}/runtime-image-benchmark.json
+          if-no-files-found: error
+          retention-days: 7
 
   packages:
     name: Packages
