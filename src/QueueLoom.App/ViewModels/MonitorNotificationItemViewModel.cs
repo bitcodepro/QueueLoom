@@ -61,6 +61,9 @@ public sealed class MonitorNotificationItemViewModel(
     /// <summary>The service time of the last approximate zero counted: the same point read twice confirms nothing.</summary>
     public DateTimeOffset? LastClearPointAt { get; set; }
 
+    /// <summary>What the queue held at the last check (see DeadLetterEntitySnapshot.ContentMarkers), when it was looked at.</summary>
+    public IReadOnlyCollection<string>? ContentMarkers { get; set; }
+
     public bool CountIsLowerBound => CountQuality == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound;
 
     public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);

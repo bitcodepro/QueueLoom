@@ -55,7 +55,11 @@ internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, 
                 {
                     HasTransferDeadLetterCount = false,
                     CountsUnavailable = deadLetter?.CountError is not null,
-                    DeadLetterCountError = deadLetter?.CountError
+                    DeadLetterCountError = deadLetter?.CountError,
+                    // A dead-letter topic only grows at its end: a moved end offset is a new message, whatever the count.
+                    DeadLetterContentMarkers = deadLetter is { CountError: null, Ends.Count: > 0 }
+                        ? deadLetter.Ends.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}@{pair.Value}").ToArray()
+                        : null
                 },
                 ServiceBusEntityStatus.Active)
             {

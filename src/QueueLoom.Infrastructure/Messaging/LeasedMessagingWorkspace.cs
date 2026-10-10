@@ -531,7 +531,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
                 MeasuredAt = current.MeasuredAt,
                 MeasuredFrom = current.MeasuredFrom,
-                PreviousMeasuredFrom = previous?.MeasuredFrom
+                PreviousMeasuredFrom = previous?.MeasuredFrom,
+                // Only with this read's own count: an older observation that stood keeps no markers of this read.
+                ContentMarkers = ReferenceEquals(source.Runtime.DeadLetterContentMarkers, null) || current.Count != count
+                    ? null : source.Runtime.DeadLetterContentMarkers
             });
         }
 

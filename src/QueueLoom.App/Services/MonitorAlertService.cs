@@ -12,6 +12,12 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
     /// <summary>How far the count can be trusted: written "1,000+" for a lower bound, "≈1,000" for an estimate.</summary>
     public QueueLoom.Core.Monitoring.DeadLetterCountQuality CountQuality { get; init; }
 
+    /// <summary>
+    /// Messages that arrived although the count did not grow (one dead letter replaced by another): reported as new
+    /// messages rather than as growth.
+    /// </summary>
+    public int NewMessages { get; init; }
+
     /// <summary>How far the previous count could be trusted.</summary>
     public QueueLoom.Core.Monitoring.DeadLetterCountQuality PreviousQuality { get; init; }
 
@@ -28,7 +34,9 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
 
     internal const int MaximumListed = 5;
 
-    private string SourceText => PreviousCount is { } previous
+    private string SourceText => NewMessages > 0
+        ? $"{Source}: {NewMessages:N0} new dead-lettered message{(NewMessages == 1 ? string.Empty : "s")}, {CountText} in total"
+        : PreviousCount is { } previous
         ? $"{Source}: {CountText} dead-lettered messages (was {QueueLoom.Core.Monitoring.DeadLetterCountText.Format(previous, PreviousQuality)})"
         : $"{Source}: {CountText} dead-lettered messages";
 

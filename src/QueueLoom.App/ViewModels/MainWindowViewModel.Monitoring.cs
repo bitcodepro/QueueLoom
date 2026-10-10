@@ -496,6 +496,7 @@ public sealed partial class MainWindowViewModel
                 existing.LastMeasuredAt = entity.MeasuredAt;
                 existing.LastDetectedAt = detectedAt;
                 existing.UnconfirmedClearChecks = 0;
+                existing.ContentMarkers = entity.ContentMarkers;
                 continue;
             }
             if (existing is not null)
@@ -558,6 +559,7 @@ public sealed partial class MainWindowViewModel
                     existing.CountQuality = DeadLetterCountQuality.LowerBound;
                     continue;
                 }
+                var grew = false;
                 if (previous != now)
                 {
                     existing.Count = count;
@@ -566,11 +568,27 @@ public sealed partial class MainWindowViewModel
                     // Alert on growth that can be said; a change from or to a sample is reported, not alerted as growth.
                     if (DeadLetterMeasurement.ProvenIncrease(previous, now) is { Count: > 0 })
                     {
+                        grew = true;
                         alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
                             { CountQuality = quality, PreviousQuality = previous.Quality });
                     }
                     changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previous} → {now}"));
                 }
+                // A message that replaced another at the same (or a lower) count: new contents, not growth.
+                if (!grew && existing.ContentMarkers is { } seen && entity.ContentMarkers is { } current &&
+                    current.Count(marker => !seen.Contains(marker)) is var arrived and > 0)
+                {
+                    existing.LastDetectedAt = detectedAt;
+                    alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
+                        { CountQuality = quality, PreviousQuality = previous.Quality, NewMessages = arrived });
+                    AddActivity(
+                        "Warning",
+                        "New dead letters",
+                        $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {arrived:N0} new, " +
+                        $"{DeadLetterCountText.Format(count, quality)} in total",
+                        entity.Entity);
+                }
+                existing.ContentMarkers = entity.ContentMarkers;
                 continue;
             }
 
@@ -580,7 +598,13 @@ public sealed partial class MainWindowViewModel
                 entity.Entity,
                 FormatSubQueue(entity.SubQueue),
                 count,
-                detectedAt) { CountQuality = quality, LastMeasuredAt = entity.MeasuredAt, MeasuredFrom = entity.MeasuredFrom };
+                detectedAt)
+            {
+                CountQuality = quality,
+                LastMeasuredAt = entity.MeasuredAt,
+                MeasuredFrom = entity.MeasuredFrom,
+                ContentMarkers = entity.ContentMarkers
+            };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
             alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null)
