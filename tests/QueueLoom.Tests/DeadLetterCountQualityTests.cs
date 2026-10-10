@@ -23,7 +23,8 @@ public sealed partial class ViewModelStateTests
     [InlineData(1_234, DeadLetterCountQuality.Estimated, "≈1,234")]
     [InlineData(1_000, DeadLetterCountQuality.LowerBound, "1,000+")]
     [InlineData(0, DeadLetterCountQuality.LowerBound, "none seen")]
-    [InlineData(1_234, DeadLetterCountQuality.Unqualified, "1,234")]
+    [InlineData(1_234, DeadLetterCountQuality.Unqualified, "~1,234")]
+    [InlineData(0, DeadLetterCountQuality.Unknown, "unknown")]
     public void EachQualityIsWrittenDifferently(long count, DeadLetterCountQuality quality, string expected) =>
         Assert.Equal(expected, DeadLetterCountText.Format(count, quality, CultureInfo.InvariantCulture));
 
@@ -35,12 +36,18 @@ public sealed partial class ViewModelStateTests
     public void AChangeKeepsItsQuality(long change, DeadLetterCountQuality quality, string expected) =>
         Assert.Equal(expected, DeadLetterCountText.FormatChange(change, quality, CultureInfo.InvariantCulture));
 
+    // Only what the parts justify: exact with a lower bound or an unknown part is a floor; an estimate with a lower bound
+    // (estimated 100, really 1, plus at least 10) bounds nothing; every part unknown is unknown.
     [Theory]
     [InlineData(new[] { DeadLetterCountQuality.Exact, DeadLetterCountQuality.Exact }, DeadLetterCountQuality.Exact)]
+    [InlineData(new[] { DeadLetterCountQuality.Exact, DeadLetterCountQuality.LowerBound }, DeadLetterCountQuality.LowerBound)]
+    [InlineData(new[] { DeadLetterCountQuality.Exact, DeadLetterCountQuality.Unknown }, DeadLetterCountQuality.LowerBound)]
+    [InlineData(new[] { DeadLetterCountQuality.Exact, DeadLetterCountQuality.Estimated }, DeadLetterCountQuality.Estimated)]
+    [InlineData(new[] { DeadLetterCountQuality.Estimated, DeadLetterCountQuality.LowerBound }, DeadLetterCountQuality.Unqualified)]
+    [InlineData(new[] { DeadLetterCountQuality.Estimated, DeadLetterCountQuality.Unknown }, DeadLetterCountQuality.Unqualified)]
     [InlineData(new[] { DeadLetterCountQuality.Exact, DeadLetterCountQuality.Unqualified }, DeadLetterCountQuality.Unqualified)]
-    [InlineData(new[] { DeadLetterCountQuality.Unqualified, DeadLetterCountQuality.Estimated }, DeadLetterCountQuality.Estimated)]
-    [InlineData(new[] { DeadLetterCountQuality.Estimated, DeadLetterCountQuality.LowerBound }, DeadLetterCountQuality.LowerBound)]
-    public void ATotalIsNoMoreCertainThanItsLeastCertainPart(DeadLetterCountQuality[] parts, DeadLetterCountQuality expected) =>
+    [InlineData(new[] { DeadLetterCountQuality.Unknown, DeadLetterCountQuality.Unknown }, DeadLetterCountQuality.Unknown)]
+    public void ATotalOnlyClaimsWhatItsPartsJustify(DeadLetterCountQuality[] parts, DeadLetterCountQuality expected) =>
         Assert.Equal(expected, DeadLetterCountQualities.Combine(parts));
 
     // SQS reports ApproximateNumberOf…: the topology marks it, and a scan shows "≈" with an approximate change.
@@ -97,7 +104,7 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(DeadLetterCountQuality.Estimated, Assert.Single(vm.MonitorNotifications).CountQuality);
     }
 
-    // History written before count quality was kept reads as unqualified: shown as before, never claimed exact.
+    // History written before count quality was kept reads as unqualified: shown as "~N", never claimed exact.
     [Fact]
     public void AnOldHistorySampleIsUnqualifiedNotExact()
     {
@@ -113,7 +120,7 @@ public sealed partial class ViewModelStateTests
         var summary = DeadLetterHistory.Summarize([legacy, current], at, at.AddMinutes(10))!;
         Assert.Equal(DeadLetterCountQuality.Unqualified, summary.StartQuality);
         Assert.Equal(DeadLetterCountQuality.Exact, summary.NowQuality);
-        Assert.Equal(5, summary.Change);
+        Assert.Null(summary.Change); // An old count has no guarantee, so no change is claimed against it.
         Assert.Equal(DeadLetterCountQuality.Unqualified, summary.ChangeQuality);
         Assert.Equal(DeadLetterCountQuality.Unqualified, summary.Peak.Quality);
     }

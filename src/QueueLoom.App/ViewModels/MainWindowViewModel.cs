@@ -36,6 +36,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private readonly Dictionary<string, DeadLetterMeasurement> _previousDlqCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeadLetterMeasurement> _monitorBaseline = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeadLetterMeasurement> _lastDlqMeasurements = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _monitorIncomparable = new(StringComparer.Ordinal);
+    // Each scanned environment's total quality: a zero row is not listed, but its approximate or sampled zero still
+    // keeps the overall count from reading as exact.
+    private readonly Dictionary<Guid, DeadLetterCountQuality> _dlqScanQualities = [];
     private readonly Dictionary<string, MonitorNotificationItemViewModel> _monitorNotifications = new(StringComparer.Ordinal);
     private readonly List<EntityItemViewModel> _allEntities = [];
 

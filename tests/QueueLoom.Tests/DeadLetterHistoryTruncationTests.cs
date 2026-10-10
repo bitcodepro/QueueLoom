@@ -66,5 +66,5 @@ public sealed class DeadLetterHistoryTruncationTests
         DeadLetterHistory.Summarize([first, last], From, From.AddHours(1), maximumSources: 50)!.Sources.Single(source => source.Name == name);
 
     private static DeadLetterHistorySample Sample(DateTimeOffset at, Dictionary<string, long> sources) =>
-        new(at, Profile, "Test", sources.Values.Sum(), sources);
+        new(at, Profile, "Test", sources.Values.Sum(), sources, QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact);
 }

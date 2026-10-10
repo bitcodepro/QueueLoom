@@ -37,10 +37,9 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
     {
         var samples = WithTail(Load());
         var previous = samples.LastOrDefault(item => item.ProfileId == sample.ProfileId);
-        // Within a minute an unchanged total adds nothing, unless its quality changed (exact 100 then a sampled 100+).
-        if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.Total == sample.Total &&
-            previous.TotalIsLowerBound == sample.TotalIsLowerBound &&
-            (previous.LowerBoundSources ?? []).SequenceEqual(sample.LowerBoundSources ?? [], StringComparer.Ordinal))
+        // Within a minute an unchanged sample adds nothing; a quality change (exact 100, then an estimated or sampled 100)
+        // is a change and is kept.
+        if (previous is not null && sample.At - previous.At < DeadLetterHistory.MinimumSpacing && previous.RecordsTheSameAs(sample))
         {
             return;
         }

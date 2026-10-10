@@ -108,7 +108,7 @@ public sealed class DeadLetterHistoryTests : IDisposable
     public void ChartAxis_UsesRoundSteps(long peak, long expected) => Assert.Equal(expected, HistoryChart.AxisMaximum(peak));
 
     private static DeadLetterHistorySample Sample(DateTimeOffset at, long total, params (string Name, long Count)[] sources) =>
-        new(at, Profile, "Staging", total, sources.ToDictionary(source => source.Name, source => source.Count));
+        new(at, Profile, "Staging", total, sources.ToDictionary(source => source.Name, source => source.Count), QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact);
 
     private sealed class FixedTime(DateTimeOffset now) : TimeProvider
     {

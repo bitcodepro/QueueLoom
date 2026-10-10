@@ -197,6 +197,10 @@ public sealed partial class MainWindowViewModel
         ServiceBusEntityReference? replaceEntity = null)
     {
         _hasDlqScan = true;
+        if (replaceEntity is null)
+        {
+            _dlqScanQualities[profile.Id] = snapshot.TotalQuality;
+        }
         OnPropertyChanged(nameof(GlobalDlqDisplay));
         var selectedProfileId = SelectedDlqSource?.ProfileId;
         var selectedEntity = SelectedDlqSource?.Entity;

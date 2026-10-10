@@ -45,7 +45,7 @@ public sealed partial class ViewModelStateTests
         var file = Path.Combine(directory.Path, "dlq-history.jsonl");
         var store = new JsonLinesDeadLetterHistoryStore(file);
         await store.AppendAsync(new DeadLetterHistorySample(DateTimeOffset.UtcNow.AddMinutes(-5), profile.Id, profile.Name, 7,
-            new Dictionary<string, long> { ["orders"] = 7 }));
+            new Dictionary<string, long> { ["orders"] = 7 }, QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact));
         await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, history: store);
         await viewModel.InitializeAsync();
 
@@ -190,7 +190,8 @@ public sealed partial class ViewModelStateTests
     }
 
     private static DeadLetterHistorySample Sample(ServiceBusProfile profile, int minutesAgo, long total, string source = "orders") =>
-        new(DateTimeOffset.UtcNow.AddMinutes(-minutesAgo), profile.Id, profile.Name, total, new Dictionary<string, long> { [source] = total });
+        new(DateTimeOffset.UtcNow.AddMinutes(-minutesAgo), profile.Id, profile.Name, total, new Dictionary<string, long> { [source] = total },
+            QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact);
 
     /// <summary>Serializes reads and appends like the file store; each read waits for its gate and honours cancellation.</summary>
     private sealed class SerializedGatedHistoryStore : IDeadLetterHistoryStore

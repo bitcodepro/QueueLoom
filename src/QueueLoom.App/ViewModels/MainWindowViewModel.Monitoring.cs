@@ -104,6 +104,7 @@ public sealed partial class MainWindowViewModel
             _activeMonitorTargetLabel = null;
             _hasMonitorBaseline = false;
             _monitorBaseline.Clear();
+        _monitorIncomparable.Clear();
             IsMonitoring = false;
             MonitorStatus = "Monitor is stopped";
             MonitorAlert = string.Empty;
@@ -154,6 +155,7 @@ public sealed partial class MainWindowViewModel
         _activeMonitorIntervalSeconds = MonitorIntervalSeconds;
         _hasMonitorBaseline = false;
         _monitorBaseline.Clear();
+        _monitorIncomparable.Clear();
         var target = _activeMonitorScope == AllEnvironmentsMonitorScope
             ? AllEnvironmentsMonitorScope
             : _monitoredEntity is null
@@ -206,6 +208,7 @@ public sealed partial class MainWindowViewModel
         _activeMonitorTargetLabel = null;
         _hasMonitorBaseline = false;
         _monitorBaseline.Clear();
+        _monitorIncomparable.Clear();
         IsMonitoring = false;
         MonitorStatus = "Monitor stopped because an environment changed";
         MonitorAlert = string.Empty;
@@ -384,6 +387,8 @@ public sealed partial class MainWindowViewModel
 
         var increases = _hasMonitorBaseline
             ? _lastDlqMeasurements
+                // A source now counted through another reader is compared with nothing from before the change.
+                .Where(measurement => !_monitorIncomparable.Contains(measurement.Key))
                 // Only proven growth: a source new to the baseline counts from zero, and a sampled count is compared
                 // only with an exact earlier one (1,000 → 300 → 1,000 samples are not "increased by 700").
                 .Select(measurement => DeadLetterMeasurement.ProvenIncrease(
@@ -405,6 +410,7 @@ public sealed partial class MainWindowViewModel
             MonitorAlert = string.Empty;
         }
         _monitorBaseline.Clear();
+        _monitorIncomparable.Clear();
         foreach (var measurement in _lastDlqMeasurements)
         {
             _monitorBaseline[measurement.Key] = measurement.Value;
@@ -460,32 +466,69 @@ public sealed partial class MainWindowViewModel
             var count = entity.Count!.Value;
             var lowerBound = entity.CountIsLowerBound;
             var quality = entity.CountQuality;
+            _monitorNotifications.TryGetValue(key, out var existing);
+            if (existing is not null && entity.MeasuredAt is { } measuredAt && existing.LastMeasuredAt is { } lastMeasured &&
+                measuredAt < lastMeasured)
+            {
+                // Older than what this source already showed (a delayed Cloud Monitoring point after a fresh read): it
+                // neither lowers nor resolves anything, and the source keeps the count it already showed.
+                _lastDlqMeasurements[key] = new DeadLetterMeasurement(existing.Count, existing.CountQuality);
+                continue;
+            }
             _lastDlqMeasurements[key] = DeadLetterMeasurement.Of(entity);
+            if (existing is not null && existing.MeasuredFrom is { } before && entity.MeasuredFrom is { } from &&
+                !string.Equals(before, from, StringComparison.Ordinal))
+            {
+                // Counted through another reader now: a different measurement, compared with nothing before it.
+                _monitorIncomparable.Add(key);
+                existing.Count = count;
+                existing.CountQuality = quality;
+                existing.MeasuredFrom = from;
+                existing.LastMeasuredAt = entity.MeasuredAt;
+                existing.LastDetectedAt = detectedAt;
+                existing.UnconfirmedClearChecks = 0;
+                continue;
+            }
+            if (existing is not null)
+            {
+                existing.LastMeasuredAt = entity.MeasuredAt ?? existing.LastMeasuredAt;
+                existing.MeasuredFrom ??= entity.MeasuredFrom;
+            }
             if (count <= 0 && lowerBound)
             {
                 // A sample that showed nothing does not prove the queue is empty: an open notification stays open, and
                 // its count is no longer shown as exact.
-                if (_monitorNotifications.TryGetValue(key, out var unproven)) unproven.CountQuality = DeadLetterCountQuality.LowerBound;
+                if (existing is not null) existing.CountQuality = DeadLetterCountQuality.LowerBound;
                 continue;
             }
             if (count <= 0)
             {
-                if (_monitorNotifications.Remove(key, out var resolved))
+                if (existing is null)
                 {
-                    MonitorNotifications.Remove(resolved);
-                    AddActivity(
-                        "Success",
-                        "DLQ resolved",
-                        $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · cleared" +
-                        (quality == DeadLetterCountQuality.Estimated ? " (by an approximate count)" : string.Empty),
-                        entity.Entity);
+                    continue;
                 }
+                if (!DeadLetterCountQualities.ProvesEmpty(quality) && ++existing.UnconfirmedClearChecks < 2)
+                {
+                    // An approximate zero (SQS, Cloud Monitoring) is not proof on its own: it resolves the notification
+                    // only when the next check agrees.
+                    existing.CountQuality = quality;
+                    continue;
+                }
+                _monitorNotifications.Remove(key);
+                MonitorNotifications.Remove(existing);
+                AddActivity(
+                    "Success",
+                    "DLQ resolved",
+                    $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · cleared" +
+                    (DeadLetterCountQualities.ProvesEmpty(quality) ? string.Empty : " (approximate counts, two checks in a row)"),
+                    entity.Entity);
                 continue;
             }
 
-            if (_monitorNotifications.TryGetValue(key, out var existing))
+            if (existing is not null)
             {
-                var before = new DeadLetterMeasurement(existing.Count, existing.CountQuality);
+                existing.UnconfirmedClearChecks = 0;
+                var previous = new DeadLetterMeasurement(existing.Count, existing.CountQuality);
                 var now = new DeadLetterMeasurement(count, quality);
                 if (lowerBound && count < existing.Count)
                 {
@@ -493,18 +536,18 @@ public sealed partial class MainWindowViewModel
                     existing.CountQuality = DeadLetterCountQuality.LowerBound;
                     continue;
                 }
-                if (before != now)
+                if (previous != now)
                 {
                     existing.Count = count;
                     existing.CountQuality = quality;
                     existing.LastDetectedAt = detectedAt;
-                    // Alert on proven growth only; a change from or to a sample is reported, not alerted as growth.
-                    if (DeadLetterMeasurement.ProvenIncrease(before, now) is { Count: > 0 })
+                    // Alert on growth that can be said; a change from or to a sample is reported, not alerted as growth.
+                    if (DeadLetterMeasurement.ProvenIncrease(previous, now) is { Count: > 0 })
                     {
-                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, before.Count)
-                            { CountQuality = quality, PreviousQuality = before.Quality });
+                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
+                            { CountQuality = quality, PreviousQuality = previous.Quality });
                     }
-                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {before} → {now}"));
+                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previous} → {now}"));
                 }
                 continue;
             }
@@ -515,7 +558,7 @@ public sealed partial class MainWindowViewModel
                 entity.Entity,
                 FormatSubQueue(entity.SubQueue),
                 count,
-                detectedAt) { CountQuality = quality };
+                detectedAt) { CountQuality = quality, LastMeasuredAt = entity.MeasuredAt, MeasuredFrom = entity.MeasuredFrom };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
             alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null)

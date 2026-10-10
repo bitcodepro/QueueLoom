@@ -36,11 +36,11 @@ public sealed record DeadLetterHistorySample(
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(MaximumSources)
             .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
-        // Kept sources that are not exact, and every lower bound even when it showed nothing or fell below the top.
+        // Every source that is not exact, kept in Sources or not: an estimated or sampled zero is never read back as a
+        // proven empty queue.
         var qualities = snapshot.Entities
-            .Where(entity => entity.Count.HasValue && entity.CountQuality != DeadLetterCountQuality.Exact)
+            .Where(entity => entity.CountQuality != DeadLetterCountQuality.Exact)
             .GroupBy(SourceName, StringComparer.Ordinal)
-            .Where(group => sources.ContainsKey(group.Key) || group.Any(entity => entity.CountIsLowerBound))
             .OrderBy(group => group.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => DeadLetterCountQualities.Combine(group.Select(entity => entity.CountQuality)),
                 StringComparer.Ordinal);
@@ -67,6 +67,16 @@ public sealed record DeadLetterHistorySample(
     [JsonIgnore]
     public IEnumerable<string> LowerBoundSources =>
         SourceQualities?.Where(pair => pair.Value == DeadLetterCountQuality.LowerBound).Select(pair => pair.Key) ?? [];
+
+    /// <summary>Every source recorded as not exact, an estimated or sampled zero included.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> QualifiedSources => SourceQualities?.Keys ?? [];
+
+    /// <summary>Same counts, qualities and sources: a later sample adds nothing.</summary>
+    public bool RecordsTheSameAs(DeadLetterHistorySample other) =>
+        Total == other.Total && TotalQuality == other.TotalQuality &&
+        (SourceQualities ?? new Dictionary<string, DeadLetterCountQuality>()).OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .SequenceEqual((other.SourceQualities ?? new Dictionary<string, DeadLetterCountQuality>()).OrderBy(pair => pair.Key, StringComparer.Ordinal));
 
     public static string SourceName(DeadLetterEntitySnapshot entity) =>
         entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
@@ -95,10 +105,12 @@ public sealed record DeadLetterSourceTrend(string Name, long? Start, long? Now)
     public bool NowIsLowerBound => NowQuality == DeadLetterCountQuality.LowerBound;
 
     /// <summary>
-    /// Null when either end is unknown (a queue below a truncated sample's top is not known to be empty) or only a
-    /// lower bound (a sampled queue's real growth or shrinkage cannot be told from two samples).
+    /// Null when either end is unknown (a queue below a truncated sample's top is not known to be empty), a lower bound,
+    /// or unqualified: see <see cref="DeadLetterMeasurement.Difference"/>.
     /// </summary>
-    public long? Change => Start is { } start && Now is { } now && !StartIsLowerBound && !NowIsLowerBound ? now - start : null;
+    public long? Change => Start is { } start && Now is { } now
+        ? DeadLetterMeasurement.Difference(new DeadLetterMeasurement(start, StartQuality), new DeadLetterMeasurement(now, NowQuality))?.Count
+        : null;
 
     /// <summary>Exact between exact counts, estimated when either end is an estimate.</summary>
     public DeadLetterCountQuality ChangeQuality => DeadLetterCountQualities.Combine(StartQuality, NowQuality);
@@ -120,8 +132,9 @@ public sealed record DeadLetterHistorySummary(
 
     public bool StartIsLowerBound => StartQuality == DeadLetterCountQuality.LowerBound;
 
-    /// <summary>Null when either total is only a lower bound; see <see cref="ChangeQuality"/> for an estimate.</summary>
-    public long? Change => NowIsLowerBound || StartIsLowerBound ? null : Now - Start;
+    /// <summary>Null when either total is a lower bound or unqualified; see <see cref="ChangeQuality"/> for an estimate.</summary>
+    public long? Change =>
+        DeadLetterMeasurement.Difference(new DeadLetterMeasurement(Start, StartQuality), new DeadLetterMeasurement(Now, NowQuality))?.Count;
 
     public DeadLetterCountQuality ChangeQuality => DeadLetterCountQualities.Combine(StartQuality, NowQuality);
 }
@@ -178,8 +191,13 @@ public static class DeadLetterHistory
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Concat(last.LowerBoundSources).Concat(first.LowerBoundSources)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name))
-                { StartQuality = first.QualityOf(name), NowQuality = last.QualityOf(name) })
+            .Select(name => (Name: name, Start: CountIn(first, name), Now: CountIn(last, name)))
+            // A count a sample did not keep is unknown, never exact.
+            .Select(source => new DeadLetterSourceTrend(source.Name, source.Start, source.Now)
+            {
+                StartQuality = source.Start is null ? DeadLetterCountQuality.Unknown : first.QualityOf(source.Name),
+                NowQuality = source.Now is null ? DeadLetterCountQuality.Unknown : last.QualityOf(source.Name)
+            })
             .OrderByDescending(source => source.Now ?? -1)
             .ThenByDescending(source => Math.Abs(source.Change ?? 0))
             .ThenBy(source => source.Name, StringComparer.Ordinal)

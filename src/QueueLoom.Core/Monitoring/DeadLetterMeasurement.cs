@@ -13,18 +13,27 @@ public readonly record struct DeadLetterMeasurement(long Count, DeadLetterCountQ
     public static DeadLetterMeasurement Of(DeadLetterEntitySnapshot entity) => new(entity.Count ?? 0, entity.CountQuality);
 
     /// <summary>
-    /// How much the count grew, when that can be said:
-    /// <list type="bullet">
-    /// <item>after an earlier lower bound, never (it says nothing of how much was there): null;</item>
-    /// <item>a lower bound above an earlier count: at least the difference, itself a lower bound;</item>
-    /// <item>otherwise the difference, exact between exact counts and estimated when either count is an estimate.</item>
-    /// </list>
+    /// The signed change from <paramref name="before"/> to <paramref name="now"/>, when two counts allow one: exact
+    /// between exact counts, estimated between exact or estimated ones. Null otherwise: a lower bound, an unqualified or
+    /// an unknown count on either side says nothing of how much the queue really changed.
+    /// </summary>
+    public static DeadLetterMeasurement? Difference(DeadLetterMeasurement? before, DeadLetterMeasurement now) =>
+        before is { } earlier && Comparable(earlier.Quality) && Comparable(now.Quality)
+            ? new DeadLetterMeasurement(now.Count - earlier.Count, DeadLetterCountQualities.Combine(earlier.Quality, now.Quality))
+            : null;
+
+    /// <summary>
+    /// How much the count grew, when that can be said: a <see cref="Difference"/>, or, after an exact count, a lower
+    /// bound above it (at least the difference, itself a lower bound). After an estimate a lower bound proves nothing:
+    /// estimated 60 then at least 80 is no growth if the queue really held 200.
     /// </summary>
     public static DeadLetterMeasurement? ProvenIncrease(DeadLetterMeasurement? before, DeadLetterMeasurement now) =>
-        before is not { } earlier ? null
-        : earlier.IsLowerBound ? null
-        : now.IsLowerBound ? (now.Count > earlier.Count ? new DeadLetterMeasurement(now.Count - earlier.Count, DeadLetterCountQuality.LowerBound) : null)
-        : new DeadLetterMeasurement(now.Count - earlier.Count, DeadLetterCountQualities.Combine(earlier.Quality, now.Quality));
+        before is { Quality: DeadLetterCountQuality.Exact } exact && now.IsLowerBound
+            ? now.Count > exact.Count ? new DeadLetterMeasurement(now.Count - exact.Count, DeadLetterCountQuality.LowerBound) : null
+            : Difference(before, now);
+
+    private static bool Comparable(DeadLetterCountQuality quality) =>
+        quality is DeadLetterCountQuality.Exact or DeadLetterCountQuality.Estimated;
 
     public override string ToString() => DeadLetterCountText.Format(Count, Quality);
 }

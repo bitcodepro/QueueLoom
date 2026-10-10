@@ -6,6 +6,17 @@ namespace QueueLoom.Infrastructure.Azure;
 public sealed partial class AzureServiceBusWorkspace
 {
     private bool _isEmulator;
+
+    /// <summary>How many messages the emulator (which reports no counts) is peeked to count them.</summary>
+    internal const int EmulatorSampleLimit = 1_000;
+
+    /// <summary>
+    /// A peek that ran dry before the cap saw every message; one that reached the cap saw only that many, so the count is
+    /// then only a lower bound.
+    /// </summary>
+    internal static QueueLoom.Core.Monitoring.DeadLetterCountQuality EmulatorSampleQuality(long count) =>
+        count >= EmulatorSampleLimit ? QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound : QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact;
+
     private async Task<long> SampleEmulatorCountAsync(ServiceBusEntityReference source, SubQueue subQueue, CancellationToken token)
     {
         var options = new ServiceBusReceiverOptions { SubQueue = subQueue, PrefetchCount = 0 };
@@ -15,10 +26,10 @@ public sealed partial class AzureServiceBusWorkspace
             : client.CreateReceiver(source.TopicName!, source.Name, options);
         long count = 0;
         long? cursor = null;
-        while (count < 1000)
+        while (count < EmulatorSampleLimit)
         {
             // Peek transfers payloads; keep only one small page, never acquire message locks.
-            var page = await receiver.PeekMessagesAsync((int)Math.Min(25, 1000 - count), cursor, token).ConfigureAwait(false);
+            var page = await receiver.PeekMessagesAsync((int)Math.Min(25, EmulatorSampleLimit - count), cursor, token).ConfigureAwait(false);
             if (page.Count == 0) break;
             count += page.Count;
             var sequence = page[^1].SequenceNumber;

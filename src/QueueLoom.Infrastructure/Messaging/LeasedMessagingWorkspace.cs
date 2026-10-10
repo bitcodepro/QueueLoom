@@ -515,7 +515,13 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 : DeadLetterCountQuality.Exact;
             _previousDeadLetterCounts[key] = new DeadLetterMeasurement(count, quality);
             snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous?.Count)
-                { CountQuality = quality, PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact });
+            {
+                CountQuality = quality,
+                PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
+                // A sample is true now; a reported count as of its own time (a Cloud Monitoring point can be minutes old).
+                MeasuredAt = sampled ? TimeProvider.GetUtcNow() : source.Runtime.DeadLetterCountMeasuredAt,
+                MeasuredFrom = source.Runtime.DeadLetterCountSource
+            });
         }
 
         return new DeadLetterSnapshot(profile.Id, TimeProvider.GetUtcNow(), snapshots);

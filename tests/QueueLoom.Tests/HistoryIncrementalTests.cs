@@ -12,7 +12,7 @@ public sealed class HistoryIncrementalTests
     private static readonly Guid Profile = Guid.NewGuid();
 
     private static DeadLetterHistorySample Sample(DateTimeOffset at, long total) =>
-        new(at, Profile, "Test", total, Enumerable.Range(0, 25).ToDictionary(index => $"orders-{index:00} (DLQ)", _ => total));
+        new(at, Profile, "Test", total, Enumerable.Range(0, 25).ToDictionary(index => $"orders-{index:00} (DLQ)", _ => total), QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact);
 
     private sealed class Clock : TimeProvider { public override DateTimeOffset GetUtcNow() => Now; }
 

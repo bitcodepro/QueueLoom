@@ -49,6 +49,15 @@ public sealed class MonitorNotificationItemViewModel(
         }
     }
 
+    /// <summary>When the shown count was true, when the service says (a Cloud Monitoring point); older counts never overrule it.</summary>
+    public DateTimeOffset? LastMeasuredAt { get; set; }
+
+    /// <summary>What the count was taken from, when not the source itself (a Pub/Sub reader subscription).</summary>
+    public string? MeasuredFrom { get; set; }
+
+    /// <summary>Approximate zeros seen in a row: one alone does not resolve the notification.</summary>
+    public int UnconfirmedClearChecks { get; set; }
+
     public bool CountIsLowerBound => CountQuality == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound;
 
     public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);

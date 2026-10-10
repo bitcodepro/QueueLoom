@@ -145,8 +145,8 @@ public sealed partial class MainWindowViewModel
     public bool HasHistorySources => _historySummary?.Sources.Count > 0;
 
     /// <summary>Shown without source rows: an empty list only proves empty queues when the last count was exact.</summary>
-    public string HistoryNoSourcesText => _historySummary is { NowIsLowerBound: true }
-        ? "No dead letters were seen at the last check, but that count was sampled: the queues are not known to be empty."
+    public string HistoryNoSourcesText => _historySummary is { } summary && !DeadLetterCountQualities.ProvesEmpty(summary.NowQuality)
+        ? "No dead letters were counted at the last check, but that count was not exact: the queues are not known to be empty."
         : "The queues were empty at the last check.";
 
     private void InitializeHistory(IDeadLetterHistoryStore? history) => _history = history;

@@ -133,7 +133,8 @@ internal static class DemoData
             var orders = step is 60 or 61 ? 140 : 12 + step % 7;
             var crm = hour > 20 ? 5 : 2;
             yield return new DeadLetterHistorySample(at, profile.Id, profile.Name, invoices + orders + crm,
-                new Dictionary<string, long> { ["invoices-retry"] = invoices, ["orders"] = orders, ["customer-events/crm-sync"] = crm });
+                new Dictionary<string, long> { ["invoices-retry"] = invoices, ["orders"] = orders, ["customer-events/crm-sync"] = crm },
+                QueueLoom.Core.Monitoring.DeadLetterCountQuality.Exact);
         }
     }
 

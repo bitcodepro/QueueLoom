@@ -31,6 +31,12 @@ public sealed record ServiceBusEntityRuntime
     /// </summary>
     public bool CountsAreEstimates { get; init; }
 
+    /// <summary>When a reported dead-letter count was true, when it is older than the read (a Cloud Monitoring point).</summary>
+    public DateTimeOffset? DeadLetterCountMeasuredAt { get; init; }
+
+    /// <summary>What the dead-letter count was taken from, when not the entity itself (a Pub/Sub reader subscription).</summary>
+    public string? DeadLetterCountSource { get; init; }
+
     /// <summary>A failed reported DLQ count; this must not become zero or trigger receive-based sampling.</summary>
     public string? DeadLetterCountError { get; init; }
 

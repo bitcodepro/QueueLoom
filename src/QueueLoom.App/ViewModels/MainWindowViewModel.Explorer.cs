@@ -50,9 +50,13 @@ public sealed partial class MainWindowViewModel
                                    + (_topology?.AggregateMessageCounts.TransferDeadLetter ?? 0);
     public long GlobalDlqSourceCount => DeadLetterSources.Sum(source => source.Count);
 
-    /// <summary>The listed total is no more certain than its least certain row.</summary>
+    /// <summary>
+    /// The listed total is no more certain than its least certain row, or than any scanned environment (whose
+    /// approximate or sampled zeros are not listed as rows).
+    /// </summary>
     public QueueLoom.Core.Monitoring.DeadLetterCountQuality GlobalDlqCountQuality =>
-        QueueLoom.Core.Monitoring.DeadLetterCountQualities.Combine(DeadLetterSources.Select(source => source.CountQuality));
+        QueueLoom.Core.Monitoring.DeadLetterCountQualities.Combine(
+            DeadLetterSources.Select(source => source.CountQuality).Concat(_dlqScanQualities.Values));
 
     private async Task RefreshTopologyAsync(CancellationToken cancellationToken)
     {

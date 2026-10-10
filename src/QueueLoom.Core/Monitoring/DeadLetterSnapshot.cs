@@ -28,9 +28,11 @@ public sealed record DeadLetterSnapshot
     /// <summary>The total includes a count that is only a lower bound, so the real total may be larger.</summary>
     public bool TotalIsLowerBound => TotalQuality == DeadLetterCountQuality.LowerBound;
 
-    /// <summary>The weakest quality among the counted sources: the total is no better than its least certain part.</summary>
-    public DeadLetterCountQuality TotalQuality =>
-        DeadLetterCountQualities.Combine(Entities.Where(entity => entity.Count.HasValue).Select(entity => entity.CountQuality));
+    /// <summary>
+    /// What the total is worth, unreadable sources included: exact counts with a failed one make a lower bound (the known
+    /// part is a floor), and every source failing makes it unknown.
+    /// </summary>
+    public DeadLetterCountQuality TotalQuality => DeadLetterCountQualities.Combine(Entities.Select(entity => entity.CountQuality));
 
     public bool HasFailures => Entities.Any(entity => !entity.IsSuccessful);
 

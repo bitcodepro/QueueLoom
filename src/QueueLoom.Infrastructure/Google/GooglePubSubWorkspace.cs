@@ -158,7 +158,9 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         }
 
         var undelivered = await ReadUndeliveredCountsAsync(cancellationToken).ConfigureAwait(false);
-        var index = GooglePubSubTopology.Build(_projectId, topicIds, subscriptions, TimeProvider.GetUtcNow(), undelivered);
+        var index = GooglePubSubTopology.Build(_projectId, topicIds, subscriptions, TimeProvider.GetUtcNow(),
+            undelivered?.ToDictionary(pair => pair.Key, pair => pair.Value.Count, StringComparer.Ordinal),
+            undelivered?.ToDictionary(pair => pair.Key, pair => pair.Value.At, StringComparer.Ordinal));
         _subscriptions = index.Subscriptions;
         _deadLetterReaders = index.DeadLetterReaders;
         return index.Topology;
@@ -263,7 +265,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     /// The latest pubsub.googleapis.com/subscription/num_undelivered_messages per subscription ID, or null when
     /// Cloud Monitoring is not available (emulator, missing permission). The metric trails by a minute or two.
     /// </summary>
-    private async Task<IReadOnlyDictionary<string, long>?> ReadUndeliveredCountsAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyDictionary<string, (long Count, DateTimeOffset At)>?> ReadUndeliveredCountsAsync(CancellationToken cancellationToken)
     {
         if (_metrics is null)
         {
@@ -273,7 +275,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         try
         {
             var now = TimeProvider.GetUtcNow();
-            var counts = new Dictionary<string, long>(StringComparer.Ordinal);
+            var counts = new Dictionary<string, (long Count, DateTimeOffset At)>(StringComparer.Ordinal);
             var series = _metrics.ListTimeSeriesAsync(
                 new ProjectName(_projectId),
                 "metric.type = \"pubsub.googleapis.com/subscription/num_undelivered_messages\" AND resource.type = \"pubsub_subscription\"",
@@ -287,8 +289,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             {
                 if (item.Resource.Labels.TryGetValue("subscription_id", out var subscriptionId) && item.Points.Count > 0)
                 {
-                    // Points come newest first.
-                    counts[subscriptionId] = Math.Max(0, item.Points[0].Value.Int64Value);
+                    // Points come newest first. The point's own time is kept: it can be minutes older than this read.
+                    var point = item.Points[0];
+                    counts[subscriptionId] = (Math.Max(0, point.Value.Int64Value),
+                        point.Interval?.EndTime?.ToDateTimeOffset() ?? now);
                 }
             }
             return counts;
@@ -571,7 +575,8 @@ internal sealed record GooglePubSubTopology(
         IEnumerable<string> topicIds,
         IReadOnlyCollection<Subscription> subscriptions,
         DateTimeOffset fetchedAt,
-        IReadOnlyDictionary<string, long>? undelivered = null)
+        IReadOnlyDictionary<string, long>? undelivered = null,
+        IReadOnlyDictionary<string, DateTimeOffset>? measuredAt = null)
     {
         var byTopic = subscriptions
             .GroupBy(subscription => subscription.Topic, StringComparer.Ordinal)
@@ -667,23 +672,27 @@ internal sealed record GooglePubSubTopology(
         // dead-letter topic, which covers every subscription that shares the topic.
         ServiceBusEntityRuntime Runtime(Subscription subscription, Subscription? deadLetterReader)
         {
+            // Dead letters are counted through the reader subscription; a different reader is a different measurement.
+            var reader = deadLetterReader?.SubscriptionName.SubscriptionId;
             if (undelivered is null)
             {
                 return new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
                 {
                     CountsUnavailable = true,
-                    HasTransferDeadLetterCount = false
+                    HasTransferDeadLetterCount = false,
+                    DeadLetterCountSource = reader
                 };
             }
 
             // A dead-letter reader that Cloud Monitoring reported no series for has no count yet (a new subscription, or
             // a gap in the metric): it is counted by reading, like a project without Monitoring, never taken as zero.
-            if (deadLetterReader is not null && !undelivered.ContainsKey(deadLetterReader.SubscriptionName.SubscriptionId))
+            if (reader is not null && !undelivered.ContainsKey(reader))
             {
                 return new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
                 {
                     CountsUnavailable = true,
-                    HasTransferDeadLetterCount = false
+                    HasTransferDeadLetterCount = false,
+                    DeadLetterCountSource = reader
                 };
             }
 
@@ -692,8 +701,10 @@ internal sealed record GooglePubSubTopology(
                 deadLetter: deadLetterReader is null ? 0 : undelivered[deadLetterReader.SubscriptionName.SubscriptionId]))
             {
                 HasTransferDeadLetterCount = false,
-                // Cloud Monitoring's num_undelivered_messages is sampled and delayed: an estimate.
-                CountsAreEstimates = true
+                // Cloud Monitoring's num_undelivered_messages is sampled and delayed: an estimate, as of its point's time.
+                CountsAreEstimates = true,
+                DeadLetterCountSource = reader,
+                DeadLetterCountMeasuredAt = reader is not null && measuredAt?.TryGetValue(reader, out var at) == true ? at : null
             };
         }
     }

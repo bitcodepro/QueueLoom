@@ -9,8 +9,9 @@ public static class DeadLetterCountText
     public const int SampleLimit = 1_000;
 
     /// <summary>
-    /// "1,234" for an exact (or old, unqualified) count, "≈1,234" for an estimate. A lower bound is "1,000+" (more may be
-    /// there) and "none seen" for zero: an empty sample does not prove the queue is empty.
+    /// "1,234" for an exact count, "≈1,234" for an estimate, "~1,234" with no guarantee (old history, or a mix of an
+    /// estimate and a lower bound), "unknown" without a count. A lower bound is "1,000+" (more may be there) and
+    /// "none seen" for zero: an empty sample does not prove the queue is empty.
     /// </summary>
     public static string Format(long? count, DeadLetterCountQuality quality, IFormatProvider? culture = null)
     {
@@ -18,9 +19,11 @@ public static class DeadLetterCountText
         return count switch
         {
             null => "—",
+            _ when quality == DeadLetterCountQuality.Unknown => "unknown",
             0 when quality == DeadLetterCountQuality.LowerBound => "none seen",
             { } value when quality == DeadLetterCountQuality.LowerBound => value.ToString("N0", culture) + "+",
             { } value when quality == DeadLetterCountQuality.Estimated => "≈" + value.ToString("N0", culture),
+            { } value when quality == DeadLetterCountQuality.Unqualified => "~" + value.ToString("N0", culture),
             { } value => value.ToString("N0", culture)
         };
     }
@@ -28,7 +31,7 @@ public static class DeadLetterCountText
     public static string Format(long? count, bool isLowerBound, IFormatProvider? culture = null) =>
         Format(count, isLowerBound ? DeadLetterCountQuality.LowerBound : DeadLetterCountQuality.Exact, culture);
 
-    /// <summary>A signed change: "+5", "−3", "≈+5", "20+" (at least).</summary>
+    /// <summary>A signed change: "+5", "−3", "≈+5", "~+5", "+20+" (at least 20).</summary>
     public static string FormatChange(long change, DeadLetterCountQuality quality, IFormatProvider? culture = null)
     {
         culture ??= CultureInfo.CurrentCulture;
@@ -38,6 +41,7 @@ public static class DeadLetterCountText
         {
             DeadLetterCountQuality.LowerBound => signed + "+",
             DeadLetterCountQuality.Estimated => "≈" + signed,
+            DeadLetterCountQuality.Unqualified => "~" + signed,
             _ => signed
         };
     }
@@ -47,7 +51,9 @@ public static class DeadLetterCountText
     {
         DeadLetterCountQuality.LowerBound => LowerBoundNote,
         DeadLetterCountQuality.Estimated => EstimatedNote,
-        DeadLetterCountQuality.Unqualified => "Recorded before QueueLoom tracked whether counts are exact.",
+        DeadLetterCountQuality.Unqualified =>
+            "No guarantee either way: recorded before QueueLoom tracked count quality, or a mix of an approximate and a sampled count.",
+        DeadLetterCountQuality.Unknown => "The count could not be read.",
         _ => null
     };
 
