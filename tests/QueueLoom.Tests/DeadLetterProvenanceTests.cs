@@ -303,13 +303,14 @@ public sealed partial class ViewModelStateTests
         public long Count { get; set; }
         public string? Reader { get; set; }
         public DateTimeOffset? At { get; set; }
+        public DeadLetterOffsets? Offsets { get; set; }
         public override MessagingProvider Provider => MessagingProvider.Kafka;
         protected override Task OpenAsync(ServiceBusProfile profile, CancellationToken token) => Task.CompletedTask;
         protected override ValueTask CloseAsync() => ValueTask.CompletedTask;
         protected override Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken token) => Task.FromResult(new ServiceBusTopology(DateTimeOffset.UtcNow,
         [
             new ServiceBusQueue("orders", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: Count))
-                { CountsAreEstimates = true, DeadLetterCountSource = Reader, DeadLetterCountMeasuredAt = At })
+                { CountsAreEstimates = true, DeadLetterCountSource = Reader, DeadLetterCountMeasuredAt = At, DeadLetterOffsets = Offsets })
         ]));
         protected override ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue) =>
             throw new InvalidOperationException("A reported count is never sampled.");

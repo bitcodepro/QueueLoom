@@ -522,10 +522,12 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 MeasuredAt = sampled ? TimeProvider.GetUtcNow() : source.Runtime.DeadLetterCountMeasuredAt,
                 MeasuredFrom = source.Runtime.DeadLetterCountSource
             };
+            var stale = false;
             if (previous is { } newer && DeadLetterMeasurement.SameTarget(current, newer) && DeadLetterMeasurement.IsOlder(current, newer))
             {
                 // Older than what this source already showed: the newer observation stands, it is not overruled.
                 current = newer;
+                stale = true;
             }
             _previousDeadLetterCounts[key] = current;
             snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, current.Count, previous?.Count)
@@ -534,7 +536,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
                 MeasuredAt = current.MeasuredAt,
                 MeasuredFrom = current.MeasuredFrom,
-                PreviousMeasuredFrom = previous?.MeasuredFrom
+                PreviousMeasuredFrom = previous?.MeasuredFrom,
+                // Only with this read's own count: an older observation that was rejected keeps no checkpoint of this read.
+                Offsets = stale ? null : source.Runtime.DeadLetterOffsets
             });
         }
 
