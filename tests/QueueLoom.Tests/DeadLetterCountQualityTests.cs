@@ -92,7 +92,8 @@ public sealed partial class ViewModelStateTests
 
         Assert.Contains("increased by ≈5;", vm.MonitorAlert, StringComparison.Ordinal);
         await WaitUntilAsync(() => alerts.System.Count == 2);
-        Assert.Contains("≈15 dead-lettered messages (was ≈10)", alerts.System[^1].Text, StringComparison.Ordinal);
+        // Alerts are sent in the background, so the list's order is not the checks' order.
+        Assert.Contains(alerts.System, alert => alert.Text.Contains("≈15 dead-lettered messages (was ≈10)", StringComparison.Ordinal));
         Assert.Equal(DeadLetterCountQuality.Estimated, Assert.Single(vm.MonitorNotifications).CountQuality);
     }
 
