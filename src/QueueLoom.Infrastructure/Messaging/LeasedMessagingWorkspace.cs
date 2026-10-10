@@ -509,7 +509,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 count = source.Runtime.MessageCounts.DeadLetter;
             }
 
-            var key = $"{profile.Id:N}|{source.Reference.Path}";
+            // Per environment and its configuration: an edited profile (another project, region or account) keeps
+            // its ID but is not the place the earlier observations came from.
+            var key = $"{ConnectedConfigurationIdentity}|{source.Reference.Path}";
             DeadLetterMeasurement? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
             var quality = sampled ? DeadLetterCountQuality.LowerBound
                 : source.Runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated
