@@ -36,10 +36,10 @@ public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, 
 public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? Count, string? Error)
 {
     /// <summary>
-    /// True when Count is only what a sample of the queue showed (Pub/Sub without Cloud Monitoring, read up to 1,000):
-    /// the queue may hold more, and 0 does not prove it is empty.
+    /// "exact"; "estimated" (SQS's approximate counts, Pub/Sub's Cloud Monitoring series: close but approximate or delayed);
+    /// "lowerBound" (Pub/Sub counted by reading up to 1,000: more may be there, and 0 does not prove it empty).
     /// </summary>
-    public bool CountIsLowerBound { get; init; }
+    public string CountQuality { get; init; } = "exact";
 }
 
 public sealed record RuleInfo(string Name, string Kind, string Filter, string? Action);
@@ -94,8 +94,8 @@ public sealed record ForwardingInfo(
 
 public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count)
 {
-    /// <summary>True when Count includes a sampled queue, so the real total may be larger.</summary>
-    public bool IsLowerBound { get; init; }
+    /// <summary>"exact", "estimated", "lowerBound" (the real total may be larger) or "unqualified" (recorded by an older QueueLoom).</summary>
+    public string Quality { get; init; } = "exact";
 }
 
 /// <param name="Start">Null when the first sample kept only larger queues, so this one's count then is unknown.</param>
@@ -103,9 +103,12 @@ public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count)
 /// <param name="Change">Null when either end is unknown or only a lower bound.</param>
 public sealed record DeadLetterTrendInfo(string Source, long? Start, long? Now, long? Change)
 {
-    public bool StartIsLowerBound { get; init; }
+    public string StartQuality { get; init; } = "exact";
 
-    public bool NowIsLowerBound { get; init; }
+    public string NowQuality { get; init; } = "exact";
+
+    /// <summary>"exact", or "estimated" when either end is an estimate (Change is null when either is a lower bound).</summary>
+    public string ChangeQuality { get; init; } = "exact";
 }
 
 /// <param name="Note">Why there is nothing to show, when nothing was recorded.</param>
@@ -122,17 +125,19 @@ public sealed record DeadLetterHistoryInfo(
     IReadOnlyList<DeadLetterTrendInfo> Sources,
     string? Note)
 {
-    /// <summary>Now includes a sampled queue, so the real total may be larger; Change is then null.</summary>
-    public bool NowIsLowerBound { get; init; }
+    /// <summary>"exact", "estimated", "lowerBound" (Change is then null) or "unqualified" (recorded by an older QueueLoom).</summary>
+    public string NowQuality { get; init; } = "exact";
 
-    /// <summary>Start includes a sampled queue, so the real total may have been larger; Change is then null.</summary>
-    public bool StartIsLowerBound { get; init; }
+    public string StartQuality { get; init; } = "exact";
+
+    /// <summary>"exact", or "estimated" when either end is an estimate.</summary>
+    public string ChangeQuality { get; init; } = "exact";
 }
 
 public sealed record DeadLetterScanInfo(string Environment, DateTimeOffset CapturedAt, long TotalCount, IReadOnlyList<DeadLetterSourceInfo> Sources)
 {
-    /// <summary>TotalCount includes a sampled queue (see DeadLetterSourceInfo.CountIsLowerBound): the real total may be larger.</summary>
-    public bool TotalIsLowerBound { get; init; }
+    /// <summary>The weakest quality among the sources (see DeadLetterSourceInfo.CountQuality).</summary>
+    public string TotalQuality { get; init; } = "exact";
 }
 
 /// <param name="DecodedBodyTruncated">True when the decoded body was cut at 4,000 characters.</param>
@@ -229,7 +234,7 @@ internal static class McpMapping
     public static DeadLetterSourceInfo ToInfo(DeadLetterEntitySnapshot snapshot) =>
         new(EntityName(snapshot.Entity), SubQueueName(snapshot.SubQueue), snapshot.Count,
             snapshot.Error is null ? null : QueueLoom.Core.Diagnostics.SensitiveDataRedactor.Redact(snapshot.Error))
-            { CountIsLowerBound = snapshot.CountIsLowerBound };
+            { CountQuality = DeadLetterCountQualities.Name(snapshot.CountQuality) };
 
     public static MessageInfo ToInfo(BrowsedMessage message)
     {

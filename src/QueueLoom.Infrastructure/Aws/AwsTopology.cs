@@ -244,7 +244,8 @@ internal sealed class AwsTopologyIndex
                     scheduled: queue.Delayed),
                 createdAt: queue.CreatedAt,
                 updatedAt: queue.UpdatedAt)
-            { HasTransferDeadLetterCount = false };
+            // SQS reports ApproximateNumberOfMessages: an estimate, not the exact count.
+            { HasTransferDeadLetterCount = false, CountsAreEstimates = true };
 
             string? note = null;
             if (deadLetterUsers.TryGetValue(queue.Arn, out var users))
@@ -295,7 +296,7 @@ internal sealed class AwsTopologyIndex
                 var runtime = new ServiceBusEntityRuntime(new ServiceBusMessageCounts(
                     active: endpointQueue?.Visible ?? 0,
                     deadLetter: deadLetterQueue?.Visible ?? 0))
-                { HasTransferDeadLetterCount = false };
+                { HasTransferDeadLetterCount = false, CountsAreEstimates = true };
                 return new ServiceBusSubscription(
                     topic.Name,
                     subscription.Name,

@@ -26,12 +26,12 @@ public sealed partial class MainWindowViewModel
             .Distinct()
             .Count();
         StatusText = snapshot.HasFailures
-            ? $"Partial scan in {profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalIsLowerBound)} known messages · {failedSources} source errors"
-            : $"Found {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalIsLowerBound)} dead-letter messages in {profile.Name}";
+            ? $"Partial scan in {profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalQuality)} known messages · {failedSources} source errors"
+            : $"Found {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalQuality)} dead-letter messages in {profile.Name}";
         AddActivity(
             snapshot.HasFailures ? "Error" : snapshot.TotalCount > 0 ? "Warning" : "Success",
             snapshot.HasFailures ? "Partial DLQ scan" : "DLQ scan",
-            $"{profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalIsLowerBound)} known messages · {failedSources} source errors");
+            $"{profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalQuality)} known messages · {failedSources} source errors");
     }
 
     private async Task ScanAllEnvironmentsAsync(CancellationToken cancellationToken)
@@ -60,7 +60,7 @@ public sealed partial class MainWindowViewModel
         var partialFailures = 0;
         var restoreFailed = false;
         var total = 0L;
-        var totalIsLowerBound = false;
+        var totalQuality = DeadLetterCountQuality.Exact;
         _lastDlqScanHadFailures = false;
 
         try
@@ -80,7 +80,7 @@ public sealed partial class MainWindowViewModel
                     await RecordDeadLetterHistoryAsync(profile, snapshot, cancellationToken).ConfigureAwait(true);
                     UpdateDeadLetterRows(profile, snapshot, replaceExisting: false);
                     total = checked(total + snapshot.TotalCount);
-                    totalIsLowerBound |= snapshot.TotalIsLowerBound;
+                    totalQuality = DeadLetterCountQualities.Combine(totalQuality, snapshot.TotalQuality);
                     successfulEnvironments++;
                     if (snapshot.HasFailures)
                     {
@@ -179,7 +179,7 @@ public sealed partial class MainWindowViewModel
             SortDeadLetterSources(selectedProfileId, selectedEntity, selectedSubQueue);
         }
 
-        var totalText = DeadLetterCountText.Format(total, totalIsLowerBound);
+        var totalText = DeadLetterCountText.Format(total, totalQuality);
         StatusText = scanFailures == 0 && partialFailures == 0 && !restoreFailed
             ? $"All environments scanned · {totalText} dead-letter messages"
             : $"Partial global scan · {totalText} known messages · {scanFailures} scan errors · {partialFailures} environments with source errors · restore {(restoreFailed ? "failed" : "ok")}";
@@ -243,7 +243,7 @@ public sealed partial class MainWindowViewModel
                 entity.Count,
                 previous?.Count,
                 entity.Error,
-                entity.SubQueue) { CountIsLowerBound = entity.CountIsLowerBound, PreviousIsLowerBound = previous?.IsLowerBound == true };
+                entity.SubQueue) { CountQuality = entity.CountQuality, PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact };
             DeadLetterSources.Add(new DlqSourceItemViewModel(
                 profile.Id,
                 profile.Name,

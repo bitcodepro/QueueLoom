@@ -10,18 +10,26 @@ public sealed record DeadLetterTrendItemViewModel(string Name, long? Now, long? 
     /// <summary>Now (or the period's start) is only a lower bound: a sampled Pub/Sub queue.</summary>
     public bool IsLowerBound { get; init; }
 
-    // Unknown when a sample kept only the largest queues and this one was not among them.
-    public string NowText => DeadLetterCountText.Format(Now, NowIsLowerBound);
+    public DeadLetterCountQuality NowQuality { get; init; }
 
-    public bool NowIsLowerBound { get; init; }
+    /// <summary>Exact, or estimated when either end of the period was an estimate.</summary>
+    public DeadLetterCountQuality ChangeQuality { get; init; }
+
+    public bool NowIsLowerBound
+    {
+        get => NowQuality == DeadLetterCountQuality.LowerBound;
+        init { if (value) NowQuality = DeadLetterCountQuality.LowerBound; }
+    }
+
+    // Unknown when a sample kept only the largest queues and this one was not among them.
+    public string NowText => DeadLetterCountText.Format(Now, NowQuality);
 
     public string ChangeText => Change switch
     {
         null when IsLowerBound => "unknown: counted by sampling",
         null => "not tracked for the whole period",
-        > 0 => $"+{Change:N0}",
-        < 0 => $"−{-Change:N0}",
-        _ => "no change"
+        0 => ChangeQuality == DeadLetterCountQuality.Estimated ? "about the same" : "no change",
+        { } change => DeadLetterCountText.FormatChange(change, ChangeQuality)
     };
 
     public bool IsRising => Change > 0;
@@ -87,24 +95,20 @@ public sealed partial class MainWindowViewModel
     public DateTimeOffset HistoryTo => _historyTo;
 
     public string HistoryNowText => _historySummary is { } summary
-        ? DeadLetterCountText.Format(summary.Now, summary.NowIsLowerBound)
+        ? DeadLetterCountText.Format(summary.Now, summary.NowQuality)
         : "—";
 
     public string HistoryPeakText => _historySummary is { } summary
-        ? DeadLetterCountText.Format(summary.Peak.Count, summary.Peak.IsLowerBound)
+        ? DeadLetterCountText.Format(summary.Peak.Count, summary.Peak.Quality)
         : "—";
 
     public string HistoryPeakTime => _historySummary is { } summary
         ? summary.Peak.At.ToLocalTime().ToString("ddd d MMM, HH:mm", CultureInfo.CurrentCulture)
         : string.Empty;
 
-    public string HistoryChangeText => _historySummary?.Change switch
-    {
-        null => "—",
-        > 0 and var change => $"+{change:N0}",
-        < 0 and var change => $"−{-change:N0}",
-        _ => "0"
-    };
+    public string HistoryChangeText => _historySummary is { Change: { } change } summary
+        ? change == 0 ? "0" : DeadLetterCountText.FormatChange(change, summary.ChangeQuality)
+        : "\u2014";
 
     public bool IsHistoryRising => _historySummary?.Change > 0;
 
@@ -115,6 +119,12 @@ public sealed partial class MainWindowViewModel
           "Counts are recorded by the monitor and by dead-letter scans, at most once a minute, and kept for 30 days." +
           (summary.Points.Any(point => point.IsLowerBound)
               ? " A count marked + includes a queue counted by reading it (no exact count is available): further growth is unknown."
+              : string.Empty) +
+          (summary.Points.Any(point => point.Quality == DeadLetterCountQuality.Estimated)
+              ? " A count marked \u2248 includes an approximate or delayed count (SQS, Pub/Sub Cloud Monitoring)."
+              : string.Empty) +
+          (summary.Points.Any(point => point.Quality == DeadLetterCountQuality.Unqualified)
+              ? " Counts recorded by an older QueueLoom are shown without saying whether they were exact."
               : string.Empty)
         : string.Empty;
 
@@ -129,7 +139,7 @@ public sealed partial class MainWindowViewModel
 
     public IReadOnlyList<DeadLetterTrendItemViewModel> HistorySources =>
         _historySummary?.Sources.Select(source => new DeadLetterTrendItemViewModel(source.Name, source.Now, source.Change)
-            { IsLowerBound = source.StartIsLowerBound || source.NowIsLowerBound, NowIsLowerBound = source.NowIsLowerBound }).ToArray()
+            { IsLowerBound = source.StartIsLowerBound || source.NowIsLowerBound, NowQuality = source.NowQuality, ChangeQuality = source.ChangeQuality }).ToArray()
         ?? [];
 
     public bool HasHistorySources => _historySummary?.Sources.Count > 0;

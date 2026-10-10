@@ -25,6 +25,12 @@ public sealed record ServiceBusEntityRuntime
     /// <summary>The service does not report counts for this entity, so every counter is unknown rather than zero.</summary>
     public bool CountsUnavailable { get; init; }
 
+    /// <summary>
+    /// The service reports these counts as approximate or delayed (SQS's ApproximateNumberOf…, Pub/Sub's Cloud
+    /// Monitoring series): close, but not the exact number at this moment.
+    /// </summary>
+    public bool CountsAreEstimates { get; init; }
+
     /// <summary>A failed reported DLQ count; this must not become zero or trigger receive-based sampling.</summary>
     public string? DeadLetterCountError { get; init; }
 

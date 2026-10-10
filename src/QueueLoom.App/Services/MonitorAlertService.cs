@@ -9,11 +9,11 @@ namespace QueueLoom.App.Services;
 /// <summary>A monitor found new dead letters (or more of them) in a queue or subscription.</summary>
 public sealed record MonitorAlert(string Environment, string Source, long Count, long? PreviousCount)
 {
-    /// <summary>The count is only a lower bound (a sampled Pub/Sub queue): written "1,000+", never as an exact size.</summary>
-    public bool CountIsLowerBound { get; init; }
+    /// <summary>How far the count can be trusted: written "1,000+" for a lower bound, "≈1,000" for an estimate.</summary>
+    public QueueLoom.Core.Monitoring.DeadLetterCountQuality CountQuality { get; init; }
 
-    /// <summary>The previous count was only a lower bound.</summary>
-    public bool PreviousIsLowerBound { get; init; }
+    /// <summary>How far the previous count could be trusted.</summary>
+    public QueueLoom.Core.Monitoring.DeadLetterCountQuality PreviousQuality { get; init; }
 
     public string Title => "QueueLoom: dead letters";
 
@@ -29,16 +29,16 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
     internal const int MaximumListed = 5;
 
     private string SourceText => PreviousCount is { } previous
-        ? $"{Source}: {CountText} dead-lettered messages (was {QueueLoom.Core.Monitoring.DeadLetterCountText.Format(previous, PreviousIsLowerBound)})"
+        ? $"{Source}: {CountText} dead-lettered messages (was {QueueLoom.Core.Monitoring.DeadLetterCountText.Format(previous, PreviousQuality)})"
         : $"{Source}: {CountText} dead-lettered messages";
 
-    private string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountIsLowerBound);
+    private string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);
 
     /// <summary>One alert for everything one check found: a check of many sources sends one message, not one each.</summary>
     public static MonitorAlert Combine(IReadOnlyList<MonitorAlert> alerts) => alerts.Count == 1
         ? alerts[0]
         : new MonitorAlert(alerts[0].Environment, $"{alerts.Count:N0} sources", alerts.Sum(alert => alert.Count), null)
-            { Combined = alerts, CountIsLowerBound = alerts.Any(alert => alert.CountIsLowerBound) };
+            { Combined = alerts, CountQuality = QueueLoom.Core.Monitoring.DeadLetterCountQualities.Combine(alerts.Select(alert => alert.CountQuality)) };
 }
 
 /// <summary>Sends monitor alerts outside the QueueLoom window.</summary>

@@ -510,9 +510,12 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
 
             var key = source.Reference.Path;
             DeadLetterMeasurement? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
-            _previousDeadLetterCounts[key] = new DeadLetterMeasurement(count, sampled);
+            var quality = sampled ? DeadLetterCountQuality.LowerBound
+                : source.Runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated
+                : DeadLetterCountQuality.Exact;
+            _previousDeadLetterCounts[key] = new DeadLetterMeasurement(count, quality);
             snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous?.Count)
-                { CountIsLowerBound = sampled, PreviousIsLowerBound = previous?.IsLowerBound == true });
+                { CountQuality = quality, PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact });
         }
 
         return new DeadLetterSnapshot(profile.Id, TimeProvider.GetUtcNow(), snapshots);

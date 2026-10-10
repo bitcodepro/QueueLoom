@@ -1,22 +1,27 @@
+using System.Text.Json.Serialization;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Core.Monitoring;
 
 /// <summary>Dead-letter counts of one environment at one moment, from a complete monitor check or scan.</summary>
 /// <param name="Sources">Non-empty dead-letter queues by display name ("orders", "orders (transfer)"); the largest only.</param>
-/// <param name="TotalIsLowerBound">The total includes a count that is only a lower bound (a sampled Pub/Sub queue).</param>
-/// <param name="LowerBoundSources">Sources whose count is only a lower bound, kept in Sources or not; null when there are none.</param>
+/// <param name="TotalQuality">
+/// How far the total can be trusted. Always written by this version; a sample without it was recorded before count
+/// quality was kept, and is read as <see cref="DeadLetterCountQuality.Unqualified"/>, never as exact.
+/// </param>
+/// <param name="SourceQualities">
+/// Sources whose count is not exact, kept in Sources or not (a sampled queue that showed nothing is listed here, so it
+/// is never read back as a proven 0); null when every counted source was exact.
+/// </param>
 public sealed record DeadLetterHistorySample(
     DateTimeOffset At,
     Guid ProfileId,
     string Environment,
     long Total,
     IReadOnlyDictionary<string, long> Sources,
-    // Omitted while unset, so samples without lower bounds are written exactly as before.
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool TotalIsLowerBound = false,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<string>? LowerBoundSources = null)
+    DeadLetterCountQuality? TotalQuality = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, DeadLetterCountQuality>? SourceQualities = null)
 {
     public const int MaximumSources = 25;
 
@@ -31,18 +36,37 @@ public sealed record DeadLetterHistorySample(
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(MaximumSources)
             .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
-        var lowerBound = snapshot.Entities
-            .Where(entity => entity.CountIsLowerBound && entity.Count.HasValue)
-            .Select(SourceName)
-            // Kept or not: a sampled queue that showed nothing (or fell below the top) is not known to be empty.
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToArray();
+        // Kept sources that are not exact, and every lower bound even when it showed nothing or fell below the top.
+        var qualities = snapshot.Entities
+            .Where(entity => entity.Count.HasValue && entity.CountQuality != DeadLetterCountQuality.Exact)
+            .GroupBy(SourceName, StringComparer.Ordinal)
+            .Where(group => sources.ContainsKey(group.Key) || group.Any(entity => entity.CountIsLowerBound))
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => DeadLetterCountQualities.Combine(group.Select(entity => entity.CountQuality)),
+                StringComparer.Ordinal);
         return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources,
-            snapshot.TotalIsLowerBound, lowerBound.Length == 0 ? null : lowerBound);
+            snapshot.TotalQuality, qualities.Count == 0 ? null : qualities);
     }
 
-    public bool IsLowerBound(string source) => LowerBoundSources?.Contains(source, StringComparer.Ordinal) == true;
+    /// <summary>The total's quality; an old sample without one is unqualified.</summary>
+    [JsonIgnore]
+    public DeadLetterCountQuality Quality => TotalQuality ?? DeadLetterCountQuality.Unqualified;
+
+    [JsonIgnore]
+    public bool TotalIsLowerBound => Quality == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>A source's quality: as recorded, else exact (or, in an old sample, unqualified).</summary>
+    public DeadLetterCountQuality QualityOf(string source) =>
+        SourceQualities?.TryGetValue(source, out var quality) == true ? quality
+        : TotalQuality is null ? DeadLetterCountQuality.Unqualified
+        : DeadLetterCountQuality.Exact;
+
+    public bool IsLowerBound(string source) => QualityOf(source) == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>Sources recorded as lower bounds, including any that showed nothing.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> LowerBoundSources =>
+        SourceQualities?.Where(pair => pair.Value == DeadLetterCountQuality.LowerBound).Select(pair => pair.Key) ?? [];
 
     public static string SourceName(DeadLetterEntitySnapshot entity) =>
         entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
@@ -52,23 +76,32 @@ public sealed record DeadLetterHistorySample(
 
 public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count)
 {
+    public DeadLetterCountQuality Quality { get; init; }
+
     /// <summary>The count is only a lower bound.</summary>
-    public bool IsLowerBound { get; init; }
+    public bool IsLowerBound => Quality == DeadLetterCountQuality.LowerBound;
 }
 
 /// <param name="Start">Count at the first sample of the period; null when that sample kept only larger queues.</param>
 /// <param name="Now">Count at the last sample; null when that sample kept only larger queues.</param>
 public sealed record DeadLetterSourceTrend(string Name, long? Start, long? Now)
 {
-    public bool StartIsLowerBound { get; init; }
+    public DeadLetterCountQuality StartQuality { get; init; }
 
-    public bool NowIsLowerBound { get; init; }
+    public DeadLetterCountQuality NowQuality { get; init; }
+
+    public bool StartIsLowerBound => StartQuality == DeadLetterCountQuality.LowerBound;
+
+    public bool NowIsLowerBound => NowQuality == DeadLetterCountQuality.LowerBound;
 
     /// <summary>
     /// Null when either end is unknown (a queue below a truncated sample's top is not known to be empty) or only a
     /// lower bound (a sampled queue's real growth or shrinkage cannot be told from two samples).
     /// </summary>
     public long? Change => Start is { } start && Now is { } now && !StartIsLowerBound && !NowIsLowerBound ? now - start : null;
+
+    /// <summary>Exact between exact counts, estimated when either end is an estimate.</summary>
+    public DeadLetterCountQuality ChangeQuality => DeadLetterCountQualities.Combine(StartQuality, NowQuality);
 }
 
 public sealed record DeadLetterHistorySummary(
@@ -79,12 +112,18 @@ public sealed record DeadLetterHistorySummary(
     IReadOnlyList<DeadLetterSourceTrend> Sources,
     int SampleCount)
 {
-    public bool NowIsLowerBound { get; init; }
+    public DeadLetterCountQuality NowQuality { get; init; }
 
-    public bool StartIsLowerBound { get; init; }
+    public DeadLetterCountQuality StartQuality { get; init; }
 
-    /// <summary>Null when either total is only a lower bound.</summary>
+    public bool NowIsLowerBound => NowQuality == DeadLetterCountQuality.LowerBound;
+
+    public bool StartIsLowerBound => StartQuality == DeadLetterCountQuality.LowerBound;
+
+    /// <summary>Null when either total is only a lower bound; see <see cref="ChangeQuality"/> for an estimate.</summary>
     public long? Change => NowIsLowerBound || StartIsLowerBound ? null : Now - Start;
+
+    public DeadLetterCountQuality ChangeQuality => DeadLetterCountQualities.Combine(StartQuality, NowQuality);
 }
 
 public interface IDeadLetterHistoryStore
@@ -120,34 +159,34 @@ public static class DeadLetterHistory
             return null;
         }
 
-        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total) { IsLowerBound = sample.TotalIsLowerBound }).ToArray();
+        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total) { Quality = sample.Quality }).ToArray();
         if (points.Length > maximumPoints)
         {
             var bucket = (to - from).Ticks / maximumPoints + 1;
-            // A bucket keeps its highest count, and stays a lower bound when any of its samples was one.
+            // A bucket keeps its highest count, with the weakest quality of its samples.
             points = points
                 .GroupBy(point => (point.At - from).Ticks / bucket)
-                .Select(group => group.MaxBy(point => point.Count)! with { IsLowerBound = group.Any(point => point.IsLowerBound) })
+                .Select(group => group.MaxBy(point => point.Count)! with { Quality = DeadLetterCountQualities.Combine(group.Select(point => point.Quality)) })
                 .ToArray();
         }
 
         var first = inRange[0];
         var last = inRange[^1];
-        // An uncertain point anywhere in the period may hide a higher real count, so the peak is then only a lower bound.
-        var peak = points.MaxBy(point => point.Count)! with { IsLowerBound = points.Any(point => point.IsLowerBound) };
+        // An uncertain point anywhere in the period may hide a higher real count: the peak is no more certain than any point.
+        var peak = points.MaxBy(point => point.Count)! with { Quality = DeadLetterCountQualities.Combine(points.Select(point => point.Quality)) };
         // Sampled queues are listed even when nothing was seen in them: their count is unknown, not zero.
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
-            .Concat(last.LowerBoundSources ?? []).Concat(first.LowerBoundSources ?? [])
+            .Concat(last.LowerBoundSources).Concat(first.LowerBoundSources)
             .Distinct(StringComparer.Ordinal)
             .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name))
-                { StartIsLowerBound = first.IsLowerBound(name), NowIsLowerBound = last.IsLowerBound(name) })
+                { StartQuality = first.QualityOf(name), NowQuality = last.QualityOf(name) })
             .OrderByDescending(source => source.Now ?? -1)
             .ThenByDescending(source => Math.Abs(source.Change ?? 0))
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(maximumSources)
             .ToArray();
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
-            { NowIsLowerBound = last.TotalIsLowerBound, StartIsLowerBound = first.TotalIsLowerBound };
+            { NowQuality = last.Quality, StartQuality = first.Quality };
     }
 
     /// <summary>

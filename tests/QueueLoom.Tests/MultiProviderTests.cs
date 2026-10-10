@@ -295,6 +295,7 @@ public sealed class MultiProviderTests
         Assert.False(billing.CountsUnavailable);
         Assert.Equal(12, billing.MessageCounts.Active);
         Assert.Equal(4, billing.MessageCounts.DeadLetter);
+        Assert.True(billing.CountsAreEstimates); // Cloud Monitoring series are sampled and delayed.
         var shipping = events.Subscriptions.Single(item => item.Name == "shipping").Runtime;
         Assert.Equal(0, shipping.MessageCounts.Active);
         Assert.False(shipping.CountsUnavailable);

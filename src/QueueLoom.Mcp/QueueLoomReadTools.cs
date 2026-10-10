@@ -121,7 +121,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 // A sampled queue that showed nothing is listed too: its 0 is not proof that it is empty.
                 snapshot.Entities.Where(entity => entity.Count > 0 || !entity.IsSuccessful || entity.CountIsLowerBound)
                     .Select(McpMapping.ToInfo).ToArray())
-                { TotalIsLowerBound = snapshot.TotalIsLowerBound };
+                { TotalQuality = DeadLetterCountQualities.Name(snapshot.TotalQuality) };
         });
 
     /// <summary>Records a complete scan only (a partial one would draw a false dip); history is best effort.</summary>
@@ -145,8 +145,9 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
     [Description("How the number of dead-lettered messages in an environment changed over time, from QueueLoom's own records " +
                  "(every monitor check and scan, kept 30 days). Returns the count now, at the start of the period and at its peak, " +
                  "up to 48 points over time and the queues that changed most. Use it to answer 'when did this start' or 'is it getting worse'. " +
-                 "A count flagged *IsLowerBound comes from reading a queue that reports no number (Pub/Sub without Cloud Monitoring): " +
-                 "the real count may be larger, and its change is null.")]
+                 "Every count has a quality: exact; estimated (SQS's approximate counts, Pub/Sub's Cloud Monitoring); lowerBound " +
+                 "(read from a queue that reports no number: the real count may be larger, and its change is null); or unqualified " +
+                 "(recorded by an older QueueLoom).")]
     public Task<DeadLetterHistoryInfo> GetDeadLetterHistoryAsync(
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("How many hours back to look, 1-720 (30 days). Default 24.")] int hours = 24,
@@ -166,11 +167,20 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 ? new DeadLetterHistoryInfo(profile.Name, from, to, 0, null, null, null, null, [], [],
                     "Nothing was recorded in this period. History grows while a QueueLoom monitor runs or when dead letters are scanned.")
                 : new DeadLetterHistoryInfo(profile.Name, from, to, summary.SampleCount, summary.Now, summary.Start, summary.Change,
-                    new DeadLetterHistoryPointInfo(summary.Peak.At, summary.Peak.Count) { IsLowerBound = summary.Peak.IsLowerBound },
-                    summary.Points.Select(point => new DeadLetterHistoryPointInfo(point.At, point.Count) { IsLowerBound = point.IsLowerBound }).ToArray(),
+                    new DeadLetterHistoryPointInfo(summary.Peak.At, summary.Peak.Count) { Quality = DeadLetterCountQualities.Name(summary.Peak.Quality) },
+                    summary.Points.Select(point => new DeadLetterHistoryPointInfo(point.At, point.Count) { Quality = DeadLetterCountQualities.Name(point.Quality) }).ToArray(),
                     summary.Sources.Select(source => new DeadLetterTrendInfo(source.Name, source.Start, source.Now, source.Change)
-                        { StartIsLowerBound = source.StartIsLowerBound, NowIsLowerBound = source.NowIsLowerBound }).ToArray(),
-                    null) { NowIsLowerBound = summary.NowIsLowerBound, StartIsLowerBound = summary.StartIsLowerBound };
+                        {
+                            StartQuality = DeadLetterCountQualities.Name(source.StartQuality),
+                            NowQuality = DeadLetterCountQualities.Name(source.NowQuality),
+                            ChangeQuality = DeadLetterCountQualities.Name(source.ChangeQuality)
+                        }).ToArray(),
+                    null)
+                {
+                    NowQuality = DeadLetterCountQualities.Name(summary.NowQuality),
+                    StartQuality = DeadLetterCountQualities.Name(summary.StartQuality),
+                    ChangeQuality = DeadLetterCountQualities.Name(summary.ChangeQuality)
+                };
         });
 
     [McpServerTool(Name = "check_topic_routing", Title = "Subscription rules and routing", ReadOnly = true, Idempotent = true)]

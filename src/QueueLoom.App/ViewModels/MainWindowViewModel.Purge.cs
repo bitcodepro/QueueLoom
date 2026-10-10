@@ -225,7 +225,7 @@ public sealed partial class MainWindowViewModel
                      .Where(row => row.ProfileId == result.ProfileId && completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
                      .ToArray())
         {
-            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.CountIsLowerBound);
+            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.Snapshot.CountQuality);
             var index = DeadLetterSources.IndexOf(row);
             DeadLetterSources.RemoveAt(index);
             if (row.CountIsLowerBound)

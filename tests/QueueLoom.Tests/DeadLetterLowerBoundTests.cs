@@ -83,7 +83,7 @@ public sealed partial class ViewModelStateTests
     [Fact]
     public void AnAlertWritesALowerBoundWithAPlus()
     {
-        var alert = new MonitorAlert("Development", "orders (DLQ)", 1_000, null) { CountIsLowerBound = true };
+        var alert = new MonitorAlert("Development", "orders (DLQ)", 1_000, null) { CountQuality = DeadLetterCountQuality.LowerBound };
         Assert.Contains("+ dead-lettered messages", alert.Text, StringComparison.Ordinal);
     }
 
@@ -103,9 +103,11 @@ public sealed partial class ViewModelStateTests
 
         var first = DeadLetterHistorySample.FromSnapshot(exact, "Test");
         var last = JsonSerializer.Deserialize<DeadLetterHistorySample>(JsonSerializer.Serialize(DeadLetterHistorySample.FromSnapshot(sampled, "Test")))!;
-        Assert.DoesNotContain("LowerBound", JsonSerializer.Serialize(first), StringComparison.Ordinal);
+        // Exact samples record their quality but no per-source list; old samples without a quality read as unqualified.
+        Assert.Contains("\"TotalQuality\":\"Exact\"", JsonSerializer.Serialize(first), StringComparison.Ordinal);
+        Assert.DoesNotContain("SourceQualities", JsonSerializer.Serialize(first), StringComparison.Ordinal);
         Assert.True(last.TotalIsLowerBound);
-        Assert.Equal(["orders", "payments"], last.LowerBoundSources);
+        Assert.Equal(["orders", "payments"], last.LowerBoundSources.ToArray());
 
         var summary = DeadLetterHistory.Summarize([first, last], start, start.AddHours(2))!;
         Assert.True(summary.NowIsLowerBound);
@@ -120,7 +122,7 @@ public sealed partial class ViewModelStateTests
     public void McpMarksLowerBoundsAndListsASampledQueueThatShowedNothing()
     {
         var info = McpMapping.ToInfo(new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), 0) { CountIsLowerBound = true });
-        Assert.True(info.CountIsLowerBound);
+        Assert.Equal("lowerBound", info.CountQuality);
         Assert.Equal(0, info.Count);
     }
 

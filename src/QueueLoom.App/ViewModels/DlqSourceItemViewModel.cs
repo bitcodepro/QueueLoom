@@ -50,15 +50,16 @@ public sealed class DlqSourceItemViewModel(
     /// <summary>Messages are there, or may be: a sampled queue that showed nothing can still be opened to look.</summary>
     public bool CanBrowse => Count > 0 || Snapshot.CountIsLowerBound;
 
-    public string CountText => DeadLetterCountText.Format(Snapshot.Count ?? 0, Snapshot.CountIsLowerBound);
+    public DeadLetterCountQuality CountQuality => Snapshot.CountQuality;
 
-    public string? CountNote => Snapshot.CountIsLowerBound ? DeadLetterCountText.LowerBoundNote : null;
+    public string CountText => DeadLetterCountText.Format(Snapshot.Count ?? 0, Snapshot.CountQuality);
+
+    public string? CountNote => DeadLetterCountText.Note(Snapshot.CountQuality);
 
     public string Delta => Snapshot.CountIsLowerBound || Snapshot.PreviousIsLowerBound ? "unknown" : Snapshot.Change switch
     {
-        > 0 => $"+{Snapshot.Change}",
-        < 0 => Snapshot.Change.ToString()!,
-        0 => "±0",
+        0 => Snapshot.ChangeQuality == DeadLetterCountQuality.Estimated ? "\u2248\u00b10" : "\u00b10",
+        { } change => DeadLetterCountText.FormatChange(change, Snapshot.ChangeQuality),
         _ => "new"
     };
 

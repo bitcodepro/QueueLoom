@@ -12,7 +12,7 @@ public sealed class MonitorNotificationItemViewModel(
     DateTimeOffset firstDetectedAt) : ObservableObject
 {
     private long _count = count;
-    private bool _countIsLowerBound;
+    private QueueLoom.Core.Monitoring.DeadLetterCountQuality _countQuality;
     private DateTimeOffset _lastDetectedAt = firstDetectedAt;
 
     public string Key { get; } = key;
@@ -35,17 +35,23 @@ public sealed class MonitorNotificationItemViewModel(
         }
     }
 
-    /// <summary>The count is only what a sample of the queue showed (Pub/Sub without Cloud Monitoring).</summary>
-    public bool CountIsLowerBound
+    /// <summary>How far the shown count can be trusted (a sample is a lower bound; SQS and Cloud Monitoring estimate).</summary>
+    public QueueLoom.Core.Monitoring.DeadLetterCountQuality CountQuality
     {
-        get => _countIsLowerBound;
+        get => _countQuality;
         set
         {
-            if (SetProperty(ref _countIsLowerBound, value)) OnPropertyChanged(nameof(CountText));
+            if (SetProperty(ref _countQuality, value))
+            {
+                OnPropertyChanged(nameof(CountText));
+                OnPropertyChanged(nameof(CountIsLowerBound));
+            }
         }
     }
 
-    public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountIsLowerBound);
+    public bool CountIsLowerBound => CountQuality == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound;
+
+    public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);
 
     public DateTimeOffset LastDetectedAt
     {

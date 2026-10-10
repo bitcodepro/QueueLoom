@@ -50,8 +50,9 @@ public sealed partial class MainWindowViewModel
                                    + (_topology?.AggregateMessageCounts.TransferDeadLetter ?? 0);
     public long GlobalDlqSourceCount => DeadLetterSources.Sum(source => source.Count);
 
-    /// <summary>The listed total includes a sampled queue, so the real total may be larger.</summary>
-    public bool GlobalDlqCountIsLowerBound => DeadLetterSources.Any(source => source.CountIsLowerBound);
+    /// <summary>The listed total is no more certain than its least certain row.</summary>
+    public QueueLoom.Core.Monitoring.DeadLetterCountQuality GlobalDlqCountQuality =>
+        QueueLoom.Core.Monitoring.DeadLetterCountQualities.Combine(DeadLetterSources.Select(source => source.CountQuality));
 
     private async Task RefreshTopologyAsync(CancellationToken cancellationToken)
     {

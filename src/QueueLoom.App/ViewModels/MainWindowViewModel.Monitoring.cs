@@ -372,7 +372,7 @@ public sealed partial class MainWindowViewModel
         }
 
         var total = _lastDlqMeasurements.Values.Sum(measurement => measurement.Count);
-        var totalIsLowerBound = _lastDlqMeasurements.Values.Any(measurement => measurement.IsLowerBound);
+        var totalQuality = DeadLetterCountQualities.Combine(_lastDlqMeasurements.Values.Select(measurement => measurement.Quality));
         if (!isComplete)
         {
             MonitorAlert = $"DLQ check was incomplete at {DateTimeOffset.Now:HH:mm:ss}; known counts were not used as a new baseline.";
@@ -396,8 +396,8 @@ public sealed partial class MainWindowViewModel
         if (_hasMonitorBaseline && increases.Length > 0)
         {
             // "at least" growth from a sample stays "N+" in the total too.
-            var increase = DeadLetterCountText.Format(increases.Sum(item => item.Count), increases.Any(item => item.IsLowerBound));
-            MonitorAlert = $"{increases.Length:N0} DLQ source(s) increased by {increase}; total is {DeadLetterCountText.Format(total, totalIsLowerBound)} at {DateTimeOffset.Now:HH:mm:ss}";
+            var increase = DeadLetterCountText.Format(increases.Sum(item => item.Count), DeadLetterCountQualities.Combine(increases.Select(item => item.Quality)));
+            MonitorAlert = $"{increases.Length:N0} DLQ source(s) increased by {increase}; total is {DeadLetterCountText.Format(total, totalQuality)} at {DateTimeOffset.Now:HH:mm:ss}";
             AddActivity("Warning", "DLQ alert", MonitorAlert);
         }
         else
@@ -459,12 +459,13 @@ public sealed partial class MainWindowViewModel
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
             var count = entity.Count!.Value;
             var lowerBound = entity.CountIsLowerBound;
-            _lastDlqMeasurements[key] = new DeadLetterMeasurement(count, lowerBound);
+            var quality = entity.CountQuality;
+            _lastDlqMeasurements[key] = DeadLetterMeasurement.Of(entity);
             if (count <= 0 && lowerBound)
             {
                 // A sample that showed nothing does not prove the queue is empty: an open notification stays open, and
                 // its count is no longer shown as exact.
-                if (_monitorNotifications.TryGetValue(key, out var unproven)) unproven.CountIsLowerBound = true;
+                if (_monitorNotifications.TryGetValue(key, out var unproven)) unproven.CountQuality = DeadLetterCountQuality.LowerBound;
                 continue;
             }
             if (count <= 0)
@@ -475,7 +476,8 @@ public sealed partial class MainWindowViewModel
                     AddActivity(
                         "Success",
                         "DLQ resolved",
-                        $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · cleared",
+                        $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · cleared" +
+                        (quality == DeadLetterCountQuality.Estimated ? " (by an approximate count)" : string.Empty),
                         entity.Entity);
                 }
                 continue;
@@ -483,24 +485,24 @@ public sealed partial class MainWindowViewModel
 
             if (_monitorNotifications.TryGetValue(key, out var existing))
             {
-                var before = new DeadLetterMeasurement(existing.Count, existing.CountIsLowerBound);
-                var now = new DeadLetterMeasurement(count, lowerBound);
+                var before = new DeadLetterMeasurement(existing.Count, existing.CountQuality);
+                var now = new DeadLetterMeasurement(count, quality);
                 if (lowerBound && count < existing.Count)
                 {
                     // Lost precision is not a decrease: a smaller sample keeps the larger count already reported.
-                    existing.CountIsLowerBound = true;
+                    existing.CountQuality = DeadLetterCountQuality.LowerBound;
                     continue;
                 }
                 if (before != now)
                 {
                     existing.Count = count;
-                    existing.CountIsLowerBound = lowerBound;
+                    existing.CountQuality = quality;
                     existing.LastDetectedAt = detectedAt;
                     // Alert on proven growth only; a change from or to a sample is reported, not alerted as growth.
                     if (DeadLetterMeasurement.ProvenIncrease(before, now) is { Count: > 0 })
                     {
                         alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, before.Count)
-                            { CountIsLowerBound = lowerBound, PreviousIsLowerBound = before.IsLowerBound });
+                            { CountQuality = quality, PreviousQuality = before.Quality });
                     }
                     changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {before} → {now}"));
                 }
@@ -513,15 +515,15 @@ public sealed partial class MainWindowViewModel
                 entity.Entity,
                 FormatSubQueue(entity.SubQueue),
                 count,
-                detectedAt) { CountIsLowerBound = lowerBound };
+                detectedAt) { CountQuality = quality };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
             alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null)
-                { CountIsLowerBound = lowerBound });
+                { CountQuality = quality });
             AddActivity(
                 "Warning",
                 "DLQ detected",
-                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {DeadLetterCountText.Format(count, lowerBound)} messages",
+                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {DeadLetterCountText.Format(count, quality)} messages",
                 entity.Entity);
         }
 

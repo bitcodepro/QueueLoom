@@ -691,7 +691,9 @@ internal sealed record GooglePubSubTopology(
                 active: undelivered.GetValueOrDefault(subscription.SubscriptionName.SubscriptionId),
                 deadLetter: deadLetterReader is null ? 0 : undelivered[deadLetterReader.SubscriptionName.SubscriptionId]))
             {
-                HasTransferDeadLetterCount = false
+                HasTransferDeadLetterCount = false,
+                // Cloud Monitoring's num_undelivered_messages is sampled and delayed: an estimate.
+                CountsAreEstimates = true
             };
         }
     }
