@@ -182,6 +182,13 @@ public sealed class QueueDialogViewModel : ObservableObject
         }
 
         TimeSpan? timeToLive = null;
+        if (ShowTimeToLive && !IsNew && _currentTimeToLive is not null && TimeToLive is null)
+        {
+            // An empty field means "unchanged" to every service, so clearing a TTL would silently keep it.
+            Error = "The time to keep unread messages cannot be removed here; an empty field would keep the current one. " +
+                    "Enter the longest time you need.";
+            return null;
+        }
         if (ShowTimeToLive && _currentTimeToLive is { } shown && TimeToLive == shown.Shown && TimeToLiveUnit == shown.Unit)
         {
             // Untouched: the field shows a rounded value, so the exact current TTL goes back.

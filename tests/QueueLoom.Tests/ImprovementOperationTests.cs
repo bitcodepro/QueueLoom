@@ -62,6 +62,24 @@ public sealed partial class ViewModelStateTests
         await store.CreateResendAsync(profile.Id, Enumerable.Range(0, count).Select(OperationItem).ToArray(), mode, 50,
             profile.EndpointDisplay, ScheduledResend.IdentityFor(profile), "Immediate resend", default);
 
+    // Kafka: a record purged from the retry queue by a fatal producer error may already be written.
+    [Fact]
+    public async Task AKafkaFatalPurgeStaysUncertainAndIsNotRetriedAsAProvenFailure()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new BatchReplayStore(directory.Path);
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var workspace = new FakeWorkspace(); await workspace.ConnectAsync(profile);
+        var plan = await PrepareOperation(store, profile);
+        var outcome = await KafkaIdempotentProducerTests.FatalPurgeOutcomeAsync();
+        workspace.OnSend = () => throw outcome;
+
+        await store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default);
+
+        Assert.Equal("Uncertain", store.ReadHistory(plan).Items[0].State);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], true, workspace, () => true, null, default));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

@@ -293,6 +293,12 @@
                          Text="Turn on when the topics' producers are Java-based, so a resent keyed record reaches the same partition. Off keeps librdkafka's default (CRC32)." />
             </StackPanel>
             <StackPanel Spacing="7">
+              <CheckBox Content="Compatibility mode: send without idempotence" IsChecked="{Binding KafkaNonIdempotentProducer}"
+                        AutomationProperties.Name="Send without idempotence" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="Only for clusters that refuse idempotent sends (Kafka before 2.8 without the IDEMPOTENT_WRITE permission). When an acknowledgement is lost, the client's retry can then write a record twice." />
+            </StackPanel>
+            <StackPanel Spacing="7">
               <TextBlock Text="SCHEMA REGISTRY (OPTIONAL)" Classes="eyebrow" />
               <Grid ColumnDefinitions="2*,14,*,14,*">
                 <TextBox Grid.Column="0" Text="{Binding SchemaRegistryUrl}" PlaceholderText="http://schema-registry:8081"

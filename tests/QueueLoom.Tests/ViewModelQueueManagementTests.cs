@@ -169,4 +169,22 @@ public sealed partial class ViewModelStateTests
         Assert.Null(edit.TryBuildSettings());
         Assert.Contains("cannot remove partitions", edit.Error, StringComparison.Ordinal);
     }
+
+    // Clearing an existing TTL used to build "unchanged" settings, so the old TTL silently stayed.
+    [Fact]
+    public void ClearingAnExistingTimeToLiveIsRefusedInsteadOfKeepingItSilently()
+    {
+        var dialog = new QueueDialogViewModel(SqsLike, "Orders", "orders", new QueueSettings(TimeSpan.FromDays(2))) { TimeToLive = null };
+
+        Assert.Null(dialog.TryBuildSettings());
+        Assert.Contains("cannot be removed", dialog.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AQueueWithoutATimeToLiveCanStillBeSavedWithTheFieldEmpty()
+    {
+        var dialog = new QueueDialogViewModel(SqsLike, "Orders", "orders", new QueueSettings(MaxDeliveryCount: 5)) { TimeToLive = null };
+
+        Assert.NotNull(dialog.TryBuildSettings());
+    }
 }
