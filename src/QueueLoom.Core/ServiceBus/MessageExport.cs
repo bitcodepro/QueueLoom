@@ -180,6 +180,9 @@ public static class MessageExport
                 writer.WriteBoolean("bodyTruncated", true);
             }
             writer.WriteEndObject();
+            // Utf8JsonWriter buffers everything until it is flushed. Hand each message to the stream so a large
+            // export never needs one buffer the size of the whole file, which cannot grow past the largest array.
+            await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         writer.WriteEndArray();
         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
