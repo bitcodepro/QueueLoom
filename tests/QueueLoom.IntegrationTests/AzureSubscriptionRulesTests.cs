@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using QueueLoom.Core.Abstractions;
@@ -133,20 +134,29 @@ public sealed class AzureSubscriptionRulesTests : IAsyncLifetime
             await sender.SendMessageAsync(message);
         }
 
-        var delivered = new Dictionary<string, HashSet<string>>();
-        foreach (var subscription in rules.Select(item => item.Subscription))
+        // The broker fans a message out to its subscriptions asynchronously, so a subscription peeked right after the
+        // sends can still be missing one. Peek every subscription until none has changed for two seconds (at most 30 s).
+        var delivered = rules.ToDictionary(item => item.Subscription, _ => new HashSet<string>());
+        var receivers = rules.Select(item => _client.CreateReceiver(_topic, item.Subscription)).ToArray();
+        try
         {
-            await using var receiver = _client.CreateReceiver(_topic, subscription);
-            var ids = new HashSet<string>();
-            for (var attempt = 0; attempt < 3; attempt++)
+            var deadline = Stopwatch.StartNew();
+            var unchangedSince = Stopwatch.StartNew();
+            while (unchangedSince.Elapsed < TimeSpan.FromSeconds(2) && deadline.Elapsed < TimeSpan.FromSeconds(30))
             {
-                foreach (var message in await receiver.PeekMessagesAsync(50))
+                for (var index = 0; index < receivers.Length; index++)
                 {
-                    ids.Add(message.MessageId);
+                    foreach (var message in await receivers[index].PeekMessagesAsync(50, fromSequenceNumber: 0))
+                    {
+                        if (delivered[rules[index].Subscription].Add(message.MessageId)) unchangedSince.Restart();
+                    }
                 }
                 await Task.Delay(200);
             }
-            delivered[subscription] = ids;
+        }
+        finally
+        {
+            foreach (var receiver in receivers) await receiver.DisposeAsync();
         }
 
         foreach (var draft in messages)
