@@ -134,7 +134,9 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
             var deadLetterQueue = index.FindQueueByArn(queue.DeadLetterTargetArn)
                 ?? throw new InvalidOperationException(
-                    $"Queue '{queue.Name}' has no dead-letter queue. Add a redrive policy to it in AWS first.");
+                    queue.DeadLetterTargetArn is not null
+                        ? $"The dead-letter queue of '{queue.Name}' is in another account or region and cannot be read here."
+                        : $"Queue '{queue.Name}' has no dead-letter queue. Add a redrive policy to it in AWS first.");
             // A dead-letter queue can serve several queues; SQS stamps each moved message with its source.
             return new SqsChannel(this, source, subQueue, deadLetterQueue, belongsTo: queue.Arn);
         }

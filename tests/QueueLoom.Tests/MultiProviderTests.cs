@@ -244,7 +244,8 @@ public sealed class MultiProviderTests
         var events = result.Topology.Topics.Single(topic => topic.Name == "events");
         Assert.True(events.Subscriptions.Single(item => item.Name == "billing").HasDeadLetterQueue);
         var shipping = events.Subscriptions.Single(item => item.Name == "shipping");
-        Assert.False(shipping.HasDeadLetterQueue);
+        Assert.True(shipping.HasDeadLetterQueue);
+        Assert.NotNull(shipping.Runtime.DeadLetterCountError);
         Assert.Contains("no subscription to read them from", shipping.Note);
         Assert.Equal("Holds dead letters of billing",
             result.Topology.Topics.Single(topic => topic.Name == "events-dlq").Subscriptions.Single().Note);
