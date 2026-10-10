@@ -76,6 +76,13 @@ public sealed record DeadLetterEntitySnapshot
     /// <summary>What the previous count was taken from; a count of another target has no change against this one.</summary>
     public string? PreviousMeasuredFrom { get; init; }
 
+    /// <summary>
+    /// What this count is of, within an environment: the dead-letter destination it was taken from where the service
+    /// says (an SQS dead-letter queue ARN, a Pub/Sub reader subscription), else the source itself. Sources sharing a
+    /// destination have one key, whichever of them reports it and however many there are.
+    /// </summary>
+    public string PhysicalKey => MeasuredFrom is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
+
     /// <summary>The most messages whose identities are read to tell a replaced message from an unchanged queue.</summary>
     public const int ContentMarkerLimit = 100;
 

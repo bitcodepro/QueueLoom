@@ -68,8 +68,9 @@ public sealed partial class ViewModelStateTests
             [SharingOrdersDlq("orders", 25), SharingOrdersDlq("refunds", 25)]), "Test");
 
         Assert.Equal(25, sample.Total);
-        Assert.Equal(25, Assert.Single(sample.Sources, pair => pair.Key == "orders-dlq (shared by 2)").Value);
+        Assert.Equal(25, Assert.Single(sample.Sources, pair => pair.Key == "orders-dlq (shared)").Value);
         Assert.DoesNotContain("orders", sample.Sources.Keys);
+        Assert.Equal("orders-dlq (shared)", sample.SharedAliases!["refunds"]);
     }
 
     // The monitor alerts the shared queue once and counts it once in the total and in its growth.
@@ -97,5 +98,114 @@ public sealed partial class ViewModelStateTests
         Assert.Null(alerts.System[1].Combined);
         Assert.Equal(30, alerts.System[1].Count);
         Assert.Contains("1 DLQ source(s) increased by ≈5; total is ≈30", vm.MonitorAlert, StringComparison.Ordinal);
+    }
+
+    private static DeadLetterEntitySnapshot Through(string queue, long count, string target, DateTimeOffset? measuredAt = null) =>
+        new(ServiceBusEntityReference.Queue(queue), count) { CountQuality = DeadLetterCountQuality.Estimated, MeasuredFrom = target, MeasuredAt = measuredAt };
+
+    // The listed totals count a shared queue once too, and each row says its count is the shared queue's.
+    [Fact]
+    public async Task ListedTotalsCountASharedDeadLetterQueueOnce()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, SharingOrdersDlq("orders", 25), SharingOrdersDlq("refunds", 25)) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+
+        await vm.ScanCurrentEnvironmentCommand.ExecuteAsync();
+
+        Assert.Equal(2, vm.DeadLetterSources.Count);
+        Assert.Equal(25, vm.GlobalDlqSourceCount);
+        Assert.Equal(25, vm.VisibleDlqSourceCount);
+        Assert.All(vm.DeadLetterSources, row =>
+        {
+            Assert.True(row.IsShared);
+            Assert.Contains("dead-letter queue orders-dlq, shared with", row.CountNote, StringComparison.Ordinal);
+        });
+    }
+
+    // Both sources move from one shared queue to another: a target change, not a drop of 15.
+    [Fact]
+    public void SharedSourcesMovedToAnotherQueueHaveNoTotalChange()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(DateTimeOffset when, long count, string target) => DeadLetterHistorySample.FromSnapshot(
+            new DeadLetterSnapshot(profileId, when, [Through("orders", count, target), Through("refunds", count, target)]), "Test");
+
+        var summary = DeadLetterHistory.Summarize(
+            [Sample(at, 25, "arn:aws:sqs:us-east-1:123:dlq-a"), Sample(at.AddMinutes(1), 10, "arn:aws:sqs:us-east-1:123:dlq-b")],
+            at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+    }
+
+    // A queue that gains a second user is still the same queue: an older point of it does not escape its newer one.
+    [Fact]
+    public void AnOlderPointOfAQueueThatGainedAUserIsLeftOut()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var alone = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, at, [Through("orders", 100, SharedArn, at)]), "Test");
+        var shared = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, at.AddMinutes(5),
+            [Through("orders", 0, SharedArn, at.AddMinutes(-5)), Through("refunds", 0, SharedArn, at.AddMinutes(-5))]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([alone, shared], at.AddMinutes(-10), at.AddMinutes(10))!;
+
+        Assert.Equal(100, summary.Now);
+        Assert.Equal(1, summary.SampleCount);
+    }
+
+    // History written before shared queues were counted once may count one twice: no "drop" against it.
+    [Fact]
+    public void HistoryBeforeCountingSharedQueuesOnceIsNotComparedWithIt()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var legacy = new DeadLetterHistorySample(at, profileId, "Test", 50, new Dictionary<string, long> { ["orders"] = 25, ["refunds"] = 25 },
+            DeadLetterCountQuality.Estimated);
+        var current = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, at.AddMinutes(1),
+            [SharingOrdersDlq("orders", 25), SharingOrdersDlq("refunds", 25)]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([legacy, current], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+    }
+
+    // The incident is the shared queue's: a source joining or leaving it is no new incident and loses no growth.
+    [Theory]
+    [InlineData(30, 2)]
+    [InlineData(25, 1)]
+    public async Task ASourceJoiningASharedQueueKeepsItsIncident(long countAfterJoin, int expectedAlerts)
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, SharingOrdersDlq("refunds", 25)) } };
+        var alerts = new RecordingAlerts();
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace, alerts: alerts);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        async Task Check() => await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        await Check();
+        await WaitUntilAsync(() => alerts.System.Count == 1);
+
+        workspace.Snapshots[dev.Id] = Snapshot(dev.Id, SharingOrdersDlq("orders", countAfterJoin), SharingOrdersDlq("refunds", countAfterJoin));
+        await Check();
+        workspace.Snapshots[dev.Id] = Snapshot(dev.Id, SharingOrdersDlq("refunds", countAfterJoin));
+        await Check();
+
+        if (expectedAlerts == 2)
+        {
+            await WaitUntilAsync(() => alerts.System.Count == 2);
+            Assert.Equal(25, alerts.System[1].PreviousCount);
+            Assert.Contains("increased by ≈5", vm.Activity.First(item => item.Action == "DLQ alert").Details, StringComparison.Ordinal);
+        }
+        await Task.Delay(100);
+        Assert.Equal(expectedAlerts, alerts.System.Count);
+        Assert.Single(vm.MonitorNotifications);
     }
 }

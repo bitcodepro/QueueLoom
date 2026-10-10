@@ -486,7 +486,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         {
             if (source.Runtime.DeadLetterCountError is { } countError)
             {
-                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError));
+                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError) { MeasuredFrom = source.Runtime.DeadLetterCountSource });
                 continue;
             }
             long count;
@@ -500,7 +500,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
-                    snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, exception.GetBaseException().Message));
+                    snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, exception.GetBaseException().Message)
+                        { MeasuredFrom = source.Runtime.DeadLetterCountSource });
                     continue;
                 }
             }

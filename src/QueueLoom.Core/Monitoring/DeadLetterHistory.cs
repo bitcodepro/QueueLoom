@@ -23,7 +23,10 @@ public sealed record DeadLetterHistorySample(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyDictionary<string, DeadLetterCountQuality>? SourceQualities = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyDictionary<string, DeadLetterObservation>? SourceObservations = null)
+    IReadOnlyDictionary<string, DeadLetterObservation>? SourceObservations = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, string>? SharedAliases = null,
+    bool CountsSharedOnce = false)
 {
     public const int MaximumSources = 25;
 
@@ -32,10 +35,16 @@ public sealed record DeadLetterHistorySample(
         ArgumentNullException.ThrowIfNull(snapshot);
         // A shared dead-letter destination is recorded once, under its own name, not once per source that uses it.
         var shared = snapshot.SharedTargets;
+        // Its name depends on the destination alone, never on which or how many sources use it.
         string SourceName(DeadLetterEntitySnapshot entity) =>
-            entity.MeasuredFrom is { } target && shared.TryGetValue(target, out var users)
-                ? $"{SharedName(target)} (shared by {users.Count})"
+            entity.MeasuredFrom is { } target && shared.ContainsKey(target)
+                ? SharedSourceName(target)
                 : DeadLetterHistorySample.SourceName(entity);
+        // Which source used which shared destination: a source moved to another destination is a target change.
+        var aliases = shared.SelectMany(pair => pair.Value.Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: SharedSourceName(pair.Key))))
+            .GroupBy(pair => pair.Alias, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);
         var sources = snapshot.CountedOnce
             .Where(entity => entity.Count > 0)
             .GroupBy(SourceName, StringComparer.Ordinal)
@@ -64,7 +73,8 @@ public sealed record DeadLetterHistorySample(
                     group.Select(entity => entity.MeasuredFrom).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))),
                 StringComparer.Ordinal);
         return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources,
-            snapshot.TotalQuality, qualities.Count == 0 ? null : qualities, observations.Count == 0 ? null : observations);
+            snapshot.TotalQuality, qualities.Count == 0 ? null : qualities, observations.Count == 0 ? null : observations,
+            aliases.Count == 0 ? null : aliases, CountsSharedOnce: true);
     }
 
     /// <summary>The total's quality; an old sample without one is unqualified.</summary>
@@ -95,14 +105,23 @@ public sealed record DeadLetterHistorySample(
     /// <summary>Every source this sample recorded a count, quality or observation of.</summary>
     [JsonIgnore]
     public IEnumerable<string> RecordedSources =>
-        Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Distinct(StringComparer.Ordinal);
+        Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Concat(SharedAliases?.Keys ?? [])
+            .Distinct(StringComparer.Ordinal);
 
-    public string? TargetOf(string source) => SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom : null;
+    public string? TargetOf(string source) =>
+        SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom
+        : SharedAliases?.TryGetValue(source, out var shared) == true && SourceObservations?.TryGetValue(shared, out var sharedObservation) == true
+            ? sharedObservation.MeasuredFrom
+        : null;
+
+    /// <summary>A shared destination's name in history: its short name, whoever uses it.</summary>
+    public static string SharedSourceName(string target) => $"{SharedName(target)} (shared)";
 
     /// <summary>Same counts, qualities, sources and observations: a later sample adds nothing.</summary>
     public bool RecordsTheSameAs(DeadLetterHistorySample other) =>
         Total == other.Total && TotalQuality == other.TotalQuality &&
-        Same(SourceQualities, other.SourceQualities) && Same(SourceObservations, other.SourceObservations);
+        Same(SourceQualities, other.SourceQualities) && Same(SourceObservations, other.SourceObservations) &&
+        Same(SharedAliases, other.SharedAliases) && CountsSharedOnce == other.CountsSharedOnce;
 
     private static bool Same<T>(IReadOnlyDictionary<string, T>? first, IReadOnlyDictionary<string, T>? second) =>
         (first ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal)
@@ -265,7 +284,9 @@ public static class DeadLetterHistory
         // Every source either sample recorded anything of (a count, a quality or an observation), whether or not its
         // count was zero or below the kept largest.
         var targetsChanged = first.RecordedSources.Intersect(last.RecordedSources, StringComparer.Ordinal)
-            .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal));
+            .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal)) ||
+            // Recorded before shared destinations were counted once: its total may count one several times.
+            (first.CountsSharedOnce != last.CountsSharedOnce && (first.SharedAliases ?? last.SharedAliases) is not null);
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
             { NowQuality = last.Quality, StartQuality = first.Quality, TargetsChanged = targetsChanged };
     }
@@ -279,17 +300,19 @@ public static class DeadLetterHistory
         var latest = new Dictionary<(string Source, string? Target), DateTimeOffset>();
         foreach (var sample in ordered)
         {
+            // By what was measured: a destination is the same one whatever name or sharing it was recorded under.
+            static (string Source, string? Target) KeyOf(KeyValuePair<string, DeadLetterObservation> pair) =>
+                pair.Value.MeasuredFrom is { } target ? (string.Empty, target) : (pair.Key, null);
             var observations = sample.SourceObservations ?? new Dictionary<string, DeadLetterObservation>();
-            if (observations.Any(pair => pair.Value.MeasuredAt is { } at &&
-                                         latest.TryGetValue((pair.Key, pair.Value.MeasuredFrom), out var newer) && at < newer))
+            if (observations.Any(pair => pair.Value.MeasuredAt is { } at && latest.TryGetValue(KeyOf(pair), out var newer) && at < newer))
             {
                 continue;
             }
-            foreach (var (source, observation) in observations)
+            foreach (var pair in observations)
             {
-                if (observation.MeasuredAt is { } at)
+                if (pair.Value.MeasuredAt is { } at && (!latest.TryGetValue(KeyOf(pair), out var known) || at > known))
                 {
-                    latest[(source, observation.MeasuredFrom)] = at;
+                    latest[KeyOf(pair)] = at;
                 }
             }
             yield return sample;

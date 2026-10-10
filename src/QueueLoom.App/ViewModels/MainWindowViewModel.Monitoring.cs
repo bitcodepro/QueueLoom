@@ -479,7 +479,12 @@ public sealed partial class MainWindowViewModel
         // A source that could not be read interrupts an approximate-zero confirmation: two zeros must be consecutive.
         foreach (var failed in snapshot.Entities.Where(item => !item.IsSuccessful))
         {
-            if (_monitorNotifications.TryGetValue($"{profile.Id:N}|{failed.Entity.Path}|{failed.SubQueue}", out var interrupted))
+            // A failed read may not say what it would have measured: its own incident, or any incident of this source.
+            foreach (var interrupted in _monitorNotifications
+                         .Where(pair => pair.Key == $"{profile.Id:N}|{failed.PhysicalKey}" ||
+                                        (pair.Key.StartsWith($"{profile.Id:N}|", StringComparison.Ordinal) &&
+                                         pair.Value.Source == failed.Entity && pair.Value.SubQueueLabel == FormatSubQueue(failed.SubQueue)))
+                         .Select(pair => pair.Value))
             {
                 interrupted.UnconfirmedClearChecks = 0;
                 interrupted.LastClearPointAt = null;
@@ -487,7 +492,8 @@ public sealed partial class MainWindowViewModel
         }
         foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
         {
-            var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
+            // One incident per dead-letter destination: sources sharing one are its aliases, not incidents of their own.
+            var key = $"{profile.Id:N}|{entity.PhysicalKey}";
             var count = entity.Count!.Value;
             var lowerBound = entity.CountIsLowerBound;
             var quality = entity.CountQuality;
@@ -621,7 +627,8 @@ public sealed partial class MainWindowViewModel
                 LastMeasuredAt = entity.MeasuredAt,
                 MeasuredFrom = entity.MeasuredFrom,
                 ContentMarkers = entity.ContentMarkers,
-                Offsets = entity.Offsets
+                Offsets = entity.Offsets,
+                SharedName = entity.MeasuredFrom is { } target && shared.ContainsKey(target) ? AlertSource(entity) : null
             };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);

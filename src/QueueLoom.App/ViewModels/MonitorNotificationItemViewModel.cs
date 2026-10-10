@@ -18,7 +18,10 @@ public sealed class MonitorNotificationItemViewModel(
     public string Key { get; } = key;
     public string EnvironmentName { get; } = environmentName;
     public ServiceBusEntityReference Source { get; } = source;
-    public string SourceName => Source.DisplayName;
+    public string SourceName => SharedName ?? Source.DisplayName;
+
+    /// <summary>The shared dead-letter destination this incident is of, with the sources that use it.</summary>
+    public string? SharedName { get; set; }
     public string EntityName => Source.Name;
     public string ParentTopicName => Source.TopicName ?? string.Empty;
     public bool IsQueue => Source.Kind == ServiceBusEntityKind.Queue;

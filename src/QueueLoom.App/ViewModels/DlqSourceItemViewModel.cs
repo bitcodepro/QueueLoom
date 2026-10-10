@@ -54,7 +54,20 @@ public sealed class DlqSourceItemViewModel(
 
     public string CountText => DeadLetterCountText.Format(Snapshot.Count ?? 0, Snapshot.CountQuality);
 
-    public string? CountNote => DeadLetterCountText.Note(Snapshot.CountQuality);
+    /// <summary>Other sources whose dead letters go to the same destination; its count is theirs as much as this one's.</summary>
+    public IReadOnlyList<string>? SharedWith { get; init; }
+
+    public bool IsShared => SharedWith is { Count: > 0 };
+
+    public string? CountNote => IsShared
+        ? $"The whole count of the dead-letter queue {DeadLetterHistorySample.SharedName(Snapshot.MeasuredFrom!)}, shared with " +
+          $"{string.Join(", ", SharedWith!)}: counted once in totals, not this source's own." +
+          (DeadLetterCountText.Note(Snapshot.CountQuality) is { } note ? $" {note}" : string.Empty)
+        : DeadLetterCountText.Note(Snapshot.CountQuality);
+
+    /// <summary>Rows counted once per dead-letter destination: shared destinations are listed under each source.</summary>
+    public static long CountOnce(IEnumerable<DlqSourceItemViewModel> rows) =>
+        DeadLetterSnapshot.CountOnce(rows, row => $"{row.ProfileId:N}|{row.Snapshot.PhysicalKey}", _ => true).Sum(row => row.Count);
 
     public string Delta => Snapshot.CountIsLowerBound || Snapshot.PreviousIsLowerBound ? "unknown" : Snapshot.Change switch
     {
