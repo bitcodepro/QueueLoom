@@ -67,7 +67,8 @@ public sealed class DlqSourceItemViewModel(
 
     /// <summary>Rows counted once per dead-letter destination: shared destinations are listed under each source.</summary>
     public static long CountOnce(IEnumerable<DlqSourceItemViewModel> rows) =>
-        DeadLetterSnapshot.CountOnce(rows, row => $"{row.ProfileId:N}|{row.Snapshot.PhysicalKey}", _ => true).Sum(row => row.Count);
+        DeadLetterSnapshot.CountOnce(rows, row => $"{row.ProfileId:N}|{row.Snapshot.PhysicalKey}",
+            row => row.Snapshot.IsSuccessful && row.Snapshot.Count.HasValue).Sum(row => row.Count);
 
     public string Delta => Snapshot.CountIsLowerBound || Snapshot.PreviousIsLowerBound ? "unknown" : Snapshot.Change switch
     {

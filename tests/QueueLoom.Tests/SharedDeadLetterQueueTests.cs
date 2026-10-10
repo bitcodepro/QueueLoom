@@ -68,9 +68,9 @@ public sealed partial class ViewModelStateTests
             [SharingOrdersDlq("orders", 25), SharingOrdersDlq("refunds", 25)]), "Test");
 
         Assert.Equal(25, sample.Total);
-        Assert.Equal(25, Assert.Single(sample.Sources, pair => pair.Key == "orders-dlq (shared)").Value);
+        Assert.Equal(25, Assert.Single(sample.Sources, pair => pair.Key == "orders-dlq").Value);
         Assert.DoesNotContain("orders", sample.Sources.Keys);
-        Assert.Equal("orders-dlq (shared)", sample.SharedAliases!["refunds"]);
+        Assert.Equal("orders-dlq", sample.SharedAliases!["refunds"]);
     }
 
     // The monitor alerts the shared queue once and counts it once in the total and in its growth.
@@ -206,6 +206,103 @@ public sealed partial class ViewModelStateTests
         }
         await Task.Delay(100);
         Assert.Equal(expectedAlerts, alerts.System.Count);
+        // Back to one user: the incident shows that source, no longer as shared.
+        Assert.Equal("refunds", Assert.Single(vm.MonitorNotifications).SourceName);
+    }
+
+    // While two sources use it, the incident says so.
+    [Fact]
+    public async Task ASharedIncidentNamesTheSourcesUsingItNow()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, SharingOrdersDlq("refunds", 25)) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        Assert.Equal("refunds", Assert.Single(vm.MonitorNotifications).SourceName);
+
+        workspace.Snapshots[dev.Id] = Snapshot(dev.Id, SharingOrdersDlq("orders", 25), SharingOrdersDlq("refunds", 25));
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+
+        Assert.Equal("orders-dlq (dead-letter queue shared by orders, refunds)", Assert.Single(vm.MonitorNotifications).SourceName);
+    }
+
+    // Two sources sharing a queue are one observation: one approximate zero in a check is one, not two in a row.
+    [Fact]
+    public async Task SharedSourcesConfirmAnApproximateZeroOnceAPerCheck()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        DeadLetterSnapshot Holding(long count) => Snapshot(dev.Id, SharingOrdersDlq("orders", count), SharingOrdersDlq("refunds", count));
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Holding(25) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        async Task Check() => await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        await Check();
+
+        workspace.Snapshots[dev.Id] = Holding(0);
+        await Check();
         Assert.Single(vm.MonitorNotifications);
+
+        // An interrupted check (the shared queue unreadable) starts the confirmation over.
+        workspace.Snapshots[dev.Id] = Snapshot(dev.Id, new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), null, null, "timed out") { MeasuredFrom = SharedArn });
+        await Check();
+        workspace.Snapshots[dev.Id] = Holding(0);
+        await Check();
+        Assert.Single(vm.MonitorNotifications);
+
+        await Check();
+        Assert.Empty(vm.MonitorNotifications);
+    }
+
+    // One shared backlog across one, two and again one user is one continuous trend, without invented changes.
+    [Fact]
+    public void HistoryOfASharedQueueIsOneTrendWhoeverUsesIt()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(int minute, params string[] users) => DeadLetterHistorySample.FromSnapshot(
+            new DeadLetterSnapshot(profileId, at.AddMinutes(minute), users.Select(user => SharingOrdersDlq(user, 25))), "Test");
+
+        foreach (var (first, last) in new[] { (Sample(0, "orders"), Sample(1, "orders", "refunds")), (Sample(1, "orders", "refunds"), Sample(2, "orders")) })
+        {
+            var summary = DeadLetterHistory.Summarize([first, last], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+            var trend = Assert.Single(summary.Sources);
+            Assert.Equal("orders-dlq", trend.Name);
+            Assert.Equal(0, trend.Change);
+            Assert.Equal(DeadLetterCountQuality.Estimated, trend.NowQuality);
+            Assert.Equal(0, summary.Change);
+            Assert.False(summary.TargetsChanged);
+        }
+    }
+
+    // A partial scan: the first alias of the shared queue failed, the other read it. The known count stays.
+    [Fact]
+    public async Task ListedTotalsKeepASharedCountWhenOneAliasFailed()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace
+        {
+            Snapshots =
+            {
+                [dev.Id] = Snapshot(dev.Id,
+                    new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), null, null, "timed out") { MeasuredFrom = SharedArn },
+                    SharingOrdersDlq("refunds", 25))
+            }
+        };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+
+        await vm.ScanCurrentEnvironmentCommand.ExecuteAsync();
+
+        Assert.Equal(25, vm.GlobalDlqSourceCount);
+        Assert.Equal(25, vm.VisibleDlqSourceCount);
     }
 }

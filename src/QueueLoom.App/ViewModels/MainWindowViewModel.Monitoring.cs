@@ -490,7 +490,10 @@ public sealed partial class MainWindowViewModel
                 interrupted.LastClearPointAt = null;
             }
         }
-        foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
+        // Each physical destination once per check: two sources sharing one are one observation, never two
+        // consecutive zeros in the same check.
+        foreach (var entity in DeadLetterSnapshot.CountOnce(snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue),
+                     item => item.PhysicalKey, _ => true))
         {
             // One incident per dead-letter destination: sources sharing one are its aliases, not incidents of their own.
             var key = $"{profile.Id:N}|{entity.PhysicalKey}";
@@ -498,6 +501,12 @@ public sealed partial class MainWindowViewModel
             var lowerBound = entity.CountIsLowerBound;
             var quality = entity.CountQuality;
             _monitorNotifications.TryGetValue(key, out var existing);
+            if (existing is not null)
+            {
+                // Sources join and leave a shared destination: the incident shows who uses it now.
+                existing.Source = entity.Entity;
+                existing.SharedName = entity.MeasuredFrom is { } sharedTarget && shared.ContainsKey(sharedTarget) ? AlertSource(entity) : null;
+            }
             if (existing is not null && entity.MeasuredAt is { } measuredAt && existing.LastMeasuredAt is { } lastMeasured &&
                 measuredAt < lastMeasured)
             {

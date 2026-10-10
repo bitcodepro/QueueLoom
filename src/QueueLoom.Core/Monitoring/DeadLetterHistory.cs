@@ -33,15 +33,14 @@ public sealed record DeadLetterHistorySample(
     public static DeadLetterHistorySample FromSnapshot(DeadLetterSnapshot snapshot, string environment)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        // A shared dead-letter destination is recorded once, under its own name, not once per source that uses it.
-        var shared = snapshot.SharedTargets;
-        // Its name depends on the destination alone, never on which or how many sources use it.
+        // A count taken from a known destination (an SQS dead-letter queue, a Pub/Sub reader subscription) is recorded
+        // under that destination's name, whichever and however many sources use it: one source joining or leaving a
+        // shared queue changes nothing in its history.
         string SourceName(DeadLetterEntitySnapshot entity) =>
-            entity.MeasuredFrom is { } target && shared.ContainsKey(target)
-                ? SharedSourceName(target)
-                : DeadLetterHistorySample.SourceName(entity);
-        // Which source used which shared destination: a source moved to another destination is a target change.
-        var aliases = shared.SelectMany(pair => pair.Value.Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: SharedSourceName(pair.Key))))
+            entity.MeasuredFrom is { } target ? SharedSourceName(target) : DeadLetterHistorySample.SourceName(entity);
+        // Which source used which destination: a source moved to another destination is a target change.
+        var aliases = snapshot.Entities.Where(entity => entity.MeasuredFrom is not null)
+            .Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: SharedSourceName(entity.MeasuredFrom!)))
             .GroupBy(pair => pair.Alias, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);
@@ -114,8 +113,8 @@ public sealed record DeadLetterHistorySample(
             ? sharedObservation.MeasuredFrom
         : null;
 
-    /// <summary>A shared destination's name in history: its short name, whoever uses it.</summary>
-    public static string SharedSourceName(string target) => $"{SharedName(target)} (shared)";
+    /// <summary>A measured destination's name in history: its short name, whoever uses it.</summary>
+    public static string SharedSourceName(string target) => SharedName(target);
 
     /// <summary>Same counts, qualities, sources and observations: a later sample adds nothing.</summary>
     public bool RecordsTheSameAs(DeadLetterHistorySample other) =>

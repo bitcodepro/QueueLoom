@@ -43,7 +43,7 @@ public sealed partial class ViewModelStateTests
             before.CapturedAt.AddMinutes(-1), after.CapturedAt.AddMinutes(5))!;
         Assert.True(summary.TargetsChanged);
         Assert.Null(summary.Change);
-        Assert.Null(Assert.Single(summary.Sources).Change);
+        Assert.All(summary.Sources, source => Assert.Null(source.Change));
     }
 
     // ≈100 measured at 10:00, then ≈0 measured at 09:55 (read later): the newer observation stands.
@@ -150,7 +150,7 @@ public sealed partial class ViewModelStateTests
 
         Assert.True(summary.TargetsChanged);
         Assert.Null(summary.Change);
-        Assert.Null(Assert.Single(summary.Sources).Change);
+        Assert.All(summary.Sources, source => Assert.Null(source.Change));
     }
 
     private static DeadLetterHistorySample Observed(Guid profileId, DateTimeOffset capturedAt, params DeadLetterEntitySnapshot[] entities) =>
