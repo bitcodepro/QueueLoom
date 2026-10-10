@@ -58,6 +58,9 @@ public sealed class MonitorNotificationItemViewModel(
     /// <summary>Approximate zeros seen in a row: one alone does not resolve the notification.</summary>
     public int UnconfirmedClearChecks { get; set; }
 
+    /// <summary>The service time of the last approximate zero counted: the same point read twice confirms nothing.</summary>
+    public DateTimeOffset? LastClearPointAt { get; set; }
+
     public bool CountIsLowerBound => CountQuality == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound;
 
     public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);

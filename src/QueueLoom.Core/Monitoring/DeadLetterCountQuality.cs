@@ -67,6 +67,12 @@ public static class DeadLetterCountQualities
     public static DeadLetterCountQuality Combine(DeadLetterCountQuality first, DeadLetterCountQuality second) =>
         Combine([first, second]);
 
+    /// <summary>The quality of an entity's reported dead-letter count, as the topology describes it.</summary>
+    public static DeadLetterCountQuality OfReported(QueueLoom.Core.ServiceBus.ServiceBusEntityRuntime runtime) =>
+        runtime.CountsUnavailable || runtime.DeadLetterCountError is not null ? DeadLetterCountQuality.Unknown
+        : runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated
+        : DeadLetterCountQuality.Exact;
+
     /// <summary>Whether the count proves the queue empty when it is 0: only an exact 0 does.</summary>
     public static bool ProvesEmpty(DeadLetterCountQuality quality) => quality == DeadLetterCountQuality.Exact;
 

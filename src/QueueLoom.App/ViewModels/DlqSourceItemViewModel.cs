@@ -60,7 +60,8 @@ public sealed class DlqSourceItemViewModel(
     {
         0 => Snapshot.ChangeQuality == DeadLetterCountQuality.Estimated ? "\u2248\u00b10" : "\u00b10",
         { } change => DeadLetterCountText.FormatChange(change, Snapshot.ChangeQuality),
-        _ => "new"
+        // A previous count that cannot be compared (another reader or dead-letter queue, an unknown count) is not "new".
+        _ => Snapshot.PreviousCount is null ? "new" : "unknown"
     };
 
     public string Error => Snapshot.Error ?? string.Empty;

@@ -28,6 +28,12 @@ public sealed record EntityInfo(
     long TransferDeadLetter,
     long Scheduled)
 {
+    /// <summary>
+    /// How far the counts can be trusted: "exact"; "estimated" (SQS's approximate counts, Pub/Sub Cloud Monitoring); or
+    /// "unknown" (the service reports none, so the zeros mean nothing).
+    /// </summary>
+    public string CountQuality { get; init; } = "exact";
+
     public string? TypedEntity { get; init; }
 }
 
@@ -40,6 +46,12 @@ public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? 
     /// "lowerBound" (Pub/Sub counted by reading up to 1,000: more may be there, and 0 does not prove it empty).
     /// </summary>
     public string CountQuality { get; init; } = "exact";
+
+    /// <summary>When the count was true, when the service says it is older than the read (a Cloud Monitoring point).</summary>
+    public DateTimeOffset? MeasuredAt { get; init; }
+
+    /// <summary>What was counted, when not the queue itself: a Pub/Sub reader subscription, an SQS dead-letter queue ARN.</summary>
+    public string? MeasuredFrom { get; init; }
 }
 
 public sealed record RuleInfo(string Name, string Kind, string Filter, string? Action);
@@ -72,7 +84,11 @@ public sealed record DeadLetterCauseInfo(
     string? Hint);
 
 /// <param name="Note">What QueueLoom knows about the queue, such as where it forwards its dead letters.</param>
-public sealed record DeadLetterSourceSummaryInfo(string Entity, long DeadLetterCount, int Read, string? Note, string? Error);
+public sealed record DeadLetterSourceSummaryInfo(string Entity, long DeadLetterCount, int Read, string? Note, string? Error)
+{
+    /// <summary>The quality of DeadLetterCount: "exact", "estimated" or "unknown" (the service reports no number).</summary>
+    public string CountQuality { get; init; } = "exact";
+}
 
 public sealed record DeadLetterExplanationInfo(
     string Environment,
@@ -106,6 +122,11 @@ public sealed record DeadLetterTrendInfo(string Source, long? Start, long? Now, 
     public string StartQuality { get; init; } = "exact";
 
     public string NowQuality { get; init; } = "exact";
+
+    /// <summary>What each end was counted through, when recorded; Change is null when they differ.</summary>
+    public string? StartMeasuredFrom { get; init; }
+
+    public string? NowMeasuredFrom { get; init; }
 
     /// <summary>"exact", or "estimated" when either end is an estimate (Change is null when either is a lower bound).</summary>
     public string ChangeQuality { get; init; } = "exact";
@@ -225,7 +246,8 @@ internal static class McpMapping
         runtime.MessageCounts.Active,
         runtime.MessageCounts.DeadLetter,
         runtime.MessageCounts.TransferDeadLetter,
-        runtime.MessageCounts.Scheduled);
+        runtime.MessageCounts.Scheduled)
+        { CountQuality = DeadLetterCountQualities.Name(DeadLetterCountQualities.OfReported(runtime)) };
 
     /// <summary>"orders" for a queue or topic, "topic/subscription" for a subscription.</summary>
     public static string EntityName(ServiceBusEntityReference reference) =>
@@ -234,7 +256,7 @@ internal static class McpMapping
     public static DeadLetterSourceInfo ToInfo(DeadLetterEntitySnapshot snapshot) =>
         new(EntityName(snapshot.Entity), SubQueueName(snapshot.SubQueue), snapshot.Count,
             snapshot.Error is null ? null : QueueLoom.Core.Diagnostics.SensitiveDataRedactor.Redact(snapshot.Error))
-            { CountQuality = DeadLetterCountQualities.Name(snapshot.CountQuality) };
+            { CountQuality = DeadLetterCountQualities.Name(snapshot.CountQuality), MeasuredAt = snapshot.MeasuredAt, MeasuredFrom = snapshot.MeasuredFrom };
 
     public static MessageInfo ToInfo(BrowsedMessage message)
     {

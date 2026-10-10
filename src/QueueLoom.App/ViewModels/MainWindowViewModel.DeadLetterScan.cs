@@ -54,6 +54,13 @@ public sealed partial class MainWindowViewModel
         var resultsGenerationBeforeScan = _messageResultsGeneration;
         _lastDlqMeasurements.Clear();
         DeadLetterSources.Clear();
+        // Coverage of this sweep only: an environment counts once it was scanned; one that failed or was not reached is
+        // unknown, so the overall count is never an exact 0 left over from an earlier scan.
+        _dlqScanQualities.Clear();
+        foreach (var environment in Profiles)
+        {
+            _dlqScanQualities[environment.Id] = DeadLetterCountQuality.Unknown;
+        }
         ApplyDeadLetterEnvironmentFilter();
         var scanFailures = 0;
         var successfulEnvironments = 0;
@@ -92,6 +99,7 @@ public sealed partial class MainWindowViewModel
                 {
                     scanFailures++;
                     _lastDlqScanHadFailures = true;
+                    totalQuality = DeadLetterCountQualities.Combine(totalQuality, DeadLetterCountQuality.Unknown);
                     AddActivity("Error", "Environment scan failed", $"{profile.Name} · {SanitizeException(exception)}");
                 }
             }
@@ -247,7 +255,14 @@ public sealed partial class MainWindowViewModel
                 entity.Count,
                 previous?.Count,
                 entity.Error,
-                entity.SubQueue) { CountQuality = entity.CountQuality, PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact };
+                entity.SubQueue)
+            {
+                CountQuality = entity.CountQuality,
+                PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
+                MeasuredAt = entity.MeasuredAt,
+                MeasuredFrom = entity.MeasuredFrom,
+                PreviousMeasuredFrom = previous?.MeasuredFrom
+            };
             DeadLetterSources.Add(new DlqSourceItemViewModel(
                 profile.Id,
                 profile.Name,

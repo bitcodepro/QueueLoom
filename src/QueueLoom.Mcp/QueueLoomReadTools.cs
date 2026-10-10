@@ -166,11 +166,14 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             return summary is null
                 ? new DeadLetterHistoryInfo(profile.Name, from, to, 0, null, null, null, null, [], [],
                     "Nothing was recorded in this period. History grows while a QueueLoom monitor runs or when dead letters are scanned.")
+                    { NowQuality = "unknown", StartQuality = "unknown", ChangeQuality = "unknown" }
                 : new DeadLetterHistoryInfo(profile.Name, from, to, summary.SampleCount, summary.Now, summary.Start, summary.Change,
                     new DeadLetterHistoryPointInfo(summary.Peak.At, summary.Peak.Count) { Quality = DeadLetterCountQualities.Name(summary.Peak.Quality) },
                     summary.Points.Select(point => new DeadLetterHistoryPointInfo(point.At, point.Count) { Quality = DeadLetterCountQualities.Name(point.Quality) }).ToArray(),
                     summary.Sources.Select(source => new DeadLetterTrendInfo(source.Name, source.Start, source.Now, source.Change)
                         {
+                            StartMeasuredFrom = source.StartMeasuredFrom,
+                            NowMeasuredFrom = source.NowMeasuredFrom,
                             StartQuality = DeadLetterCountQualities.Name(source.StartQuality),
                             NowQuality = DeadLetterCountQualities.Name(source.NowQuality),
                             ChangeQuality = DeadLetterCountQualities.Name(source.ChangeQuality)
@@ -486,9 +489,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: true, token).ConfigureAwait(false);
                 var queues = topology.Queues.Where(queue => queue.HasDeadLetterQueue)
-                    .Select(queue => (queue.Reference, Count: queue.Runtime.MessageCounts.DeadLetter, queue.Note))
+                    .Select(queue => (queue.Reference, Count: queue.Runtime.MessageCounts.DeadLetter, queue.Note,
+                        Quality: DeadLetterCountQualities.OfReported(queue.Runtime)))
                     .Concat(topology.Topics.SelectMany(topic => topic.Subscriptions).Where(subscription => subscription.HasDeadLetterQueue)
-                        .Select(subscription => (subscription.Reference, Count: subscription.Runtime.MessageCounts.DeadLetter, subscription.Note)))
+                        .Select(subscription => (subscription.Reference, Count: subscription.Runtime.MessageCounts.DeadLetter, subscription.Note,
+                            Quality: DeadLetterCountQualities.OfReported(subscription.Runtime))))
                     .ToArray();
                 if (!string.IsNullOrWhiteSpace(entity))
                 {
@@ -497,24 +502,27 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 }
                 else if (topology.HasMessageCounts)
                 {
-                    queues = queues.Where(queue => queue.Count > 0).ToArray();
+                    // Only an exact zero proves a queue empty; an approximate or unknown one is read too.
+                    queues = queues.Where(queue => queue.Count > 0 || !DeadLetterCountQualities.ProvesEmpty(queue.Quality)).ToArray();
                 }
 
                 var summaries = new List<DeadLetterSourceSummaryInfo>();
                 var read = new List<BrowsedMessage>();
-                foreach (var (reference, count, note) in queues)
+                foreach (var (reference, count, note, quality) in queues)
                 {
                     try
                     {
                         var browsed = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(reference, ServiceBusSubQueue.DeadLetter, perQueue), token)
                             .ConfigureAwait(false);
                         read.AddRange(browsed);
-                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, browsed.Count, note, null));
+                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, browsed.Count, note, null)
+                            { CountQuality = DeadLetterCountQualities.Name(quality) });
                     }
                     catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or TimeoutException)
                     {
                         summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, 0, note,
-                            QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(exception)));
+                            QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(exception))
+                            { CountQuality = DeadLetterCountQualities.Name(quality) });
                     }
                 }
                 return (summaries, read);
@@ -540,8 +548,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 .OrderByDescending(cause => cause.Count)
                 .Take(Math.Clamp(maxCauses, 1, 50))
                 .ToArray();
+            // Reading nothing proves emptiness only where the count is exact: a Pub/Sub read can come back empty.
+            var proven = sources.All(source => source.CountQuality == "exact");
             var summary = total == 0
-                ? sources.Count == 0 ? "No dead-letter queue holds messages." : "The dead-letter queues that were read are empty."
+                ? !proven ? "No dead letters were read, but some queues report no exact count: they are not known to be empty."
+                  : sources.Count == 0 ? "No dead-letter queue holds messages." : "The dead-letter queues that were read are empty."
                 : $"{total:N0} dead letter(s) read from {sources.Count(source => source.Read > 0):N0} queue(s) fall into " +
                   $"{messages.GroupBy(DeadLetterCauses.KeyOf).Count():N0} cause(s); the largest is {causes[0].Reason}" +
                   (causes[0].Pattern is null ? string.Empty : $": {causes[0].Pattern}") + $" ({causes[0].Share}%)." +

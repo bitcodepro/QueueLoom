@@ -513,14 +513,25 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             var quality = sampled ? DeadLetterCountQuality.LowerBound
                 : source.Runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated
                 : DeadLetterCountQuality.Exact;
-            _previousDeadLetterCounts[key] = new DeadLetterMeasurement(count, quality);
-            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous?.Count)
+            // A sample is true now; a reported count as of its own time (a Cloud Monitoring point can be minutes old).
+            var current = new DeadLetterMeasurement(count, quality)
             {
-                CountQuality = quality,
-                PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
-                // A sample is true now; a reported count as of its own time (a Cloud Monitoring point can be minutes old).
                 MeasuredAt = sampled ? TimeProvider.GetUtcNow() : source.Runtime.DeadLetterCountMeasuredAt,
                 MeasuredFrom = source.Runtime.DeadLetterCountSource
+            };
+            if (previous is { } newer && DeadLetterMeasurement.SameTarget(current, newer) && DeadLetterMeasurement.IsOlder(current, newer))
+            {
+                // Older than what this source already showed: the newer observation stands, it is not overruled.
+                current = newer;
+            }
+            _previousDeadLetterCounts[key] = current;
+            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, current.Count, previous?.Count)
+            {
+                CountQuality = current.Quality,
+                PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
+                MeasuredAt = current.MeasuredAt,
+                MeasuredFrom = current.MeasuredFrom,
+                PreviousMeasuredFrom = previous?.MeasuredFrom
             });
         }
 

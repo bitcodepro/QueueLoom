@@ -215,12 +215,57 @@ public sealed class McpRedactionAndGuardTests
         Assert.DoesNotContain("\n\n\n\n", details, StringComparison.Ordinal);
     }
 
+    // Count quality in the public tools: an approximate zero is not proof of empty, an approximate count says so, and
+    // a period without history has unknown values rather than exact nulls.
+    private static readonly ServiceBusQueue Estimated = new(
+        "orders",
+        new ServiceBusEntityRuntime(new ServiceBusMessageCounts(active: 0, deadLetter: 0)) { CountsAreEstimates = true },
+        ServiceBusEntityStatus.Active);
+
+    [Fact]
+    public async Task ExplainDeadLetters_DoesNotCallAnApproximateZeroEmpty()
+    {
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Estimated]) { HasMessageCounts = true } };
+
+        var (result, text, _) = await CallAsync(workspace, "explain_dead_letters", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains("not known to be empty", text, StringComparison.Ordinal);
+        Assert.Contains("\"countQuality\":\"estimated\"", text.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetEntities_SaysApproximateCountsAreEstimates()
+    {
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Estimated]) };
+
+        var (result, text, _) = await CallAsync(workspace, "get_entities", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains("estimated", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetDeadLetterHistory_WithoutRecordsHasUnknownValues()
+    {
+        using var directory = new QueueLoom.Tests.Infrastructure.TemporaryDirectory();
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Orders]) };
+        var store = new QueueLoom.Infrastructure.Persistence.JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+
+        var (result, text, _) = await CallAsync(workspace, "get_dead_letter_history", new(), history: store);
+
+        Assert.True(result.IsError != true, text);
+        Assert.DoesNotContain("\"exact\"", text, StringComparison.Ordinal);
+        Assert.Contains("unknown", text, StringComparison.Ordinal);
+    }
+
     private static async Task<(CallToolResult Result, string Text, CapturingApprover Approver)> CallAsync(
         IServiceBusWorkspace workspace,
         string tool,
         Dictionary<string, object?> arguments,
         bool approve = true,
-        ServiceBusProfile? profile = null)
+        ServiceBusProfile? profile = null,
+        IDeadLetterHistoryStore? history = null)
     {
         profile ??= CreateProfile("Development", EnvironmentKind.Development);
         var approver = new CapturingApprover(approve);
@@ -234,6 +279,7 @@ public sealed class McpRedactionAndGuardTests
                 services.AddSingleton<IProfileRepository>(new FakeProfileRepository([profile], profile.Id));
                 services.AddSingleton(workspace);
                 services.AddSingleton<IOperationApprover>(approver);
+                if (history is not null) services.AddSingleton(history);
             },
             input: clientToServer.Reader.AsStream(),
             output: serverToClient.Writer.AsStream(),

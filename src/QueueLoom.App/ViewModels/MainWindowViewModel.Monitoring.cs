@@ -460,6 +460,15 @@ public sealed partial class MainWindowViewModel
         // one notification and one webhook post, not fifty (most of which the in-flight limit would then drop).
         var alerts = new List<MonitorAlert>();
         var changes = new List<(ServiceBusEntityReference Entity, string Text)>();
+        // A source that could not be read interrupts an approximate-zero confirmation: two zeros must be consecutive.
+        foreach (var failed in snapshot.Entities.Where(item => !item.IsSuccessful))
+        {
+            if (_monitorNotifications.TryGetValue($"{profile.Id:N}|{failed.Entity.Path}|{failed.SubQueue}", out var interrupted))
+            {
+                interrupted.UnconfirmedClearChecks = 0;
+                interrupted.LastClearPointAt = null;
+            }
+        }
         foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
@@ -496,9 +505,14 @@ public sealed partial class MainWindowViewModel
             }
             if (count <= 0 && lowerBound)
             {
-                // A sample that showed nothing does not prove the queue is empty: an open notification stays open, and
-                // its count is no longer shown as exact.
-                if (existing is not null) existing.CountQuality = DeadLetterCountQuality.LowerBound;
+                // A sample that showed nothing does not prove the queue is empty: an open notification stays open, its
+                // count is no longer shown as exact, and an approximate-zero confirmation starts over.
+                if (existing is not null)
+                {
+                    existing.CountQuality = DeadLetterCountQuality.LowerBound;
+                    existing.UnconfirmedClearChecks = 0;
+                    existing.LastClearPointAt = null;
+                }
                 continue;
             }
             if (count <= 0)
@@ -507,6 +521,13 @@ public sealed partial class MainWindowViewModel
                 {
                     continue;
                 }
+                if (!DeadLetterCountQualities.ProvesEmpty(quality) && entity.MeasuredAt is { } zeroAt && existing.LastClearPointAt == zeroAt)
+                {
+                    // The same service point read again (Cloud Monitoring had nothing newer): not a second zero.
+                    existing.CountQuality = quality;
+                    continue;
+                }
+                existing.LastClearPointAt = entity.MeasuredAt;
                 if (!DeadLetterCountQualities.ProvesEmpty(quality) && ++existing.UnconfirmedClearChecks < 2)
                 {
                     // An approximate zero (SQS, Cloud Monitoring) is not proof on its own: it resolves the notification
@@ -528,6 +549,7 @@ public sealed partial class MainWindowViewModel
             if (existing is not null)
             {
                 existing.UnconfirmedClearChecks = 0;
+                existing.LastClearPointAt = null;
                 var previous = new DeadLetterMeasurement(existing.Count, existing.CountQuality);
                 var now = new DeadLetterMeasurement(count, quality);
                 if (lowerBound && count < existing.Count)

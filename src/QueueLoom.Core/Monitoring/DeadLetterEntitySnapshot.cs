@@ -73,6 +73,9 @@ public sealed record DeadLetterEntitySnapshot
     /// </summary>
     public string? MeasuredFrom { get; init; }
 
+    /// <summary>What the previous count was taken from; a count of another target has no change against this one.</summary>
+    public string? PreviousMeasuredFrom { get; init; }
+
     /// <summary>Shorthand for a lower-bound count; setting it true makes the count a lower bound.</summary>
     public bool CountIsLowerBound
     {
@@ -101,7 +104,9 @@ public sealed record DeadLetterEntitySnapshot
     /// null around a lower bound, an unqualified or an unknown count.
     /// </summary>
     public long? Change => Count.HasValue && PreviousCount.HasValue
-        ? DeadLetterMeasurement.Difference(new DeadLetterMeasurement(PreviousCount.Value, PreviousQuality), new DeadLetterMeasurement(Count.Value, CountQuality))?.Count
+        ? DeadLetterMeasurement.Difference(
+            new DeadLetterMeasurement(PreviousCount.Value, PreviousQuality) { MeasuredFrom = PreviousMeasuredFrom },
+            new DeadLetterMeasurement(Count.Value, CountQuality) { MeasuredFrom = MeasuredFrom })?.Count
         : null;
 
     /// <summary>Exact between exact counts, estimated when either is an estimate.</summary>
