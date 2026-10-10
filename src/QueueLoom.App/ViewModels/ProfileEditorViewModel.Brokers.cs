@@ -16,6 +16,7 @@ public sealed partial class ProfileEditorViewModel
     private string _kafkaBootstrapServers = string.Empty;
     private bool _kafkaUseTls;
     private bool _kafkaJavaCompatiblePartitioner;
+    private bool _kafkaNonIdempotentProducer;
     private KafkaSaslMechanism _kafkaSaslMechanism = KafkaSaslMechanism.ScramSha512;
     private string _kafkaUserName = string.Empty;
     private string _kafkaDeadLetterSuffixes = string.Join(", ", KafkaSettings.DefaultDeadLetterSuffixes);
@@ -132,6 +133,13 @@ public sealed partial class ProfileEditorViewModel
         set => SetProperty(ref _kafkaJavaCompatiblePartitioner, value);
     }
 
+    /// <summary>Compatibility mode for clusters that refuse idempotent sends; a lost acknowledgement can then duplicate.</summary>
+    public bool KafkaNonIdempotentProducer
+    {
+        get => _kafkaNonIdempotentProducer;
+        set => SetProperty(ref _kafkaNonIdempotentProducer, value);
+    }
+
     /// <summary>Optional Confluent-compatible Schema Registry, used to decode Avro, Protobuf and JSON Schema bodies.</summary>
     public string SchemaRegistryUrl
     {
@@ -176,6 +184,7 @@ public sealed partial class ProfileEditorViewModel
             _kafkaDeadLetterSuffixes = string.Join(", ", kafka.EffectiveDeadLetterSuffixes);
             _schemaRegistryUrl = kafka.SchemaRegistryUrl ?? string.Empty;
             _kafkaJavaCompatiblePartitioner = kafka.JavaCompatiblePartitioner;
+            _kafkaNonIdempotentProducer = kafka.NonIdempotentProducer;
             _schemaRegistryUserName = kafka.SchemaRegistryUserName ?? string.Empty;
             _hasExistingSchemaRegistryPassword = kafka.SchemaRegistryUserName is not null;
         }
@@ -218,7 +227,8 @@ public sealed partial class ProfileEditorViewModel
             suffixes.SequenceEqual(KafkaSettings.DefaultDeadLetterSuffixes) ? null : suffixes,
             NullIfWhiteSpace(SchemaRegistryUrl)?.TrimEnd('/'),
             NullIfWhiteSpace(SchemaRegistryUrl) is null ? null : NullIfWhiteSpace(SchemaRegistryUserName),
-            KafkaJavaCompatiblePartitioner);
+            KafkaJavaCompatiblePartitioner,
+            KafkaNonIdempotentProducer);
         if (settings.SchemaRegistryUserName is not null && string.IsNullOrEmpty(SchemaRegistryPassword) && !_hasExistingSchemaRegistryPassword)
         {
             Error = "Enter the Schema Registry password or API secret.";

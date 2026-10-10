@@ -26,6 +26,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     private ClientConfig? _config;
     private IAdminClient? _admin;
     private IProducer<byte[]?, byte[]?>? _producer;
+    private volatile Error? _producerFatalError;
     private SchemaRegistryClient? _schemaRegistry;
     private KafkaTopologyIndex _index = KafkaTopologyIndex.Empty;
 
@@ -92,7 +93,14 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             {
                 throw new InvalidOperationException($"No Kafka broker answered at {settings.BootstrapServers}.");
             }
-            _producer = new ProducerBuilder<byte[]?, byte[]?>(CreateProducerConfig(config, settings.JavaCompatiblePartitioner)).Build();
+            var producerConfig = CreateProducerConfig(config, settings.JavaCompatiblePartitioner, settings.NonIdempotentProducer);
+            ConfigureProducer?.Invoke(producerConfig);
+            _producerFatalError = null;
+            _producer = new ProducerBuilder<byte[]?, byte[]?>(producerConfig)
+                // librdkafka reports why a producer stopped (a refused idempotent producer ID, for example) only here;
+                // the failed sends themselves carry just "purged" or "fatal".
+                .SetErrorHandler((_, error) => { if (error.IsFatal) _producerFatalError = error; })
+                .Build();
         }
         catch (KafkaException exception)
         {
@@ -274,6 +282,23 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             // broker is a refusal. Anything else may have been stored, and must not read as a refusal, or sending it
             // again could duplicate it.
             var status = exception.DeliveryResult?.Status;
+            if (status != PersistenceStatus.Persisted && _producerFatalError is { } fatal)
+            {
+                // The producer stopped for good (a refused idempotent producer ID among the causes). It is not retried
+                // here, and never turned into a non-idempotent send. A record purged while still queued was never sent;
+                // anything else may have been, so it stays unknown and a move keeps its original.
+                var reason = $"The Kafka producer stopped: {fatal.Reason}.";
+                var hint = fatal.Code == ErrorCode.ClusterAuthorizationFailed
+                    ? " The cluster refuses idempotent sends: Kafka before 2.8 needs the IDEMPOTENT_WRITE permission for them. " +
+                      "Grant it, or turn on the environment's compatibility mode, in which a lost acknowledgement can leave a " +
+                      "record written twice. Reconnect afterwards."
+                    : " Reconnect to the environment to send again.";
+                throw exception.Error.Code == ErrorCode.Local_PurgeQueue
+                    ? new DeliveryRejectedException($"Kafka did not accept the message. {reason}{hint}", exception)
+                    : new InvalidOperationException(
+                        $"Whether Kafka stored the message is unknown. {reason} Check '{destination.Name}' before sending it again.{hint}",
+                        exception);
+            }
             throw status == PersistenceStatus.Persisted
                 ? new InvalidOperationException($"Kafka stored the message but reported an error: {exception.Error.Reason}", exception)
                 : status != PersistenceStatus.PossiblyPersisted && IsDefiniteRefusal(exception.Error.Code)
@@ -323,9 +348,18 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     /// which one the topic's other producers use, so a resent record reaches the partition they use for its key:
     /// changing it for an existing profile would move keys and break per-key order and compaction.
     /// </summary>
-    internal static ProducerConfig CreateProducerConfig(ClientConfig config, bool javaCompatiblePartitioner)
+    /// <remarks>
+    /// The producer is idempotent unless the profile's compatibility mode says otherwise: librdkafka retries a send whose
+    /// acknowledgement was lost, and only the broker's sequence check keeps that retry from writing the record twice.
+    /// A refusal of idempotence is reported, never answered by switching it off (as KIP-679 decided for Kafka itself).
+    /// It protects the client's own retries only; a second send started by the user is a new record.
+    /// </remarks>
+    internal static ProducerConfig CreateProducerConfig(ClientConfig config, bool javaCompatiblePartitioner, bool nonIdempotent = false)
     {
-        var producer = new ProducerConfig(config) { Acks = Acks.All, MessageTimeoutMs = 30_000 };
+        // A copy: ProducerConfig(ClientConfig) shares the given dictionary, so producer settings set here would otherwise
+        // reach the admin client and consumers built from the same configuration (an idempotent admin client among them).
+        var producer = new ProducerConfig(config.ToDictionary(setting => setting.Key, setting => setting.Value))
+            { Acks = Acks.All, MessageTimeoutMs = 30_000, EnableIdempotence = !nonIdempotent };
         if (javaCompatiblePartitioner)
         {
             producer.Partitioner = Partitioner.Murmur2Random;
@@ -338,6 +372,9 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     /// ends with a partition EOF, so waiting is safe; past this the read is a timeout, never an exhausted topic.
     /// </summary>
     internal TimeSpan IdleFetchLimit { get; init; } = RequestTimeout;
+
+    /// <summary>Test seam: adjusts the producer's configuration (shorter timeouts) before it is built.</summary>
+    internal Action<ProducerConfig>? ConfigureProducer { get; set; }
 
     /// <summary>Test seam: replaces the SDK consumer of this workspace when set.</summary>
     internal Func<IConsumer<byte[]?, byte[]?>>? ConsumerFactory { get; set; }
