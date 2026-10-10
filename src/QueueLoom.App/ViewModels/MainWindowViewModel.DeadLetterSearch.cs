@@ -249,7 +249,7 @@ public sealed partial class MainWindowViewModel
             $"{searchedTargets:N0} sources | oldest first{qualifier}" +
             (timedOutEnvironments > 0 ? $" | {timedOutEnvironments:N0} environment timeouts" : string.Empty) +
             (outsideWindow > 0 ? $" | {outsideWindow:N0} older matches hidden ({SearchWindow.Label.ToLowerInvariant()})" : string.Empty);
-        MessageListTitle = $"Search timeline | {scopeName} | body search reads up to the first 1 MiB";
+        MessageListTitle = $"Search timeline | {scopeName} | {BodySearchCoverage}";
         StatusText = $"Found {Messages.Count:N0} matching dead-letter messages in {scopeName}";
         AddActivity(
             incomplete || restoreFailed ? "Warning" : "Info",
@@ -282,4 +282,10 @@ public sealed partial class MainWindowViewModel
         DeadLetterSearchStatus = "Search Correlation ID, Message ID, body, or application properties.";
         ClearDeadLetterSearchCommand.NotifyCanExecuteChanged();
     }
+
+    /// <summary>
+    /// Search matches every received body in full. Only Azure Service Bus cuts what the list keeps to 1 MiB, and its
+    /// server-side search matches the whole body it received, not that cut.
+    /// </summary>
+    internal const string BodySearchCoverage = "bodies are searched in full";
 }
