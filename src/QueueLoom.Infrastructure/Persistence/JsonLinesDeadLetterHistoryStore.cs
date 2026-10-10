@@ -94,6 +94,8 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
     // generation below, an edit, a replaced file) makes the next Load read and parse everything again. Hashing reads
     // the file but parses nothing: before, every monitor check deserialized the whole 30-day file, which is what
     // stalled the window. The generation, written by every compaction of this version, adds an explicit signal.
+    /// <summary>Tests count the history lines parsed, which does not depend on how fast the machine is.</summary>
+    internal long LinesParsed { get; private set; }
     private readonly List<DeadLetterHistorySample> _samples = [];
     private long _readLength;
     private byte[] _prefixHash = [];
@@ -145,6 +147,7 @@ public sealed class JsonLinesDeadLetterHistoryStore(string file, TimeProvider? t
             }
             try
             {
+                LinesParsed++;
                 if (JsonSerializer.Deserialize<DeadLetterHistorySample>(line) is { Sources: not null } sample)
                 {
                     _samples.Add(sample);
