@@ -50,6 +50,9 @@ public sealed partial class MainWindowViewModel
                                    + (_topology?.AggregateMessageCounts.TransferDeadLetter ?? 0);
     public long GlobalDlqSourceCount => DeadLetterSources.Sum(source => source.Count);
 
+    /// <summary>The listed total includes a sampled queue, so the real total may be larger.</summary>
+    public bool GlobalDlqCountIsLowerBound => DeadLetterSources.Any(source => source.CountIsLowerBound);
+
     private async Task RefreshTopologyAsync(CancellationToken cancellationToken)
     {
         var topology = await _workspace.GetTopologyAsync(forceRefresh: true, cancellationToken)

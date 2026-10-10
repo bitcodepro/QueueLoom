@@ -676,9 +676,20 @@ internal sealed record GooglePubSubTopology(
                 };
             }
 
+            // A dead-letter reader that Cloud Monitoring reported no series for has no count yet (a new subscription, or
+            // a gap in the metric): it is counted by reading, like a project without Monitoring, never taken as zero.
+            if (deadLetterReader is not null && !undelivered.ContainsKey(deadLetterReader.SubscriptionName.SubscriptionId))
+            {
+                return new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
+                {
+                    CountsUnavailable = true,
+                    HasTransferDeadLetterCount = false
+                };
+            }
+
             return new ServiceBusEntityRuntime(new ServiceBusMessageCounts(
                 active: undelivered.GetValueOrDefault(subscription.SubscriptionName.SubscriptionId),
-                deadLetter: deadLetterReader is null ? 0 : undelivered.GetValueOrDefault(deadLetterReader.SubscriptionName.SubscriptionId)))
+                deadLetter: deadLetterReader is null ? 0 : undelivered[deadLetterReader.SubscriptionName.SubscriptionId]))
             {
                 HasTransferDeadLetterCount = false
             };

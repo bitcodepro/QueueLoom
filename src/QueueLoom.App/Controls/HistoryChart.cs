@@ -219,7 +219,8 @@ public sealed class HistoryChart : Control
         context.DrawEllipse(TooltipBrush ?? Brushes.Black, new Pen(line, 2), focus, 4.5, 4.5);
 
         var sample = points[nearest];
-        var count = Text($"{sample.Count:N0} dead letters", LineBrush ?? Brushes.White, 12, FontWeight.SemiBold);
+        var count = Text($"{QueueLoom.Core.Monitoring.DeadLetterCountText.Format(sample.Count, sample.IsLowerBound)} dead letters",
+            LineBrush ?? Brushes.White, 12, FontWeight.SemiBold);
         var time = Text(sample.At.ToLocalTime().ToString("ddd d MMM, HH:mm", CultureInfo.CurrentCulture), labels, 11);
         var width = Math.Max(count.Width, time.Width) + 16;
         var height = count.Height + time.Height + 10;

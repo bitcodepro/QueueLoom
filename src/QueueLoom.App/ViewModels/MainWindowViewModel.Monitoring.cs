@@ -371,7 +371,8 @@ public sealed partial class MainWindowViewModel
             }
         }
 
-        var total = _lastDlqMeasurements.Values.Sum();
+        var total = _lastDlqMeasurements.Values.Sum(measurement => measurement.Count);
+        var totalIsLowerBound = _lastDlqMeasurements.Values.Any(measurement => measurement.IsLowerBound);
         if (!isComplete)
         {
             MonitorAlert = $"DLQ check was incomplete at {DateTimeOffset.Now:HH:mm:ss}; known counts were not used as a new baseline.";
@@ -383,14 +384,17 @@ public sealed partial class MainWindowViewModel
 
         var increases = _hasMonitorBaseline
             ? _lastDlqMeasurements
-                .Select(measurement =>
-                    measurement.Value - _monitorBaseline.GetValueOrDefault(measurement.Key))
+                // Only proven growth: a source new to the baseline counts from zero, and a sampled count is compared
+                // only with an exact earlier one (1,000 → 300 → 1,000 samples are not "increased by 700").
+                .Select(measurement => DeadLetterMeasurement.ProvenIncrease(
+                    _monitorBaseline.TryGetValue(measurement.Key, out var before) ? before : new DeadLetterMeasurement(0, false),
+                    measurement.Value) ?? 0)
                 .Where(increase => increase > 0)
                 .ToArray()
             : [];
         if (_hasMonitorBaseline && increases.Length > 0)
         {
-            MonitorAlert = $"{increases.Length:N0} DLQ source(s) increased by {increases.Sum():N0}; total is {total:N0} at {DateTimeOffset.Now:HH:mm:ss}";
+            MonitorAlert = $"{increases.Length:N0} DLQ source(s) increased by {increases.Sum():N0}; total is {DeadLetterCountText.Format(total, totalIsLowerBound)} at {DateTimeOffset.Now:HH:mm:ss}";
             AddActivity("Warning", "DLQ alert", MonitorAlert);
         }
         else
@@ -452,10 +456,12 @@ public sealed partial class MainWindowViewModel
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
             var count = entity.Count!.Value;
             var lowerBound = entity.CountIsLowerBound;
-            _lastDlqMeasurements[key] = count;
+            _lastDlqMeasurements[key] = new DeadLetterMeasurement(count, lowerBound);
             if (count <= 0 && lowerBound)
             {
-                // A sample that showed nothing does not prove the queue is empty: an open notification stays open.
+                // A sample that showed nothing does not prove the queue is empty: an open notification stays open, and
+                // its count is no longer shown as exact.
+                if (_monitorNotifications.TryGetValue(key, out var unproven)) unproven.CountIsLowerBound = true;
                 continue;
             }
             if (count <= 0)
@@ -474,24 +480,26 @@ public sealed partial class MainWindowViewModel
 
             if (_monitorNotifications.TryGetValue(key, out var existing))
             {
+                var before = new DeadLetterMeasurement(existing.Count, existing.CountIsLowerBound);
+                var now = new DeadLetterMeasurement(count, lowerBound);
                 if (lowerBound && count < existing.Count)
                 {
                     // Lost precision is not a decrease: a smaller sample keeps the larger count already reported.
                     existing.CountIsLowerBound = true;
                     continue;
                 }
-                existing.CountIsLowerBound = lowerBound;
-                if (existing.Count != count)
+                if (before != now)
                 {
-                    var previousCount = existing.Count;
                     existing.Count = count;
+                    existing.CountIsLowerBound = lowerBound;
                     existing.LastDetectedAt = detectedAt;
-                    if (count > previousCount)
+                    // Alert on proven growth only; a change from or to a sample is reported, not alerted as growth.
+                    if (DeadLetterMeasurement.ProvenIncrease(before, now) > 0)
                     {
-                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount)
-                            { CountIsLowerBound = lowerBound });
+                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, before.Count)
+                            { CountIsLowerBound = lowerBound, PreviousIsLowerBound = before.IsLowerBound });
                     }
-                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previousCount:N0} → {DeadLetterCountText.Format(count, lowerBound)}"));
+                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {before} → {now}"));
                 }
                 continue;
             }

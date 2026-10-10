@@ -226,7 +226,7 @@ public sealed partial class MainWindowViewModel
                      .ToArray())
         {
             DeadLetterSources.Remove(row);
-            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = 0;
+            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.CountIsLowerBound);
         }
 
         SortDeadLetterSources(null, null, null);

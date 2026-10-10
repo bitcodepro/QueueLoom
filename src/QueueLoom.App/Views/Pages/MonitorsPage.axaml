@@ -175,7 +175,7 @@
 
             <StackPanel Grid.Column="2" Spacing="10">
               <TextBlock Text="LARGEST DEAD-LETTER QUEUES" Classes="eyebrow" />
-              <TextBlock Text="The queues were empty at the last check." Classes="muted"
+              <TextBlock Text="{Binding HistoryNoSourcesText}" Classes="muted"
                          IsVisible="{Binding !HasHistorySources}" TextWrapping="Wrap" />
               <ItemsControl ItemsSource="{Binding HistorySources}" IsVisible="{Binding HasHistorySources}">
                 <ItemsControl.ItemTemplate>

@@ -254,6 +254,25 @@ public sealed class MultiProviderTests
         Assert.False(result.Topology.HasMessageCounts);
     }
 
+    // A dead-letter reader with no Cloud Monitoring series yet has no count: it is sampled by reading, never shown as 0.
+    [Fact]
+    public void Pubsub_dead_letter_reader_missing_from_cloud_monitoring_is_sampled_not_zero()
+    {
+        const string project = "orders-prod-4821";
+        var deadLetterTopic = new TopicName(project, "events-dlq").ToString();
+        var subscriptions = new[]
+        {
+            Subscription(project, "billing", "events", deadLetterTopic),
+            Subscription(project, "dlq-reader", "events-dlq", null)
+        };
+
+        var result = GooglePubSubTopology.Build(project, ["events", "events-dlq"], subscriptions, DateTimeOffset.UnixEpoch,
+            new Dictionary<string, long> { ["billing"] = 12 });
+
+        var billing = result.Topology.Topics.Single(topic => topic.Name == "events").Subscriptions.Single(item => item.Name == "billing").Runtime;
+        Assert.True(billing.CountsUnavailable);
+    }
+
     [Fact]
     public void Pubsub_counts_from_cloud_monitoring_fill_active_and_dead_letter_columns()
     {

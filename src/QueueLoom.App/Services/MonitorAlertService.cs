@@ -12,6 +12,9 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
     /// <summary>The count is only a lower bound (a sampled Pub/Sub queue): written "1,000+", never as an exact size.</summary>
     public bool CountIsLowerBound { get; init; }
 
+    /// <summary>The previous count was only a lower bound.</summary>
+    public bool PreviousIsLowerBound { get; init; }
+
     public string Title => "QueueLoom: dead letters";
 
     public string Text => Combined is { Count: > 0 } combined
@@ -26,7 +29,7 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
     internal const int MaximumListed = 5;
 
     private string SourceText => PreviousCount is { } previous
-        ? $"{Source}: {CountText} dead-lettered messages (was {previous:N0})"
+        ? $"{Source}: {CountText} dead-lettered messages (was {QueueLoom.Core.Monitoring.DeadLetterCountText.Format(previous, PreviousIsLowerBound)})"
         : $"{Source}: {CountText} dead-lettered messages";
 
     private string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountIsLowerBound);

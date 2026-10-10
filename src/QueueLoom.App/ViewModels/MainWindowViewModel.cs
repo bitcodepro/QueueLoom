@@ -32,9 +32,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private readonly INotificationService? _notifications;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _workspaceGate = new(1, 1);
-    private readonly Dictionary<string, long> _previousDlqCounts = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _monitorBaseline = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _lastDlqMeasurements = new(StringComparer.Ordinal);
+    // Counts keep their quality: a sampled (lower-bound) count is never compared with others as if it were exact.
+    private readonly Dictionary<string, DeadLetterMeasurement> _previousDlqCounts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeadLetterMeasurement> _monitorBaseline = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeadLetterMeasurement> _lastDlqMeasurements = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MonitorNotificationItemViewModel> _monitorNotifications = new(StringComparer.Ordinal);
     private readonly List<EntityItemViewModel> _allEntities = [];
 

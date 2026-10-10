@@ -124,16 +124,19 @@ public static class DeadLetterHistory
         if (points.Length > maximumPoints)
         {
             var bucket = (to - from).Ticks / maximumPoints + 1;
+            // A bucket keeps its highest count, and stays a lower bound when any of its samples was one.
             points = points
                 .GroupBy(point => (point.At - from).Ticks / bucket)
-                .Select(group => group.MaxBy(point => point.Count)!)
+                .Select(group => group.MaxBy(point => point.Count)! with { IsLowerBound = group.Any(point => point.IsLowerBound) })
                 .ToArray();
         }
 
         var first = inRange[0];
         var last = inRange[^1];
         var peak = points.MaxBy(point => point.Count)!;
+        // Sampled queues are listed even when nothing was seen in them: their count is unknown, not zero.
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
+            .Concat(last.LowerBoundSources ?? []).Concat(first.LowerBoundSources ?? [])
             .Distinct(StringComparer.Ordinal)
             .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name))
                 { StartIsLowerBound = first.IsLowerBound(name), NowIsLowerBound = last.IsLowerBound(name) })
