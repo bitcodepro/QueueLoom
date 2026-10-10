@@ -43,15 +43,19 @@ public sealed partial class AzureServiceBusWorkspace
     // its dead letters, which never use sessions, and leaves the active count at zero.
     // An entity that auto-forwards holds nothing and cannot be peeked at all; one that forwards its dead letters has
     // an empty dead-letter queue.
-    private static async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, bool requiresSession,
+    internal static async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, bool requiresSession,
         string? forwardTo, string? forwardDeadLettersTo,
-        Func<ServiceBusEntityReference, SubQueue, CancellationToken, Task<long>> sampleCount, CancellationToken token) =>
-        new(new ServiceBusMessageCounts(
-            active: requiresSession || forwardTo is not null ? 0 : await sampleCount(source, SubQueue.None, token).ConfigureAwait(false),
-            deadLetter: forwardDeadLettersTo is not null ? 0 : await sampleCount(source, SubQueue.DeadLetter, token).ConfigureAwait(false)))
+        Func<ServiceBusEntityReference, SubQueue, CancellationToken, Task<long>> sampleCount, CancellationToken token)
+    {
+        var active = requiresSession || forwardTo is not null ? 0 : await sampleCount(source, SubQueue.None, token).ConfigureAwait(false);
+        var deadLetter = forwardDeadLettersTo is not null ? 0 : await sampleCount(source, SubQueue.DeadLetter, token).ConfigureAwait(false);
+        return new(new ServiceBusMessageCounts(active: active, deadLetter: deadLetter))
         {
-            IsEmulatorSample = true
+            IsEmulatorSample = true,
+            // A capped sample is at least the cap, as the monitor's snapshot already says (EmulatorSampleQuality).
+            DeadLetterCountIsLowerBound = EmulatorSampleQuality(deadLetter) == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound
         };
+    }
 
     private Task<ServiceBusTopology> SampleEmulatorTopologyAsync(ServiceBusTopology topology, CancellationToken token) =>
         SampleEmulatorTopologyAsync(topology, SampleEmulatorCountAsync, _timeProvider, token);

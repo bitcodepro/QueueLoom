@@ -70,6 +70,7 @@ public static class DeadLetterCountQualities
     /// <summary>The quality of an entity's reported dead-letter count, as the topology describes it.</summary>
     public static DeadLetterCountQuality OfReported(QueueLoom.Core.ServiceBus.ServiceBusEntityRuntime runtime) =>
         runtime.CountsUnavailable || runtime.DeadLetterCountError is not null ? DeadLetterCountQuality.Unknown
+        : runtime.DeadLetterCountIsLowerBound ? DeadLetterCountQuality.LowerBound
         : runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated
         : DeadLetterCountQuality.Exact;
 

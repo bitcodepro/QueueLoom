@@ -22,6 +22,9 @@ public sealed record ServiceBusEntityRuntime
     public ServiceBusMessageCounts MessageCounts { get; }
     public bool IsEmulatorSample { get; init; }
 
+    /// <summary>The dead-letter count is a sample that reached its cap: at least this many, maybe more.</summary>
+    public bool DeadLetterCountIsLowerBound { get; init; }
+
     /// <summary>The service does not report counts for this entity, so every counter is unknown rather than zero.</summary>
     public bool CountsUnavailable { get; init; }
 

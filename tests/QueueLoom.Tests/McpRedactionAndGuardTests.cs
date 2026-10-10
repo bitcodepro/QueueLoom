@@ -234,6 +234,39 @@ public sealed class McpRedactionAndGuardTests
         Assert.Contains("\"countQuality\":\"estimated\"", text.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
     }
 
+    // An exact positive count whose read failed is not an empty queue.
+    [Fact]
+    public async Task ExplainDeadLetters_DoesNotCallAFailedReadEmpty()
+    {
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [Orders]) { HasMessageCounts = true },
+            CleanupOperationGate = _ => throw new TimeoutException("The read timed out.")
+        };
+
+        var (result, text, _) = await CallAsync(workspace, "explain_dead_letters", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains("could not be read", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("are empty", text, StringComparison.Ordinal);
+    }
+
+    // The emulator's capped sample is at least the cap: get_entities says so, as scan_dead_letters does.
+    [Theory]
+    [InlineData(999, "exact")]
+    [InlineData(1000, "lowerBound")]
+    public async Task GetEntities_CallsACappedEmulatorSampleALowerBound(long sampled, string quality)
+    {
+        var runtime = await QueueLoom.Infrastructure.Azure.AzureServiceBusWorkspace.SampleEmulatorRuntimeAsync(
+            Orders.Reference, false, null, null, (_, _, _) => Task.FromResult(sampled), CancellationToken.None);
+        var workspace = new FakeWorkspace { Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [new ServiceBusQueue("orders", runtime, ServiceBusEntityStatus.Active)]) };
+
+        var (result, text, _) = await CallAsync(workspace, "get_entities", new());
+
+        Assert.True(result.IsError != true, text);
+        Assert.Contains($"\"countQuality\":\"{quality}\"", text.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task GetEntities_SaysApproximateCountsAreEstimates()
     {

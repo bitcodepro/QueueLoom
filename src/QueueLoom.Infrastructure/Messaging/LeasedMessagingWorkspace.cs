@@ -93,7 +93,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 await OpenAsync(profile, cancellationToken).ConfigureAwait(false);
                 _profile = profile;
                 _cachedTopology = null;
-                _previousDeadLetterCounts.Clear();
+                // Observations are kept per environment across reconnects (a global sweep reconnects each one): a
+                // delayed point fetched after a reconnect must not overrule what was already seen.
                 _connectionState = WorkspaceConnectionState.Connected;
             }
             catch
@@ -508,7 +509,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 count = source.Runtime.MessageCounts.DeadLetter;
             }
 
-            var key = source.Reference.Path;
+            var key = $"{profile.Id:N}|{source.Reference.Path}";
             DeadLetterMeasurement? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
             var quality = sampled ? DeadLetterCountQuality.LowerBound
                 : source.Runtime.CountsAreEstimates ? DeadLetterCountQuality.Estimated

@@ -338,6 +338,12 @@ public sealed partial class MainWindowViewModel
                 catch (Exception exception)
                 {
                     isComplete = false;
+                    // Nothing of this environment was read: no approximate zero of it is consecutive with the next.
+                    foreach (var interrupted in _monitorNotifications.Where(pair => pair.Key.StartsWith($"{profile.Id:N}|", StringComparison.Ordinal)))
+                    {
+                        interrupted.Value.UnconfirmedClearChecks = 0;
+                        interrupted.Value.LastClearPointAt = null;
+                    }
                     AddActivity(
                         "Error",
                         "Monitor environment failed",
