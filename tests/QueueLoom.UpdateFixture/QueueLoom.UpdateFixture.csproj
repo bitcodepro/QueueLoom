@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/QueueLoom.App/Services/DiagnosticsPreview.cs" Link="DiagnosticsPreview.cs" />
+    <Compile Include="../../src/QueueLoom.App/Services/AppUpdater.cs" Link="AppUpdater.cs" />
+    <Compile Include="../../src/QueueLoom.App/Services/GitHubUpdateChecker.cs" Link="GitHubUpdateChecker.cs" />
     <Compile Include="../../src/QueueLoom.App/Services/UpdateRestart.cs" Link="UpdateRestart.cs" />
     <Compile Include="../../src/QueueLoom.App/Services/MacBackupMigration.cs" Link="MacBackupMigration.cs" />
     <Compile Include="../../src/QueueLoom.Infrastructure/Persistence/AtomicFile.cs" Link="AtomicFile.cs" />
