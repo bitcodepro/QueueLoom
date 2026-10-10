@@ -43,6 +43,9 @@ public sealed partial class ViewModelStateTests
         Assert.Equal([test.Id], viewModel.Messages.Select(message => message.ProfileId));
         Assert.Equal(queue.Reference, viewModel.SelectedDestination?.Reference);
         Assert.False(viewModel.HasDraftEnvironmentMismatch);
+        // Search reads whole bodies (on Azure too, beyond the 1 MiB the list keeps); the title must not claim a boundary.
+        Assert.DoesNotContain("reads up to the first 1 MiB", viewModel.MessageListTitle, StringComparison.Ordinal);
+        Assert.Contains("bodies are searched in full", viewModel.MessageListTitle, StringComparison.Ordinal);
     }
 
     // Gap 2 (view model): an SQS FIFO read sees at most one receive batch per message group, yet the browse said

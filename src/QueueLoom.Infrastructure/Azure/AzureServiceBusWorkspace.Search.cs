@@ -470,7 +470,7 @@ public sealed partial class AzureServiceBusWorkspace
         int ScannedMessageCount,
         bool SafetyLimitReached);
 
-    private static bool MatchesSearch(ServiceBusReceivedMessage message, MessageSearchQuery query)
+    internal static bool MatchesSearch(ServiceBusReceivedMessage message, MessageSearchQuery query)
     {
         var body = message.Body.ToMemory();
         return query.Matches(
@@ -483,7 +483,9 @@ public sealed partial class AzureServiceBusWorkspace
                 var shown = AzureMessageMapper.ToDomainProperty(property);
                 return new KeyValuePair<string, string?>(shown.Name, shown.Value);
             }),
-            body[..Math.Min(body.Length, AzureMessageMapper.MaxRetainedBodyBytes)],
+            // The whole received body: the 1 MiB cut applies to what the list keeps, and searching only that part
+            // reported a large message as "not matching" when its field or text lay beyond it.
+            body,
             message.ContentType);
     }
 }
