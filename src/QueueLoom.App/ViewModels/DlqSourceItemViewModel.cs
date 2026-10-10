@@ -47,11 +47,14 @@ public sealed class DlqSourceItemViewModel(
 
     public bool CountIsLowerBound => Snapshot.CountIsLowerBound;
 
+    /// <summary>Messages are there, or may be: a sampled queue that showed nothing can still be opened to look.</summary>
+    public bool CanBrowse => Count > 0 || Snapshot.CountIsLowerBound;
+
     public string CountText => DeadLetterCountText.Format(Snapshot.Count ?? 0, Snapshot.CountIsLowerBound);
 
     public string? CountNote => Snapshot.CountIsLowerBound ? DeadLetterCountText.LowerBoundNote : null;
 
-    public string Delta => Snapshot.CountIsLowerBound ? "unknown" : Snapshot.Change switch
+    public string Delta => Snapshot.CountIsLowerBound || Snapshot.PreviousIsLowerBound ? "unknown" : Snapshot.Change switch
     {
         > 0 => $"+{Snapshot.Change}",
         < 0 => Snapshot.Change.ToString()!,

@@ -3,6 +3,7 @@ using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Core.Abstractions;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Tests.Infrastructure;
 
@@ -71,19 +72,25 @@ public sealed partial class ViewModelStateTests
         Assert.False(notification.CountIsLowerBound);
         workspace.Snapshots[dev.Id] = Count(80, true);
         await Check();
-        Assert.Contains("increased by 20", vm.MonitorAlert, StringComparison.Ordinal);
+        // At least 20: growth measured against a sample is itself only a lower bound.
+        Assert.Contains($"increased by {DeadLetterCountText.Format(20, isLowerBound: true)};", vm.MonitorAlert, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(null, false, 5L, false, null)]
-    [InlineData(10L, false, 15L, false, 5L)]
-    [InlineData(10L, false, 15L, true, 5L)]
-    [InlineData(10L, false, 5L, true, null)]
-    [InlineData(1_000L, true, 5_000L, false, null)]
-    [InlineData(1_000L, true, 1_000L, true, null)]
-    public void OnlyProvenGrowthIsAnIncrease(long? before, bool beforeSampled, long now, bool nowSampled, long? expected) =>
-        Assert.Equal(expected, DeadLetterMeasurement.ProvenIncrease(
-            before is { } value ? new DeadLetterMeasurement(value, beforeSampled) : null, new DeadLetterMeasurement(now, nowSampled)));
+    [InlineData(null, false, 5L, false, null, false)]
+    [InlineData(10L, false, 15L, false, 5L, false)]
+    [InlineData(10L, false, 15L, true, 5L, true)]
+    [InlineData(10L, false, 5L, true, null, false)]
+    [InlineData(1_000L, true, 5_000L, false, null, false)]
+    [InlineData(1_000L, true, 1_000L, true, null, false)]
+    public void OnlyProvenGrowthIsAnIncreaseAndKeepsItsQuality(long? before, bool beforeSampled, long now, bool nowSampled,
+        long? expected, bool expectedAtLeast)
+    {
+        var increase = DeadLetterMeasurement.ProvenIncrease(
+            before is { } value ? new DeadLetterMeasurement(value, beforeSampled) : null, new DeadLetterMeasurement(now, nowSampled));
+        Assert.Equal(expected, increase?.Count);
+        Assert.Equal(expectedAtLeast, increase?.IsLowerBound == true);
+    }
 
     // An empty Pub/Sub sample written to the store, read back and summarised is a listed queue with an unknown count.
     [Fact]
@@ -125,5 +132,126 @@ public sealed partial class ViewModelStateTests
                 [new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), minute == 3 ? 5 : 50) { CountIsLowerBound = minute == 3 }]), "Test")).ToArray();
         var summary = DeadLetterHistory.Summarize(many, at, at.AddMinutes(10), maximumPoints: 2)!;
         Assert.Contains(summary.Points, point => point.IsLowerBound);
+    }
+
+    // The monitor's aggregate: exact growth in one source plus at-least growth in another is at least their sum.
+    [Fact]
+    public async Task MixedExactAndLowerBoundGrowthIsReportedAsALowerBound()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        DeadLetterSnapshot Counts(long exact, long sampled, bool isSampled) => Snapshot(dev.Id,
+            new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), exact),
+            new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("payments"), sampled) { CountIsLowerBound = isSampled });
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Counts(10, 10, false) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+
+        workspace.Snapshots[dev.Id] = Counts(15, 30, true);
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+
+        Assert.Contains($"2 DLQ source(s) increased by {DeadLetterCountText.Format(25, isLowerBound: true)};", vm.MonitorAlert, StringComparison.Ordinal);
+    }
+
+    // A purge stops after a few empty receives, which proves nothing for a sampled queue: its row stays as "none seen" and
+    // the environment total is not an exact 0.
+    [Fact]
+    public async Task APurgedSampledSourceStaysListedAsUnknownNotZero()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var source = ServiceBusEntityReference.Queue("orders");
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, new DeadLetterEntitySnapshot(source, 40) { CountIsLowerBound = true }) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        await vm.ScanCurrentEnvironmentCommand.ExecuteAsync();
+        var now = DateTimeOffset.UtcNow;
+
+        typeof(MainWindowViewModel).GetMethod("ApplyCompletedPurgeToDeadLetterRows", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(vm, [new DeadLetterPurgeResult(dev.Id, now, now, [new DeadLetterPurgeSourceResult(source, ServiceBusSubQueue.DeadLetter, 40)], Path.GetTempPath())]);
+
+        var row = Assert.Single(vm.DeadLetterSources);
+        Assert.Equal("none seen", row.CountText);
+        Assert.Equal("none seen", vm.GlobalDlqDisplay);
+        vm.SelectedDlqSource = row;
+        Assert.True(vm.BrowseDlqSourceCommand.CanExecute(null)); // An uncertain empty source can still be opened.
+    }
+
+    // An exact 100 at the start and a sampled 50 later: the period's peak is only "at least 100", with or without downsampling.
+    [Theory]
+    [InlineData(360)]
+    [InlineData(2)]
+    public void APeriodWithAnUncertainPointHasALowerBoundPeak(int maximumPoints)
+    {
+        var profile = Guid.NewGuid();
+        var at = DateTimeOffset.UtcNow;
+        DeadLetterHistorySample Sample(int seconds, long count, bool sampled) => DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profile,
+            at.AddSeconds(seconds), [new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), count) { CountIsLowerBound = sampled }]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([Sample(0, 100, false), Sample(30, 100, false), Sample(90, 50, true)],
+            at, at.AddMinutes(2), maximumPoints)!;
+
+        Assert.Equal(100, summary.Peak.Count);
+        Assert.True(summary.Peak.IsLowerBound);
+    }
+
+    // The workspace's own snapshot: a reported count after a sample has no computable change, and the row says unknown.
+    [Fact]
+    public async Task AReportedCountAfterASampleHasAnUnknownChange()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var workspace = new SwitchingDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Sampled = true, Seen = 1_000 };
+        await workspace.ConnectAsync(ServiceBusProfile.CreateNew("Switching", EnvironmentKind.Test, new(AuthenticationKind.KafkaNone))
+            with { Provider = MessagingProvider.Kafka, Kafka = new("broker.invalid:9092") });
+        await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+
+        workspace.Sampled = false;
+        workspace.Reported = 1_200;
+        var entity = Assert.Single((await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All)).Entities);
+
+        Assert.Equal(1_200, entity.Count);
+        Assert.False(entity.CountIsLowerBound);
+        Assert.True(entity.PreviousIsLowerBound);
+        Assert.Null(entity.Change);
+        Assert.Equal("unknown", new DlqSourceItemViewModel(Guid.NewGuid(), "Test", "TEST", default, entity).Delta);
+    }
+
+    private sealed class SwitchingDeadLetterWorkspace(QueueLoomPaths paths) : QueueLoom.Infrastructure.Messaging.LeasedMessagingWorkspace(new DeadLetterJsonBackupStore(paths), null)
+    {
+        public bool Sampled { get; set; }
+        public int Seen { get; set; }
+        public long Reported { get; set; }
+        public override MessagingProvider Provider => MessagingProvider.Kafka;
+        protected override Task OpenAsync(ServiceBusProfile profile, CancellationToken token) => Task.CompletedTask;
+        protected override ValueTask CloseAsync() => ValueTask.CompletedTask;
+        protected override Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken token) => Task.FromResult(new ServiceBusTopology(DateTimeOffset.UtcNow,
+            [new ServiceBusQueue("orders", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: Sampled ? 0 : Reported)) { CountsUnavailable = Sampled })]));
+        protected override QueueLoom.Infrastructure.Messaging.ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue) =>
+            new CountingChannel(source, Seen);
+        protected override Task SendCoreAsync(ServiceBusTopology topology, ServiceBusEntityReference destination, MessageDraft message, CancellationToken token) =>
+            throw new InvalidOperationException("This read-only fixture cannot send.");
+    }
+
+    private sealed class CountingChannel(ServiceBusEntityReference source, int count) : QueueLoom.Infrastructure.Messaging.ILeasedMessageChannel
+    {
+        private int _next;
+        public string PhysicalName => source.Name + "-dlq";
+        public int MaximumBatchSize => 100;
+        public Task<IReadOnlyList<QueueLoom.Infrastructure.Messaging.LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
+        {
+            var batch = Enumerable.Range(_next, Math.Max(0, Math.Min(maxMessages, count - _next)))
+                .Select(index => new QueueLoom.Infrastructure.Messaging.LeasedMessage(new BrowsedMessage(source, ServiceBusSubQueue.DeadLetter, index, "x"u8.ToArray(),
+                    new EditableMessageProperties(MessageId: $"m-{index}")), $"lease-{index}"))
+                .ToArray();
+            _next += batch.Length;
+            return Task.FromResult<IReadOnlyList<QueueLoom.Infrastructure.Messaging.LeasedMessage>>(batch);
+        }
+        public Task ReleaseAsync(IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage> messages, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage>> SettleAsync(IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage> messages, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage>>([]);
+        public void Dispose() { }
     }
 }

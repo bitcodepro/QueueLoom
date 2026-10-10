@@ -237,7 +237,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && SupportsTransferDeadLetter);
         BrowseDlqSourceCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
-            () => !IsBusy && SelectedDlqSource is { Count: > 0 });
+            () => !IsBusy && SelectedDlqSource is { CanBrowse: true });
         PurgeEnvironmentDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Purging environment dead letters", PurgeEnvironmentDeadLettersAsync, token),
             () => !IsBusy && CanPurgeEnvironmentDeadLetters);

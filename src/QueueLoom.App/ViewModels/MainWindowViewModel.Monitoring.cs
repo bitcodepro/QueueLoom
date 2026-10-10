@@ -388,13 +388,16 @@ public sealed partial class MainWindowViewModel
                 // only with an exact earlier one (1,000 → 300 → 1,000 samples are not "increased by 700").
                 .Select(measurement => DeadLetterMeasurement.ProvenIncrease(
                     _monitorBaseline.TryGetValue(measurement.Key, out var before) ? before : new DeadLetterMeasurement(0, false),
-                    measurement.Value) ?? 0)
-                .Where(increase => increase > 0)
+                    measurement.Value))
+                .OfType<DeadLetterMeasurement>()
+                .Where(increase => increase.Count > 0)
                 .ToArray()
             : [];
         if (_hasMonitorBaseline && increases.Length > 0)
         {
-            MonitorAlert = $"{increases.Length:N0} DLQ source(s) increased by {increases.Sum():N0}; total is {DeadLetterCountText.Format(total, totalIsLowerBound)} at {DateTimeOffset.Now:HH:mm:ss}";
+            // "at least" growth from a sample stays "N+" in the total too.
+            var increase = DeadLetterCountText.Format(increases.Sum(item => item.Count), increases.Any(item => item.IsLowerBound));
+            MonitorAlert = $"{increases.Length:N0} DLQ source(s) increased by {increase}; total is {DeadLetterCountText.Format(total, totalIsLowerBound)} at {DateTimeOffset.Now:HH:mm:ss}";
             AddActivity("Warning", "DLQ alert", MonitorAlert);
         }
         else
@@ -494,7 +497,7 @@ public sealed partial class MainWindowViewModel
                     existing.CountIsLowerBound = lowerBound;
                     existing.LastDetectedAt = detectedAt;
                     // Alert on proven growth only; a change from or to a sample is reported, not alerted as growth.
-                    if (DeadLetterMeasurement.ProvenIncrease(before, now) > 0)
+                    if (DeadLetterMeasurement.ProvenIncrease(before, now) is { Count: > 0 })
                     {
                         alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, before.Count)
                             { CountIsLowerBound = lowerBound, PreviousIsLowerBound = before.IsLowerBound });

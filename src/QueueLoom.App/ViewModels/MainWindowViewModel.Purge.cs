@@ -225,8 +225,18 @@ public sealed partial class MainWindowViewModel
                      .Where(row => row.ProfileId == result.ProfileId && completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
                      .ToArray())
         {
-            DeadLetterSources.Remove(row);
             _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.CountIsLowerBound);
+            var index = DeadLetterSources.IndexOf(row);
+            DeadLetterSources.RemoveAt(index);
+            if (row.CountIsLowerBound)
+            {
+                // Purging stops after a few empty receives, which proves nothing for a sampled queue: it stays listed
+                // as "none seen", never as an exact 0.
+                DeadLetterSources.Insert(index, new DlqSourceItemViewModel(
+                    row.ProfileId, row.ProfileName, row.EnvironmentLabel, row.EnvironmentTone,
+                    new DeadLetterEntitySnapshot(row.Entity, 0, null, null, row.Snapshot.SubQueue) { CountIsLowerBound = true },
+                    row.QueueKindLabel.ToLowerInvariant()));
+            }
         }
 
         SortDeadLetterSources(null, null, null);

@@ -24,7 +24,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
     private readonly DeadLetterJsonBackupStore _backupStore;
     private readonly AsyncOperationGate _operationGate = new();
     private readonly SemaphoreSlim _topologyGate = new(1, 1);
-    private readonly ConcurrentDictionary<string, long> _previousDeadLetterCounts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DeadLetterMeasurement> _previousDeadLetterCounts = new(StringComparer.Ordinal);
     private ServiceBusProfile? _profile;
     private ServiceBusTopology? _cachedTopology;
     private WorkspaceConnectionState _connectionState;
@@ -509,9 +509,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             }
 
             var key = source.Reference.Path;
-            long? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
-            _previousDeadLetterCounts[key] = count;
-            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous) { CountIsLowerBound = sampled });
+            DeadLetterMeasurement? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
+            _previousDeadLetterCounts[key] = new DeadLetterMeasurement(count, sampled);
+            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous?.Count)
+                { CountIsLowerBound = sampled, PreviousIsLowerBound = previous?.IsLowerBound == true });
         }
 
         return new DeadLetterSnapshot(profile.Id, TimeProvider.GetUtcNow(), snapshots);

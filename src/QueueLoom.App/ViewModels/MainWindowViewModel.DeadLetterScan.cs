@@ -237,13 +237,13 @@ public sealed partial class MainWindowViewModel
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
             // The change is shown only between two exact counts; anything involving a sample is unknown.
-            var previous = previousCounts[key] is { IsLowerBound: false } exact ? exact.Count : (long?)null;
+            var previous = previousCounts[key];
             var withHistory = new DeadLetterEntitySnapshot(
                 entity.Entity,
                 entity.Count,
-                previous,
+                previous?.Count,
                 entity.Error,
-                entity.SubQueue) { CountIsLowerBound = entity.CountIsLowerBound };
+                entity.SubQueue) { CountIsLowerBound = entity.CountIsLowerBound, PreviousIsLowerBound = previous?.IsLowerBound == true };
             DeadLetterSources.Add(new DlqSourceItemViewModel(
                 profile.Id,
                 profile.Name,

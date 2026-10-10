@@ -133,7 +133,8 @@ public static class DeadLetterHistory
 
         var first = inRange[0];
         var last = inRange[^1];
-        var peak = points.MaxBy(point => point.Count)!;
+        // An uncertain point anywhere in the period may hide a higher real count, so the peak is then only a lower bound.
+        var peak = points.MaxBy(point => point.Count)! with { IsLowerBound = points.Any(point => point.IsLowerBound) };
         // Sampled queues are listed even when nothing was seen in them: their count is unknown, not zero.
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Concat(last.LowerBoundSources ?? []).Concat(first.LowerBoundSources ?? [])

@@ -54,6 +54,9 @@ public sealed record DeadLetterEntitySnapshot
     /// </summary>
     public bool CountIsLowerBound { get; init; }
 
+    /// <summary>The previous count was only a lower bound, so no change can be computed from it.</summary>
+    public bool PreviousIsLowerBound { get; init; }
+
     public long? PreviousCount { get; }
 
     public string? Error { get; }
@@ -61,7 +64,7 @@ public sealed record DeadLetterEntitySnapshot
     public bool IsSuccessful => Count.HasValue && string.IsNullOrWhiteSpace(Error);
 
     /// <summary>Null when either count is unknown, or when this one is only a lower bound.</summary>
-    public long? Change => Count.HasValue && PreviousCount.HasValue && !CountIsLowerBound
+    public long? Change => Count.HasValue && PreviousCount.HasValue && !CountIsLowerBound && !PreviousIsLowerBound
         ? Count.Value - PreviousCount.Value
         : null;
 }
