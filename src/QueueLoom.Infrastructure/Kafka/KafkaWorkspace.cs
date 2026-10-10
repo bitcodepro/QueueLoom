@@ -285,19 +285,17 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             if (status != PersistenceStatus.Persisted && _producerFatalError is { } fatal)
             {
                 // The producer stopped for good (a refused idempotent producer ID among the causes). It is not retried
-                // here, and never turned into a non-idempotent send. A record purged while still queued was never sent;
-                // anything else may have been, so it stays unknown and a move keeps its original.
-                var reason = $"The Kafka producer stopped: {fatal.Reason}.";
+                // here, and never turned into a non-idempotent send. Even "purged in queue" proves nothing: a record whose
+                // acknowledgement was lost waits in the retry queue and is purged with that code, while ProduceAsync drops
+                // its "possibly persisted" status. So the outcome stays unknown, and a move keeps its original.
                 var hint = fatal.Code == ErrorCode.ClusterAuthorizationFailed
                     ? " The cluster refuses idempotent sends: Kafka before 2.8 needs the IDEMPOTENT_WRITE permission for them. " +
                       "Grant it, or turn on the environment's compatibility mode, in which a lost acknowledgement can leave a " +
                       "record written twice. Reconnect afterwards."
                     : " Reconnect to the environment to send again.";
-                throw exception.Error.Code == ErrorCode.Local_PurgeQueue
-                    ? new DeliveryRejectedException($"Kafka did not accept the message. {reason}{hint}", exception)
-                    : new InvalidOperationException(
-                        $"Whether Kafka stored the message is unknown. {reason} Check '{destination.Name}' before sending it again.{hint}",
-                        exception);
+                throw new InvalidOperationException(
+                    $"Whether Kafka stored the message is unknown. The Kafka producer stopped: {fatal.Reason}. " +
+                    $"Check '{destination.Name}' before sending it again.{hint}", exception);
             }
             throw status == PersistenceStatus.Persisted
                 ? new InvalidOperationException($"Kafka stored the message but reported an error: {exception.Error.Reason}", exception)

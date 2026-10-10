@@ -15,7 +15,7 @@ public sealed class KafkaIdempotentProducerTests
     private const string Topic = "orders";
 
     // A cluster that refuses an idempotent producer ID (Kafka before 2.8 without IDEMPOTENT_WRITE): the send reports a
-    // clear, uncertain error, does not quietly fall back to a non-idempotent send, and writes nothing.
+    // clear error, does not quietly fall back to a non-idempotent send, and writes nothing.
     [Fact]
     public async Task ARefusedIdempotentProducerIsReportedAndNothingIsSentBehindTheUsersBack()
     {
@@ -26,8 +26,9 @@ public sealed class KafkaIdempotentProducerTests
 
         var error = await Assert.ThrowsAnyAsync<Exception>(() => SendAsync(workspace, "order-1").WaitAsync(TimeSpan.FromSeconds(30)));
 
-        // Purged while still queued: certainly not written, so it is a refusal, but it is not retried in any other mode.
-        Assert.IsType<DeliveryRejectedException>(error);
+        // Reported as unknown, never as a proven refusal: "purged in queue" can also be a written record waiting for a retry.
+        Assert.IsType<InvalidOperationException>(error);
+        Assert.Contains("unknown", error.Message, StringComparison.Ordinal);
         Assert.Contains("Cluster authorization failed", error.Message, StringComparison.Ordinal);
         Assert.Contains("IDEMPOTENT_WRITE", error.Message, StringComparison.Ordinal);
         Assert.Contains("compatibility mode", error.Message, StringComparison.Ordinal);
@@ -56,6 +57,31 @@ public sealed class KafkaIdempotentProducerTests
         var outcome = Assert.Single(result.Items);
         Assert.Equal(ResendOutcome.Failed, outcome.Outcome);
         Assert.Equal(0, ((DeleteRecorder)(object)workspace).Deletes);
+    }
+
+    // A record whose acknowledgement was lost waits in librdkafka's retry queue; a fatal producer error then purges it
+    // with "purged in queue", and ProduceAsync drops its "possibly persisted" status. That must stay unknown.
+    [Fact]
+    public async Task AFatalPurgeOfAQueuedRecordIsNotAProvenRefusal()
+    {
+        var error = await FatalPurgeOutcomeAsync();
+
+        Assert.IsNotType<DeliveryRejectedException>(error);
+        Assert.Contains("unknown", error.Message, StringComparison.Ordinal);
+        Assert.Contains("Cluster authorization failed", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>What the workspace reports for a record purged in queue after the producer stopped.</summary>
+    internal static async Task<Exception> FatalPurgeOutcomeAsync()
+    {
+        await using var workspace = new KafkaWorkspace(new NoSecrets());
+        var producer = DispatchProxy.Create<IProducer<byte[]?, byte[]?>, BrokerOutcomeTests.FailingProducer>();
+        ((BrokerOutcomeTests.FailingProducer)(object)producer).Code = ErrorCode.Local_PurgeQueue;
+        typeof(KafkaWorkspace).GetField("_producer", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace, producer);
+        typeof(KafkaWorkspace).GetField("_producerFatalError", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(workspace, new Error(ErrorCode.ClusterAuthorizationFailed, "Broker: Cluster authorization failed", true));
+        return await Assert.ThrowsAnyAsync<Exception>(() => SendCoreAsync(workspace, ServiceBusEntityReference.Queue(Topic),
+            new MessageDraft(new EditableMessageBody("x", MessageBodyFormat.Text), EditableMessageProperties.Empty)));
     }
 
     private static async Task<KafkaWorkspace> ConnectAsync(KafkaMockCluster cluster, bool compatibilityMode, Action<ProducerConfig> configure)
