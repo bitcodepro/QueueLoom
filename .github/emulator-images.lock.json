@@ -1,0 +1,150 @@
+{
+  "format": 1,
+  "platform": "linux/amd64",
+  "images": [
+    {
+      "name": "localstack",
+      "source_tag": "localstack/localstack:4.14",
+      "source_digest": "sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a",
+      "image": "localstack/localstack@sha256:75ba7a4bda54a3020019fba23e99c61bbff7dbf23eea12919e5b75b15c6f03f2",
+      "config_id": "sha256:0e9f1067a26f6e32a07af9f5eaba68bfd7737c8b8ef41296e3b46094fb9e59cf",
+      "rootfs_diff_ids": [
+        "sha256:a8ff6f8cbdfd6741c10dd183560df7212db666db046768b0f05bbc3904515f03",
+        "sha256:0ae7ca6720222d7a8690d7f25aac32fd8a855980224065493f71f78468dccd31",
+        "sha256:1dfdd9260fd4dc35803a8e460eaf945271bcc275cbc24d1d6f0364c711e5dea7",
+        "sha256:61e0df330e3857ed5c6563822145c128bcd6360e180315fa4b2fd34cc4809ac7",
+        "sha256:8bbc59fd8b84f044aae399e366950365356a613c985e4bcebe8ab0babd48e686",
+        "sha256:adcd3bde56dd721a625702f006ace38c097603ec7e91d0dcc79e8186e1890c9e",
+        "sha256:4037a810cbafa502b2aa285ee331d79bd7d233413036a808c7786fc1427c3563",
+        "sha256:65d3ad77e6c45b2e2454f7dd2a013a2304e8a09a2b1eebfbadc94bde3ed23459",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "sha256:c33adcce63ddeb01405f23a8df24496d2ed41f80ed72da18422e58d8cb09b003",
+        "sha256:477e90230c12cdf94188ca08d6447b8e2e7408d6de6703e44bc3119b75bd7883",
+        "sha256:e594d6f45c528f67d0384c573c82c04beedf1ef5501664708f76c645f30a6a5b",
+        "sha256:33e134e3eb6e355886f2491f0376a0974652d3e2f102e459e300a9d5a52379a4",
+        "sha256:c3a0bb28d77ed1a38c25f72e74acb9a5acfab217859d33445db7dab916f62f72",
+        "sha256:6ad9356951c492f498ac5d94eaa38cda3d810f0c9b486787995def15a6deda2f",
+        "sha256:49269f784547f3d773bfd824f4bfb7e762e3c8b250d772539707ed608531bd4d",
+        "sha256:ebdec992d079f34612b3dc6ba3a0d853f603ccb96e5ec3523ae3dea7d4aacf04",
+        "sha256:afd674730ade1069f60f468aec0f966a3abf02d206b94bd8ff76ce0356b42795",
+        "sha256:d0655e7d4f1e693d5d28be53cfcce43ccf54df60d304b59601d5bedf57943dcd",
+        "sha256:3704f275cba2f5afe6929037bf7430532e298660010ffcda8df1800c2a9684cb",
+        "sha256:1f36539312eea6aa8ecfcc9d2493cf5e293abd5447ddcf5638593a51b639dc1b",
+        "sha256:af5e65fe2a71a69b88c51a28dd8850a738b33093e9611bf1154a93676d3ee84f",
+        "sha256:5573e69cc2466db2e44281e198cfc597a9f168308ff2487b45f22cd6547adb91",
+        "sha256:1dbe89c8b56c208e5205720d3a9971631324ee9b06322327d81794fa4ef9a98f"
+      ],
+      "version_labels": {},
+      "version_environment": {},
+      "registry_layer_bytes": 457412070
+    },
+    {
+      "name": "rabbitmq",
+      "source_tag": "rabbitmq:4-management",
+      "source_digest": "sha256:8dd6e3570ddaa2ef82a6c3a8950e79c1f73893adfbdddbc374fc1f1ac8a0f5dd",
+      "image": "rabbitmq@sha256:1d306c8f8c55cd3ed50271198f4094220e4caed9a8d04a14aca869339d3d3ca9",
+      "config_id": "sha256:30fb3e92f938ed166ba72c2bb9fe5b71c80a3b2d75e0f335f81c113eb8cee90e",
+      "rootfs_diff_ids": [
+        "sha256:d81fb2a7c6ee3be05fdefaa7fd223be219c1ab172083ec1b994c3ecda33ac0a8",
+        "sha256:a00ace92b103464cfa0b5002a7238011d0b3422ce18b0391d15c423e2e53f4f8",
+        "sha256:091ac9a7dcd49fa8122b5dba6c1c509bdc5355b0b820e12aa97a4764ec5e3c36",
+        "sha256:3bf72c27e7e79d1c4b43d4ee1594160a66e15e66e5844e56f45106deafdf6fce",
+        "sha256:bd2c46d68ea0b15ddcc1c599a324853758b49e4af60803b01665e62df42185b0",
+        "sha256:eaaed9fa6608a47b2a456a7dff18aab92882fcd49f6b2cde7f1fee685b210785",
+        "sha256:44870cd8f19a6497310f71401688a6ade446938e673f99e5ee782483c5c299b0",
+        "sha256:a7f0e03e5576a3ea3a43f6dc3935827a33efc36c1d6f75226bf9711981819967",
+        "sha256:c8bcca16517d438604cac9583136d69105f34da3c6857d53c2dc61012b5b172c",
+        "sha256:a9e27f56e99417d9bc76141d754f0fbac0d202ab4aa33514a2b2722727bead7b",
+        "sha256:4a2cb62ee05c82e2cac4a24039c2bfbd28e778e6c822745a5698c4a11fda53c6"
+      ],
+      "version_labels": {
+        "org.opencontainers.image.version": "24.04"
+      },
+      "version_environment": {
+        "RABBITMQ_VERSION": "4.3.6"
+      },
+      "registry_layer_bytes": 120966838
+    },
+    {
+      "name": "kafka",
+      "source_tag": "apache/kafka:3.9.2",
+      "source_digest": "sha256:05b4616e0702ef2729327705d54ad6b50ea70b271c4b730fabd2320789fb7b02",
+      "image": "apache/kafka@sha256:f5f8605794dce59d1d566f63667682771c2fec9e96088b0d6a5ef0f8476dd4b2",
+      "config_id": "sha256:41abbd7d7f05d1ea7918ce2539d04a334c597943a53dbc1812a572af136c6df1",
+      "rootfs_diff_ids": [
+        "sha256:989e799e634906e94dc9a5ee2ee26fc92ad260522990f26e707861a5f52bf64e",
+        "sha256:9c3a5d3bc1d986297ccf3222aa60d30955e70ea5170e9b7a44b206a316dd18f0",
+        "sha256:fcf55ba1acd31da88b4f0e40192024dbac904cc053f591c7138a3dc35bd01521",
+        "sha256:967afb1d17e55b6045d16eb964e3bfed1bd9aec5d884810c9445692b65c65a84",
+        "sha256:941f874f7c102bce088fde230ea317a7b02be558a484956f414d5e721278f6b4",
+        "sha256:dc63e7ca979102425abf7b78ba4cc2513164d81c14096a7e2789a0a0fad53f98",
+        "sha256:57a91cfa8fcde270f6a79bd439e54ec87a625f15f91d3f3feda47215fd4fa150",
+        "sha256:72e8d68d0aaf4f2115fda3626a04ec8a7eaccccce8821c0dfda257e9adea4ac9",
+        "sha256:9aa7bea8b4a13dd4f5b9d0cece9062284745e5466efea96c9339b2ffbcae80cc",
+        "sha256:84608b33cca5717e3cd147286061459d614eb289e23a5f6429cb18ca5a1b001f"
+      ],
+      "version_labels": {},
+      "version_environment": {},
+      "registry_layer_bytes": 217864518
+    },
+    {
+      "name": "pubsub",
+      "source_tag": "gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators",
+      "source_digest": "sha256:be2f0e582a94c9e06e7a384fe2b3b39d590eeb8da65a110eda991598c100fe80",
+      "image": "gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:09dc038f3c36e664eeeee4b97c8bfb3d107ce26742483a1231f4c6e5b8366d7d",
+      "config_id": "sha256:41c983be62f000a5044cba2812f0db715c9d54bb11915534ebe2c2f61a0e2ef6",
+      "rootfs_diff_ids": [
+        "sha256:15f1c8eb1ab18eae260c7fb6296434cbe1ff0e1e30fd814ae92a80dd54005e62",
+        "sha256:a1a29680e0cd7cd44518f66db4b7aa58a166092318578ee60cb6af2c5fba5bca",
+        "sha256:1d2b2a32d5902d17d4a956dda6440424d1fbfd98a294819495e47ca73442e149",
+        "sha256:653355fb98cf70381f44b917ce31c78657deb2fcf1baa60a16c9ad7cf6b84535",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "sha256:0409a73e20df240242e99253792ef253c8ec41ac13c38e13b581934dc381a7d6",
+        "sha256:53db1fc9a07c906321d7233adfb43a70e05954d3d9332403b9f36d8e11d8d412"
+      ],
+      "version_labels": {},
+      "version_environment": {
+        "CLOUD_SDK_VERSION": "588.0.0"
+      },
+      "registry_layer_bytes": 445700641
+    },
+    {
+      "name": "sqlserver",
+      "source_tag": "mcr.microsoft.com/mssql/server:2022-latest",
+      "source_digest": "sha256:4402d880dd4c34bfa7d8705e56a86cd6c88da80a1f6bbbe741f999e76264a090",
+      "image": "mcr.microsoft.com/mssql/server@sha256:4402d880dd4c34bfa7d8705e56a86cd6c88da80a1f6bbbe741f999e76264a090",
+      "config_id": "sha256:5b0916c7af8ca97ce9390be7e1182862d6fa90bff9f44f035dbe1626df140637",
+      "rootfs_diff_ids": [
+        "sha256:73974f74b436f39a2fdb6461b1e3f7c3e41c73325776fa71d16b942a5b4a365b",
+        "sha256:23cb21c16535955001c3bf1060e0a32f8b7b314f9cb010578c4e0cb672ea0a2b",
+        "sha256:3cf464bc4045ec94a74d32640ffd3985744fd4377d19083f6681607319dd003a"
+      ],
+      "version_labels": {
+        "com.microsoft.product": "Microsoft SQL Server",
+        "com.microsoft.version": "16.0.4295.3",
+        "org.opencontainers.image.version": "22.04"
+      },
+      "version_environment": {},
+      "registry_layer_bytes": 625930571
+    },
+    {
+      "name": "servicebus",
+      "source_tag": "mcr.microsoft.com/azure-messaging/servicebus-emulator:latest",
+      "source_digest": "sha256:5a96d893b245031740f7d46e0fe5ff282d24b78c4b7d761dd57590f3f010a9b3",
+      "image": "mcr.microsoft.com/azure-messaging/servicebus-emulator@sha256:7607008ede6fa0f9fb4f3411bd681e39b48dcbcc90bafbc15f7bca5c3d8ced4b",
+      "config_id": "sha256:d323e220209d20142e52f21bf392c895d8c6822c08ca043bc2e9d3252c6f6cd8",
+      "rootfs_diff_ids": [
+        "sha256:464117bd87fd68238302cc4718a4d5db8f308341d08d83371abb65328c91ff63",
+        "sha256:cc255f531ff9d6699d3839565f786bb9f2674853292c1eaa2e3aad1760b52182",
+        "sha256:3f1d916cec3a33e9abe57336b74c1504ce9f0816dda19c88d60b437c16ebcfaa",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "sha256:f79c4f3fa8f2d8549b8aed29688b1c3cbe41cb0993e2863154fda490669874a6"
+      ],
+      "version_labels": {
+        "org.opencontainers.image.version": "1.0.0"
+      },
+      "version_environment": {},
+      "registry_layer_bytes": 89034418
+    }
+  ]
+}
