@@ -81,11 +81,13 @@ public sealed record DeadLetterEntitySnapshot
 
     /// <summary>
     /// What the queue holds, as opaque markers, where the service lets it be seen without side effects: Azure Service
-    /// Bus's peeked sequence numbers and message IDs (up to <see cref="ContentMarkerLimit"/> messages), Kafka's partition
-    /// end offsets. A marker not seen before means a new message arrived, even when the count stayed the same. Null
+    /// Bus's peeked sequence numbers and message IDs (up to <see cref="ContentMarkerLimit"/> messages). A marker not seen before means a new message arrived, even when the count stayed the same. Null
     /// when the contents were not looked at.
     /// </summary>
     public IReadOnlyCollection<string>? ContentMarkers { get; init; }
+
+    /// <summary>Kafka's dead-letter topic checkpoint (see <see cref="DeadLetterOffsets"/>), when read with this count.</summary>
+    public DeadLetterOffsets? Offsets { get; init; }
 
     /// <summary>Shorthand for a lower-bound count; setting it true makes the count a lower bound.</summary>
     public bool CountIsLowerBound

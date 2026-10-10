@@ -41,10 +41,10 @@ public sealed record ServiceBusEntityRuntime
     public string? DeadLetterCountSource { get; init; }
 
     /// <summary>
-    /// Markers of what the dead-letter queue holds, when the service shows them without side effects (Kafka's partition
-    /// end offsets): a new marker means a new message, even at the same count.
+    /// Where the dead-letter topic's partitions end (Kafka): offsets written since an earlier checkpoint are new
+    /// messages, even at the same retained count.
     /// </summary>
-    public IReadOnlyList<string>? DeadLetterContentMarkers { get; init; }
+    public QueueLoom.Core.Monitoring.DeadLetterOffsets? DeadLetterOffsets { get; init; }
 
     /// <summary>A failed reported DLQ count; this must not become zero or trigger receive-based sampling.</summary>
     public string? DeadLetterCountError { get; init; }

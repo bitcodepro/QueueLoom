@@ -64,6 +64,9 @@ public sealed class MonitorNotificationItemViewModel(
     /// <summary>What the queue held at the last check (see DeadLetterEntitySnapshot.ContentMarkers), when it was looked at.</summary>
     public IReadOnlyCollection<string>? ContentMarkers { get; set; }
 
+    /// <summary>The dead-letter topic checkpoint at the last check (Kafka), when read.</summary>
+    public QueueLoom.Core.Monitoring.DeadLetterOffsets? Offsets { get; set; }
+
     public bool CountIsLowerBound => CountQuality == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound;
 
     public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountQuality);
