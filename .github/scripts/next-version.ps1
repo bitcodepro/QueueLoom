@@ -11,12 +11,14 @@
     [minor] or #minor -> X.Y+1.0
     anything else     -> X.Y.Z+1
   [skip release] in that line skips the release.
+  An explicit ReleaseVersion overrides bump/skip and accepts stable or prerelease SemVer.
   Writes version, tag and skip to $env:GITHUB_OUTPUT when it is set.
 #>
 param(
     [ValidateSet('auto', 'patch', 'minor', 'major')]
     [string] $Bump = 'auto',
-    [string] $CommitMessage = ''
+    [string] $CommitMessage = '',
+    [string] $ReleaseVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,6 +31,21 @@ function Write-Output-Value([string] $name, [string] $value) {
 }
 
 $subject = ($CommitMessage -split "`r?`n", 2)[0]
+
+if ($ReleaseVersion -ne '') {
+    # SemVer without build metadata; the value also becomes an archive filename and a tag.
+    if ($ReleaseVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z' -or
+        @((($ReleaseVersion -split '-', 2)[1] -split '\.') | Where-Object { $_ -match '^0[0-9]+$' }).Count) {
+        throw 'release_version must be SemVer without v or build metadata, such as 1.2.3 or 1.2.3-rc.1.'
+    }
+    if (git tag --list "v$ReleaseVersion") { throw "Tag v$ReleaseVersion already exists." }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
+    Write-Output-Value 'skip' 'false'
+    Write-Output-Value 'version' $ReleaseVersion
+    Write-Output-Value 'tag' "v$ReleaseVersion"
+    Write-Output-Value 'prerelease' ($ReleaseVersion.Contains('-').ToString().ToLowerInvariant())
+    return
+}
 
 if ($subject -match '\[skip release\]') {
     Write-Output-Value 'skip' 'true'
@@ -46,6 +63,7 @@ $latest = git tag --list 'v*' |
     ForEach-Object { [version]($_.Substring(1)) } |
     Sort-Object -Descending |
     Select-Object -First 1
+if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
 
 if ($null -eq $latest) {
     $next = [version]'0.1.0'
@@ -62,8 +80,10 @@ $version = $next.ToString(3)
 if (git tag --list "v$version") {
     throw "Tag v$version already exists."
 }
+if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
 
 Write-Output-Value 'skip' 'false'
 Write-Output-Value 'bump' $Bump
 Write-Output-Value 'version' $version
 Write-Output-Value 'tag' "v$version"
+Write-Output-Value 'prerelease' 'false'

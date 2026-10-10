@@ -20,6 +20,10 @@ on:
         type: choice
         options: [auto, patch, minor, major]
         default: auto
+      release_version:
+        description: 'Explicit SemVer on main (e.g. 1.2.3-rc.1); empty keeps automatic bump'
+        type: string
+        default: ''
       image_cache_benchmark:
         description: Measure pinned image pull/save/local-load and corrupt-cache fallback (no cache writes)
         type: boolean
@@ -38,6 +42,21 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
+  release-policy:
+    name: Release policy tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Test release policy and version selection
+        run: |
+          python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+          python3 -B -m unittest discover -s .github/scripts/tests -p 'test_publish_release.py' -v
+          python3 -B -m unittest discover -s .github/scripts/workflow-tests -v
+          pwsh -File .github/scripts/tests/test-next-version.ps1
+
   build-and-test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -47,6 +66,9 @@ jobs:
         os: [windows-latest, ubuntu-24.04, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -93,6 +115,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -210,6 +235,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Measure all six images and invalid-cache fallback
         run: >-
           python3 -B .github/scripts/emulator_image_cache.py benchmark
@@ -239,6 +267,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: QueueLoom-*
@@ -250,16 +281,19 @@ jobs:
 
   version:
     name: Next version
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [build-and-test, emulator-tests]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [build-and-test, emulator-tests, release-policy]
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       skip: ${{ steps.version.outputs.skip }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Compute next version
@@ -267,7 +301,9 @@ jobs:
         shell: pwsh
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        run: ./.github/scripts/next-version.ps1 -Bump '${{ inputs.bump || 'auto' }}' -CommitMessage $env:COMMIT_MESSAGE
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: ./.github/scripts/next-version.ps1 -Bump $env:BUMP -CommitMessage $env:COMMIT_MESSAGE -ReleaseVersion $env:RELEASE_VERSION
 
   release-packages:
     name: Release packages
@@ -277,9 +313,28 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  verify-release-packages:
+    name: Verify release archives
+    needs: release-packages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: QueueLoom-*
+          path: packages
+          merge-multiple: true
+      - name: Check all four archives and SHA-256 checksums
+        shell: pwsh
+        run: ./.github/scripts/verify-packages.ps1 -Directory packages
+
   release:
     name: Release
-    needs: [version, release-packages]
+    needs: [build-and-test, emulator-tests, release-policy, version, release-packages, verify-release-packages]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -289,6 +344,10 @@ jobs:
       group: release
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: QueueLoom-*
@@ -305,10 +364,8 @@ jobs:
             packages/*.zip
             packages/*.tar.gz
 
-      - name: Create tag and GitHub Release
+      - name: Create immutable tag and GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create '${{ needs.version.outputs.tag }}' packages/*
-          --repo '${{ github.repository }}' --target '${{ github.sha }}'
-          --title '${{ needs.version.outputs.tag }}' --generate-notes
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: python3 -B .github/scripts/publish-release.py
