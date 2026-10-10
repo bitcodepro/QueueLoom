@@ -200,7 +200,7 @@ public static class DeadLetterHistory
     {
         ArgumentNullException.ThrowIfNull(samples);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumPoints, 2);
-        var inRange = samples.Where(sample => sample.At >= from && sample.At <= to).OrderBy(sample => sample.At).ToArray();
+        var inRange = Fresh(samples.Where(sample => sample.At >= from && sample.At <= to).OrderBy(sample => sample.At)).ToArray();
         if (inRange.Length == 0)
         {
             return null;
@@ -239,10 +239,38 @@ public static class DeadLetterHistory
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(maximumSources)
             .ToArray();
-        var targetsChanged = (first.SourceObservations?.Keys ?? []).Any(name =>
-            first.TargetOf(name) is { } before && last.TargetOf(name) is { } after && !string.Equals(before, after, StringComparison.Ordinal));
+        // As strict as a source's own change: a known reader against a missing one is another target too.
+        var targetsChanged = first.Sources.Keys.Concat(first.LowerBoundSources)
+            .Intersect(last.Sources.Keys.Concat(last.LowerBoundSources), StringComparer.Ordinal)
+            .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal));
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
             { NowQuality = last.Quality, StartQuality = first.Quality, TargetsChanged = targetsChanged };
+    }
+
+    /// <summary>
+    /// Leaves out a sample that holds an observation older than one already recorded for the same source and target:
+    /// another process (or a restart) with its own cache can record a delayed point after a newer one.
+    /// </summary>
+    private static IEnumerable<DeadLetterHistorySample> Fresh(IEnumerable<DeadLetterHistorySample> ordered)
+    {
+        var latest = new Dictionary<(string Source, string? Target), DateTimeOffset>();
+        foreach (var sample in ordered)
+        {
+            var observations = sample.SourceObservations ?? new Dictionary<string, DeadLetterObservation>();
+            if (observations.Any(pair => pair.Value.MeasuredAt is { } at &&
+                                         latest.TryGetValue((pair.Key, pair.Value.MeasuredFrom), out var newer) && at < newer))
+            {
+                continue;
+            }
+            foreach (var (source, observation) in observations)
+            {
+                if (observation.MeasuredAt is { } at)
+                {
+                    latest[(source, observation.MeasuredFrom)] = at;
+                }
+            }
+            yield return sample;
+        }
     }
 
     /// <summary>

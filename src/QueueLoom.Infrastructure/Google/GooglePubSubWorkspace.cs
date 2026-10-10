@@ -674,13 +674,15 @@ internal sealed record GooglePubSubTopology(
         {
             // Dead letters are counted through the reader subscription; a different reader is a different measurement.
             var reader = deadLetterReader?.SubscriptionName.SubscriptionId;
+            // Project-qualified: the same subscription ID in another project is another reader.
+            var readerName = deadLetterReader?.SubscriptionName.ToString();
             if (undelivered is null)
             {
                 return new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty)
                 {
                     CountsUnavailable = true,
                     HasTransferDeadLetterCount = false,
-                    DeadLetterCountSource = reader
+                    DeadLetterCountSource = readerName
                 };
             }
 
@@ -692,7 +694,7 @@ internal sealed record GooglePubSubTopology(
                 {
                     CountsUnavailable = true,
                     HasTransferDeadLetterCount = false,
-                    DeadLetterCountSource = reader
+                    DeadLetterCountSource = readerName
                 };
             }
 
@@ -703,7 +705,7 @@ internal sealed record GooglePubSubTopology(
                 HasTransferDeadLetterCount = false,
                 // Cloud Monitoring's num_undelivered_messages is sampled and delayed: an estimate, as of its point's time.
                 CountsAreEstimates = true,
-                DeadLetterCountSource = reader,
+                DeadLetterCountSource = readerName,
                 DeadLetterCountMeasuredAt = reader is not null && measuredAt?.TryGetValue(reader, out var at) == true ? at : null
             };
         }

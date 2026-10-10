@@ -89,6 +89,70 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(100, Assert.Single(await store.ReadAsync(profile.Id, DateTimeOffset.MinValue)).Total);
     }
 
+    // An edited environment keeps its ID but is another place: what the old configuration showed does not stand in.
+    [Fact]
+    public async Task AnEditedEnvironmentIsNotComparedWithItsEarlierConfiguration()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        await using var workspace = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        var profile = ReportedProfile();
+        await workspace.ConnectAsync(profile);
+        await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await workspace.ConnectAsync(profile with { Kafka = new("other-broker.invalid:9092") });
+        workspace.Count = 0;
+        workspace.At = tenOClock.AddMinutes(-5);
+
+        var entity = Assert.Single((await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All)).Entities);
+
+        Assert.Equal(0, entity.Count);
+        Assert.Null(entity.PreviousCount);
+    }
+
+    // Two processes (or a restart) each with their own cache: the delayed point the second records is left out of the
+    // history summary, not shown as a drop of 100.
+    [Fact]
+    public async Task ADelayedPointFromAnotherWriterIsLeftOutOfHistory()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var profile = ReportedProfile();
+        await using var first = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        await using var second = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 0, Reader = "reader", At = tenOClock.AddMinutes(-5) };
+        await first.ConnectAsync(profile);
+        await second.ConnectAsync(profile);
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        var newer = await first.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(newer, profile.Name));
+        var delayed = await second.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(delayed, profile.Name) with { At = newer.CapturedAt.AddMinutes(1) });
+
+        var summary = DeadLetterHistory.Summarize(await store.ReadAsync(profile.Id, DateTimeOffset.MinValue),
+            newer.CapturedAt.AddMinutes(-1), newer.CapturedAt.AddMinutes(5))!;
+
+        Assert.Equal(100, summary.Now);
+        Assert.Equal(0, summary.Change);
+        Assert.DoesNotContain(summary.Points, point => point.Count == 0);
+    }
+
+    // The total is as strict as a source: a count through a reader and one without a reader do not compare, either way.
+    [Theory]
+    [InlineData("reader-a", null)]
+    [InlineData(null, "reader-a")]
+    public void ATotalAcrossAKnownAndAMissingReaderHasNoChange(string? before, string? after)
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(long count, string? reader, DateTimeOffset when) => DeadLetterHistorySample.FromSnapshot(
+            new DeadLetterSnapshot(profileId, when, [new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("orders"), count) { MeasuredFrom = reader }]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([Sample(10, before, at), Sample(500, after, at.AddMinutes(1))], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+        Assert.Null(Assert.Single(summary.Sources).Change);
+    }
+
     // A count rebuilt after a delete keeps whose count it was: a later read through another reader is no change of it.
     [Fact]
     public void ACountWithoutItsReaderIsNotComparedWithOneThroughAReader()
