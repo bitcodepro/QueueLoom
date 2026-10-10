@@ -549,9 +549,12 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 .Take(Math.Clamp(maxCauses, 1, 50))
                 .ToArray();
             // Reading nothing proves emptiness only where the count is exact: a Pub/Sub read can come back empty.
-            var proven = sources.All(source => source.CountQuality == "exact");
+            // A failed read proves nothing either, whatever the count says.
+            var proven = sources.All(source => source.CountQuality == "exact" && source.Error is null);
             var summary = total == 0
-                ? !proven ? "No dead letters were read, but some queues report no exact count: they are not known to be empty."
+                ? sources.Any(source => source.Error is not null)
+                    ? "No dead letters were read, but some queues could not be read: they are not known to be empty."
+                  : !proven ? "No dead letters were read, but some queues report no exact count: they are not known to be empty."
                   : sources.Count == 0 ? "No dead-letter queue holds messages." : "The dead-letter queues that were read are empty."
                 : $"{total:N0} dead letter(s) read from {sources.Count(source => source.Read > 0):N0} queue(s) fall into " +
                   $"{messages.GroupBy(DeadLetterCauses.KeyOf).Count():N0} cause(s); the largest is {causes[0].Reason}" +

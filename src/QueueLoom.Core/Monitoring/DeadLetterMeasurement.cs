@@ -21,7 +21,8 @@ public readonly record struct DeadLetterMeasurement(long Count, DeadLetterCountQ
 
     /// <summary>Two counts of different things (another reader, another dead-letter queue) are never compared.</summary>
     public static bool SameTarget(DeadLetterMeasurement first, DeadLetterMeasurement second) =>
-        first.MeasuredFrom is null || second.MeasuredFrom is null || string.Equals(first.MeasuredFrom, second.MeasuredFrom, StringComparison.Ordinal);
+        // A lost identity is not a match: only two counts both of the entity itself, or of the same reader, compare.
+        string.Equals(first.MeasuredFrom, second.MeasuredFrom, StringComparison.Ordinal);
 
     /// <summary>The later observation is older than the earlier one (a delayed point after a fresh read).</summary>
     public static bool IsOlder(DeadLetterMeasurement later, DeadLetterMeasurement earlier) =>

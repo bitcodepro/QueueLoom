@@ -225,7 +225,8 @@ public sealed partial class MainWindowViewModel
                      .Where(row => row.ProfileId == result.ProfileId && completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
                      .ToArray())
         {
-            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.Snapshot.CountQuality);
+            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.Snapshot.CountQuality)
+                { MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom };
             var index = DeadLetterSources.IndexOf(row);
             DeadLetterSources.RemoveAt(index);
             if (row.CountIsLowerBound)
@@ -234,7 +235,8 @@ public sealed partial class MainWindowViewModel
                 // as "none seen", never as an exact 0.
                 DeadLetterSources.Insert(index, new DlqSourceItemViewModel(
                     row.ProfileId, row.ProfileName, row.EnvironmentLabel, row.EnvironmentTone,
-                    new DeadLetterEntitySnapshot(row.Entity, 0, null, null, row.Snapshot.SubQueue) { CountIsLowerBound = true },
+                    new DeadLetterEntitySnapshot(row.Entity, 0, null, null, row.Snapshot.SubQueue)
+                        { CountIsLowerBound = true, MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom },
                     row.QueueKindLabel.ToLowerInvariant()));
             }
         }

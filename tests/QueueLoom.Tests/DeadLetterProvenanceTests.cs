@@ -65,10 +65,46 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(DeadLetterCountQuality.Estimated, entity.CountQuality);
     }
 
+    // A global sweep reconnects each environment: what was seen before the reconnect still stands against a delayed point.
+    [Fact]
+    public async Task AReconnectDoesNotLetAnOlderPointOverruleANewerOne()
+    {
+        using var directory = new TemporaryDirectory();
+        var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        await using var workspace = new ReportedDeadLetterWorkspace(QueueLoomPaths.ForRoot(directory.Path)) { Count = 100, Reader = "reader", At = tenOClock };
+        var profile = ReportedProfile();
+        await workspace.ConnectAsync(profile);
+        await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        await workspace.ConnectAsync(profile);
+        workspace.Count = 0;
+        workspace.At = tenOClock.AddMinutes(-5);
+
+        var snapshot = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        await store.AppendAsync(DeadLetterHistorySample.FromSnapshot(snapshot, profile.Name));
+
+        var entity = Assert.Single(snapshot.Entities);
+        Assert.Equal(100, entity.Count);
+        Assert.Equal(tenOClock, entity.MeasuredAt);
+        Assert.Equal(100, Assert.Single(await store.ReadAsync(profile.Id, DateTimeOffset.MinValue)).Total);
+    }
+
+    // A count rebuilt after a delete keeps whose count it was: a later read through another reader is no change of it.
+    [Fact]
+    public void ACountWithoutItsReaderIsNotComparedWithOneThroughAReader()
+    {
+        var rebuilt = new DeadLetterMeasurement(5, DeadLetterCountQuality.Estimated);
+        var later = new DeadLetterMeasurement(500, DeadLetterCountQuality.Estimated) { MeasuredFrom = "reader-b" };
+
+        Assert.Null(DeadLetterMeasurement.Difference(rebuilt, later));
+        Assert.NotNull(DeadLetterMeasurement.Difference(rebuilt, new DeadLetterMeasurement(7, DeadLetterCountQuality.Exact)));
+    }
+
     // ≈40, ≈0, then an unreadable source (or a sampled zero), then ≈0: not two consecutive zeros, so still open. The
     // same zero point read twice is not a second zero either.
     [Theory]
     [InlineData("failed")]
+    [InlineData("thrown")]
     [InlineData("sampled")]
     [InlineData("same point")]
     public async Task AnInterruptedOrRepeatedZeroDoesNotResolve(string interruption)
@@ -92,9 +128,14 @@ public sealed partial class ViewModelStateTests
         workspace.Snapshots[dev.Id] = interruption switch
         {
             "failed" => Of(new DeadLetterEntitySnapshot(Orders, null, null, "timed out")),
+            "thrown" => workspace.Snapshots[dev.Id],
             "sampled" => Of(new DeadLetterEntitySnapshot(Orders, 0) { CountIsLowerBound = true, MeasuredAt = at.AddMinutes(2), MeasuredFrom = "reader" }),
             _ => Of(Estimated(0, at.AddMinutes(1)))
         };
+        if (interruption == "thrown")
+        {
+            workspace.SnapshotFailure = new TimeoutException("The whole environment timed out.");
+        }
         await Check();
         if (interruption != "same point")
         {
