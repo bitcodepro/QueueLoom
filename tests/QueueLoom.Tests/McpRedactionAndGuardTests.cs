@@ -267,6 +267,52 @@ public sealed class McpRedactionAndGuardTests
         Assert.Contains($"\"countQuality\":\"{quality}\"", text.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
     }
 
+    // A configured dead-letter target that cannot be seen (another account or region; a Pub/Sub dead-letter topic
+    // with no subscription) stays a dead-letter source of unknown count: never a zero, never left out.
+    public static TheoryData<string> UnobservableDeadLetterTargets => ["sqs", "sns", "pubsub"];
+
+    private static ServiceBusTopology UnobservableTopology(string provider) => provider switch
+    {
+        "sqs" => new QueueLoom.Infrastructure.Aws.AwsTopologyIndex(
+            [new QueueLoom.Infrastructure.Aws.AwsQueueInfo("orders", "http://localhost/orders", "arn:aws:sqs:us-east-1:123:orders",
+                false, 0, 0, 0, "arn:aws:sqs:eu-west-1:999:orders-dlq", null, null)], []).ToTopology(DateTimeOffset.UtcNow) with { HasMessageCounts = true },
+        "sns" => new QueueLoom.Infrastructure.Aws.AwsTopologyIndex([],
+            [QueueLoom.Infrastructure.Aws.AwsTopicInfo.From("arn:aws:sns:us-east-1:123:events",
+                [new QueueLoom.Infrastructure.Aws.AwsSubscriptionInfo("arn:aws:sns:us-east-1:123:events:1", "https", "https://example.invalid/hook",
+                    "arn:aws:sqs:eu-west-1:999:events-dlq")])]).ToTopology(DateTimeOffset.UtcNow) with { HasMessageCounts = true },
+        _ => QueueLoom.Infrastructure.Google.GooglePubSubTopology.Build("project-a", ["events"],
+            [new global::Google.Cloud.PubSub.V1.Subscription
+            {
+                Name = "projects/project-a/subscriptions/worker",
+                Topic = "projects/project-a/topics/events",
+                DeadLetterPolicy = new global::Google.Cloud.PubSub.V1.DeadLetterPolicy { DeadLetterTopic = "projects/project-a/topics/events-dlq", MaxDeliveryAttempts = 5 }
+            }],
+            DateTimeOffset.UtcNow, undelivered: new Dictionary<string, long> { ["worker"] = 0 }).Topology
+    };
+
+    [Theory]
+    [MemberData(nameof(UnobservableDeadLetterTargets))]
+    public async Task AnUnobservableDeadLetterTargetIsUnknownNotZero(string provider)
+    {
+        var topology = UnobservableTopology(provider);
+        var source = topology.Queues.Cast<object>().Concat(topology.Topics.SelectMany(topic => topic.Subscriptions)).Single() switch
+        {
+            ServiceBusQueue queue => (queue.HasDeadLetterQueue, queue.Runtime),
+            ServiceBusSubscription subscription => (subscription.HasDeadLetterQueue, subscription.Runtime),
+            _ => throw new InvalidOperationException()
+        };
+        Assert.True(source.HasDeadLetterQueue);
+        Assert.Equal(DeadLetterCountQuality.Unknown, DeadLetterCountQualities.OfReported(source.Runtime));
+
+        var workspace = new FakeWorkspace { Topology = topology };
+        var (_, entities, _) = await CallAsync(workspace, "get_entities", new());
+        var (_, explained, _) = await CallAsync(workspace, "explain_dead_letters", new());
+
+        Assert.Contains("\"countQuality\":\"unknown\"", entities.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not known to be empty", explained, StringComparison.Ordinal);
+        Assert.DoesNotContain("No dead-letter queue holds messages", explained, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task GetEntities_SaysApproximateCountsAreEstimates()
     {

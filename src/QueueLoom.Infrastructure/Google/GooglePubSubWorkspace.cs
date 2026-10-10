@@ -634,15 +634,21 @@ internal sealed record GooglePubSubTopology(
                     note = $"Pushes to {endpoint}";
                 }
 
+                var runtime = Runtime(subscription, hasDeadLetters ? deadLetterReaders[deadLetterTopic!] : null);
+                if (!string.IsNullOrEmpty(deadLetterTopic) && !hasDeadLetters)
+                {
+                    // Configured, but nothing reads the dead-letter topic: its count is unknown, never zero.
+                    runtime = runtime with { DeadLetterCountError = "Its dead-letter topic has no subscription to read or count it from" };
+                }
                 return new ServiceBusSubscription(
                     topicId,
                     subscriptionId,
-                    Runtime(subscription, hasDeadLetters ? deadLetterReaders[deadLetterTopic!] : null),
+                    runtime,
                     subscription.State == Subscription.Types.State.Active
                         ? ServiceBusEntityStatus.Active
                         : ServiceBusEntityStatus.Unknown)
                 {
-                    HasDeadLetterQueue = hasDeadLetters,
+                    HasDeadLetterQueue = !string.IsNullOrEmpty(deadLetterTopic),
                     MaxDeliveryCount = MaxDeliveryAttempts(subscription),
                     Note = note
                 };

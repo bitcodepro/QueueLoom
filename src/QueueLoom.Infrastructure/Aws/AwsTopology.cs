@@ -245,7 +245,13 @@ internal sealed class AwsTopologyIndex
                 createdAt: queue.CreatedAt,
                 updatedAt: queue.UpdatedAt)
             // SQS reports ApproximateNumberOfMessages: an estimate, not the exact count.
-            { HasTransferDeadLetterCount = false, CountsAreEstimates = true, DeadLetterCountSource = deadLetterQueue?.Arn };
+            {
+                HasTransferDeadLetterCount = false,
+                CountsAreEstimates = true,
+                DeadLetterCountSource = deadLetterQueue?.Arn ?? queue.DeadLetterTargetArn,
+                // Configured but out of sight: its count is unknown, never zero.
+                DeadLetterCountError = UnobservableDeadLetterQueue(queue.DeadLetterTargetArn, deadLetterQueue)
+            };
 
             string? note = null;
             if (deadLetterUsers.TryGetValue(queue.Arn, out var users))
@@ -277,7 +283,7 @@ internal sealed class AwsTopologyIndex
 
             return new ServiceBusQueue(queue.Name, runtime, ServiceBusEntityStatus.Active)
             {
-                HasDeadLetterQueue = deadLetterQueue is not null,
+                HasDeadLetterQueue = queue.DeadLetterTargetArn is not null,
                 MaxDeliveryCount = queue.MaxReceiveCount,
                 DeadLetterQueueName = deadLetterQueue?.Name,
                 Note = note,
@@ -296,14 +302,19 @@ internal sealed class AwsTopologyIndex
                 var runtime = new ServiceBusEntityRuntime(new ServiceBusMessageCounts(
                     active: endpointQueue?.Visible ?? 0,
                     deadLetter: deadLetterQueue?.Visible ?? 0))
-                { HasTransferDeadLetterCount = false, CountsAreEstimates = true, DeadLetterCountSource = deadLetterQueue?.Arn };
+                {
+                    HasTransferDeadLetterCount = false,
+                    CountsAreEstimates = true,
+                    DeadLetterCountSource = deadLetterQueue?.Arn ?? subscription.DeadLetterTargetArn,
+                    DeadLetterCountError = UnobservableDeadLetterQueue(subscription.DeadLetterTargetArn, deadLetterQueue)
+                };
                 return new ServiceBusSubscription(
                     topic.Name,
                     subscription.Name,
                     runtime,
                     subscription.IsConfirmed ? ServiceBusEntityStatus.Active : ServiceBusEntityStatus.Creating)
                 {
-                    HasDeadLetterQueue = deadLetterQueue is not null,
+                    HasDeadLetterQueue = subscription.DeadLetterTargetArn is not null,
                     // Its messages are read through the SQS queue it delivers to, so that queue's redrive policy applies.
                     MaxDeliveryCount = endpointQueue?.MaxReceiveCount,
                     // An SNS FIFO topic delivers to FIFO queues only, and dead-letters into a FIFO queue.
@@ -317,4 +328,9 @@ internal sealed class AwsTopologyIndex
 
         return new ServiceBusTopology(fetchedAt, queues, topics) { SupportsTransferDeadLetter = false };
     }
+
+    private static string? UnobservableDeadLetterQueue(string? configuredArn, object? found) =>
+        configuredArn is not null && found is null
+            ? "Its dead-letter queue is in another account or region and cannot be counted"
+            : null;
 }
