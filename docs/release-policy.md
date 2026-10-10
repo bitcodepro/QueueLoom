@@ -82,6 +82,13 @@ failure is investigated. If those reads fail, it says it cannot determine a vers
 it never assumes absence. The suggestion is not a reservation and must pass all
 checks again. Prerelease suggestions skip occupied tag and draft-release names too.
 
+For stable publication errors, recovery also checks the tested SHA against published
+stable releases. This covers retrying an already published version and a successful
+server publication whose CLI response was lost. If that SHA was published as stable,
+the message asks to inspect the existing release and use a new tested main commit;
+it does not suggest another version of the same SHA. Reserved tags, drafts and
+published prereleases alone retain unused-version recovery guidance.
+
 The existing workflow concurrency group `ci-${{ github.ref }}` already serializes
 entire main runs, including version selection, with cancellation limited to PRs.
 The publisher also retains the shared `release` concurrency group. A newer pending

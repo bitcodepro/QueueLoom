@@ -157,11 +157,22 @@ def check_release_order(api, sha, tag, refs, releases, *, reserved=False):
         checked.add(base)
 
 
-def recovery_hint(api, tag):
+def recovery_hint(api, tag, sha):
     try:
         refs, releases = read_state(api)
         occupied = set(refs) | {item["tag_name"] for item in releases} | {tag}
         if stable_version(tag) is not None:
+            for item in releases:
+                if type(item["draft"]) is not bool:
+                    raise RuntimeError("Invalid release draft status.")
+                if not item["draft"]:
+                    if type(item["prerelease"]) is not bool:
+                        raise RuntimeError("Invalid release prerelease status.")
+                    if not item["prerelease"] and tag_commit(api, item["tag_name"], refs) == sha:
+                        return (f"Tested commit {sha} already has published stable release {item['tag_name']}. "
+                                "Inspect the existing release; publication may have succeeded despite the error. "
+                                "For another stable release, use a new tested main commit, not another version of this SHA. "
+                                "Do not move/delete tags or replace release assets.")
             major, minor, patch = max([stable_version(tag), *stable_tags(refs, releases).values()])
             suggestion = f"{major}.{minor}.{patch + 1}"
         else:
@@ -203,7 +214,7 @@ def publish(api, env, assets, run=subprocess.run):
         # Increasing the version cannot recover a duplicate stable SHA.
         raise
     except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, TypeError, ValueError) as error:
-        raise RuntimeError(f"{error}\n{recovery_hint(api, tag)}") from error
+        raise RuntimeError(f"{error}\n{recovery_hint(api, tag, sha)}") from error
 
 
 if __name__ == "__main__":

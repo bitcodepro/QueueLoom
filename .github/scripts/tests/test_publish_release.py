@@ -355,10 +355,65 @@ class PublisherTests(unittest.TestCase):
         self.assertIn('fresh CI on main', str(caught.exception))
         self.assertFalse(any(call.args[0] in ('PATCH', 'DELETE') for call in api.request.call_args_list))
 
+    def test_retry_published_stable_inspects_existing_release_without_version_hint(self):
+        api, run = self.api(tags={'v1.2.3': SHA},
+                            releases=[{'tag_name': 'v1.2.3', 'draft': False, 'prerelease': False}]), Mock()
+        with self.assertRaisesRegex(RuntimeError, 'Tag v1.2.3 already exists') as caught:
+            release.publish(api, ENV, ['archive'], run)
+        self.assertIn('Inspect the existing release', str(caught.exception))
+        self.assertIn('new tested main commit', str(caught.exception))
+        self.assertNotIn('release_version=', str(caught.exception))
+        self.assertFalse(any(call.args[0] != 'GET' for call in api.request.call_args_list))
+        run.assert_not_called()
+
+    def test_server_published_stable_but_cli_lost_response_does_not_suggest_same_sha(self):
+        api = self.api()
+        original = api.request.side_effect
+        published = False
+        def request(method, path, *args, **kwargs):
+            if path.startswith('releases?') and published:
+                return [{'tag_name': 'v1.2.3', 'draft': False, 'prerelease': False}]
+            return original(method, path, *args, **kwargs)
+        def lose_response(*args, **kwargs):
+            nonlocal published
+            published = True
+            raise subprocess.CalledProcessError(1, ['gh', 'release', 'create'])
+        api.request.side_effect = request
+        run = Mock(side_effect=lose_response)
+        with self.assertRaises(RuntimeError) as caught:
+            release.publish(api, ENV, ['archive'], run)
+        self.assertIn('Inspect the existing release', str(caught.exception))
+        self.assertIn('publication may have succeeded despite the error', str(caught.exception))
+        self.assertIn('new tested main commit', str(caught.exception))
+        self.assertNotIn('release_version=', str(caught.exception))
+        self.assertEqual(sum(call.args[0] == 'POST' for call in api.request.call_args_list), 1)
+        self.assertFalse(any(call.args[0] in ('PATCH', 'DELETE') for call in api.request.call_args_list))
+        run.assert_called_once()
+
+    def test_reserved_or_draft_retry_still_suggests_next_unused_version(self):
+        for releases in [[], [{'tag_name': 'v1.2.3', 'draft': True, 'prerelease': False}]]:
+            api, run = self.api(tags={'v1.2.3': SHA}, releases=releases), Mock()
+            with self.assertRaises(RuntimeError) as caught:
+                release.publish(api, ENV, ['archive'], run)
+            self.assertIn('release_version=1.2.4', str(caught.exception))
+            self.assertNotIn('new tested main commit', str(caught.exception))
+            self.assertFalse(any(call.args[0] != 'GET' for call in api.request.call_args_list))
+            run.assert_not_called()
+
+    def test_prerelease_same_sha_does_not_consume_stable_recovery(self):
+        api, run = self.api(tags={'v1.2.3-rc.1': SHA},
+                            releases=[{'tag_name': 'v1.2.3-rc.1', 'draft': False, 'prerelease': True}]), Mock(
+                                side_effect=subprocess.CalledProcessError(1, ['gh', 'release', 'create']))
+        with self.assertRaises(RuntimeError) as caught:
+            release.publish(api, ENV, ['archive'], run)
+        self.assertIn('release_version=1.2.4', str(caught.exception))
+        self.assertNotIn('new tested main commit', str(caught.exception))
+        run.assert_called_once()
+
     def test_prerelease_recovery_skips_occupied_suggestions(self):
         api = self.api(tags={'v1.2.3-rc.1.1': SHA},
                        releases=[{'tag_name': 'v1.2.3-rc.1.1.1', 'draft': True}])
-        self.assertIn('release_version=1.2.3-rc.1.1.1.1', release.recovery_hint(api, 'v1.2.3-rc.1'))
+        self.assertIn('release_version=1.2.3-rc.1.1.1.1', release.recovery_hint(api, 'v1.2.3-rc.1', SHA))
 
     def test_recovery_api_failure_never_turns_failure_into_publication(self):
         api, run = self.api(), Mock()
