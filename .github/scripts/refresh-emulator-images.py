@@ -74,10 +74,13 @@ def resolve(name, reference=None):
         manifest, digest = registry.get('manifests', candidates[0]['digest'])
     config_digest = manifest['config']['digest']
     config, actual_config_digest = registry.get('blobs', config_digest)
-    assert actual_config_digest == config_digest
-    assert config['os'] == 'linux' and config['architecture'] == 'amd64'
+    if actual_config_digest != config_digest:
+        raise RuntimeError('Registry config digest mismatch')
+    if config.get('os') != 'linux' or config.get('architecture') != 'amd64':
+        raise RuntimeError('Registry config must be linux/amd64')
     diffs = config['rootfs']['diff_ids']
-    assert diffs and all(re.fullmatch('sha256:[0-9a-f]{64}', value) for value in diffs)
+    if not isinstance(diffs, list) or not diffs or not all(isinstance(value, str) and re.fullmatch('sha256:[0-9a-f]{64}', value) for value in diffs):
+        raise RuntimeError('Registry rootfs identities are invalid')
     repository_reference = source.rsplit(':', 1)[0]
     labels = config.get('config', {}).get('Labels') or {}
     version_labels = {key: value for key, value in labels.items() if key in ('org.opencontainers.image.version', 'org.opencontainers.image.revision', 'com.microsoft.version', 'com.microsoft.product')}
@@ -87,6 +90,10 @@ def resolve(name, reference=None):
         if separator and key in ('LOCALSTACK_VERSION', 'RABBITMQ_VERSION', 'KAFKA_VERSION', 'CLOUD_SDK_VERSION', 'CLOUDSDK_VERSION', 'MSSQL_VERSION', 'MSSQL_MAJOR_VERSION', 'SERVICE_BUS_EMULATOR_VERSION'):
             version_environment[key] = text
     return {'name': name, 'source_tag': source, 'source_digest': source_digest, 'image': repository_reference+'@'+digest, 'config_id': config_digest, 'rootfs_diff_ids': diffs, 'version_labels': version_labels, 'version_environment': version_environment, 'registry_layer_bytes': sum(layer['size'] for layer in manifest['layers'])}
+
+def verify_checked_lock(result, old):
+    if result != old:
+        raise RuntimeError('Registry metadata differs from the checked-in lock')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
@@ -111,7 +118,7 @@ if __name__ == '__main__':
         print(f"{name}: {entry['image']} config={entry['config_id']} version_env={entry['version_environment']} labels={entry['version_labels']}", flush=True)
     result = {'format': 1, 'platform': 'linux/amd64', 'images': images}
     if args.check:
-        assert result == old, 'Registry metadata differs from the checked-in lock'
+        verify_checked_lock(result, old)
         print('All six locked linux/amd64 manifests, configs and rootfs identities verified.')
     else:
         args.lock.write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')

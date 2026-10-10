@@ -40,6 +40,11 @@ ID, `linux/amd64` platform and rootfs layer identities. Docker save/load can los
 `RepoDigests` on the classic image store, so these local tags and config IDs are
 used instead of assuming the original digest reference survived. All six
 container starts use `--pull=never` and the verified local tags.
+Archive members must be regular files or their parent directories, with safe,
+unique paths. Docker's legacy repositories and OCI index must describe only
+the six locked tags; arbitrary sidecars, links and directories are rejected.
+On a verified restore that will not save an entry, the tar and metadata are
+removed before starting containers to reduce duplicate disk usage.
 
 A cache miss, restore action failure, corrupt archive, failed load, wrong ID,
 wrong platform or wrong rootfs falls back to six digest-pinned registry pulls.

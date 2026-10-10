@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
@@ -91,10 +91,20 @@ def verify_archive(path, images):
     """Reject extra tags/configs before loading; never extract archive members ourselves."""
     expected = {local_tag(image): image for image in images}
     with tarfile.open(path, mode='r:') as archive:
-        def read_regular(name, limit):
-            if not isinstance(name, str) or name.startswith('/') or '..' in name.split('/'):
+        members = {}
+        def safe_name(name):
+            if not isinstance(name, str) or not name or name.startswith('/') or '\\' in name or any(part in ('', '.', '..') for part in name.split('/')):
                 raise ValueError('Unsafe archive member name')
-            member = archive.getmember(name)
+            return name
+        for member in archive.getmembers():
+            name = safe_name(member.name.rstrip('/') if member.isdir() else member.name)
+            if name in members or not (member.isfile() or member.isdir()):
+                raise ValueError('Duplicate or unsafe archive member type')
+            members[name] = member
+        allowed = {'manifest.json'}
+        def read_regular(name, limit):
+            name = safe_name(name)
+            member = members[name]
             if not member.isfile() or member.size > limit:
                 raise ValueError('Unexpected archive metadata member')
             return archive.extractfile(member).read()
@@ -102,25 +112,82 @@ def verify_archive(path, images):
         if not isinstance(manifest, list) or len(manifest) != 6:
             raise ValueError('Archive must contain exactly six image manifests')
         seen = set()
+        legacy_repositories = {}
         for entry in manifest:
+            if not isinstance(entry, dict):
+                raise ValueError('Archive manifest entry must be an object')
             tags = entry.get('RepoTags')
-            if not isinstance(tags, list) or len(tags) != 1 or tags[0] not in expected or tags[0] in seen:
+            if not isinstance(tags, list) or len(tags) != 1 or not isinstance(tags[0], str) or tags[0] not in expected or tags[0] in seen:
                 raise ValueError('Unexpected/duplicate archive image tags')
             seen.add(tags[0])
             image = expected[tags[0]]
             raw_config = read_regular(entry['Config'], 2 * 1024 * 1024)
+            allowed.add(entry['Config'])
             if 'sha256:'+hashlib.sha256(raw_config).hexdigest() != image['config_id']:
                 raise ValueError('Archive image config differs from the lock')
             config = json.loads(raw_config)
-            if config.get('os') != 'linux' or config.get('architecture') != 'amd64' or config.get('rootfs', {}).get('diff_ids') != image['rootfs_diff_ids']:
+            if not isinstance(config, dict) or not isinstance(config.get('rootfs'), dict) or config.get('os') != 'linux' or config.get('architecture') != 'amd64' or config['rootfs'].get('diff_ids') != image['rootfs_diff_ids']:
                 raise ValueError('Archive image platform/rootfs differs from the lock')
             layers = entry.get('Layers', [])
-            if len(layers) != len(image['rootfs_diff_ids']):
+            if not isinstance(layers, list) or len(layers) != len(image['rootfs_diff_ids']):
                 raise ValueError('Archive layer count differs from config')
             for layer in layers:
-                member = archive.getmember(layer)
-                if layer.startswith('/') or '..' in layer.split('/') or not member.isfile():
+                member = members[safe_name(layer)]
+                if not member.isfile():
                     raise ValueError('Unsafe/missing archive layer')
+                allowed.add(layer)
+            repository, tag = tags[0].rsplit(':', 1)
+            legacy_repositories.setdefault(repository, {})[tag] = image['rootfs_diff_ids'][-1].removeprefix('sha256:')
+
+        # Docker 28 classic save includes a legacy repositories file and an OCI
+        # index, manifests and hashed legacy config blobs alongside manifest.json.
+        # Validate their tags too; accepting arbitrary sidecars could add images.
+        if 'repositories' in members:
+            if json.loads(read_regular('repositories', 64 * 1024)) != legacy_repositories:
+                raise ValueError('Unexpected legacy repository tags/layers')
+            allowed.add('repositories')
+        if 'index.json' in members or 'oci-layout' in members:
+            if json.loads(read_regular('oci-layout', 1024)) != {'imageLayoutVersion': '1.0.0'}:
+                raise ValueError('Unsupported OCI layout')
+            index = json.loads(read_regular('index.json', 64 * 1024))
+            if not isinstance(index, dict) or index.get('schemaVersion') != 2 or not isinstance(index.get('manifests'), list) or len(index['manifests']) != 6:
+                raise ValueError('Unexpected OCI index')
+            oci_seen = set()
+            for descriptor in index['manifests']:
+                if not isinstance(descriptor, dict) or descriptor.get('mediaType') != 'application/vnd.oci.image.manifest.v1+json' or not isinstance(descriptor.get('annotations'), dict):
+                    raise ValueError('Unexpected OCI descriptor')
+                annotations = descriptor['annotations']
+                tag = annotations.get('io.containerd.image.name')
+                if not isinstance(tag, str) or tag not in expected or tag in oci_seen or annotations.get('org.opencontainers.image.ref.name') != tag.rsplit(':', 1)[1]:
+                    raise ValueError('Unexpected OCI image tag')
+                oci_seen.add(tag)
+                digest = descriptor.get('digest')
+                if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+                    raise ValueError('Invalid OCI manifest digest')
+                name = 'blobs/sha256/'+digest.removeprefix('sha256:')
+                raw = read_regular(name, 2 * 1024 * 1024)
+                if 'sha256:'+hashlib.sha256(raw).hexdigest() != digest or descriptor.get('size') != len(raw):
+                    raise ValueError('OCI manifest content mismatch')
+                oci = json.loads(raw)
+                if not isinstance(oci, dict) or not isinstance(oci.get('config'), dict) or oci['config'].get('digest') != expected[tag]['config_id'] or not isinstance(oci.get('layers'), list) or len(oci['layers']) != len(expected[tag]['rootfs_diff_ids']):
+                    raise ValueError('OCI manifest differs from locked image')
+                allowed.add(name)
+            allowed.update(('index.json', 'oci-layout'))
+        for name, member in members.items():
+            if name in allowed or member.isdir():
+                continue
+            # Moby writes otherwise unreferenced, content-addressed legacy image
+            # JSON here. They contain no additional tag lookup mechanism.
+            if re.fullmatch(r'blobs/sha256/[0-9a-f]{64}', name):
+                raw = read_regular(name, 2 * 1024 * 1024)
+                legacy = json.loads(raw)
+                if hashlib.sha256(raw).hexdigest() == name.rsplit('/', 1)[1] and isinstance(legacy, dict) and isinstance(legacy.get('id'), str) and re.fullmatch(r'[0-9a-f]{64}', legacy['id']) and legacy.get('os') == 'linux':
+                    allowed.add(name)
+                    continue
+            raise ValueError('Unexpected archive member: '+name)
+        directories = {str(parent) for name in allowed for parent in PurePosixPath(name).parents if str(parent) != '.'}
+        if any(member.isdir() and name not in directories for name, member in members.items()):
+            raise ValueError('Unexpected archive directory')
 
 def prepare(lock_path, cache_dir, write_archive=False, docker=None, max_bytes=MAX_ARCHIVE_BYTES):
     started = time.perf_counter()
@@ -138,6 +205,8 @@ def prepare(lock_path, cache_dir, write_archive=False, docker=None, max_bytes=MA
         try:
             validation_started = time.perf_counter()
             metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+            if not isinstance(metadata, dict):
+                raise ValueError('Cache metadata must be an object')
             size = archive_path.stat().st_size
             if metadata.get('format') != FORMAT or metadata.get('platform') != PLATFORM or metadata.get('lock_sha256') != lock_hash:
                 raise ValueError('Cache metadata does not match this lock/platform/format')
@@ -149,6 +218,10 @@ def prepare(lock_path, cache_dir, write_archive=False, docker=None, max_bytes=MA
             docker.load(archive_path)
             verify_images(docker, images)
             metrics.update(mode='archive', load_seconds=time.perf_counter()-load_started, archive_bytes=size, save_ready=True)
+            if not write_archive:
+                archive_path.unlink()
+                metadata_path.unlink()
+                metrics['save_ready'] = False
         except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.CalledProcessError) as error:
             metrics['cache_error'] = str(error)
             print(f'::warning::Runtime image cache rejected; using pinned registry pulls: {error}', flush=True)
@@ -215,11 +288,16 @@ def benchmark(lock_path, cache_dir, report_path):
     if not cold['save_ready']:
         result['warm'] = {'skipped': 'Archive unavailable or exceeds cap; no warm claim'}
     else:
+        with tarfile.open(cache_dir / 'images.tar', 'r:') as archive:
+            result['archive_member_names'] = [member.name for member in archive.getmembers()]
+        result['docker_server_version'] = docker.run('version', '--format', '{{.Server.Version}}', capture=True).strip()
         docker.remove_owned_refs(lock['images'])
         retained = [image['name'] for image in lock['images'] if docker.inspect(local_tag(image)) or docker.inspect(image['config_id'])]
         if retained:
             raise ValueError('Locked images still resident; refuse a misleading empty-store load measurement')
-        _, warm = prepare(lock_path, cache_dir, write_archive=False, docker=docker)
+        # Retain this local benchmark archive for the deliberate corruption test.
+        # This job never invokes the GitHub cache save action.
+        _, warm = prepare(lock_path, cache_dir, write_archive=True, docker=docker)
         if warm['mode'] != 'archive' or warm['pull_count'] != 0:
             raise ValueError('Local warm archive did not restore all six images without registry pulls')
         result['warm_local_archive'] = warm

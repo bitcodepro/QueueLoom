@@ -66,15 +66,33 @@ class FakeDocker:
             raise subprocess.CalledProcessError(1, ['docker', 'image', 'save'])
         manifest = []
         members = {}
+        descriptors = []
+        repositories = {}
         for image in images:
-            config_name = image['config_id'].removeprefix('sha256:')+'.json'
-            layer_names = ['layers/'+value.removeprefix('sha256:')+'.tar' for value in image['rootfs_diff_ids']]
+            config_name = 'blobs/sha256/'+image['config_id'].removeprefix('sha256:')
+            layer_names = ['blobs/sha256/'+value.removeprefix('sha256:') for value in image['rootfs_diff_ids']]
             manifest.append({'Config': config_name, 'RepoTags': [cache.local_tag(image)], 'Layers': layer_names})
             members[config_name] = self.configs[image['config_id']]
             for name, diff_id in zip(layer_names, image['rootfs_diff_ids']):
                 members[name] = self.layers[diff_id]
+            tag = cache.local_tag(image)
+            repository, version = tag.rsplit(':', 1)
+            repositories[repository] = {version: image['rootfs_diff_ids'][-1].removeprefix('sha256:')}
+            oci = json.dumps({'schemaVersion': 2, 'config': {'digest': image['config_id']}, 'layers': [{'digest': value} for value in image['rootfs_diff_ids']]}).encode()
+            oci_digest = digest(oci)
+            members['blobs/sha256/'+oci_digest.removeprefix('sha256:')] = oci
+            descriptors.append({'mediaType': 'application/vnd.oci.image.manifest.v1+json', 'digest': oci_digest, 'size': len(oci), 'annotations': {'io.containerd.image.name': tag, 'org.opencontainers.image.ref.name': version}})
+            legacy = json.dumps({'id': image['config_id'].removeprefix('sha256:'), 'os': 'linux'}).encode()
+            members['blobs/sha256/'+digest(legacy).removeprefix('sha256:')] = legacy
         members['manifest.json'] = json.dumps(manifest).encode()
+        members['repositories'] = json.dumps(repositories).encode()
+        members['oci-layout'] = b'{"imageLayoutVersion":"1.0.0"}'
+        members['index.json'] = json.dumps({'schemaVersion': 2, 'manifests': descriptors}).encode()
         with tarfile.open(path, 'w') as archive:
+            for name in ('blobs', 'blobs/sha256'):
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
             for name, content in members.items():
                 info = tarfile.TarInfo(name)
                 info.size = len(content)
@@ -116,6 +134,95 @@ class RuntimeImageCacheTests(unittest.TestCase):
         self.docker.images.clear()
         return result
 
+    def change_archive(self, changes, extra_member=None):
+        path = self.directory / 'images.tar'
+        with tarfile.open(path, 'r:') as archive:
+            members = [(member, archive.extractfile(member).read() if member.isfile() else None) for member in archive.getmembers()]
+        with tarfile.open(path, 'w') as archive:
+            for member, content in members:
+                if member.name in changes:
+                    content = changes[member.name]
+                    member.size = len(content)
+                archive.addfile(member, io.BytesIO(content) if content is not None else None)
+            if extra_member:
+                member, content = extra_member
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content) if member.isfile() else None)
+        metadata_path = self.directory / 'metadata.json'
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update(archive_bytes=path.stat().st_size, archive_sha256=cache.sha256_file(path))
+        metadata_path.write_text(json.dumps(metadata))
+
+    def assert_safe_fallback(self):
+        result = self.prepare()
+        self.assertEqual(result['mode'], 'pull')
+        self.assertEqual(result['pull_count'], 6)
+        self.assertEqual(self.docker.pulls, [image['image'] for image in self.lock['images']])
+        self.assertEqual(self.docker.loads, 0)
+        self.assertTrue(result['cache_error'])
+        cache.verify_images(self.docker, self.lock['images'])
+
+    def test_array_null_and_scalar_metadata_fall_back_without_load(self):
+        for value in ([], None, 12, 'metadata'):
+            with self.subTest(value=value):
+                self.make_archive()
+                (self.directory / 'metadata.json').write_text(json.dumps(value))
+                self.assert_safe_fallback()
+                (self.directory / 'metadata.json').unlink()
+                (self.directory / 'images.tar').unlink()
+
+    def test_non_object_manifest_entries_fall_back_without_load(self):
+        for value in ([], None, 12, 'entry'):
+            with self.subTest(value=value):
+                self.make_archive()
+                with tarfile.open(self.directory / 'images.tar', 'r:') as archive:
+                    manifest = json.load(archive.extractfile('manifest.json'))
+                manifest[0] = value
+                self.change_archive({'manifest.json': json.dumps(manifest).encode()})
+                self.assert_safe_fallback()
+
+    def test_unsafe_layer_paths_reject_before_lookup_or_load(self):
+        for value in ('/outside.tar', '../outside.tar', 'blobs/../outside', 'blobs\\outside', None):
+            with self.subTest(value=value):
+                self.make_archive()
+                with tarfile.open(self.directory / 'images.tar', 'r:') as archive:
+                    manifest = json.load(archive.extractfile('manifest.json'))
+                manifest[0]['Layers'][0] = value
+                self.change_archive({'manifest.json': json.dumps(manifest).encode()})
+                self.assert_safe_fallback()
+
+    def test_extra_regular_directory_link_or_duplicate_member_rejected(self):
+        for name, kind in (('unrelated', tarfile.REGTYPE), ('unexpected-dir', tarfile.DIRTYPE), ('link', tarfile.SYMTYPE), ('link', tarfile.LNKTYPE), ('manifest.json', tarfile.REGTYPE)):
+            with self.subTest(name=name, kind=kind):
+                self.make_archive()
+                member = tarfile.TarInfo(name)
+                member.type = kind
+                member.linkname = 'manifest.json'
+                self.change_archive({}, (member, b'{}'))
+                self.assert_safe_fallback()
+
+    def test_legacy_or_oci_sidecar_cannot_add_an_unlocked_tag(self):
+        for sidecar in ('repositories', 'index.json'):
+            with self.subTest(sidecar=sidecar):
+                self.make_archive()
+                with tarfile.open(self.directory / 'images.tar', 'r:') as archive:
+                    value = json.load(archive.extractfile(sidecar))
+                if sidecar == 'repositories':
+                    value['unrelated/image'] = {'latest': '0'*64}
+                else:
+                    value['manifests'][0]['annotations']['io.containerd.image.name'] = 'unrelated/image:latest'
+                self.change_archive({sidecar: json.dumps(value).encode()})
+                self.assert_safe_fallback()
+
+    def test_verified_archive_is_retained_only_when_save_is_requested(self):
+        self.make_archive()
+        self.assertEqual(self.prepare(write=True)['mode'], 'archive')
+        self.assertTrue((self.directory / 'images.tar').exists())
+        self.assertTrue((self.directory / 'metadata.json').exists())
+        self.assertEqual(self.prepare()['mode'], 'archive')
+        self.assertFalse((self.directory / 'images.tar').exists())
+        self.assertFalse((self.directory / 'metadata.json').exists())
+
     def test_cold_pr_pulls_exact_six_digests_and_does_not_create_archive(self):
         result = self.prepare()
         self.assertEqual(self.docker.pulls, [image['image'] for image in self.lock['images']])
@@ -132,6 +239,8 @@ class RuntimeImageCacheTests(unittest.TestCase):
         self.assertEqual(self.docker.loads, 1)
         self.assertFalse(self.docker.pulls)
         cache.verify_images(self.docker, self.lock['images'])
+        self.assertFalse(result['save_ready'])
+        self.assertFalse((self.directory / 'images.tar').exists())
 
     def test_loaded_identity_platform_or_rootfs_mismatch_forces_verified_pulls(self):
         self.make_archive()

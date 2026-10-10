@@ -99,7 +99,9 @@ jobs:
           dotnet-version: 10.0.4xx
 
       - name: Test runtime image cache validation and fallback
-        run: python3 -B -m unittest discover -s .github/scripts/tests -p test_emulator_image_cache.py -v
+        run: |
+          python3 -B -m unittest discover -s .github/scripts/tests -v
+          python3 -O -B -m unittest discover -s .github/scripts/tests -v
 
       # The archive contains only six public images and integrity metadata, never Docker credentials.
       # Exact key only: an application commit cannot invalidate the image lock cache.
