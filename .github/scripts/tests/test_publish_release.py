@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
+import subprocess
 import urllib.error
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'publish-release.py'
@@ -10,26 +11,49 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 SHA = 'a' * 40
 MAIN = 'b' * 40
+OLDER = 'c' * 40
 ENV = {'GITHUB_REPOSITORY': 'bitcodepro/QueueLoom', 'GITHUB_REF': 'refs/heads/main',
        'GITHUB_EVENT_NAME': 'push', 'GITHUB_SHA': SHA, 'RELEASE_TAG': 'v1.2.3',
        'GITHUB_WORKFLOW_REF': 'bitcodepro/QueueLoom/.github/workflows/ci.yml@refs/heads/main'}
 
 
 class PublisherTests(unittest.TestCase):
-    def api(self, *, status='ahead', merge_base=SHA, tag=None, releases=None, moved=None):
+    def api(self, *, status='ahead', merge_base=SHA, tag=None, releases=None, moved=None,
+            tags=None, ancestry=None, objects=None):
         api = Mock()
+        existing = dict(tags or {})
+        created = {}
+        def reference(name, obj):
+            return {'ref': 'refs/tags/' + name,
+                    'object': {'type': 'commit', 'sha': obj} if isinstance(obj, str) else obj}
         def request(method, path, data=None, **kwargs):
             if path == 'git/ref/heads/main':
                 return {'object': {'sha': MAIN}}
             if path == f'compare/{SHA}...{MAIN}':
                 return {'status': status, 'merge_base_commit': {'sha': merge_base}}
-            if path == 'git/ref/tags/v1.2.3':
-                if any(call.args[0] == 'POST' for call in api.request.call_args_list):
+            if path == 'git/matching-refs/tags/v':
+                return [reference(name, obj) for name, obj in {**existing, **created}.items()]
+            if path.startswith('git/ref/tags/'):
+                name = path.removeprefix('git/ref/tags/')
+                if name in created:
                     return {'object': {'type': 'commit', 'sha': moved or SHA}}
-                return tag
+                if name in existing:
+                    return reference(name, existing[name])
+                if name == ENV['RELEASE_TAG'] and tag is not None:
+                    return tag
+                if kwargs.get('missing_ok'):
+                    return None
+                raise RuntimeError('HTTP 404: missing tag')
+            if path.startswith('git/tags/'):
+                return {'object': objects[path.removeprefix('git/tags/')]}
+            if path.startswith('compare/'):
+                base = path.removeprefix('compare/').split('...')[0]
+                state, merge = (ancestry or {}).get(base, ('ahead', base))
+                return {'status': state, 'merge_base_commit': {'sha': merge}}
             if path.startswith('releases?'):
                 return releases or []
             if method == 'POST' and path == 'git/refs':
+                created[data['ref'].removeprefix('refs/tags/')] = data['sha']
                 return {}
             raise AssertionError((method, path))
         api.request.side_effect = request
@@ -41,6 +65,7 @@ class PublisherTests(unittest.TestCase):
         api.request.assert_any_call('POST', 'git/refs', {'ref': 'refs/tags/v1.2.3', 'sha': SHA})
         command = run.call_args.args[0]
         self.assertIn('--verify-tag', command)
+        self.assertIn('--latest', command)
         self.assertNotIn('--prerelease', command)
         self.assertEqual(run.call_args.kwargs, {'check': True})
 
@@ -85,7 +110,7 @@ class PublisherTests(unittest.TestCase):
         original = api.request.side_effect
         def request(method, path, *args, **kwargs):
             if path == 'releases?per_page=100&page=1':
-                return [{'tag_name': 'other'}] * 100
+                return [{'tag_name': 'other', 'draft': True}] * 100
             if path == 'releases?per_page=100&page=2':
                 return [{'tag_name': 'v1.2.3', 'draft': True}]
             return original(method, path, *args, **kwargs)
@@ -114,13 +139,164 @@ class PublisherTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_dispatch_prerelease(self):
-        api, run = Mock(), Mock()
-        api.request.side_effect = [{'object': {'sha': MAIN}},
-                                   {'status': 'ahead', 'merge_base_commit': {'sha': SHA}},
-                                   None, [], {}, {'object': {'type': 'commit', 'sha': SHA}}]
+        api, run = self.api(), Mock()
         release.publish(api, {**ENV, 'GITHUB_EVENT_NAME': 'workflow_dispatch',
                               'RELEASE_TAG': 'v1.2.3-rc.1'}, ['archive'], run)
         self.assertIn('--prerelease', run.call_args.args[0])
+        self.assertIn('--latest=false', run.call_args.args[0])
+
+    def test_stable_must_exceed_remote_maximum_even_if_version_job_was_earlier(self):
+        for requested in ['v1.0.1', 'v1.5.0']:
+            api, run = self.api(tags={'v1.5.0': OLDER, 'v1.4.99': OLDER}), Mock()
+            with self.assertRaisesRegex(RuntimeError, 'highest stable v1.5.0|Tag v1.5.0 already exists'):
+                release.publish(api, {**ENV, 'RELEASE_TAG': requested}, ['archive'], run)
+            self.assertFalse(any(call.args[0] == 'POST' for call in api.request.call_args_list))
+            run.assert_not_called()
+
+    def test_numeric_order_not_lexicographic_and_reserved_stable_tags_count(self):
+        api, run = self.api(tags={'v1.10.0': OLDER, 'v1.9.99': OLDER}), Mock()
+        with self.assertRaisesRegex(RuntimeError, 'highest stable v1.10.0'):
+            release.publish(api, {**ENV, 'RELEASE_TAG': 'v1.9.100'}, ['archive'], run)
+        run.assert_not_called()
+        release.publish(self.api(tags={'v1.9.99': OLDER}),
+                        {**ENV, 'RELEASE_TAG': 'v1.10.0'}, ['archive'], Mock())
+
+    def test_old_main_run_cannot_relabel_old_code_after_newer_release(self):
+        api, run = self.api(tags={'v1.2.5': MAIN},
+                            releases=[{'tag_name': 'v1.2.5', 'draft': False}],
+                            ancestry={MAIN: ('behind', SHA)}), Mock()
+        with self.assertRaisesRegex(RuntimeError, 'older than or diverges from v1.2.5'):
+            release.publish(api, {**ENV, 'RELEASE_TAG': 'v1.2.6'}, ['archive'], run)
+        run.assert_not_called()
+        self.assertFalse(any(call.args[0] == 'POST' for call in api.request.call_args_list))
+
+    def test_every_published_release_counts_including_prerelease_and_lower_version(self):
+        # A later-published small version/RC can carry newer code. Latest label,
+        # target_commitish and release list order must not hide that commit.
+        for previous in ['v1.0.0', 'v2.0.0-rc.1']:
+            api, run = self.api(tags={'v1.2.2': OLDER, previous: MAIN},
+                                releases=[{'tag_name': 'v1.2.2', 'draft': False},
+                                          {'tag_name': previous, 'draft': False,
+                                           'target_commitish': 'main'}],
+                                ancestry={MAIN: ('behind', SHA)}), Mock()
+            with self.assertRaisesRegex(RuntimeError, 'older than or diverges'):
+                release.publish(api, ENV, ['archive'], run)
+            run.assert_not_called()
+
+    def test_published_code_on_later_release_page_cannot_be_hidden(self):
+        api, run = self.api(tags={'v1.2.2': OLDER, 'v2.0.0-rc.1': MAIN},
+                            ancestry={MAIN: ('behind', SHA)}), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            if path == 'releases?per_page=100&page=1':
+                return [{'tag_name': 'noise', 'draft': True}] * 100
+            if path == 'releases?per_page=100&page=2':
+                return [{'tag_name': 'v2.0.0-rc.1', 'draft': False}]
+            return original(method, path, *args, **kwargs)
+        api.request.side_effect = request
+        with self.assertRaisesRegex(RuntimeError, 'older than or diverges'):
+            release.publish(api, ENV, ['archive'], run)
+        run.assert_not_called()
+
+    def test_unknown_draft_status_never_hides_release_history(self):
+        for value in [None, 'false', 0]:
+            api, run = self.api(releases=[{'tag_name': 'v2.0.0-rc.1', 'draft': value}]), Mock()
+            with self.assertRaisesRegex(RuntimeError, 'Invalid release draft status'):
+                release.publish(api, ENV, ['archive'], run)
+            run.assert_not_called()
+
+    def test_equal_or_descendant_code_allowed_and_annotated_tag_peeled(self):
+        annotation = 'd' * 40
+        api, run = self.api(tags={'v1.2.1': SHA,
+                                'v1.2.2': {'type': 'tag', 'sha': annotation}},
+                            releases=[{'tag_name': 'v1.2.1', 'draft': False},
+                                      {'tag_name': 'v1.2.2', 'draft': False}],
+                            objects={annotation: {'type': 'commit', 'sha': OLDER}}), Mock()
+        release.publish(api, ENV, ['archive'], run)
+        api.request.assert_any_call('GET', f'git/tags/{annotation}')
+        api.request.assert_any_call('GET', f'compare/{OLDER}...{SHA}')
+        run.assert_called_once()
+
+    def test_missing_or_unresolvable_published_tag_fails_closed(self):
+        for tags in [{}, {'v1.2.2': {'type': 'tree', 'sha': OLDER}}]:
+            api, run = self.api(tags=tags, releases=[{'tag_name': 'v1.2.2', 'draft': False}]), Mock()
+            with self.assertRaises(RuntimeError):
+                release.publish(api, ENV, ['archive'], run)
+            run.assert_not_called()
+
+    def test_higher_stable_reserved_after_our_reservation_stops_publication(self):
+        api, run = self.api(), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            value = original(method, path, *args, **kwargs)
+            if path == 'git/matching-refs/tags/v' and any(call.args[0] == 'POST' for call in api.request.call_args_list):
+                value.append({'ref': 'refs/tags/v1.2.4', 'object': {'type': 'commit', 'sha': MAIN}})
+            return value
+        api.request.side_effect = request
+        with self.assertRaisesRegex(RuntimeError, 'highest stable v1.2.4') as caught:
+            release.publish(api, ENV, ['archive'], run)
+        self.assertIn('release_version=1.2.5', str(caught.exception))
+        run.assert_not_called()
+        self.assertFalse(any(call.args[0] in ('PATCH', 'DELETE') for call in api.request.call_args_list))
+
+    def test_new_published_code_after_reservation_stops_even_prerelease(self):
+        api, run = self.api(tags={'v1.2.2': OLDER, 'v2.0.0-rc.1': MAIN},
+                            ancestry={MAIN: ('behind', SHA)}), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            if path.startswith('releases?') and any(call.args[0] == 'POST' for call in api.request.call_args_list):
+                return [{'tag_name': 'v2.0.0-rc.1', 'draft': False}]
+            return original(method, path, *args, **kwargs)
+        api.request.side_effect = request
+        with self.assertRaisesRegex(RuntimeError, 'older than or diverges'):
+            release.publish(api, {**ENV, 'RELEASE_TAG': 'v2.0.0-rc.2'}, ['archive'], run)
+        run.assert_not_called()
+
+    def test_failure_after_reservation_reports_fresh_unused_version_without_cleanup(self):
+        api, run = self.api(), Mock(side_effect=subprocess.CalledProcessError(1, ['gh', 'release', 'create']))
+        with self.assertRaisesRegex(RuntimeError, 'release_version=1.2.4') as caught:
+            release.publish(api, ENV, ['archive'], run)
+        self.assertIn('fresh CI on main', str(caught.exception))
+        self.assertFalse(any(call.args[0] in ('PATCH', 'DELETE') for call in api.request.call_args_list))
+
+    def test_prerelease_recovery_skips_occupied_suggestions(self):
+        api = self.api(tags={'v1.2.3-rc.1.1': SHA},
+                       releases=[{'tag_name': 'v1.2.3-rc.1.1.1', 'draft': True}])
+        self.assertIn('release_version=1.2.3-rc.1.1.1.1', release.recovery_hint(api, 'v1.2.3-rc.1'))
+
+    def test_recovery_api_failure_never_turns_failure_into_publication(self):
+        api, run = self.api(), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            if path == 'git/matching-refs/tags/v':
+                raise RuntimeError('HTTP 403')
+            return original(method, path, *args, **kwargs)
+        api.request.side_effect = request
+        with self.assertRaisesRegex(RuntimeError, 'Could not determine the next unused version'):
+            release.publish(api, ENV, ['archive'], run)
+        run.assert_not_called()
+
+    def test_two_publishers_selecting_one_version_have_one_winner_and_safe_recovery(self):
+        api = self.api()
+        first, second = Mock(), Mock()
+        release.publish(api, ENV, ['archive'], first)
+        with self.assertRaisesRegex(RuntimeError, 'release_version=1.2.4'):
+            release.publish(api, ENV, ['archive'], second)
+        self.assertEqual(sum(call.args[0] == 'POST' for call in api.request.call_args_list), 1)
+        first.assert_called_once()
+        second.assert_not_called()
+
+    def test_main_divergence_after_reservation_stops_publication(self):
+        api, run = self.api(), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            if path == f'compare/{SHA}...{MAIN}' and any(call.args[0] == 'POST' for call in api.request.call_args_list):
+                return {'status': 'diverged', 'merge_base_commit': {'sha': OLDER}}
+            return original(method, path, *args, **kwargs)
+        api.request.side_effect = request
+        with self.assertRaisesRegex(RuntimeError, 'no longer an ancestor'):
+            release.publish(api, ENV, ['archive'], run)
+        run.assert_not_called()
 
     def test_no_assets_fail_without_api(self):
         api = Mock()

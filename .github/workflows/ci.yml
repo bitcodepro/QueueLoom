@@ -174,7 +174,7 @@ jobs:
             -e SQL_SERVER=sqlserver -e 'MSSQL_SA_PASSWORD=QueueLoom!Test123' -e ACCEPT_EULA=Y \
             -v "$PWD/tests/QueueLoom.IntegrationTests/ServiceBusEmulatorConfig.json:/ServiceBus_Emulator/ConfigFiles/Config.json" \
             "$QUEUELOOM_SERVICEBUS_IMAGE"
-          for attempt in $(seq 1 90); do
+          for ((attempt = 0; attempt < 90; attempt++)); do
             if curl -sf http://localhost:4566/_localstack/health | grep -q '"sqs": "\(available\|running\)"' &&
                curl -sf http://localhost:8085 >/dev/null &&
                curl -sf http://localhost:5300/health | grep -q healthy &&

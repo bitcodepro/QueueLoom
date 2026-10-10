@@ -15,6 +15,8 @@ gh workflow run ci.yml --repo bitcodepro/QueueLoom --ref main -f release_version
 Leave it empty for the existing automatic bump. An explicit version takes precedence
 over `bump` and the commit's skip marker. Do not create a tag beforehand. A dispatch
 on another branch or on a tag can test code but cannot enter the release jobs.
+An explicit stable version must be greater than the highest stable tag; prerelease
+versions remain supported and are always published with `--prerelease --latest=false`.
 
 ## Commit and CI identity
 
@@ -22,6 +24,18 @@ Every checkout, including the reusable package workflow, uses the immutable
 `github.sha` captured when that run starts. Advancing main while jobs run does not
 change the packaged code. Immediately before publication the tested SHA must still
 be an ancestor of the current main SHA (or identical); a reset/divergence fails.
+It must also descend from (or equal) the commit of every published release, including
+prereleases, and of the highest stable tag (including a reserved tag without a release).
+Annotated tags are peeled to exact commits. Missing/unresolvable tags or failed API
+checks refuse publication. The release's `target_commitish`, list position, commit
+date and GitHub Latest designation are not evidence of commit ancestry.
+
+Both the stable version ceiling and released commit history are read from GitHub
+inside the publisher before tag creation and again after reservation, just before
+release creation. This catches a newer tag/release created after the version job's
+earlier checkout. Rerunning all jobs of X1 cannot label X1 with a new number after X2
+has been released, even when X1 remains an ancestor of main. The operator must start
+fresh CI on main, not keep incrementing the version of the stale run.
 
 Successful CI evidence is the **same run's job dependency graph**. The only job
 with `contents: write` explicitly needs build/test, emulator tests, release policy
@@ -45,11 +59,43 @@ type and SHA again before `gh release create --verify-tag`.
 
 A failed publication can leave a reserved tag or a partially uploaded release.
 Rerunning the publisher with that same version explicitly fails, without altering
-existing assets or tags. Select a new version after investigating the failure.
-Rerunning all automatic version-selection jobs may choose the next unused version;
-all jobs still use the original run SHA and execute their checks again. Tag creation
-and release publication are separate API operations, not one transaction. The
-server restriction below closes the tag-movement race after the final code check.
+existing assets or tags. The failure message reads current remote tags/releases and
+suggests a currently unused version for a **fresh CI dispatch on main** after the
+failure is investigated. If those reads fail, it says it cannot determine a version;
+it never assumes absence. The suggestion is not a reservation and must pass all
+checks again. Prerelease suggestions skip occupied tag and draft-release names too.
+
+The existing workflow concurrency group `ci-${{ github.ref }}` already serializes
+entire main runs, including version selection, with cancellation limited to PRs.
+The publisher also retains the shared `release` concurrency group. A newer pending
+main run can replace a previous pending run under GitHub's queue policy; this is not
+a promise to release every individual push. Ordering must not be used as proof of
+code freshness. If two publishers nevertheless select one version (for example an
+older workflow or an external publisher), the first atomic tag creation wins and
+the other explicitly fails with recovery guidance. It never silently renumbers the
+already built packages or reuses the winner's tag.
+
+Tag creation and release publication are separate API operations, not one transaction.
+The server restriction below closes tag movement after the final code check. Current
+CI publishers share concurrency; the fresh post-reservation reads detect conflicting
+state before publication. An independently authorized external writer can still race
+after that last read, within the remaining trust boundary described below.
+
+## Updater and GitHub Latest
+
+The app's `GitHubUpdateChecker` requests `/releases?per_page=30`, ignores drafts and
+prereleases, and selects the highest numeric stable version in that response. It
+does **not** request `/releases/latest` or follow the Latest label. Tests verify that
+a later-listed v1.0.1 does not displace v1.5.0 or downgrade a running v1.5.0. Thus a
+lower version is a release-policy error, not automatically an updater downgrade;
+the stale-code/new-higher-number scenario is still unsafe for that updater.
+
+The [CLI manual](https://cli.github.com/manual/gh_release_create) describes the default
+Latest choice as automatic based on date and version. The
+[REST API](https://docs.github.com/en/rest/releases/releases#create-a-release) also
+exposes explicit `make_latest` values; drafts and prereleases cannot be Latest.
+This workflow avoids relying on defaults: after all monotonicity/ancestry checks,
+stable releases use `--latest` and prereleases use `--latest=false`.
 
 ## Server state and remaining trust boundary
 
@@ -72,6 +118,12 @@ can create a different workflow granting itself `contents: write`, call the Rele
 API directly with sufficient credentials, or create an arbitrary new tag. A code
 check inside a writer-controlled workflow is not an independent trust boundary.
 An administrator able to change rules or re-enable workflows is also trusted.
+These guards apply to runs whose workflow definition contains this policy. Rerunning
+a historical main run from before this change retains its old workflow and original
+SHA/ref; repository code changes cannot retroactively constrain that old publisher.
+The disabled legacy tag workflow remains disabled, but this PR does not disable CI
+or change server settings to revoke historical main publishers. Independent server
+publication authority remains necessary for that guarantee as well.
 
 A full guarantee additionally requires server-enforced separation of publication
 authority from ordinary writers, assessed together rather than as standalone fixes:
@@ -103,9 +155,12 @@ GitHub references: [workflow dependency and success semantics](https://docs.gith
 
 Release policy tests exercise main push/dispatch, exact SHA/ancestry, untrusted refs
 and workflow identities, existing tags/releases (including paginated drafts), tag
-creation races, moved tags, API failures and retry rejection. Workflow graph tests
+creation races, moved tags, API failures and retry rejection. They also cover stable
+numeric monotonicity, a stale X1 rerun after an X2 release, published prerelease/lower
+version ancestry, annotated tags, state changes after reservation, two publishers
+selecting one version and recovery after failed publication. Workflow graph tests
 verify all required `needs`, failure/pending/absent prerequisite states, pinned
-checkouts, current-run artifact selection and the publisher's lack of package execution.
+checkouts, current-run artifact selection, existing concurrency and the publisher's lack of package execution.
 PowerShell tests cover automatic bumps, skip markers, explicit versions, prereleases,
 input injection and invalid SemVer. Run them without publishing:
 
@@ -114,8 +169,9 @@ python3 -m pip install PyYAML==6.0.3
 python3 -B -m unittest discover -s .github/scripts/tests -v
 python3 -B -m unittest discover -s .github/scripts/workflow-tests -v
 pwsh -File .github/scripts/tests/test-next-version.ps1
-actionlint -shellcheck= .github/workflows/ci.yml .github/workflows/package.yml
+actionlint .github/workflows/ci.yml .github/workflows/package.yml
 git diff --check
+dotnet test tests/QueueLoom.Tests/QueueLoom.Tests.csproj -c Release --filter FullyQualifiedName~GitHubUpdateCheckerTests
 ```
 
 The job-state tests are structural regression checks, not live release experiments.

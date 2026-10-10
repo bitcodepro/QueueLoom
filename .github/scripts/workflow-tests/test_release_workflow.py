@@ -50,6 +50,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow['permissions']['contents'], 'read')
         self.assertTrue(any('verify-packages.ps1' in step.get('run', '') for step in verify['steps']))
 
+    def test_main_runs_and_publish_jobs_keep_existing_serialization(self):
+        self.assertEqual(self.workflow['concurrency']['group'], 'ci-${{ github.ref }}')
+        self.assertEqual(self.workflow['concurrency']['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}")
+        self.assertEqual(self.jobs['release']['concurrency'], {'group': 'release', 'cancel-in-progress': 'false'})
+
     def test_every_checkout_is_the_run_sha_without_persisted_credentials(self):
         package = yaml.load((ROOT / 'workflows/package.yml').read_text(), Loader=yaml.BaseLoader)
         for name, job in {**self.jobs, 'reusable-package': package['jobs']['package']}.items():

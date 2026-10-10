@@ -30,6 +30,14 @@ function Write-Output-Value([string] $name, [string] $value) {
     }
 }
 
+function Get-LatestStableVersion {
+    $tags = @(git tag --list 'v*')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
+    $tags | Where-Object { $_ -match '^v([0-9]+)\.([0-9]+)\.([0-9]+)$' } |
+        ForEach-Object { [version]($_.Substring(1)) } |
+        Sort-Object -Descending | Select-Object -First 1
+}
+
 $subject = ($CommitMessage -split "`r?`n", 2)[0]
 
 if ($ReleaseVersion -ne '') {
@@ -40,6 +48,12 @@ if ($ReleaseVersion -ne '') {
     }
     if (git tag --list "v$ReleaseVersion") { throw "Tag v$ReleaseVersion already exists." }
     if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
+    if (-not $ReleaseVersion.Contains('-')) {
+        $latest = Get-LatestStableVersion
+        if ($null -ne $latest -and [version]$ReleaseVersion -le $latest) {
+            throw "Stable release_version must be greater than v$($latest.ToString(3)). Choose a newer version and start CI on main."
+        }
+    }
     Write-Output-Value 'skip' 'false'
     Write-Output-Value 'version' $ReleaseVersion
     Write-Output-Value 'tag' "v$ReleaseVersion"
@@ -58,12 +72,7 @@ if ($Bump -eq 'auto') {
             else { 'patch' }
 }
 
-$latest = git tag --list 'v*' |
-    Where-Object { $_ -match '^v(\d+)\.(\d+)\.(\d+)$' } |
-    ForEach-Object { [version]($_.Substring(1)) } |
-    Sort-Object -Descending |
-    Select-Object -First 1
-if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
+$latest = Get-LatestStableVersion
 
 if ($null -eq $latest) {
     $next = [version]'0.1.0'

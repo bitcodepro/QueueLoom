@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import urllib.error
+from urllib.parse import quote
 import urllib.request
 
 
@@ -61,36 +62,131 @@ def check_main(api, sha):
         raise RuntimeError("The tested commit is no longer an ancestor of main.")
 
 
-def check_unused(api, tag):
-    if api.request("GET", f"git/ref/tags/{tag}", missing_ok=True) is not None:
-        raise RuntimeError(f"Tag {tag} already exists; tags are never moved or reused.")
-    # List releases too: include draft releases and paginate, not just the latest release.
+def read_state(api):
+    references = api.request("GET", "git/matching-refs/tags/v")
+    refs = {ref["ref"].removeprefix("refs/tags/"): ref for ref in references}
+    releases = []
     page = 1
     while True:
-        releases = api.request("GET", f"releases?per_page=100&page={page}")
-        if any(release["tag_name"] == tag for release in releases):
-            raise RuntimeError(f"Release {tag} already exists (including drafts).")
-        if len(releases) < 100:
-            break
+        batch = api.request("GET", f"releases?per_page=100&page={page}")
+        releases.extend(batch)
+        if len(batch) < 100:
+            return refs, releases
         page += 1
+
+
+def stable_version(tag):
+    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", tag)
+    return tuple(map(int, match.groups())) if match else None
+
+
+def stable_tags(refs, releases, exclude=None):
+    names = set(refs) | {item["tag_name"] for item in releases}
+    return {name: stable_version(name) for name in names
+            if name != exclude and stable_version(name) is not None}
+
+
+def check_unused_release(tag, releases):
+    if any(item["tag_name"] == tag for item in releases):
+        raise RuntimeError(f"Release {tag} already exists (including drafts).")
+
+
+def check_unused(api, tag, releases):
+    if api.request("GET", f"git/ref/tags/{tag}", missing_ok=True) is not None:
+        raise RuntimeError(f"Tag {tag} already exists; tags are never moved or reused.")
+    check_unused_release(tag, releases)
+
+
+def tag_commit(api, tag, refs):
+    reference = refs.get(tag)
+    if reference is None:
+        # A published release with a missing/unresolvable tag must fail closed.
+        reference = api.request("GET", f"git/ref/tags/{quote(tag, safe='')}")
+    obj = reference["object"]
+    for _ in range(16):
+        if not re.fullmatch(r"[0-9a-f]{40}", obj["sha"]):
+            raise RuntimeError(f"Invalid object SHA for {tag}.")
+        if obj["type"] == "commit":
+            return obj["sha"]
+        if obj["type"] != "tag":
+            break
+        obj = api.request("GET", f"git/tags/{obj['sha']}")["object"]
+    raise RuntimeError(f"Tag {tag} does not resolve to a commit.")
+
+
+def check_release_order(api, sha, tag, refs, releases, *, reserved=False):
+    # Ignore only our freshly reserved tag when rechecking the stable ceiling.
+    stable = stable_tags(refs, releases, exclude=tag if reserved else None)
+    highest = max(stable, key=stable.get) if stable else None
+    version = stable_version(tag)
+    if version is not None and highest is not None and version <= stable[highest]:
+        raise RuntimeError(f"Stable {tag} must be greater than highest stable {highest}.")
+    # Check every published release, including prereleases; never rely on Latest,
+    # commit dates, release ordering, or target_commitish (which may be a branch).
+    history = {highest} if highest else set()
+    for item in releases:
+        if type(item["draft"]) is not bool:
+            raise RuntimeError("Invalid release draft status.")
+        if not item["draft"]:
+            history.add(item["tag_name"])
+    checked = set()
+    for previous in sorted(history):
+        base = tag_commit(api, previous, refs)
+        if base in checked or base == sha:
+            continue
+        comparison = api.request("GET", f"compare/{base}...{sha}")
+        if (comparison["status"] not in ("ahead", "identical") or
+                comparison["merge_base_commit"]["sha"] != base):
+            raise RuntimeError(
+                f"Tested commit {sha} is older than or diverges from {previous} ({base}). "
+                "Start fresh CI on main; do not rerun this old SHA.")
+        checked.add(base)
+
+
+def recovery_hint(api, tag):
+    try:
+        refs, releases = read_state(api)
+        occupied = set(refs) | {item["tag_name"] for item in releases} | {tag}
+        if stable_version(tag) is not None:
+            major, minor, patch = max([stable_version(tag), *stable_tags(refs, releases).values()])
+            suggestion = f"{major}.{minor}.{patch + 1}"
+        else:
+            suggestion = tag[1:] + ".1"
+            while "v" + suggestion in occupied:
+                suggestion += ".1"
+        return (f"Do not move/delete {tag} or replace release assets. After investigating, "
+                f"start fresh CI on main with release_version={suggestion} (or empty for automatic bump). "
+                "This currently unused version is a suggestion, revalidated at publication; an old SHA remains rejected.")
+    except (RuntimeError, OSError, KeyError, TypeError, ValueError):
+        return ("Could not determine the next unused version. Inspect remote tags/releases, "
+                "then start fresh CI on main. Do not move/delete tags or replace release assets.")
 
 
 def publish(api, env, assets, run=subprocess.run):
     sha, tag = validate_context(env)
     if not assets:
         raise RuntimeError("No verified release assets.")
-    check_main(api, sha)
-    check_unused(api, tag)
-    # Create-only POST is atomic. A racing creator causes 422; never PATCH or force-push.
-    api.request("POST", "git/refs", {"ref": f"refs/tags/{tag}", "sha": sha})
-    reference = api.request("GET", f"git/ref/tags/{tag}")
-    if reference["object"]["type"] != "commit" or reference["object"]["sha"] != sha:
-        raise RuntimeError("The new tag changed before publication.")
-    command = ["gh", "release", "create", tag, *assets, "--verify-tag", "--generate-notes",
-               "--title", tag, "--repo", env["GITHUB_REPOSITORY"]]
-    if "-" in tag:
-        command.append("--prerelease")
-    run(command, check=True)
+    try:
+        check_main(api, sha)
+        refs, releases = read_state(api)
+        check_unused(api, tag, releases)
+        check_release_order(api, sha, tag, refs, releases)
+        # Create-only POST is atomic. A racing creator causes 422; never PATCH or force-push.
+        api.request("POST", "git/refs", {"ref": f"refs/tags/{tag}", "sha": sha})
+        # Re-read remote state after reservation, not the version job's earlier snapshot.
+        refs, releases = read_state(api)
+        check_unused_release(tag, releases)
+        check_release_order(api, sha, tag, refs, releases, reserved=True)
+        check_main(api, sha)
+        reference = api.request("GET", f"git/ref/tags/{tag}")
+        if reference["object"]["type"] != "commit" or reference["object"]["sha"] != sha:
+            raise RuntimeError("The new tag changed before publication.")
+        command = ["gh", "release", "create", tag, *assets, "--verify-tag", "--generate-notes",
+                   "--title", tag, "--repo", env["GITHUB_REPOSITORY"]]
+        command += ["--prerelease", "--latest=false"] if "-" in tag else ["--latest"]
+        run(command, check=True)
+    except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(f"{error}\n{recovery_hint(api, tag)}") from error
 
 
 if __name__ == "__main__":

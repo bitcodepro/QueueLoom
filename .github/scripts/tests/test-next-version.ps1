@@ -39,6 +39,14 @@ try {
     Check-Version @{ ReleaseVersion = '2.0.0-rc.1'; CommitMessage = '[skip release]' } @{ version = '2.0.0-rc.1'; prerelease = 'true'; skip = 'false' }
     Check-Version @{ ReleaseVersion = '2.0.0' } @{ prerelease = 'false'; version = '2.0.0' }
     Check-Version @{ ReleaseVersion = '0.0.0-alpha-beta.0' } @{ prerelease = 'true' }
+    Check-Rejected '1.0.1'
+    $global:versionTestTags = @('v1.10.0', 'v1.9.99', 'v9.0.0-rc.1')
+    Check-Rejected '1.9.100'
+    Check-Rejected '1.10.0'
+    Check-Version @{ ReleaseVersion = '1.10.1' } @{ version = '1.10.1'; prerelease = 'false' }
+    Check-Version @{} @{ version = '1.10.1' }
+    Check-Version @{ ReleaseVersion = '1.9.0-rc.2' } @{ prerelease = 'true' }
+    $global:versionTestTags = @('v1.2.3', 'v1.2.4-rc.1')
     foreach ($version in @('1.2.3', 'v2.0.0', '01.2.3', '1.02.3', '1.2.03', '1.2.3-01',
             '1.2.3-rc..1', '1.2.3-', '1.2.3+build', "1.2.3;echo 'bad'", "1.2.3`n", ' 1.2.3', '1.2')) {
         Check-Rejected $version
