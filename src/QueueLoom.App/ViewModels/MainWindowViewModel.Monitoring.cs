@@ -451,7 +451,13 @@ public sealed partial class MainWindowViewModel
         {
             var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
             var count = entity.Count!.Value;
+            var lowerBound = entity.CountIsLowerBound;
             _lastDlqMeasurements[key] = count;
+            if (count <= 0 && lowerBound)
+            {
+                // A sample that showed nothing does not prove the queue is empty: an open notification stays open.
+                continue;
+            }
             if (count <= 0)
             {
                 if (_monitorNotifications.Remove(key, out var resolved))
@@ -468,6 +474,13 @@ public sealed partial class MainWindowViewModel
 
             if (_monitorNotifications.TryGetValue(key, out var existing))
             {
+                if (lowerBound && count < existing.Count)
+                {
+                    // Lost precision is not a decrease: a smaller sample keeps the larger count already reported.
+                    existing.CountIsLowerBound = true;
+                    continue;
+                }
+                existing.CountIsLowerBound = lowerBound;
                 if (existing.Count != count)
                 {
                     var previousCount = existing.Count;
@@ -475,9 +488,10 @@ public sealed partial class MainWindowViewModel
                     existing.LastDetectedAt = detectedAt;
                     if (count > previousCount)
                     {
-                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount));
+                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previousCount)
+                            { CountIsLowerBound = lowerBound });
                     }
-                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previousCount:N0} → {count:N0}"));
+                    changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previousCount:N0} → {DeadLetterCountText.Format(count, lowerBound)}"));
                 }
                 continue;
             }
@@ -488,14 +502,15 @@ public sealed partial class MainWindowViewModel
                 entity.Entity,
                 FormatSubQueue(entity.SubQueue),
                 count,
-                detectedAt);
+                detectedAt) { CountIsLowerBound = lowerBound };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
-            alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null));
+            alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null)
+                { CountIsLowerBound = lowerBound });
             AddActivity(
                 "Warning",
                 "DLQ detected",
-                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {count:N0} messages",
+                $"{profile.Name} · {entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · {DeadLetterCountText.Format(count, lowerBound)} messages",
                 entity.Entity);
         }
 

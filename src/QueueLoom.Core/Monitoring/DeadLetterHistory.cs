@@ -4,12 +4,19 @@ namespace QueueLoom.Core.Monitoring;
 
 /// <summary>Dead-letter counts of one environment at one moment, from a complete monitor check or scan.</summary>
 /// <param name="Sources">Non-empty dead-letter queues by display name ("orders", "orders (transfer)"); the largest only.</param>
+/// <param name="TotalIsLowerBound">The total includes a count that is only a lower bound (a sampled Pub/Sub queue).</param>
+/// <param name="LowerBoundSources">Sources whose count is only a lower bound, kept in Sources or not; null when there are none.</param>
 public sealed record DeadLetterHistorySample(
     DateTimeOffset At,
     Guid ProfileId,
     string Environment,
     long Total,
-    IReadOnlyDictionary<string, long> Sources)
+    IReadOnlyDictionary<string, long> Sources,
+    // Omitted while unset, so samples without lower bounds are written exactly as before.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    bool TotalIsLowerBound = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? LowerBoundSources = null)
 {
     public const int MaximumSources = 25;
 
@@ -24,8 +31,18 @@ public sealed record DeadLetterHistorySample(
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(MaximumSources)
             .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
-        return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources);
+        var lowerBound = snapshot.Entities
+            .Where(entity => entity.CountIsLowerBound && entity.Count.HasValue)
+            .Select(SourceName)
+            // Kept or not: a sampled queue that showed nothing (or fell below the top) is not known to be empty.
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources,
+            snapshot.TotalIsLowerBound, lowerBound.Length == 0 ? null : lowerBound);
     }
+
+    public bool IsLowerBound(string source) => LowerBoundSources?.Contains(source, StringComparer.Ordinal) == true;
 
     public static string SourceName(DeadLetterEntitySnapshot entity) =>
         entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
@@ -33,14 +50,25 @@ public sealed record DeadLetterHistorySample(
             : entity.Entity.DisplayName;
 }
 
-public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count);
+public sealed record DeadLetterHistoryPoint(DateTimeOffset At, long Count)
+{
+    /// <summary>The count is only a lower bound.</summary>
+    public bool IsLowerBound { get; init; }
+}
 
 /// <param name="Start">Count at the first sample of the period; null when that sample kept only larger queues.</param>
 /// <param name="Now">Count at the last sample; null when that sample kept only larger queues.</param>
 public sealed record DeadLetterSourceTrend(string Name, long? Start, long? Now)
 {
-    /// <summary>Null when either end is unknown: a queue below a truncated sample's top is not known to be empty.</summary>
-    public long? Change => Start is { } start && Now is { } now ? now - start : null;
+    public bool StartIsLowerBound { get; init; }
+
+    public bool NowIsLowerBound { get; init; }
+
+    /// <summary>
+    /// Null when either end is unknown (a queue below a truncated sample's top is not known to be empty) or only a
+    /// lower bound (a sampled queue's real growth or shrinkage cannot be told from two samples).
+    /// </summary>
+    public long? Change => Start is { } start && Now is { } now && !StartIsLowerBound && !NowIsLowerBound ? now - start : null;
 }
 
 public sealed record DeadLetterHistorySummary(
@@ -51,7 +79,12 @@ public sealed record DeadLetterHistorySummary(
     IReadOnlyList<DeadLetterSourceTrend> Sources,
     int SampleCount)
 {
-    public long Change => Now - Start;
+    public bool NowIsLowerBound { get; init; }
+
+    public bool StartIsLowerBound { get; init; }
+
+    /// <summary>Null when either total is only a lower bound.</summary>
+    public long? Change => NowIsLowerBound || StartIsLowerBound ? null : Now - Start;
 }
 
 public interface IDeadLetterHistoryStore
@@ -87,7 +120,7 @@ public static class DeadLetterHistory
             return null;
         }
 
-        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total)).ToArray();
+        var points = inRange.Select(sample => new DeadLetterHistoryPoint(sample.At, sample.Total) { IsLowerBound = sample.TotalIsLowerBound }).ToArray();
         if (points.Length > maximumPoints)
         {
             var bucket = (to - from).Ticks / maximumPoints + 1;
@@ -102,13 +135,15 @@ public static class DeadLetterHistory
         var peak = points.MaxBy(point => point.Count)!;
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name)))
+            .Select(name => new DeadLetterSourceTrend(name, CountIn(first, name), CountIn(last, name))
+                { StartIsLowerBound = first.IsLowerBound(name), NowIsLowerBound = last.IsLowerBound(name) })
             .OrderByDescending(source => source.Now ?? -1)
             .ThenByDescending(source => Math.Abs(source.Change ?? 0))
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(maximumSources)
             .ToArray();
-        return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length);
+        return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
+            { NowIsLowerBound = last.TotalIsLowerBound, StartIsLowerBound = first.TotalIsLowerBound };
     }
 
     /// <summary>

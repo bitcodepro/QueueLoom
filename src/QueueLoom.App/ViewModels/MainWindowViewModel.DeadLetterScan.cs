@@ -26,8 +26,8 @@ public sealed partial class MainWindowViewModel
             .Distinct()
             .Count();
         StatusText = snapshot.HasFailures
-            ? $"Partial scan in {profile.Name} · {snapshot.TotalCount:N0} known messages · {failedSources} source errors"
-            : $"Found {snapshot.TotalCount:N0} dead-letter messages in {profile.Name}";
+            ? $"Partial scan in {profile.Name} · {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalIsLowerBound)} known messages · {failedSources} source errors"
+            : $"Found {DeadLetterCountText.Format(snapshot.TotalCount, snapshot.TotalIsLowerBound)} dead-letter messages in {profile.Name}";
         AddActivity(
             snapshot.HasFailures ? "Error" : snapshot.TotalCount > 0 ? "Warning" : "Success",
             snapshot.HasFailures ? "Partial DLQ scan" : "DLQ scan",

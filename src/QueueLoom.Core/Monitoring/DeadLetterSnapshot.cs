@@ -25,6 +25,9 @@ public sealed record DeadLetterSnapshot
 
     public long TotalCount => checked(Entities.Where(entity => entity.Count.HasValue).Sum(entity => entity.Count!.Value));
 
+    /// <summary>The total includes a count that is only a lower bound, so the real total may be larger.</summary>
+    public bool TotalIsLowerBound => Entities.Any(entity => entity.Count.HasValue && entity.CountIsLowerBound);
+
     public bool HasFailures => Entities.Any(entity => !entity.IsSuccessful);
 
     public bool HasDeadLetters => Entities.Any(entity => entity.Count > 0);

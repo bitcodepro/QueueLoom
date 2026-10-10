@@ -45,7 +45,13 @@ public sealed class DlqSourceItemViewModel(
 
     public long Count => Snapshot.Count ?? 0;
 
-    public string Delta => Snapshot.Change switch
+    public bool CountIsLowerBound => Snapshot.CountIsLowerBound;
+
+    public string CountText => DeadLetterCountText.Format(Snapshot.Count ?? 0, Snapshot.CountIsLowerBound);
+
+    public string? CountNote => Snapshot.CountIsLowerBound ? DeadLetterCountText.LowerBoundNote : null;
+
+    public string Delta => Snapshot.CountIsLowerBound ? "unknown" : Snapshot.Change switch
     {
         > 0 => $"+{Snapshot.Change}",
         < 0 => Snapshot.Change.ToString()!,

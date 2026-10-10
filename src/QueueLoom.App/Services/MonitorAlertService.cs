@@ -9,6 +9,9 @@ namespace QueueLoom.App.Services;
 /// <summary>A monitor found new dead letters (or more of them) in a queue or subscription.</summary>
 public sealed record MonitorAlert(string Environment, string Source, long Count, long? PreviousCount)
 {
+    /// <summary>The count is only a lower bound (a sampled Pub/Sub queue): written "1,000+", never as an exact size.</summary>
+    public bool CountIsLowerBound { get; init; }
+
     public string Title => "QueueLoom: dead letters";
 
     public string Text => Combined is { Count: > 0 } combined
@@ -23,13 +26,16 @@ public sealed record MonitorAlert(string Environment, string Source, long Count,
     internal const int MaximumListed = 5;
 
     private string SourceText => PreviousCount is { } previous
-        ? $"{Source}: {Count:N0} dead-lettered messages (was {previous:N0})"
-        : $"{Source}: {Count:N0} dead-lettered messages";
+        ? $"{Source}: {CountText} dead-lettered messages (was {previous:N0})"
+        : $"{Source}: {CountText} dead-lettered messages";
+
+    private string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountIsLowerBound);
 
     /// <summary>One alert for everything one check found: a check of many sources sends one message, not one each.</summary>
     public static MonitorAlert Combine(IReadOnlyList<MonitorAlert> alerts) => alerts.Count == 1
         ? alerts[0]
-        : new MonitorAlert(alerts[0].Environment, $"{alerts.Count:N0} sources", alerts.Sum(alert => alert.Count), null) { Combined = alerts };
+        : new MonitorAlert(alerts[0].Environment, $"{alerts.Count:N0} sources", alerts.Sum(alert => alert.Count), null)
+            { Combined = alerts, CountIsLowerBound = alerts.Any(alert => alert.CountIsLowerBound) };
 }
 
 /// <summary>Sends monitor alerts outside the QueueLoom window.</summary>

@@ -7,11 +7,17 @@ namespace QueueLoom.App.ViewModels;
 /// <summary>A row under the history chart: a dead-letter queue and how its count changed over the period.</summary>
 public sealed record DeadLetterTrendItemViewModel(string Name, long? Now, long? Change)
 {
+    /// <summary>Now (or the period's start) is only a lower bound: a sampled Pub/Sub queue.</summary>
+    public bool IsLowerBound { get; init; }
+
     // Unknown when a sample kept only the largest queues and this one was not among them.
-    public string NowText => Now?.ToString("N0", CultureInfo.CurrentCulture) ?? "—";
+    public string NowText => DeadLetterCountText.Format(Now, NowIsLowerBound);
+
+    public bool NowIsLowerBound { get; init; }
 
     public string ChangeText => Change switch
     {
+        null when IsLowerBound => "unknown: counted by sampling",
         null => "not tracked for the whole period",
         > 0 => $"+{Change:N0}",
         < 0 => $"−{-Change:N0}",
@@ -80,10 +86,12 @@ public sealed partial class MainWindowViewModel
 
     public DateTimeOffset HistoryTo => _historyTo;
 
-    public string HistoryNowText => _historySummary is { } summary ? summary.Now.ToString("N0", CultureInfo.CurrentCulture) : "—";
+    public string HistoryNowText => _historySummary is { } summary
+        ? DeadLetterCountText.Format(summary.Now, summary.NowIsLowerBound)
+        : "—";
 
     public string HistoryPeakText => _historySummary is { } summary
-        ? summary.Peak.Count.ToString("N0", CultureInfo.CurrentCulture)
+        ? DeadLetterCountText.Format(summary.Peak.Count, summary.Peak.IsLowerBound)
         : "—";
 
     public string HistoryPeakTime => _historySummary is { } summary
@@ -104,7 +112,10 @@ public sealed partial class MainWindowViewModel
 
     public string HistoryFootnote => _historySummary is { } summary
         ? $"{summary.SampleCount:N0} check{(summary.SampleCount == 1 ? string.Empty : "s")} in this period. " +
-          "Counts are recorded by the monitor and by dead-letter scans, at most once a minute, and kept for 30 days."
+          "Counts are recorded by the monitor and by dead-letter scans, at most once a minute, and kept for 30 days." +
+          (summary.Points.Any(point => point.IsLowerBound)
+              ? " A count marked + includes a queue counted by reading it (no exact count is available): further growth is unknown."
+              : string.Empty)
         : string.Empty;
 
     /// <summary>The history for the current selection is still being read; nothing of an earlier selection is shown.</summary>
@@ -117,7 +128,8 @@ public sealed partial class MainWindowViewModel
             : $"No checks of {HistoryProfile.Name} in this period. Start the monitor or scan for dead letters to record counts.";
 
     public IReadOnlyList<DeadLetterTrendItemViewModel> HistorySources =>
-        _historySummary?.Sources.Select(source => new DeadLetterTrendItemViewModel(source.Name, source.Now, source.Change)).ToArray()
+        _historySummary?.Sources.Select(source => new DeadLetterTrendItemViewModel(source.Name, source.Now, source.Change)
+            { IsLowerBound = source.StartIsLowerBound || source.NowIsLowerBound, NowIsLowerBound = source.NowIsLowerBound }).ToArray()
         ?? [];
 
     public bool HasHistorySources => _historySummary?.Sources.Count > 0;

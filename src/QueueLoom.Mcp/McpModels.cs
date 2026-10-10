@@ -33,7 +33,14 @@ public sealed record EntityInfo(
 
 public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, bool CountsAreSampled, IReadOnlyList<EntityInfo> Entities);
 
-public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? Count, string? Error);
+public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? Count, string? Error)
+{
+    /// <summary>
+    /// True when Count is only what a sample of the queue showed (Pub/Sub without Cloud Monitoring, read up to 1,000):
+    /// the queue may hold more, and 0 does not prove it is empty.
+    /// </summary>
+    public bool CountIsLowerBound { get; init; }
+}
 
 public sealed record RuleInfo(string Name, string Kind, string Filter, string? Action);
 
@@ -85,12 +92,21 @@ public sealed record ForwardingInfo(
     IReadOnlyList<string> Missing,
     int LongestChain);
 
-public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count);
+public sealed record DeadLetterHistoryPointInfo(DateTimeOffset At, long Count)
+{
+    /// <summary>True when Count includes a sampled queue, so the real total may be larger.</summary>
+    public bool IsLowerBound { get; init; }
+}
 
 /// <param name="Start">Null when the first sample kept only larger queues, so this one's count then is unknown.</param>
 /// <param name="Now">Null when the last sample kept only larger queues.</param>
-/// <param name="Change">Null when either end is unknown.</param>
-public sealed record DeadLetterTrendInfo(string Source, long? Start, long? Now, long? Change);
+/// <param name="Change">Null when either end is unknown or only a lower bound.</param>
+public sealed record DeadLetterTrendInfo(string Source, long? Start, long? Now, long? Change)
+{
+    public bool StartIsLowerBound { get; init; }
+
+    public bool NowIsLowerBound { get; init; }
+}
 
 /// <param name="Note">Why there is nothing to show, when nothing was recorded.</param>
 public sealed record DeadLetterHistoryInfo(
@@ -104,9 +120,20 @@ public sealed record DeadLetterHistoryInfo(
     DeadLetterHistoryPointInfo? Peak,
     IReadOnlyList<DeadLetterHistoryPointInfo> Points,
     IReadOnlyList<DeadLetterTrendInfo> Sources,
-    string? Note);
+    string? Note)
+{
+    /// <summary>Now includes a sampled queue, so the real total may be larger; Change is then null.</summary>
+    public bool NowIsLowerBound { get; init; }
 
-public sealed record DeadLetterScanInfo(string Environment, DateTimeOffset CapturedAt, long TotalCount, IReadOnlyList<DeadLetterSourceInfo> Sources);
+    /// <summary>Start includes a sampled queue, so the real total may have been larger; Change is then null.</summary>
+    public bool StartIsLowerBound { get; init; }
+}
+
+public sealed record DeadLetterScanInfo(string Environment, DateTimeOffset CapturedAt, long TotalCount, IReadOnlyList<DeadLetterSourceInfo> Sources)
+{
+    /// <summary>TotalCount includes a sampled queue (see DeadLetterSourceInfo.CountIsLowerBound): the real total may be larger.</summary>
+    public bool TotalIsLowerBound { get; init; }
+}
 
 /// <param name="DecodedBodyTruncated">True when the decoded body was cut at 4,000 characters.</param>
 /// <param name="ApplicationPropertiesTruncated">
@@ -201,7 +228,8 @@ internal static class McpMapping
 
     public static DeadLetterSourceInfo ToInfo(DeadLetterEntitySnapshot snapshot) =>
         new(EntityName(snapshot.Entity), SubQueueName(snapshot.SubQueue), snapshot.Count,
-            snapshot.Error is null ? null : QueueLoom.Core.Diagnostics.SensitiveDataRedactor.Redact(snapshot.Error));
+            snapshot.Error is null ? null : QueueLoom.Core.Diagnostics.SensitiveDataRedactor.Redact(snapshot.Error))
+            { CountIsLowerBound = snapshot.CountIsLowerBound };
 
     public static MessageInfo ToInfo(BrowsedMessage message)
     {

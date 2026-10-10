@@ -96,7 +96,7 @@
                     <Grid ColumnDefinitions="*,Auto">
                       <TextBlock Text="{Binding SourceName}" FontWeight="SemiBold"
                                  TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourceName}" />
-                      <TextBlock Grid.Column="1" Text="{Binding Count, StringFormat={}{0:N0}}" FontWeight="Bold"
+                      <TextBlock Grid.Column="1" Text="{Binding CountText}" FontWeight="Bold"
                                  Classes="danger" Margin="10,0,0,0" />
                     </Grid>
                     <TextBlock Grid.Row="1" Text="{Binding EnvironmentName}" Classes="muted" FontSize="11" />

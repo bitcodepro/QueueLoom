@@ -489,7 +489,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 continue;
             }
             long count;
-            if (source.Runtime.CountsUnavailable)
+            // Sampled by reading: what was seen, never the queue's proven size (nor, when nothing was seen, proof of empty).
+            var sampled = source.Runtime.CountsUnavailable;
+            if (sampled)
             {
                 try
                 {
@@ -509,7 +511,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             var key = source.Reference.Path;
             long? previous = _previousDeadLetterCounts.TryGetValue(key, out var value) ? value : null;
             _previousDeadLetterCounts[key] = count;
-            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous));
+            snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, count, previous) { CountIsLowerBound = sampled });
         }
 
         return new DeadLetterSnapshot(profile.Id, TimeProvider.GetUtcNow(), snapshots);
@@ -537,7 +539,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         }
     }
 
-    internal const int SampleLimit = 1_000;
+    internal const int SampleLimit = DeadLetterCountText.SampleLimit;
 
     /// <summary>Read-only provider management calls also retain clients until their entire scope finishes.</summary>
     protected async ValueTask<IDisposable> EnterReadOperationAsync(CancellationToken cancellationToken)

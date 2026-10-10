@@ -12,6 +12,7 @@ public sealed class MonitorNotificationItemViewModel(
     DateTimeOffset firstDetectedAt) : ObservableObject
 {
     private long _count = count;
+    private bool _countIsLowerBound;
     private DateTimeOffset _lastDetectedAt = firstDetectedAt;
 
     public string Key { get; } = key;
@@ -28,8 +29,23 @@ public sealed class MonitorNotificationItemViewModel(
     public long Count
     {
         get => _count;
-        set => SetProperty(ref _count, value);
+        set
+        {
+            if (SetProperty(ref _count, value)) OnPropertyChanged(nameof(CountText));
+        }
     }
+
+    /// <summary>The count is only what a sample of the queue showed (Pub/Sub without Cloud Monitoring).</summary>
+    public bool CountIsLowerBound
+    {
+        get => _countIsLowerBound;
+        set
+        {
+            if (SetProperty(ref _countIsLowerBound, value)) OnPropertyChanged(nameof(CountText));
+        }
+    }
+
+    public string CountText => QueueLoom.Core.Monitoring.DeadLetterCountText.Format(Count, CountIsLowerBound);
 
     public DateTimeOffset LastDetectedAt
     {

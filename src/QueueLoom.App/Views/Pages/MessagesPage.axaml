@@ -155,7 +155,7 @@
                           Margin="5,7" HorizontalAlignment="Center" />
                   <StackPanel Grid.Column="4" VerticalAlignment="Center" HorizontalAlignment="Right" MinWidth="44"
                               IsVisible="{Binding !HasError}">
-                    <TextBlock Text="{Binding Count, StringFormat={}{0:N0}}" FontSize="20" FontWeight="SemiBold"
+                    <TextBlock Text="{Binding CountText}" ToolTip.Tip="{Binding CountNote}" FontSize="20" FontWeight="SemiBold"
                                Classes="warning" HorizontalAlignment="Right" />
                     <TextBlock Text="{Binding Delta}" Classes="muted" FontSize="11" HorizontalAlignment="Right" />
                   </StackPanel>
