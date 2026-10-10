@@ -30,17 +30,23 @@ public sealed record DeadLetterHistorySample(
     public static DeadLetterHistorySample FromSnapshot(DeadLetterSnapshot snapshot, string environment)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var sources = snapshot.Entities
+        // A shared dead-letter destination is recorded once, under its own name, not once per source that uses it.
+        var shared = snapshot.SharedTargets;
+        string SourceName(DeadLetterEntitySnapshot entity) =>
+            entity.MeasuredFrom is { } target && shared.TryGetValue(target, out var users)
+                ? $"{SharedName(target)} (shared by {users.Count})"
+                : DeadLetterHistorySample.SourceName(entity);
+        var sources = snapshot.CountedOnce
             .Where(entity => entity.Count > 0)
             .GroupBy(SourceName, StringComparer.Ordinal)
-            .Select(group => (Name: group.Key, Count: group.Sum(entity => entity.Count!.Value)))
+            .Select(group => (Name: group.Key, Count: checked(group.Sum(entity => entity.Count!.Value))))
             .OrderByDescending(source => source.Count)
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(MaximumSources)
             .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
         // Every source that is not exact, kept in Sources or not: an estimated or sampled zero is never read back as a
         // proven empty queue.
-        var qualities = snapshot.Entities
+        var qualities = snapshot.CountedOnce
             .Where(entity => entity.CountQuality != DeadLetterCountQuality.Exact)
             .GroupBy(SourceName, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
@@ -48,7 +54,7 @@ public sealed record DeadLetterHistorySample(
                 StringComparer.Ordinal);
         // When and through what a count was taken, where the service says (a Cloud Monitoring point's time, a Pub/Sub
         // reader, an SQS dead-letter queue): counts of different targets are never compared later.
-        var observations = snapshot.Entities
+        var observations = snapshot.CountedOnce
             .Where(entity => entity.MeasuredAt is not null || entity.MeasuredFrom is not null)
             .GroupBy(SourceName, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
@@ -101,6 +107,10 @@ public sealed record DeadLetterHistorySample(
     private static bool Same<T>(IReadOnlyDictionary<string, T>? first, IReadOnlyDictionary<string, T>? second) =>
         (first ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .SequenceEqual((second ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal));
+
+    /// <summary>The short name of a shared destination: the last part of its ARN or resource name.</summary>
+    public static string SharedName(string target) =>
+        target[(target.LastIndexOfAny([':', '/']) + 1)..] is { Length: > 0 } name ? name : target;
 
     public static string SourceName(DeadLetterEntitySnapshot entity) =>
         entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
