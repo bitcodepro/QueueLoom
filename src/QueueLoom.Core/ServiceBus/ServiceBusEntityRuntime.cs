@@ -40,6 +40,12 @@ public sealed record ServiceBusEntityRuntime
     /// <summary>What the dead-letter count was taken from, when not the entity itself (a Pub/Sub reader subscription).</summary>
     public string? DeadLetterCountSource { get; init; }
 
+    /// <summary>
+    /// Where the dead-letter topic's partitions end (Kafka): offsets written since an earlier checkpoint are new
+    /// messages, even at the same retained count.
+    /// </summary>
+    public QueueLoom.Core.Monitoring.DeadLetterOffsets? DeadLetterOffsets { get; init; }
+
     /// <summary>A failed reported DLQ count; this must not become zero or trigger receive-based sampling.</summary>
     public string? DeadLetterCountError { get; init; }
 
