@@ -97,9 +97,60 @@ public sealed partial class AzureServiceBusWorkspace
 
         return
         [
-            CreateSnapshot(source, ServiceBusSubQueue.DeadLetter, deadLetters, null),
-            CreateSnapshot(source, ServiceBusSubQueue.TransferDeadLetter, transferDeadLetters, null)
+            CreateSnapshot(source, ServiceBusSubQueue.DeadLetter, deadLetters, null) with
+                { ContentMarkers = await PeekContentMarkersAsync(source, SubQueue.DeadLetter, deadLetters, cancellationToken).ConfigureAwait(false) },
+            CreateSnapshot(source, ServiceBusSubQueue.TransferDeadLetter, transferDeadLetters, null) with
+                { ContentMarkers = await PeekContentMarkersAsync(source, SubQueue.TransferDeadLetter, transferDeadLetters, cancellationToken).ConfigureAwait(false) }
         ];
+    }
+
+    /// <summary>
+    /// The sequence numbers and message IDs of a small dead-letter queue, by peeking (no lock, no delivery count): a
+    /// message replaced by another at the same count shows as a new marker. Null for an empty or larger queue, or when
+    /// the peek fails, which never fails the count itself.
+    /// </summary>
+    private async Task<IReadOnlyCollection<string>?> PeekContentMarkersAsync(ServiceBusEntityReference source, SubQueue subQueue, long count,
+        CancellationToken cancellationToken)
+    {
+        if (count is <= 0 or > DeadLetterEntitySnapshot.ContentMarkerLimit)
+        {
+            return null;
+        }
+        var options = new ServiceBusReceiverOptions { SubQueue = subQueue, PrefetchCount = 0 };
+        var client = GetMessagingClient();
+        try
+        {
+            await using var receiver = source.Kind == ServiceBusEntityKind.Queue
+                ? client.CreateReceiver(source.Name, options)
+                : client.CreateReceiver(source.TopicName!, source.Name, options);
+            return await PeekContentMarkersAsync(receiver, count, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ServiceBusException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Peeks up to <paramref name="count"/> messages page by page; null unless the whole queue was seen.</summary>
+    internal static async Task<IReadOnlyCollection<string>?> PeekContentMarkersAsync(ServiceBusReceiver receiver, long count,
+        CancellationToken cancellationToken)
+    {
+        var markers = new HashSet<string>(StringComparer.Ordinal);
+        long? next = null;
+        while (markers.Count < count)
+        {
+            var page = await receiver.PeekMessagesAsync((int)Math.Min(count - markers.Count, DeadLetterEntitySnapshot.ContentMarkerLimit), next,
+                cancellationToken).ConfigureAwait(false);
+            if (page.Count == 0) break;
+            foreach (var message in page)
+            {
+                markers.Add($"{message.SequenceNumber}:{message.MessageId}");
+            }
+            if (page[^1].SequenceNumber == long.MaxValue) break;
+            next = page[^1].SequenceNumber + 1;
+        }
+        // A partial view would make an unseen old message look new on the next check.
+        return markers.Count == count ? markers : null;
     }
 
     private DeadLetterEntitySnapshot CreateSnapshot(

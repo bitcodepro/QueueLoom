@@ -466,6 +466,7 @@ public sealed partial class MainWindowViewModel
         // one notification and one webhook post, not fifty (most of which the in-flight limit would then drop).
         var alerts = new List<MonitorAlert>();
         var changes = new List<(ServiceBusEntityReference Entity, string Text)>();
+        var arrivals = new List<(ServiceBusEntityReference Entity, string Text)>();
         // A source that could not be read interrupts an approximate-zero confirmation: two zeros must be consecutive.
         foreach (var failed in snapshot.Entities.Where(item => !item.IsSuccessful))
         {
@@ -502,6 +503,8 @@ public sealed partial class MainWindowViewModel
                 existing.LastMeasuredAt = entity.MeasuredAt;
                 existing.LastDetectedAt = detectedAt;
                 existing.UnconfirmedClearChecks = 0;
+                existing.ContentMarkers = entity.ContentMarkers;
+                existing.Offsets = entity.Offsets;
                 continue;
             }
             if (existing is not null)
@@ -564,6 +567,7 @@ public sealed partial class MainWindowViewModel
                     existing.CountQuality = DeadLetterCountQuality.LowerBound;
                     continue;
                 }
+                var grew = false;
                 if (previous != now)
                 {
                     existing.Count = count;
@@ -572,11 +576,27 @@ public sealed partial class MainWindowViewModel
                     // Alert on growth that can be said; a change from or to a sample is reported, not alerted as growth.
                     if (DeadLetterMeasurement.ProvenIncrease(previous, now) is { Count: > 0 })
                     {
+                        grew = true;
                         alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
                             { CountQuality = quality, PreviousQuality = previous.Quality });
                     }
                     changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previous} → {now}"));
                 }
+                // A message that replaced another at the same (or a lower) count: new contents, not growth. Azure's
+                // markers are message identities; Kafka's offsets a checkpoint whose advance is at most that many.
+                var (arrived, upTo) = existing.ContentMarkers is { } seen && entity.ContentMarkers is { } current
+                    ? (current.Count(marker => !seen.Contains(marker)), false)
+                    : (DeadLetterOffsets.Arrivals(existing.Offsets, entity.Offsets) ?? 0, true);
+                if (!grew && arrived > 0)
+                {
+                    existing.LastDetectedAt = detectedAt;
+                    alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
+                        { CountQuality = quality, PreviousQuality = previous.Quality, NewMessages = arrived, NewMessagesApproximate = upTo });
+                    arrivals.Add((entity.Entity, $"{entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · " +
+                        $"{(upTo ? "up to " : string.Empty)}{arrived:N0} new, {DeadLetterCountText.Format(count, quality)} in total"));
+                }
+                existing.ContentMarkers = entity.ContentMarkers;
+                existing.Offsets = entity.Offsets;
                 continue;
             }
 
@@ -586,7 +606,14 @@ public sealed partial class MainWindowViewModel
                 entity.Entity,
                 FormatSubQueue(entity.SubQueue),
                 count,
-                detectedAt) { CountQuality = quality, LastMeasuredAt = entity.MeasuredAt, MeasuredFrom = entity.MeasuredFrom };
+                detectedAt)
+            {
+                CountQuality = quality,
+                LastMeasuredAt = entity.MeasuredAt,
+                MeasuredFrom = entity.MeasuredFrom,
+                ContentMarkers = entity.ContentMarkers,
+                Offsets = entity.Offsets
+            };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
             alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null)
@@ -598,7 +625,8 @@ public sealed partial class MainWindowViewModel
                 entity.Entity);
         }
 
-        ReportCountChanges(profile, changes);
+        ReportCountChanges(profile, changes, "DLQ count changed", "DLQ counts changed");
+        ReportCountChanges(profile, arrivals, "New dead letters", "New dead letters");
         if (alerts.Count > 0)
         {
             RaiseMonitorAlert(QueueLoom.App.Services.MonitorAlert.Combine(alerts));
@@ -614,18 +642,19 @@ public sealed partial class MainWindowViewModel
     /// letters in dozens of queues, every check), they become one entry: each Activity entry is a file written to disk
     /// on the window's thread, and fifty of them per check would stall it and bury everything else in Activity.
     /// </summary>
-    private void ReportCountChanges(ProfileItemViewModel profile, List<(ServiceBusEntityReference Entity, string Text)> changes)
+    private void ReportCountChanges(ProfileItemViewModel profile, List<(ServiceBusEntityReference Entity, string Text)> changes,
+        string action, string combinedAction)
     {
         if (changes.Count <= MaximumSeparateCountChanges)
         {
             foreach (var (entity, text) in changes)
             {
-                AddActivity("Warning", "DLQ count changed", $"{profile.Name} · {text}", entity);
+                AddActivity("Warning", action, $"{profile.Name} · {text}", entity);
             }
             return;
         }
         const int listed = 5;
-        AddActivity("Warning", "DLQ counts changed",
+        AddActivity("Warning", combinedAction,
             $"{profile.Name} · {changes.Count:N0} queues · " + string.Join("; ", changes.Take(listed).Select(change => change.Text)) +
             (changes.Count > listed ? $"; and {changes.Count - listed:N0} more" : string.Empty));
     }
