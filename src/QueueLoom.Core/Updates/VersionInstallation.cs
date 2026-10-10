@@ -72,6 +72,13 @@ public sealed class VersionInstallation
     public string Rid => _bootstrap.Rid;
     public string DataAnchor => _bundle is null ? Root : Path.Combine(_bundle, "Contents", "MacOS");
     public VersionReference Bootstrap => new(_bootstrap.Id, _bootstrap.ManifestSha256);
+    /// <summary>Probe the authoritative version store, which may be outside a read-only installation root.</summary>
+    public bool CanStagePackage()
+    {
+        RejectOwnedPath(Store);
+        CreateDirectory(Store);
+        return CanWrite(Store);
+    }
     public bool HasPendingActivation()
     {
         using var ownership = Own();
@@ -447,8 +454,20 @@ public sealed class VersionInstallation
                 catch (InstallationFileBusyException) { continue; }
                 if (owner != id) continue;
                 // Refuse links anywhere before recursively deleting this owned incomplete staging directory.
-                InspectTree(directory, directory);
-                Directory.Delete(directory, recursive: true);
+                _ = InspectTree(directory, directory).ToArray();
+                try
+                {
+                    // Retain ownership until every payload entry is gone. A scanner holding a nested file
+                    // must not prevent launch or lose the evidence needed to retry on the next launch.
+                    foreach (var entry in Directory.EnumerateFileSystemEntries(directory).Where(entry => entry != marker))
+                    {
+                        if (Directory.Exists(entry)) Directory.Delete(entry, recursive: true);
+                        else File.Delete(entry);
+                    }
+                    File.Delete(marker);
+                    Directory.Delete(directory);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
                 DurableInstallFile.FlushDirectory(parent);
             }
         _checkpoint?.Invoke("cleanup-finished");

@@ -1,6 +1,20 @@
 using QueueLoom.App.Services;
 using QueueLoom.Core.Updates;
 
+if (args.Length == 3 && args[0] == "--stable-update-probe")
+{
+    var target = AppUpdater.TargetFor(VersionInstallation.CurrentRid(), args[1]);
+    var installation = new VersionInstallation(args[1]);
+    var canInstall = AppUpdater.CanInstall(target);
+    var legacyDirectory = Path.Combine(installation.Root, "legacy");
+    var legacyCanInstall = AppUpdater.CanInstall(target with { InstallDirectory = legacyDirectory,
+        Executable = Path.Combine(legacyDirectory, OperatingSystem.IsWindows() ? "QueueLoom.exe" : "QueueLoom"), Bundle = null });
+    // Prove that staging into Store succeeds even when the UI's current probe refuses the root.
+    AppUpdater.Install(target, args[2]);
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { CanInstall = canInstall, LegacyCanInstall = legacyCanInstall, installation.Store }));
+    return 0;
+}
+
 if (args.Length >= 3 && args[0] == "--spawn-outside")
 {
     // An installation process with a child running from elsewhere: test cleanup must stop the first, not the second.
@@ -297,5 +311,17 @@ static void PublishMarker(string marker, string content, string? gate = null)
 
 namespace QueueLoom.App.Services
 {
-    public sealed record UpdateTarget(string Rid, string InstallDirectory, string Executable, string? Bundle);
+    // The fixture runs the real updater without its optional in-memory diagnostics or broker SDK dependencies.
+    public enum DiagnosticStage { Unknown, Started, Executing, Completed, Cancelled, Failed }
+    public enum DiagnosticOutcome { Unknown, Confirmed, Rejected }
+    public enum DiagnosticCheck { Unknown, Verified, Mismatch }
+    public enum DiagnosticRecovery { Unknown, Requested, StartupAcknowledged, Restored, Failed }
+    public sealed class DiagnosticsJournal
+    {
+        public static DiagnosticsJournal Session { get; } = new();
+        public long Begin(string kind) => 0;
+        public void Record(long operation, DiagnosticStage stage, DiagnosticOutcome outcome = DiagnosticOutcome.Unknown,
+            Exception? error = null, UpdatePhase? updateStage = null, DiagnosticCheck checksum = DiagnosticCheck.Unknown,
+            DiagnosticRecovery restart = DiagnosticRecovery.Unknown, DiagnosticRecovery rollback = DiagnosticRecovery.Unknown) { }
+    }
 }
