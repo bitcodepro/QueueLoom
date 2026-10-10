@@ -13,6 +13,10 @@ from urllib.parse import quote
 import urllib.request
 
 
+class DuplicateStableRelease(RuntimeError):
+    pass
+
+
 class GitHub:
     def __init__(self, repository, token):
         self.base = f"https://api.github.com/repos/{repository}/"
@@ -124,14 +128,24 @@ def check_release_order(api, sha, tag, refs, releases, *, reserved=False):
     # Check every published release, including prereleases; never rely on Latest,
     # commit dates, release ordering, or target_commitish (which may be a branch).
     history = {highest} if highest else set()
+    published_stable = set()
     for item in releases:
         if type(item["draft"]) is not bool:
             raise RuntimeError("Invalid release draft status.")
         if not item["draft"]:
+            if type(item["prerelease"]) is not bool:
+                raise RuntimeError("Invalid release prerelease status.")
             history.add(item["tag_name"])
+            if not item["prerelease"]:
+                published_stable.add(item["tag_name"])
     checked = set()
     for previous in sorted(history):
         base = tag_commit(api, previous, refs)
+        if version is not None and base == sha and previous in published_stable:
+            raise DuplicateStableRelease(
+                f"Tested commit {sha} already has published stable release {previous}. "
+                "A higher version alone cannot release this SHA again. Use a new tested main commit. "
+                "Any reserved tag remains; do not move/delete tags or replace release assets.")
         if base in checked or base == sha:
             continue
         comparison = api.request("GET", f"compare/{base}...{sha}")
@@ -185,6 +199,9 @@ def publish(api, env, assets, run=subprocess.run):
                    "--title", tag, "--repo", env["GITHUB_REPOSITORY"]]
         command += ["--prerelease", "--latest=false"] if "-" in tag else ["--latest"]
         run(command, check=True)
+    except DuplicateStableRelease:
+        # Increasing the version cannot recover a duplicate stable SHA.
+        raise
     except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, TypeError, ValueError) as error:
         raise RuntimeError(f"{error}\n{recovery_hint(api, tag)}") from error
 

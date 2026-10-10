@@ -37,6 +37,23 @@ earlier checkout. Rerunning all jobs of X1 cannot label X1 with a new number aft
 has been released, even when X1 remains an ancestor of main. The operator must start
 fresh CI on main, not keep incrementing the version of the stale run.
 
+A new stable release also requires a SHA that has not already been published as a
+stable release (`draft: false`, `prerelease: false`). Reissuing that SHA under a new
+patch/minor/major number is refused, including when it appears only on a later release
+page or an annotated tag. This is checked before tag creation and again after reservation.
+The error requires a **new tested main commit**; a different version or a fresh run
+on the same SHA cannot fix it, so no version-only recovery suggestion is printed.
+
+Promoting a published prerelease to stable on the same SHA is intentional and remains
+supported: for example `v1.2.3-rc.1` to `v1.2.3`, provided the stable version ceiling,
+main ancestry and all other prerequisites pass. GitHub's published release flags
+identify the channel, not merely the tag suffix. The first successful stable publication
+consumes that SHA for future stable releases. A reserved tag or draft without a published
+stable release does not consume the SHA, allowing recovery with a new version after an
+upload failure. Existing tags/drafts still cannot be reused. Prerelease publications
+retain their existing behavior and always stay outside Latest. Unknown release flags
+fail closed; they cannot hide a possible prior stable publication.
+
 Successful CI evidence is the **same run's job dependency graph**. The only job
 with `contents: write` explicitly needs build/test, emulator tests, release policy
 tests, version, release packages and archive verification. Missing, failed, cancelled,
@@ -158,7 +175,9 @@ and workflow identities, existing tags/releases (including paginated drafts), ta
 creation races, moved tags, API failures and retry rejection. They also cover stable
 numeric monotonicity, a stale X1 rerun after an X2 release, published prerelease/lower
 version ancestry, annotated tags, state changes after reservation, two publishers
-selecting one version and recovery after failed publication. Workflow graph tests
+selecting one version and recovery after failed publication. Duplicate stable SHA,
+prerelease-to-stable promotion, reserved/draft recovery and a stable publication
+racing after reservation are covered too. Workflow graph tests
 verify all required `needs`, failure/pending/absent prerequisite states, pinned
 checkouts, current-run artifact selection, existing concurrency and the publisher's lack of package execution.
 PowerShell tests cover automatic bumps, skip markers, explicit versions, prereleases,

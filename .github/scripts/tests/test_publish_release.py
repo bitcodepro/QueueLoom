@@ -23,6 +23,11 @@ class PublisherTests(unittest.TestCase):
         api = Mock()
         existing = dict(tags or {})
         created = {}
+        release_list = []
+        for item in releases or []:
+            item = dict(item)
+            item.setdefault('prerelease', '-' in item['tag_name'])
+            release_list.append(item)
         def reference(name, obj):
             return {'ref': 'refs/tags/' + name,
                     'object': {'type': 'commit', 'sha': obj} if isinstance(obj, str) else obj}
@@ -51,7 +56,7 @@ class PublisherTests(unittest.TestCase):
                 state, merge = (ancestry or {}).get(base, ('ahead', base))
                 return {'status': state, 'merge_base_commit': {'sha': merge}}
             if path.startswith('releases?'):
-                return releases or []
+                return release_list
             if method == 'POST' and path == 'git/refs':
                 created[data['ref'].removeprefix('refs/tags/')] = data['sha']
                 return {}
@@ -191,7 +196,7 @@ class PublisherTests(unittest.TestCase):
             if path == 'releases?per_page=100&page=1':
                 return [{'tag_name': 'noise', 'draft': True}] * 100
             if path == 'releases?per_page=100&page=2':
-                return [{'tag_name': 'v2.0.0-rc.1', 'draft': False}]
+                return [{'tag_name': 'v2.0.0-rc.1', 'draft': False, 'prerelease': True}]
             return original(method, path, *args, **kwargs)
         api.request.side_effect = request
         with self.assertRaisesRegex(RuntimeError, 'older than or diverges'):
@@ -205,9 +210,9 @@ class PublisherTests(unittest.TestCase):
                 release.publish(api, ENV, ['archive'], run)
             run.assert_not_called()
 
-    def test_equal_or_descendant_code_allowed_and_annotated_tag_peeled(self):
+    def test_descendant_code_allowed_and_annotated_tag_peeled(self):
         annotation = 'd' * 40
-        api, run = self.api(tags={'v1.2.1': SHA,
+        api, run = self.api(tags={'v1.2.1': OLDER,
                                 'v1.2.2': {'type': 'tag', 'sha': annotation}},
                             releases=[{'tag_name': 'v1.2.1', 'draft': False},
                                       {'tag_name': 'v1.2.2', 'draft': False}],
@@ -216,6 +221,97 @@ class PublisherTests(unittest.TestCase):
         api.request.assert_any_call('GET', f'git/tags/{annotation}')
         api.request.assert_any_call('GET', f'compare/{OLDER}...{SHA}')
         run.assert_called_once()
+
+    def test_published_stable_sha_cannot_be_reissued_with_a_higher_version(self):
+        annotation = 'd' * 40
+        for obj in [SHA, {'type': 'tag', 'sha': annotation}]:
+            for requested in ['v1.2.3', 'v1.3.0', 'v2.0.0']:
+                with self.subTest(obj=obj, requested=requested):
+                    api, run = self.api(tags={'v1.2.2': obj},
+                                        releases=[{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': False}],
+                                        objects={annotation: {'type': 'commit', 'sha': SHA}}), Mock()
+                    with self.assertRaisesRegex(release.DuplicateStableRelease, 'already has published stable release v1.2.2') as caught:
+                        release.publish(api, {**ENV, 'RELEASE_TAG': requested}, ['archive'], run)
+                    self.assertIn('new tested main commit', str(caught.exception))
+                    self.assertNotIn('release_version=', str(caught.exception))
+                    self.assertFalse(any(call.args[0] != 'GET' for call in api.request.call_args_list))
+                    run.assert_not_called()
+
+    def test_published_prerelease_can_be_promoted_to_stable_at_same_sha(self):
+        api, run = self.api(tags={'v1.2.2': OLDER, 'v1.2.3-rc.1': SHA},
+                            releases=[{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': False},
+                                      {'tag_name': 'v1.2.3-rc.1', 'draft': False, 'prerelease': True}]), Mock()
+        release.publish(api, ENV, ['archive'], run)
+        api.request.assert_any_call('POST', 'git/refs', {'ref': 'refs/tags/v1.2.3', 'sha': SHA})
+        self.assertIn('--latest', run.call_args.args[0])
+        self.assertNotIn('--prerelease', run.call_args.args[0])
+        run.assert_called_once()
+
+    def test_same_sha_reserved_tag_or_draft_does_not_prevent_recovery_with_new_version(self):
+        for releases in [[], [{'tag_name': 'v1.2.2', 'draft': True, 'prerelease': False}]]:
+            api, run = self.api(tags={'v1.2.2': SHA}, releases=releases), Mock()
+            release.publish(api, ENV, ['archive'], run)
+            run.assert_called_once()
+            self.assertFalse(any(call.args[0] in ('PATCH', 'DELETE') for call in api.request.call_args_list))
+
+    def test_published_channel_uses_release_flags_instead_of_tag_suffix(self):
+        api, run = self.api(tags={'v1.2.2-rc.1': SHA},
+                            releases=[{'tag_name': 'v1.2.2-rc.1', 'draft': False, 'prerelease': False}]), Mock()
+        with self.assertRaises(release.DuplicateStableRelease):
+            release.publish(api, ENV, ['archive'], run)
+        run.assert_not_called()
+        self.assertFalse(any(call.args[0] != 'GET' for call in api.request.call_args_list))
+
+        api, run = self.api(tags={'v1.2.2': SHA},
+                            releases=[{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': True}]), Mock()
+        release.publish(api, ENV, ['archive'], run)
+        run.assert_called_once()
+        self.assertIn('--latest', run.call_args.args[0])
+
+    def test_prerelease_channel_is_not_subject_to_stable_sha_duplicate_rule(self):
+        api, run = self.api(tags={'v1.2.2': SHA},
+                            releases=[{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': False}]), Mock()
+        release.publish(api, {**ENV, 'RELEASE_TAG': 'v1.2.3-rc.1'}, ['archive'], run)
+        self.assertIn('--prerelease', run.call_args.args[0])
+        self.assertIn('--latest=false', run.call_args.args[0])
+
+    def test_same_sha_stable_published_after_reservation_prevents_duplicate(self):
+        api, run = self.api(tags={'v1.2.2': SHA}), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            if path.startswith('releases?') and any(call.args[0] == 'POST' for call in api.request.call_args_list):
+                return [{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': False}]
+            return original(method, path, *args, **kwargs)
+        api.request.side_effect = request
+        with self.assertRaisesRegex(release.DuplicateStableRelease, 'Any reserved tag remains'):
+            release.publish(api, ENV, ['archive'], run)
+        self.assertEqual(sum(call.args[0] == 'POST' for call in api.request.call_args_list), 1)
+        self.assertFalse(any(call.args[0] in ('PATCH', 'DELETE') for call in api.request.call_args_list))
+        run.assert_not_called()
+
+    def test_same_sha_stable_on_later_release_page_is_not_ignored(self):
+        api, run = self.api(tags={'v1.2.2': SHA}), Mock()
+        original = api.request.side_effect
+        def request(method, path, *args, **kwargs):
+            if path == 'releases?per_page=100&page=1':
+                return [{'tag_name': 'noise', 'draft': True}] * 100
+            if path == 'releases?per_page=100&page=2':
+                return [{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': False}]
+            return original(method, path, *args, **kwargs)
+        api.request.side_effect = request
+        with self.assertRaises(release.DuplicateStableRelease):
+            release.publish(api, ENV, ['archive'], run)
+        self.assertFalse(any(call.args[0] != 'GET' for call in api.request.call_args_list))
+        run.assert_not_called()
+
+    def test_unknown_published_prerelease_status_fails_closed(self):
+        for value in [None, 'false', 0]:
+            api, run = self.api(tags={'v1.2.2': SHA},
+                                releases=[{'tag_name': 'v1.2.2', 'draft': False, 'prerelease': value}]), Mock()
+            with self.assertRaisesRegex(RuntimeError, 'Invalid release prerelease status'):
+                release.publish(api, ENV, ['archive'], run)
+            self.assertFalse(any(call.args[0] != 'GET' for call in api.request.call_args_list))
+            run.assert_not_called()
 
     def test_missing_or_unresolvable_published_tag_fails_closed(self):
         for tags in [{}, {'v1.2.2': {'type': 'tree', 'sha': OLDER}}]:
@@ -245,7 +341,7 @@ class PublisherTests(unittest.TestCase):
         original = api.request.side_effect
         def request(method, path, *args, **kwargs):
             if path.startswith('releases?') and any(call.args[0] == 'POST' for call in api.request.call_args_list):
-                return [{'tag_name': 'v2.0.0-rc.1', 'draft': False}]
+                return [{'tag_name': 'v2.0.0-rc.1', 'draft': False, 'prerelease': True}]
             return original(method, path, *args, **kwargs)
         api.request.side_effect = request
         with self.assertRaisesRegex(RuntimeError, 'older than or diverges'):
