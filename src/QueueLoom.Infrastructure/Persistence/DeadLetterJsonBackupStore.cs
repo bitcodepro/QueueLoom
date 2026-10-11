@@ -199,6 +199,14 @@ public sealed class DeadLetterJsonBackupSession(
         return WriteBackupAsync(message.Source, message.SubQueue, message.SequenceNumber, writer =>
         {
             writer.WriteNumber("sequenceNumber", message.SequenceNumber);
+            writer.WriteBoolean("hasSequenceNumber", message.HasSequenceNumber);
+            if (message.Position is { } position)
+            {
+                writer.WriteStartObject("position");
+                writer.WriteNumber("partition", position.Partition);
+                writer.WriteNumber("offset", position.Offset);
+                writer.WriteEndObject();
+            }
             writer.WriteNumber("enqueuedSequenceNumber", message.EnqueuedSequenceNumber);
             WriteString(writer, "messageId", properties.MessageId);
             WriteString(writer, "correlationId", properties.CorrelationId);
