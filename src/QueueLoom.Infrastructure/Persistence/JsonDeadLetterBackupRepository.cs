@@ -407,12 +407,11 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             deadLetterErrorDescription: ReadOptionalString(root, "deadLetterErrorDescription"),
             originalBodySize: ReadInt64(root, "bodySize"))
         {
-            HasSequenceNumber = root.TryGetProperty("hasSequenceNumber", out var hasSequenceNumber)
+            HasSequenceNumber = root.TryGetProperty("hasSequenceNumber", out var hasSequenceNumber) &&
+                hasSequenceNumber.ValueKind is JsonValueKind.True or JsonValueKind.False
                 ? hasSequenceNumber.GetBoolean()
                 : ReadProvider(root) is null or MessagingProvider.AzureServiceBus,
-            Position = root.TryGetProperty("position", out var position) && position.ValueKind != JsonValueKind.Null
-                ? new LogPosition(position.GetProperty("partition").GetInt32(), position.GetProperty("offset").GetInt64())
-                : null,
+            Position = ReadOptionalPosition(root),
             KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null,
             // Preserve the historical send policy without claiming unknown counters are broker-owned.
             LegacyAmqpBrokerHeaders = ReadOptionalString(root, "provider") == "RabbitMq" &&
@@ -424,6 +423,15 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                 : new HashSet<string>(StringComparer.Ordinal)
         };
     }
+
+    private static LogPosition? ReadOptionalPosition(JsonElement root) =>
+        root.TryGetProperty("position", out var position) && position.ValueKind == JsonValueKind.Object &&
+        position.TryGetProperty("partition", out var partitionValue) && partitionValue.ValueKind == JsonValueKind.Number &&
+        partitionValue.TryGetInt32(out var partition) && partition >= 0 &&
+        position.TryGetProperty("offset", out var offsetValue) && offsetValue.ValueKind == JsonValueKind.Number &&
+        offsetValue.TryGetInt64(out var offset) && offset >= 0
+            ? new LogPosition(partition, offset)
+            : null;
 
     private static MessagingProvider? ReadProvider(JsonElement root) =>
         Enum.TryParse<MessagingProvider>(ReadOptionalString(root, "provider"), ignoreCase: true, out var provider) &&

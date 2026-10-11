@@ -107,6 +107,122 @@ public sealed class BackupPositionMetadataRegressionTests
         Assert.Null(loaded.Position);
     }
 
+    public static IEnumerable<object?[]> SequenceFlagCases()
+    {
+        foreach (var provider in new MessagingProvider?[] { MessagingProvider.AzureServiceBus, MessagingProvider.Kafka, null })
+        {
+            foreach (var value in new[] { "null", "\"false\"", "0", "{}", "[]", "true", "false" })
+            {
+                var expected = value is "true" or "false" ? value == "true" : provider is null or MessagingProvider.AzureServiceBus;
+                yield return [value, provider, expected];
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(SequenceFlagCases))]
+    public async Task BackupPosition_OptionalFlagUsesOnlyBooleansAndOtherwiseLegacyDefault(
+        string value, MessagingProvider? provider, bool expected)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = ViewModelStateTests.CreateProfile("Edited flag", EnvironmentKind.Test)
+            with { Provider = provider ?? MessagingProvider.AzureServiceBus };
+        var original = MessageWithEnvelope();
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
+        var file = await session.BackupAsync(original, default);
+        var json = JsonNode.Parse(await File.ReadAllTextAsync(file))!.AsObject();
+        json["hasSequenceNumber"] = JsonNode.Parse(value);
+        if (provider is null) json.Remove("provider");
+        await File.WriteAllTextAsync(file, json.ToJsonString());
+        // First List reads the durable file; the next repository uses its ordinarily written metadata cache.
+        for (var read = 0; read < 2; read++)
+        {
+            var repository = new JsonDeadLetterBackupRepository(paths);
+            var summary = Assert.Single(await repository.ListAsync());
+            Assert.True(summary.IsReadable);
+            var loaded = await repository.LoadAsync(summary);
+
+            Assert.Equal(expected, loaded.HasSequenceNumber);
+            AssertPayloadAndEnvelope(original, loaded);
+        }
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("true")]
+    [InlineData("0")]
+    [InlineData("\"bad\"")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    [InlineData("{\"partition\":0}")]
+    [InlineData("{\"offset\":0}")]
+    [InlineData("{\"partition\":\"0\",\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":\"0\"}")]
+    [InlineData("{\"partition\":null,\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":null}")]
+    [InlineData("{\"partition\":[],\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":{}}")]
+    [InlineData("{\"partition\":true,\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":false}")]
+    [InlineData("{\"partition\":2147483648,\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":9223372036854775808}")]
+    [InlineData("{\"partition\":1.5,\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":0.5}")]
+    [InlineData("{\"partition\":-1,\"offset\":0}")]
+    [InlineData("{\"partition\":0,\"offset\":-1}")]
+    public async Task BackupPosition_InvalidOptionalPositionLeavesTheBodyLoadable(string value)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = ViewModelStateTests.CreateProfile("Edited position", EnvironmentKind.Test) with { Provider = MessagingProvider.Kafka };
+        var original = MessageWithEnvelope() with { HasSequenceNumber = false, Position = new LogPosition(0, 0) };
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
+        var file = await session.BackupAsync(original, default);
+        var json = JsonNode.Parse(await File.ReadAllTextAsync(file))!.AsObject();
+        json["position"] = JsonNode.Parse(value);
+        await File.WriteAllTextAsync(file, json.ToJsonString());
+        for (var read = 0; read < 2; read++)
+        {
+            var repository = new JsonDeadLetterBackupRepository(paths);
+            var summary = Assert.Single(await repository.ListAsync());
+            Assert.True(summary.IsReadable);
+            var loaded = await repository.LoadAsync(summary);
+
+            Assert.Null(loaded.Position);
+            Assert.False(loaded.HasSequenceNumber);
+            AssertPayloadAndEnvelope(original, loaded);
+        }
+    }
+
+    private static BrowsedMessage MessageWithEnvelope()
+    {
+        var message = Message();
+        return message with
+        {
+            KafkaEnvelope = new KafkaEnvelope([0xfe, 0x00], false,
+                [new KafkaRawHeader("opaque", [0xff]), new KafkaRawHeader("opaque", null)], message.Properties, [])
+        };
+    }
+
+    private static void AssertPayloadAndEnvelope(BrowsedMessage original, BrowsedMessage loaded)
+    {
+        Assert.Equal(original.Body.ToArray(), loaded.Body.ToArray());
+        Assert.Equal(original.SequenceNumber, loaded.SequenceNumber);
+        Assert.Equal(original.Properties, loaded.Properties);
+        Assert.NotNull(loaded.KafkaEnvelope);
+        Assert.Equal(original.KafkaEnvelope!.Key, loaded.KafkaEnvelope.Key);
+        Assert.Equal(original.KafkaEnvelope.IsTombstone, loaded.KafkaEnvelope.IsTombstone);
+        Assert.Equal(original.KafkaEnvelope.OriginalProperties, loaded.KafkaEnvelope.OriginalProperties);
+        Assert.Equal(original.KafkaEnvelope.OriginalApplicationProperties, loaded.KafkaEnvelope.OriginalApplicationProperties);
+        Assert.Equal(original.KafkaEnvelope.Headers.Count, loaded.KafkaEnvelope.Headers.Count);
+        for (var index = 0; index < original.KafkaEnvelope.Headers.Count; index++)
+        {
+            Assert.Equal(original.KafkaEnvelope.Headers[index].Name, loaded.KafkaEnvelope.Headers[index].Name);
+            Assert.Equal(original.KafkaEnvelope.Headers[index].Value, loaded.KafkaEnvelope.Headers[index].Value);
+        }
+    }
+
     private static BrowsedMessage Message() => new(ServiceBusEntityReference.Queue("synthetic"),
         ServiceBusSubQueue.DeadLetter, 7, "synthetic body"u8.ToArray(), new EditableMessageProperties());
 }
