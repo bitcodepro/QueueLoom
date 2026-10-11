@@ -16,6 +16,7 @@ public sealed partial class ViewModelStateTests
     [Theory]
     [InlineData(MessagingProvider.Kafka, MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, true)]
     [InlineData(MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, true)]
+    [InlineData(MessagingProvider.AzureServiceBus, MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, false)]
     [InlineData(null, MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, true)]
     [InlineData(MessagingProvider.Kafka, null, MessagingProvider.AzureServiceBus, true)]
     [InlineData(MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, false)]

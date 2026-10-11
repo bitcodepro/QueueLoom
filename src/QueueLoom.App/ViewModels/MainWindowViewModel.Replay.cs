@@ -62,8 +62,7 @@ public sealed partial class MainWindowViewModel
             MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub;
 
     private bool IsKafkaBackup(DeadLetterBackupSummary summary) =>
-        summary.Provider == MessagingProvider.Kafka ||
-        Profiles.FirstOrDefault(profile => profile.Id == summary.ProfileId)?.Provider == MessagingProvider.Kafka;
+        (summary.Provider ?? Profiles.FirstOrDefault(profile => profile.Id == summary.ProfileId)?.Provider) == MessagingProvider.Kafka;
 
     private object BackupReplayIdentity(DeadLetterBackupSummary summary)
     {
