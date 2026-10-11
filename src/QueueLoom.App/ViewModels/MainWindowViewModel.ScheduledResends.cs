@@ -303,7 +303,9 @@ public sealed partial class MainWindowViewModel
         ScheduledResends.Remove(item);
         if (preparedPlan is not null)
         {
-            try { await _replayStore!.ActivateScheduledAsync(preparedPlan, cancellationToken); }
+            // The exact job has been durably consumed. Finish recording its unsent recovery eligibility even if
+            // cancellation arrived after the claim; sending below still observes the operation's cancellation.
+            try { await _replayStore!.ActivateScheduledAsync(preparedPlan, CancellationToken.None); }
             finally { RefreshOperationHistory(); }
         }
         var progressFinished = false;
