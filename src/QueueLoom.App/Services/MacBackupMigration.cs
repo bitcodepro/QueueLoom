@@ -7,6 +7,11 @@ namespace QueueLoom.App.Services;
 internal static class MacBackupMigration
 {
     private static readonly string LegacyDirectory = Path.Combine("Contents", "MacOS", "backups");
+    private const UnixFileMode PrivateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+    private const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+    // Tests observe the actual temporary file before any message bytes are copied, within their own async flow.
+    internal static readonly AsyncLocal<Action<string>?> CopyStarting = new();
 
     internal static string[]? CaptureDirectories(UpdateTarget target, string? backupOverride = null)
     {
@@ -72,7 +77,7 @@ internal static class MacBackupMigration
         token.ThrowIfCancellationRequested();
         RejectLinks(source, sourceBoundary);
         RejectLinks(destination, destinationBoundary);
-        Directory.CreateDirectory(destination);
+        CreatePrivateDestinationDirectory(destination, destinationBoundary);
         var copied = 0;
         foreach (var entry in Directory.EnumerateFileSystemEntries(source))
         {
@@ -83,6 +88,26 @@ internal static class MacBackupMigration
                 : CopyFile(entry, target, destinationBoundary, token, cache);
         }
         return copied;
+    }
+
+    private static void CreatePrivateDestinationDirectory(string destination, string boundary)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(destination);
+            return;
+        }
+        // Create missing folders privately and tighten existing folders before copying raw message bodies.
+        // Only backup folders within the already link-checked boundary are changed, never the installation itself.
+        Directory.CreateDirectory(destination, PrivateDirectoryMode);
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(boundary));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
+        while (true)
+        {
+            File.SetUnixFileMode(current, PrivateDirectoryMode);
+            if (current == root) return;
+            current = Path.GetDirectoryName(current) ?? throw new IOException("Backup preservation has no destination boundary.");
+        }
     }
 
     private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token, CopyCache? cache)
@@ -116,8 +141,15 @@ internal static class MacBackupMigration
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            { Copy(input, output, token); output.Flush(flushToDisk: true); }
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+            // The temporary file is private from creation, including copies recovered after a name conflict.
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = PrivateFileMode;
+            using (var output = new FileStream(temporary, options))
+            {
+                CopyStarting.Value?.Invoke(temporary);
+                Copy(input, output, token);
+                output.Flush(flushToDisk: true);
+            }
             token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, overwrite: false);
             return Verified(1);

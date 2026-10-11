@@ -70,15 +70,29 @@ public sealed class MacBackupMigrationPermissionTests
             File.SetUnixFileMode(requested, PrivateFile);
         }
 
-        if (caller == "startup")
-            Assert.Equal(1, await new LegacyBackupMigration(paths, executableDirectory).RunAsync());
-        else
+        var observedTemporary = false;
+        var previousObserver = MacBackupMigration.CopyStarting.Value;
+        MacBackupMigration.CopyStarting.Value = temporary =>
         {
-            var target = new UpdateTarget("osx-arm64", directory.Path, Path.Combine(executableDirectory, "QueueLoom"), bundle);
-            var receipt = new UpdateRestart.Receipt(Guid.NewGuid().ToString("N"), target, "", [])
-            { BundleBackupDirectories = MacBackupMigration.CaptureDirectories(target, source) };
-            MacBackupMigration.Preserve(receipt, bundle);
+            observedTemporary = true;
+            Assert.Equal(0, new FileInfo(temporary).Length);
+            Assert.Equal(PrivateFile, File.GetUnixFileMode(temporary));
+            AssertPrivateDirectories(destinationSession, boundary);
+        };
+        try
+        {
+            if (caller == "startup")
+                Assert.Equal(1, await new LegacyBackupMigration(paths, executableDirectory).RunAsync());
+            else
+            {
+                var target = new UpdateTarget("osx-arm64", directory.Path, Path.Combine(executableDirectory, "QueueLoom"), bundle);
+                var receipt = new UpdateRestart.Receipt(Guid.NewGuid().ToString("N"), target, "", [])
+                { BundleBackupDirectories = MacBackupMigration.CaptureDirectories(target, source) };
+                MacBackupMigration.Preserve(receipt, bundle);
+            }
         }
+        finally { MacBackupMigration.CopyStarting.Value = previousObserver; }
+        Assert.True(observedTemporary);
 
         var copied = conflict ? Assert.Single(Directory.GetFiles(destinationSession, "orders.recovered-*.json")) : requested;
         Assert.Equal(payload, File.ReadAllText(copied));
@@ -86,14 +100,20 @@ public sealed class MacBackupMigrationPermissionTests
         if (conflict) Assert.Equal("different saved backup", File.ReadAllText(requested));
         Assert.Empty(Directory.GetFiles(boundary, "*.tmp", SearchOption.AllDirectories));
         Assert.Equal(PrivateFile, File.GetUnixFileMode(copied));
-        current = destinationSession;
+        AssertPrivateDirectories(destinationSession, boundary);
+        Assert.Equal(TraversableDirectory, File.GetUnixFileMode(directory.Path));
+        Assert.Equal(PrivateFile, File.GetUnixFileMode(original));
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private static void AssertPrivateDirectories(string destinationSession, string boundary)
+    {
+        var current = destinationSession;
         while (true)
         {
             Assert.Equal(PrivateDirectory, File.GetUnixFileMode(current));
             if (current == boundary) break;
             current = Path.GetDirectoryName(current)!;
         }
-        Assert.Equal(TraversableDirectory, File.GetUnixFileMode(directory.Path));
-        Assert.Equal(PrivateFile, File.GetUnixFileMode(original));
     }
 }
