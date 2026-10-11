@@ -12,6 +12,49 @@ public sealed class MacBackupMigrationPermissionTests
     private const UnixFileMode TraversableDirectory = PrivateDirectory | UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
         UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
 
+    [Fact]
+    public async Task ExistingConfiguredBackupDirectoriesKeepTheirModesAcrossRepeatedMigration()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Existing Unix directory modes require Linux or macOS.");
+            return;
+        }
+        await VerifyExistingConfiguredDirectories();
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private static async Task VerifyExistingConfiguredDirectories()
+    {
+        using var directory = new TemporaryDirectory();
+        File.SetUnixFileMode(directory.Path, TraversableDirectory);
+        var executable = Directory.CreateDirectory(Path.Combine(directory.Path, "QueueLoom.app", "Contents", "MacOS")).FullName;
+        var source = Directory.CreateDirectory(Path.Combine(executable, "backups", "session")).FullName;
+        File.SetUnixFileMode(source, PrivateDirectory);
+        File.WriteAllText(Path.Combine(source, "orders.json"), "synthetic message");
+        File.SetUnixFileMode(Path.Combine(source, "orders.json"), PrivateFile);
+        var paths = QueueLoomPaths.ForRoot(Path.Combine(directory.Path, "private-data")) with
+        { BackupsDirectory = Path.Combine(directory.Path, "operator-selected", "shared-backups") };
+        var selected = Directory.CreateDirectory(paths.BackupsDirectory).FullName;
+        var existingSession = Directory.CreateDirectory(Path.Combine(selected, "session")).FullName;
+        var selectedMode = TraversableDirectory | UnixFileMode.GroupWrite;
+        var parent = Path.GetDirectoryName(selected)!;
+        File.SetUnixFileMode(parent, TraversableDirectory);
+        File.SetUnixFileMode(selected, selectedMode);
+        File.SetUnixFileMode(existingSession, TraversableDirectory);
+        var migration = new LegacyBackupMigration(paths, executable);
+
+        Assert.Equal(1, await migration.RunAsync());
+        Assert.Equal(selectedMode, File.GetUnixFileMode(selected));
+        Assert.Equal(TraversableDirectory, File.GetUnixFileMode(existingSession));
+        Assert.Equal(TraversableDirectory, File.GetUnixFileMode(parent));
+        Assert.Equal(PrivateFile, File.GetUnixFileMode(Path.Combine(existingSession, "orders.json")));
+        Assert.Equal(0, await migration.RunAsync());
+        Assert.Equal(selectedMode, File.GetUnixFileMode(selected));
+        Assert.Equal(TraversableDirectory, File.GetUnixFileMode(existingSession));
+        Assert.Equal(TraversableDirectory, File.GetUnixFileMode(parent));
+    }
+
     [Theory]
     [InlineData("startup", false)]
     [InlineData("startup", true)]
