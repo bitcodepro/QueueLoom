@@ -4,6 +4,7 @@ using Confluent.Kafka;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Kafka;
+using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Persistence;
 using QueueLoom.Tests.Infrastructure;
 
@@ -20,7 +21,8 @@ public sealed partial class ViewModelStateTests
         };
 
     private static BrowsedMessage KafkaBackupRecord(string topic = "orders.DLT", int partition = 0, long offset = 0,
-        string? messageId = null)
+        string? messageId = null, ServiceBusEntityReference? source = null,
+        ServiceBusSubQueue subQueue = ServiceBusSubQueue.DeadLetter)
     {
         var headers = new Headers();
         if (messageId is not null) headers.Add("MessageId", System.Text.Encoding.UTF8.GetBytes(messageId));
@@ -29,7 +31,7 @@ public sealed partial class ViewModelStateTests
         {
             Topic = topic, Partition = partition, Offset = offset,
             Message = new() { Value = "record"u8.ToArray(), Headers = headers }
-        }, ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter);
+        }, source ?? ServiceBusEntityReference.Queue("orders"), subQueue);
     }
 
     private static async Task AssertKafkaBackupReplayCount(QueueLoomPaths paths, ServiceBusProfile[] profiles,
@@ -80,6 +82,78 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
+    public async Task KafkaBackupReplay_FailedPurgeSettlementThenRetryRestoresOneCopy()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = KafkaReplayProfile();
+        var record = KafkaBackupRecord();
+        await using var workspace = new KafkaReplayPurgeWorkspace(paths, record);
+        await workspace.ConnectAsync(profile);
+        var request = new DeadLetterPurgeRequest([record.Source], [ServiceBusSubQueue.DeadLetter]);
+
+        var failed = await workspace.PurgeDeadLettersAsync(request);
+        Assert.True(failed.HasFailures);
+        Assert.Equal(0, failed.DeletedCount);
+        Assert.Single(await new JsonDeadLetterBackupRepository(paths).ListAsync());
+
+        workspace.FailSettlement = false;
+        var retry = await workspace.PurgeDeadLettersAsync(request);
+        Assert.False(retry.HasFailures);
+        Assert.Equal(1, retry.DeletedCount);
+        Assert.Equal(2, workspace.SettlementAttempts);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 1);
+    }
+
+    // Runs the production backup-before-settlement flow with an in-memory broker channel.
+    private sealed class KafkaReplayPurgeWorkspace(QueueLoomPaths paths, BrowsedMessage record)
+        : LeasedMessagingWorkspace(new DeadLetterJsonBackupStore(paths), null)
+    {
+        public override MessagingProvider Provider => MessagingProvider.Kafka;
+        public bool FailSettlement { get; set; } = true;
+        public int SettlementAttempts { get; private set; }
+        protected override Task OpenAsync(ServiceBusProfile profile, CancellationToken token) => Task.CompletedTask;
+        protected override ValueTask CloseAsync() => ValueTask.CompletedTask;
+        protected override Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken token) =>
+            Task.FromResult(new ServiceBusTopology(DateTimeOffset.UnixEpoch,
+                [new ServiceBusQueue(record.Source.Name, ServiceBusEntityRuntime.Empty)]));
+        protected override ILeasedMessageChannel OpenChannel(ServiceBusTopology topology,
+            ServiceBusEntityReference source, ServiceBusSubQueue subQueue) => new Channel(this, paths, record);
+        protected override Task SendCoreAsync(ServiceBusTopology topology, ServiceBusEntityReference target,
+            MessageDraft draft, CancellationToken token) => Task.CompletedTask;
+
+        private sealed class Channel(KafkaReplayPurgeWorkspace owner, QueueLoomPaths paths, BrowsedMessage record) : ILeasedMessageChannel
+        {
+            private bool _received;
+            public string PhysicalName => record.KafkaTopic!;
+            public int MaximumBatchSize => 1;
+            public Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int count, CancellationToken token)
+            {
+                if (_received) return Task.FromResult<IReadOnlyList<LeasedMessage>>([]);
+                _received = true;
+                return Task.FromResult<IReadOnlyList<LeasedMessage>>(
+                    [new LeasedMessage(record, "0:0") { DeliveryIdentity = "0:0" }]);
+            }
+            public Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken token) => Task.CompletedTask;
+            public async Task<IReadOnlyCollection<LeasedMessage>> SettleAsync(
+                IReadOnlyCollection<LeasedMessage> messages, CancellationToken token)
+            {
+                Assert.False(token.CanBeCanceled);
+                owner.SettlementAttempts++;
+                // Each settlement is reached only after the real writer has persisted the full provenance.
+                var backups = await new JsonDeadLetterBackupRepository(paths).ListAsync();
+                Assert.Equal(owner.SettlementAttempts, backups.Count);
+                Assert.All(backups, backup =>
+                {
+                    Assert.Equal(record.KafkaTopic, backup.KafkaTopic);
+                    Assert.Equal(record.Position, backup.Position);
+                });
+                return owner.FailSettlement ? messages : [];
+            }
+        }
+    }
+
+    [Fact]
     public async Task KafkaBackupReplay_SerializationAndLoadingPreservePhysicalPosition()
     {
         using var directory = new TemporaryDirectory();
@@ -91,6 +165,7 @@ public sealed partial class ViewModelStateTests
         var summary = Assert.Single(await repository.ListAsync());
         var loaded = await repository.LoadAsync(summary);
         Assert.Equal(record.Position, loaded.Position);
+        Assert.Equal(record.KafkaTopic, loaded.KafkaTopic);
         Assert.False(loaded.HasSequenceNumber);
         Assert.Equal(MessagingProvider.Kafka, summary.Provider);
         Assert.Equal(record.Position, summary.Position);
@@ -126,6 +201,19 @@ public sealed partial class ViewModelStateTests
             await File.WriteAllTextAsync(file, json.ToJsonString());
         }
         await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
+    }
+
+    [Fact]
+    public async Task KafkaBackupReplay_LogicalSourceAndProducerIdDoNotSplitOnePhysicalRecord()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = KafkaReplayProfile();
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
+        await session.BackupAsync(KafkaBackupRecord(messageId: "first-header"), default);
+        await session.BackupAsync(KafkaBackupRecord(messageId: "other-header",
+            source: ServiceBusEntityReference.Queue("other-logical-source"), subQueue: ServiceBusSubQueue.Active), default);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 1);
     }
 
     [Theory]
