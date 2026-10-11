@@ -10,6 +10,7 @@ using QueueLoom.Core.Monitoring;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
+using QueueLoom.Core.Validation;
 using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Azure;
@@ -101,6 +102,16 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
                     {
                         throw new InvalidOperationException(
                             "QueueLoom requires a namespace-level connection string without EntityPath to list all queues and topics.");
+                    }
+
+                    // Older SAS profiles may have no namespace metadata. When one is declared,
+                    // never display it as the target of clients constructed for a different endpoint.
+                    if (!string.IsNullOrWhiteSpace(profile.FullyQualifiedNamespace) &&
+                        !string.Equals(ProfileValidator.NormalizeFullyQualifiedNamespace(profile.FullyQualifiedNamespace),
+                            parsed.FullyQualifiedNamespace, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            "The saved connection string namespace does not match this environment. Edit the environment and re-enter its connection string.");
                     }
 
                     client = new ServiceBusClient(connectionString, clientOptions);

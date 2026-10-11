@@ -451,6 +451,12 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
                 Error = "Enter a namespace-level Azure Service Bus connection string.";
                 return null;
             }
+            else
+            {
+                // The retained secret still targets the saved namespace, even if the operator
+                // changed the Entra ID namespace before switching back to SAS in this editor.
+                normalizedNamespace = _existing!.FullyQualifiedNamespace;
+            }
         }
         else
         {
