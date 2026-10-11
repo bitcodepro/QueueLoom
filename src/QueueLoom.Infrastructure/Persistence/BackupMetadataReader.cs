@@ -11,7 +11,7 @@ internal static class BackupMetadataReader
     {
         "schemaVersion", "profileId", "profileName", "environment", "fullyQualifiedNamespace", "sourceKind",
         "sourcePath", "sourceName", "topicName", "subQueue", "sequenceNumber", "messageId", "correlationId",
-        "subject", "enqueuedTimeUtc", "backedUpAtUtc", "bodySize"
+        "subject", "enqueuedTimeUtc", "backedUpAtUtc", "bodySize", "provider", "kafkaTopic", "kafkaPartition", "kafkaOffset"
     };
 
     public static JsonDocument Read(string path, CancellationToken token)

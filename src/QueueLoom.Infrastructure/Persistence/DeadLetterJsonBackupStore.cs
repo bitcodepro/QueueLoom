@@ -198,6 +198,15 @@ public sealed class DeadLetterJsonBackupSession(
         var properties = message.Properties;
         return WriteBackupAsync(message.Source, message.SubQueue, message.SequenceNumber, writer =>
         {
+            // SequenceNumber is a lossy UI hash for Kafka. Persist the exact physical record separately;
+            // producer headers and the logical DLQ source cannot establish its identity.
+            if (profile.Provider == MessagingProvider.Kafka && !string.IsNullOrWhiteSpace(message.KafkaTopic) &&
+                message.Position is { Partition: >= 0, Offset: >= 0 } position)
+            {
+                writer.WriteString("kafkaTopic", message.KafkaTopic);
+                writer.WriteNumber("kafkaPartition", position.Partition);
+                writer.WriteNumber("kafkaOffset", position.Offset);
+            }
             writer.WriteNumber("sequenceNumber", message.SequenceNumber);
             writer.WriteNumber("enqueuedSequenceNumber", message.EnqueuedSequenceNumber);
             WriteString(writer, "messageId", properties.MessageId);

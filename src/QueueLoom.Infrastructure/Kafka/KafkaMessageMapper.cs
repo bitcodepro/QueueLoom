@@ -56,6 +56,7 @@ internal static class KafkaMessageMapper
             deadLetterErrorDescription: description)
         {
             HasSequenceNumber = false, Position = new LogPosition(result.Partition.Value, result.Offset.Value),
+            KafkaTopic = result.Topic,
             KafkaEnvelope = new KafkaEnvelope(message.Key?.ToArray(), message.Value is null,
                 (message.Headers ?? []).Select(header => new KafkaRawHeader(header.Key, header.GetValueBytes()?.ToArray())).ToArray(),
                 properties, applicationProperties)

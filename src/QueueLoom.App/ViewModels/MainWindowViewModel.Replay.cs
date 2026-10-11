@@ -59,7 +59,29 @@ public sealed partial class MainWindowViewModel
 
     private bool HasBrokerAssignedIdentity(Guid profileId) =>
         Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Provider is
-            MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub or MessagingProvider.Kafka;
+            MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub;
+
+    private object BackupReplayIdentity(DeadLetterBackupSummary summary)
+    {
+        var provider = Profiles.FirstOrDefault(profile => profile.Id == summary.ProfileId)?.Provider;
+        if (summary.Provider is { } recorded && provider is { } current && recorded != current)
+            return summary.FilePath;
+        if (provider == MessagingProvider.Kafka || summary.Provider == MessagingProvider.Kafka)
+        {
+            // Old Kafka backups carry only a lossy sequence hash and optional producer ID. Never merge them.
+            // Compare exact physical topic/partition/offset and the recorded environment endpoint.
+            return provider == MessagingProvider.Kafka && summary.Provider == MessagingProvider.Kafka &&
+                   !string.IsNullOrWhiteSpace(summary.FullyQualifiedNamespace) &&
+                   !string.IsNullOrWhiteSpace(summary.KafkaTopic) && summary.Position is { Partition: >= 0, Offset: >= 0 } position
+                ? (summary.ProfileId, summary.FullyQualifiedNamespace, summary.KafkaTopic, position)
+                : summary.FilePath;
+        }
+        return string.IsNullOrEmpty(summary.MessageId) || string.IsNullOrEmpty(summary.FullyQualifiedNamespace) ||
+               !HasBrokerAssignedIdentity(summary.ProfileId)
+            ? summary.FilePath
+            : (summary.ProfileId, summary.FullyQualifiedNamespace.ToUpperInvariant(), summary.Source,
+                summary.SubQueue, summary.SequenceNumber, summary.MessageId);
+    }
 
     private async Task PrepareReplayAsync(bool backups, CancellationToken token)
     {
@@ -74,17 +96,12 @@ public sealed partial class MainWindowViewModel
         {
             // A failed settlement retried later leaves two backups of one message; restore it once. That identity is
             // only trusted where the broker assigns it (Service Bus sequence numbers, SQS and Pub/Sub message IDs,
-            // Kafka offsets). RabbitMQ derives it from the publisher's Message ID, which independent deliveries can
+            // exact Kafka topic/partition/offset). RabbitMQ derives it from the publisher's Message ID, which independent deliveries can
             // share, so those backups, and those of environments no longer listed, are all restored. The namespace is
             // part of the identity: an environment can be repointed to another namespace under the same profile id,
             // and a backup that does not record its namespace is never merged.
             var unique = FilteredBackupMessages
-                .DistinctBy(item => string.IsNullOrEmpty(item.Summary.MessageId) ||
-                                    string.IsNullOrEmpty(item.Summary.FullyQualifiedNamespace) ||
-                                    !HasBrokerAssignedIdentity(item.Summary.ProfileId)
-                    ? (object)item.Summary.FilePath
-                    : (item.Summary.ProfileId, item.Summary.FullyQualifiedNamespace.ToUpperInvariant(), item.Summary.Source,
-                        item.Summary.SubQueue, item.Summary.SequenceNumber, item.Summary.MessageId))
+                .DistinctBy(item => BackupReplayIdentity(item.Summary))
                 .ToArray();
             foreach (var item in unique)
             {
