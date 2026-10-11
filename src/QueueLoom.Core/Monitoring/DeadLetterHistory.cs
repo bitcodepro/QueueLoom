@@ -36,11 +36,20 @@ public sealed record DeadLetterHistorySample(
         // A count taken from a known destination (an SQS dead-letter queue, a Pub/Sub reader subscription) is recorded
         // under that destination's name, whichever and however many sources use it: one source joining or leaving a
         // shared queue changes nothing in its history.
+        // Its short name, unless that is ambiguous in this sample (two destinations with the same short name, or a
+        // source of that name counted by itself): then the full destination.
+        var unmeasured = snapshot.Entities.Where(entity => entity.MeasuredFrom is null)
+            .Select(DeadLetterHistorySample.SourceName).ToHashSet(StringComparer.Ordinal);
+        var physicalNames = snapshot.Entities.Select(entity => entity.MeasuredFrom).OfType<string>().Distinct(StringComparer.Ordinal)
+            .GroupBy(SharedName, StringComparer.Ordinal)
+            .SelectMany(group => group.Select(target =>
+                (Target: target, Name: group.Count() > 1 || unmeasured.Contains(group.Key) ? target : group.Key)))
+            .ToDictionary(pair => pair.Target, pair => pair.Name, StringComparer.Ordinal);
         string SourceName(DeadLetterEntitySnapshot entity) =>
-            entity.MeasuredFrom is { } target ? SharedSourceName(target) : DeadLetterHistorySample.SourceName(entity);
+            entity.MeasuredFrom is { } target ? physicalNames[target] : DeadLetterHistorySample.SourceName(entity);
         // Which source used which destination: a source moved to another destination is a target change.
         var aliases = snapshot.Entities.Where(entity => entity.MeasuredFrom is not null)
-            .Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: SharedSourceName(entity.MeasuredFrom!)))
+            .Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: physicalNames[entity.MeasuredFrom!]))
             .GroupBy(pair => pair.Alias, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);
@@ -104,14 +113,23 @@ public sealed record DeadLetterHistorySample(
     /// <summary>Every source this sample recorded a count, quality or observation of.</summary>
     [JsonIgnore]
     public IEnumerable<string> RecordedSources =>
-        Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Concat(SharedAliases?.Keys ?? [])
-            .Distinct(StringComparer.Ordinal);
+        Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Distinct(StringComparer.Ordinal);
 
-    public string? TargetOf(string source) =>
-        SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom
-        : SharedAliases?.TryGetValue(source, out var shared) == true && SourceObservations?.TryGetValue(shared, out var sharedObservation) == true
-            ? sharedObservation.MeasuredFrom
-        : null;
+    /// <summary>Every source by its own name: those counted through a destination, and those counted by themselves.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> CountedSources =>
+        (SharedAliases?.Keys ?? []).Concat(RecordedSources.Where(name => TargetOf(name) is null)).Distinct(StringComparer.Ordinal);
+
+    /// <summary>
+    /// What a source's dead letters were counted through: the destination its alias names. Aliases are source names,
+    /// apart from the recorded destinations, which can have the same name (a dead-letter queue that is a source too).
+    /// </summary>
+    public string? AliasTargetOf(string source) =>
+        SharedAliases?.TryGetValue(source, out var destination) == true && SourceObservations?.TryGetValue(destination, out var observation) == true
+            ? observation.MeasuredFrom
+            : null;
+
+    public string? TargetOf(string source) => SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom : null;
 
     /// <summary>A measured destination's name in history: its short name, whoever uses it.</summary>
     public static string SharedSourceName(string target) => SharedName(target);
@@ -271,8 +289,9 @@ public static class DeadLetterHistory
             {
                 StartQuality = source.Start is null ? DeadLetterCountQuality.Unknown : first.QualityOf(source.Name),
                 NowQuality = source.Now is null ? DeadLetterCountQuality.Unknown : last.QualityOf(source.Name),
-                StartMeasuredFrom = first.TargetOf(source.Name),
-                NowMeasuredFrom = last.TargetOf(source.Name)
+                // A name only an alias in a sample (a source counted through a destination) is of that destination.
+                StartMeasuredFrom = first.TargetOf(source.Name) ?? first.AliasTargetOf(source.Name),
+                NowMeasuredFrom = last.TargetOf(source.Name) ?? last.AliasTargetOf(source.Name)
             })
             .OrderByDescending(source => source.Now ?? -1)
             .ThenByDescending(source => Math.Abs(source.Change ?? 0))
@@ -284,6 +303,9 @@ public static class DeadLetterHistory
         // count was zero or below the kept largest.
         var targetsChanged = first.RecordedSources.Intersect(last.RecordedSources, StringComparer.Ordinal)
             .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal)) ||
+            // A source now counted through another destination, compared apart from the destinations' own trends.
+            first.CountedSources.Intersect(last.CountedSources, StringComparer.Ordinal)
+                .Any(source => !string.Equals(first.AliasTargetOf(source), last.AliasTargetOf(source), StringComparison.Ordinal)) ||
             // Recorded before shared destinations were counted once: its total may count one several times.
             (first.CountsSharedOnce != last.CountsSharedOnce && (first.SharedAliases ?? last.SharedAliases) is not null);
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)

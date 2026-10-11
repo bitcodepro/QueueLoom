@@ -305,4 +305,34 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(25, vm.GlobalDlqSourceCount);
         Assert.Equal(25, vm.VisibleDlqSourceCount);
     }
+
+    // A dead-letter queue that is a source too (orders → orders-dlq → parking): its own destination changing is a
+    // target change, although a recorded destination has its name; the orders-dlq backlog itself is unchanged.
+    [Fact]
+    public void ADeadLetterQueueThatIsASourceToo()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(int minute, long parked, string parking) => DeadLetterHistorySample.FromSnapshot(
+            new DeadLetterSnapshot(profileId, at.AddMinutes(minute),
+                [Through("orders", 25, SharedArn), Through("orders-dlq", parked, $"arn:aws:sqs:us-east-1:123:{parking}")]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([Sample(0, 10, "parking-a"), Sample(1, 5, "parking-b")], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.True(summary.TargetsChanged);
+        Assert.Null(summary.Change);
+        Assert.Equal(0, Assert.Single(summary.Sources, source => source.Name == "orders-dlq").Change);
+    }
+
+    // Two destinations with the same short name (another region) are recorded apart, under their full names.
+    [Fact]
+    public void DestinationsWithTheSameShortNameAreRecordedApart()
+    {
+        var sample = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(Guid.NewGuid(), DateTimeOffset.UtcNow,
+            [Through("orders", 25, "arn:aws:sqs:us-east-1:123:dlq"), Through("refunds", 7, "arn:aws:sqs:eu-west-1:123:dlq")]), "Test");
+
+        Assert.Equal(32, sample.Total);
+        Assert.Equal(25, sample.Sources["arn:aws:sqs:us-east-1:123:dlq"]);
+        Assert.Equal(7, sample.Sources["arn:aws:sqs:eu-west-1:123:dlq"]);
+    }
 }
