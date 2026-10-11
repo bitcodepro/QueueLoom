@@ -407,6 +407,12 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             deadLetterErrorDescription: ReadOptionalString(root, "deadLetterErrorDescription"),
             originalBodySize: ReadInt64(root, "bodySize"))
         {
+            HasSequenceNumber = root.TryGetProperty("hasSequenceNumber", out var hasSequenceNumber)
+                ? hasSequenceNumber.GetBoolean()
+                : ReadProvider(root) is null or MessagingProvider.AzureServiceBus,
+            Position = root.TryGetProperty("position", out var position) && position.ValueKind != JsonValueKind.Null
+                ? new LogPosition(position.GetProperty("partition").GetInt32(), position.GetProperty("offset").GetInt64())
+                : null,
             KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null,
             // Preserve the historical send policy without claiming unknown counters are broker-owned.
             LegacyAmqpBrokerHeaders = ReadOptionalString(root, "provider") == "RabbitMq" &&
