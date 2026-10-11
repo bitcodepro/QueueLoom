@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
 using QueueLoom.Core.Abstractions;
+using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.Infrastructure.Persistence;
@@ -31,7 +32,8 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
 
     private string CachePathFor(string path) =>
         Path.Combine(MetadataDirectory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path))) + ".cache");
-    private sealed record MetadataCache(long Length, long LastWriteTicks, DeadLetterBackupSummary? Summary);
+    private const int MetadataCacheVersion = 2;
+    private sealed record MetadataCache(long Length, long LastWriteTicks, DeadLetterBackupSummary? Summary, int Version);
     private static readonly JsonSerializerOptions CacheJsonOptions = new() { RespectRequiredConstructorParameters = true };
 
     public async Task<IReadOnlyList<DeadLetterBackupSummary>> ListAsync(
@@ -66,7 +68,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                     if (File.Exists(cachePath) && new FileInfo(cachePath).Length <= 256 * 1024)
                     {
                         var cache = JsonSerializer.Deserialize<MetadataCache>(await File.ReadAllTextAsync(cachePath, cancellationToken), CacheJsonOptions);
-                        if (cache?.Length == info.Length && cache.LastWriteTicks == info.LastWriteTimeUtc.Ticks &&
+                        if (cache?.Version == MetadataCacheVersion && cache.Length == info.Length && cache.LastWriteTicks == info.LastWriteTimeUtc.Ticks &&
                             cache.Summary is { IsReadable: true, Source.CanBrowse: true, ProfileName: not null, Environment: not null, BodySize: >= 0 } cached &&
                             cached.FilePath == path && Enum.IsDefined(cached.SubQueue) &&
                             (cached.Source.Kind != ServiceBusEntityKind.Subscription || !string.IsNullOrWhiteSpace(cached.Source.TopicName)))
@@ -84,7 +86,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                     }, cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        await AtomicFile.WriteTextAsync(cachePath, JsonSerializer.Serialize(new MetadataCache(info.Length, info.LastWriteTimeUtc.Ticks, summary)), cancellationToken);
+                        await AtomicFile.WriteTextAsync(cachePath, JsonSerializer.Serialize(new MetadataCache(info.Length, info.LastWriteTimeUtc.Ticks, summary, MetadataCacheVersion)), cancellationToken);
                     }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { /* A cache is never a durable backup. */ }
                 }
@@ -334,7 +336,10 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadOptionalString(root, "subject"),
             ReadOptionalDateTimeOffset(root, "enqueuedTimeUtc"),
             ReadRequiredDateTimeOffset(root, "backedUpAtUtc"),
-            ReadInt64(root, "bodySize"));
+            ReadInt64(root, "bodySize"))
+        {
+            Provider = ReadProvider(root)
+        };
     }
 
     private static BrowsedMessage ParseMessage(JsonElement root)
@@ -413,6 +418,10 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                 : new HashSet<string>(StringComparer.Ordinal)
         };
     }
+
+    private static MessagingProvider? ReadProvider(JsonElement root) =>
+        Enum.TryParse<MessagingProvider>(ReadOptionalString(root, "provider"), ignoreCase: true, out var provider) &&
+        Enum.IsDefined(provider) ? provider : null;
 
     private string ValidateMessagePath(string path)
     {

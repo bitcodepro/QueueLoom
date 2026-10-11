@@ -1,3 +1,5 @@
+using QueueLoom.Core.Profiles;
+
 namespace QueueLoom.Core.ServiceBus;
 
 public sealed record DeadLetterBackupSummary(
@@ -18,4 +20,5 @@ public sealed record DeadLetterBackupSummary(
     string? Error = null)
 {
     public bool IsReadable => string.IsNullOrWhiteSpace(Error);
+    public MessagingProvider? Provider { get; init; }
 }
