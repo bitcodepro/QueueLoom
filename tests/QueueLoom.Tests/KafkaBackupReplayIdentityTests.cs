@@ -22,7 +22,8 @@ public sealed partial class ViewModelStateTests
 
     private static BrowsedMessage KafkaBackupRecord(string topic = "orders.DLT", int partition = 0, long offset = 0,
         string? messageId = null, ServiceBusEntityReference? source = null,
-        ServiceBusSubQueue subQueue = ServiceBusSubQueue.DeadLetter)
+        ServiceBusSubQueue subQueue = ServiceBusSubQueue.DeadLetter,
+        Message<byte[]?, byte[]?>? wireMessage = null)
     {
         var headers = new Headers();
         if (messageId is not null) headers.Add("MessageId", System.Text.Encoding.UTF8.GetBytes(messageId));
@@ -30,7 +31,7 @@ public sealed partial class ViewModelStateTests
         return KafkaMessageMapper.FromKafka(new ConsumeResult<byte[]?, byte[]?>
         {
             Topic = topic, Partition = partition, Offset = offset,
-            Message = new() { Value = "record"u8.ToArray(), Headers = headers }
+            Message = wireMessage ?? new() { Value = "record"u8.ToArray(), Headers = headers }
         }, source ?? ServiceBusEntityReference.Queue("orders"), subQueue);
     }
 
@@ -66,7 +67,7 @@ public sealed partial class ViewModelStateTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("producer-id")]
-    public async Task KafkaBackupReplay_RetriedOriginalIsCopiedOnce(string? messageId)
+    public async Task KafkaBackupReplay_GenuineRepeatedBackupsRemainSeparateWithoutIncarnationEvidence(string? messageId)
     {
         using var directory = new TemporaryDirectory();
         var paths = QueueLoomPaths.ForRoot(directory.Path);
@@ -78,11 +79,11 @@ public sealed partial class ViewModelStateTests
         var a = await first.BackupAsync(record, default);
         var b = await retry.BackupAsync(record, default);
         Assert.NotEqual(a, b);
-        await AssertKafkaBackupReplayCount(paths, [profile], 2, 1);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
     }
 
     [Fact]
-    public async Task KafkaBackupReplay_FailedPurgeSettlementThenRetryRestoresOneCopy()
+    public async Task KafkaBackupReplay_FailedPurgeSettlementThenRetryRetainsBothCaptures()
     {
         using var directory = new TemporaryDirectory();
         var paths = QueueLoomPaths.ForRoot(directory.Path);
@@ -102,7 +103,7 @@ public sealed partial class ViewModelStateTests
         Assert.False(retry.HasFailures);
         Assert.Equal(1, retry.DeletedCount);
         Assert.Equal(2, workspace.SettlementAttempts);
-        await AssertKafkaBackupReplayCount(paths, [profile], 2, 1);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
     }
 
     // Runs the production backup-before-settlement flow with an in-memory broker channel.
@@ -125,7 +126,7 @@ public sealed partial class ViewModelStateTests
         private sealed class Channel(KafkaReplayPurgeWorkspace owner, QueueLoomPaths paths, BrowsedMessage record) : ILeasedMessageChannel
         {
             private bool _received;
-            public string PhysicalName => record.KafkaTopic!;
+            public string PhysicalName => "orders.DLT";
             public int MaximumBatchSize => 1;
             public Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int count, CancellationToken token)
             {
@@ -140,13 +141,12 @@ public sealed partial class ViewModelStateTests
             {
                 Assert.False(token.CanBeCanceled);
                 owner.SettlementAttempts++;
-                // Each settlement is reached only after the real writer has persisted the full provenance.
+                // Each settlement is reached only after the real writer has persisted a durable capture.
                 var backups = await new JsonDeadLetterBackupRepository(paths).ListAsync();
                 Assert.Equal(owner.SettlementAttempts, backups.Count);
                 Assert.All(backups, backup =>
                 {
-                    Assert.Equal(record.KafkaTopic, backup.KafkaTopic);
-                    Assert.Equal(record.Position, backup.Position);
+                    Assert.Equal(MessagingProvider.Kafka, backup.Provider);
                 });
                 return owner.FailSettlement ? messages : [];
             }
@@ -154,27 +154,33 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
-    public async Task KafkaBackupReplay_SerializationAndLoadingPreservePhysicalPosition()
+    public async Task KafkaBackupReplay_SerializationLoadingAndCachingPreserveProviderAndSnapshot()
     {
         using var directory = new TemporaryDirectory();
         var paths = QueueLoomPaths.ForRoot(directory.Path);
         var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(KafkaReplayProfile(), DateTimeOffset.UnixEpoch, default);
-        var record = KafkaBackupRecord("orders.DLT", 3, long.MaxValue);
+        var headers = new Headers();
+        headers.Add("opaque", [0xff]); headers.Add("opaque", null);
+        var record = KafkaBackupRecord("orders.DLT", 3, long.MaxValue, wireMessage: new()
+        {
+            Key = [0xfe], Value = "record"u8.ToArray(), Headers = headers,
+            Timestamp = new Timestamp(DateTime.UnixEpoch, TimestampType.CreateTime)
+        });
         var file = await session.BackupAsync(record, default);
         var repository = new JsonDeadLetterBackupRepository(paths);
         var summary = Assert.Single(await repository.ListAsync());
         var loaded = await repository.LoadAsync(summary);
-        Assert.Equal(record.Position, loaded.Position);
-        Assert.Equal(record.KafkaTopic, loaded.KafkaTopic);
-        Assert.False(loaded.HasSequenceNumber);
+        Assert.Equal(record.Body.ToArray(), loaded.Body.ToArray());
+        Assert.Equal(record.EnqueuedAt, loaded.EnqueuedAt);
+        Assert.Equal(record.KafkaEnvelope!.Key, loaded.KafkaEnvelope!.Key);
+        Assert.Equal(record.KafkaEnvelope.IsTombstone, loaded.KafkaEnvelope.IsTombstone);
+        Assert.Equal(2, loaded.KafkaEnvelope.Headers.Count);
+        Assert.Equal(new byte[] { 0xff }, loaded.KafkaEnvelope.Headers[0].Value);
+        Assert.Null(loaded.KafkaEnvelope.Headers[1].Value);
         Assert.Equal(MessagingProvider.Kafka, summary.Provider);
-        Assert.Equal(record.Position, summary.Position);
-        Assert.Equal("orders.DLT", summary.KafkaTopic);
         Assert.Equal(summary, Assert.Single(await repository.ListAsync()));
         using var json = JsonDocument.Parse(await File.ReadAllTextAsync(file));
-        Assert.Equal("orders.DLT", json.RootElement.GetProperty("kafkaTopic").GetString());
-        Assert.Equal(3, json.RootElement.GetProperty("kafkaPartition").GetInt32());
-        Assert.Equal(long.MaxValue, json.RootElement.GetProperty("kafkaOffset").GetInt64());
+        Assert.Equal("Kafka", json.RootElement.GetProperty("provider").GetString());
     }
 
     [Theory]
@@ -203,17 +209,76 @@ public sealed partial class ViewModelStateTests
         await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
     }
 
-    [Fact]
-    public async Task KafkaBackupReplay_LogicalSourceAndProducerIdDoNotSplitOnePhysicalRecord()
+    [Theory]
+    [InlineData("body")]
+    [InlineData("timestamp")]
+    [InlineData("key")]
+    [InlineData("raw-headers")]
+    [InlineData("producer-id")]
+    [InlineData("tombstone")]
+    public async Task KafkaBackupReplay_ReusedCoordinatesWithDifferentSnapshotsKeepBothRecords(string difference)
     {
         using var directory = new TemporaryDirectory();
         var paths = QueueLoomPaths.ForRoot(directory.Path);
         var profile = KafkaReplayProfile();
         var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
-        await session.BackupAsync(KafkaBackupRecord(messageId: "first-header"), default);
-        await session.BackupAsync(KafkaBackupRecord(messageId: "other-header",
+        var first = new Message<byte[]?, byte[]?>
+        {
+            Value = [], Timestamp = new Timestamp(DateTime.UnixEpoch, TimestampType.CreateTime), Headers = new Headers()
+        };
+        var second = new Message<byte[]?, byte[]?>
+        {
+            Value = [], Timestamp = first.Timestamp, Headers = new Headers()
+        };
+        switch (difference)
+        {
+            case "body": second.Value = "new incarnation"u8.ToArray(); break;
+            case "timestamp": second.Timestamp = new Timestamp(DateTime.UnixEpoch.AddSeconds(1), TimestampType.CreateTime); break;
+            case "key": second.Key = [0xff]; break;
+            case "raw-headers":
+                // Same editable last-header projection; the earlier raw header differs.
+                first.Headers.Add("opaque", [0xff]); first.Headers.Add("opaque", [1]);
+                second.Headers.Add("opaque", [0xfe]); second.Headers.Add("opaque", [1]);
+                break;
+            case "producer-id":
+                first.Headers.Add("MessageId", "old-id"u8.ToArray());
+                second.Headers.Add("MessageId", "new-id"u8.ToArray());
+                break;
+            case "tombstone": second.Value = null; break;
+        }
+        var a = KafkaBackupRecord(wireMessage: first);
+        var b = KafkaBackupRecord(wireMessage: second);
+        Assert.Equal(a.Position, b.Position);
+        Assert.Equal(a.SequenceNumber, b.SequenceNumber);
+        await session.BackupAsync(a, default);
+        await session.BackupAsync(b, default);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
+    }
+
+    [Fact]
+    public async Task KafkaBackupReplay_EqualSnapshotsFromSeparateReadsDoNotProveTopicIncarnation()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = KafkaReplayProfile();
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
+        // A recreated topic may contain even the exact same bytes and timestamp at the same coordinates.
+        await session.BackupAsync(KafkaBackupRecord(), default);
+        await session.BackupAsync(KafkaBackupRecord(), default);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
+    }
+
+    [Fact]
+    public async Task KafkaBackupReplay_LogicalAliasesRemainSeparateWithoutIncarnationEvidence()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        var profile = KafkaReplayProfile();
+        var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
+        await session.BackupAsync(KafkaBackupRecord(messageId: "shared"), default);
+        await session.BackupAsync(KafkaBackupRecord(messageId: "shared",
             source: ServiceBusEntityReference.Queue("other-logical-source"), subQueue: ServiceBusSubQueue.Active), default);
-        await AssertKafkaBackupReplayCount(paths, [profile], 2, 1);
+        await AssertKafkaBackupReplayCount(paths, [profile], 2, 2);
     }
 
     [Theory]
@@ -240,14 +305,7 @@ public sealed partial class ViewModelStateTests
     [InlineData("legacy", "shared")]
     [InlineData("provider", "shared")]
     [InlineData("endpoint", "shared")]
-    [InlineData("topic", "shared")]
-    [InlineData("partition", "shared")]
-    [InlineData("offset", "shared")]
-    [InlineData("negative-partition", "shared")]
-    [InlineData("negative-offset", "shared")]
-    [InlineData("invalid-offset", "shared")]
-    [InlineData("overflow-partition", "shared")]
-    [InlineData("blank-topic", "shared")]
+    [InlineData("unknown-provider", "shared")]
     [InlineData("blank-endpoint", "shared")]
     [InlineData("rabbit", "shared")]
     [InlineData("unknown-profile", "shared")]
@@ -267,17 +325,10 @@ public sealed partial class ViewModelStateTests
             var json = JsonNode.Parse(await File.ReadAllTextAsync(file))!.AsObject();
             switch (ambiguity)
             {
-                case "legacy": json.Remove("kafkaTopic"); json.Remove("kafkaPartition"); json.Remove("kafkaOffset"); break;
+                case "legacy": json.Remove("kafkaEnvelope"); json["schemaVersion"] = 1; break;
                 case "provider": json.Remove("provider"); break;
                 case "endpoint": json.Remove("fullyQualifiedNamespace"); break;
-                case "topic": json.Remove("kafkaTopic"); break;
-                case "partition": json.Remove("kafkaPartition"); break;
-                case "offset": json.Remove("kafkaOffset"); break;
-                case "negative-partition": json["kafkaPartition"] = -1; break;
-                case "negative-offset": json["kafkaOffset"] = -1; break;
-                case "invalid-offset": json["kafkaOffset"] = "0"; break;
-                case "overflow-partition": json["kafkaPartition"] = long.MaxValue; break;
-                case "blank-topic": json["kafkaTopic"] = " "; break;
+                case "unknown-provider": json["provider"] = "unknown"; break;
                 case "blank-endpoint": json["fullyQualifiedNamespace"] = " "; break;
                 case "unknown-profile": json["profileId"] = Guid.NewGuid(); break;
             }
@@ -304,14 +355,14 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
-    public async Task KafkaBackupReplay_OldMetadataCacheIsRebuiltFromDurableIdentity()
+    public async Task KafkaBackupReplay_OldMetadataCacheIsRebuiltBeforeReinterpretingAChangedProvider()
     {
         using var directory = new TemporaryDirectory();
         var paths = QueueLoomPaths.ForRoot(directory.Path);
         var profile = KafkaReplayProfile();
         var session = await new DeadLetterJsonBackupStore(paths).CreateSessionAsync(profile, DateTimeOffset.UnixEpoch, default);
-        await session.BackupAsync(KafkaBackupRecord(), default);
-        await session.BackupAsync(KafkaBackupRecord(), default);
+        await session.BackupAsync(KafkaBackupRecord(messageId: "shared"), default);
+        await session.BackupAsync(KafkaBackupRecord(messageId: "shared"), default);
         var repository = new JsonDeadLetterBackupRepository(paths);
         Assert.Equal(2, (await repository.ListAsync()).Count);
         foreach (var file in Directory.GetFiles(Path.Combine(directory.Path, "backup-metadata-cache")))
@@ -319,9 +370,10 @@ public sealed partial class ViewModelStateTests
             var cache = JsonNode.Parse(await File.ReadAllTextAsync(file))!.AsObject();
             cache.Remove("Version");
             var summary = cache["Summary"]!.AsObject();
-            summary.Remove("Provider"); summary.Remove("KafkaTopic"); summary.Remove("Position");
+            summary.Remove("Provider");
             await File.WriteAllTextAsync(file, cache.ToJsonString());
         }
-        await AssertKafkaBackupReplayCount(paths, [profile], 2, 1);
+        Assert.All(await repository.ListAsync(), summary => Assert.Equal(MessagingProvider.Kafka, summary.Provider));
+        await AssertKafkaBackupReplayCount(paths, [profile with { Provider = MessagingProvider.AzureServiceBus }], 2, 2);
     }
 }

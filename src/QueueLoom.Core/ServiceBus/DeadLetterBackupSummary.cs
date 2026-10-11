@@ -21,6 +21,4 @@ public sealed record DeadLetterBackupSummary(
 {
     public bool IsReadable => string.IsNullOrWhiteSpace(Error);
     public MessagingProvider? Provider { get; init; }
-    public string? KafkaTopic { get; init; }
-    public LogPosition? Position { get; init; }
 }

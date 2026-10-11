@@ -68,13 +68,10 @@ public sealed partial class MainWindowViewModel
             return summary.FilePath;
         if (provider == MessagingProvider.Kafka || summary.Provider == MessagingProvider.Kafka)
         {
-            // Old Kafka backups carry only a lossy sequence hash and optional producer ID. Never merge them.
-            // Compare exact physical topic/partition/offset and the recorded environment endpoint.
-            return provider == MessagingProvider.Kafka && summary.Provider == MessagingProvider.Kafka &&
-                   !string.IsNullOrWhiteSpace(summary.FullyQualifiedNamespace) &&
-                   !string.IsNullOrWhiteSpace(summary.KafkaTopic) && summary.Position is { Partition: >= 0, Offset: >= 0 } position
-                ? (summary.ProfileId, summary.FullyQualifiedNamespace, summary.KafkaTopic, position)
-                : summary.FilePath;
+            // Topic/partition/offset can be reused after topic or cluster recreation. The consumed record
+            // carries no incarnation provenance; even equal immutable snapshots cannot prove one original.
+            // Keep every backup, including genuine retries, rather than silently discard a replay input.
+            return summary.FilePath;
         }
         return string.IsNullOrEmpty(summary.MessageId) || string.IsNullOrEmpty(summary.FullyQualifiedNamespace) ||
                !HasBrokerAssignedIdentity(summary.ProfileId)
@@ -95,9 +92,9 @@ public sealed partial class MainWindowViewModel
         if (backups)
         {
             // A failed settlement retried later leaves two backups of one message; restore it once. That identity is
-            // only trusted where the broker assigns it (Service Bus sequence numbers, SQS and Pub/Sub message IDs,
-            // exact Kafka topic/partition/offset). RabbitMQ derives it from the publisher's Message ID, which independent deliveries can
-            // share, so those backups, and those of environments no longer listed, are all restored. The namespace is
+            // only trusted where the broker assigns it (Service Bus sequence numbers, SQS and Pub/Sub message IDs).
+            // RabbitMQ publisher IDs and Kafka coordinates cannot prove one original, so those backups,
+            // and those of environments no longer listed, are all restored. The namespace is
             // part of the identity: an environment can be repointed to another namespace under the same profile id,
             // and a backup that does not record its namespace is never merged.
             var unique = FilteredBackupMessages

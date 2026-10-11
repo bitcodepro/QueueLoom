@@ -106,8 +106,6 @@ public sealed record BrowsedMessage
 
     /// <summary>Partition and offset of a message in a log (Kafka); null elsewhere.</summary>
     public LogPosition? Position { get; init; }
-    /// <summary>The physical Kafka topic read, which can differ from the displayed dead-letter source.</summary>
-    public string? KafkaTopic { get; init; }
     public KafkaEnvelope? KafkaEnvelope { get; init; }
 
     /// <summary>The registry schema of a body in the Confluent wire format, when one was found.</summary>

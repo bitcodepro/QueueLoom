@@ -338,9 +338,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             ReadRequiredDateTimeOffset(root, "backedUpAtUtc"),
             ReadInt64(root, "bodySize"))
         {
-            Provider = ReadProvider(root),
-            KafkaTopic = ReadKafkaTopic(root),
-            Position = ReadKafkaPosition(root)
+            Provider = ReadProvider(root)
         };
     }
 
@@ -409,9 +407,6 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             deadLetterErrorDescription: ReadOptionalString(root, "deadLetterErrorDescription"),
             originalBodySize: ReadInt64(root, "bodySize"))
         {
-            KafkaTopic = ReadKafkaTopic(root),
-            Position = ReadKafkaPosition(root),
-            HasSequenceNumber = ReadProvider(root) != MessagingProvider.Kafka,
             KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null,
             // Preserve the historical send policy without claiming unknown counters are broker-owned.
             LegacyAmqpBrokerHeaders = ReadOptionalString(root, "provider") == "RabbitMq" &&
@@ -427,17 +422,6 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
     private static MessagingProvider? ReadProvider(JsonElement root) =>
         Enum.TryParse<MessagingProvider>(ReadOptionalString(root, "provider"), ignoreCase: true, out var provider) &&
         Enum.IsDefined(provider) ? provider : null;
-
-    private static string? ReadKafkaTopic(JsonElement root) =>
-        ReadProvider(root) == MessagingProvider.Kafka && ReadOptionalString(root, "kafkaTopic") is { } topic &&
-        !string.IsNullOrWhiteSpace(topic) ? topic : null;
-
-    private static LogPosition? ReadKafkaPosition(JsonElement root) =>
-        ReadKafkaTopic(root) is not null &&
-        root.TryGetProperty("kafkaPartition", out var partition) && partition.ValueKind == JsonValueKind.Number &&
-        partition.TryGetInt32(out var p) && p >= 0 &&
-        root.TryGetProperty("kafkaOffset", out var offset) && offset.ValueKind == JsonValueKind.Number &&
-        offset.TryGetInt64(out var o) && o >= 0 ? new LogPosition(p, o) : null;
 
     private string ValidateMessagePath(string path)
     {
