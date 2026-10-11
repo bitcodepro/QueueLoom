@@ -7,6 +7,11 @@ namespace QueueLoom.App.Services;
 internal static class MacBackupMigration
 {
     private static readonly string LegacyDirectory = Path.Combine("Contents", "MacOS", "backups");
+    private const UnixFileMode PrivateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+    private const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+    // Tests observe the actual temporary file before any message bytes are copied, within their own async flow.
+    internal static readonly AsyncLocal<Action<string>?> CopyStarting = new();
 
     internal static string[]? CaptureDirectories(UpdateTarget target, string? backupOverride = null)
     {
@@ -72,7 +77,7 @@ internal static class MacBackupMigration
         token.ThrowIfCancellationRequested();
         RejectLinks(source, sourceBoundary);
         RejectLinks(destination, destinationBoundary);
-        Directory.CreateDirectory(destination);
+        CreatePrivateDestinationDirectory(destination);
         var copied = 0;
         foreach (var entry in Directory.EnumerateFileSystemEntries(source))
         {
@@ -83,6 +88,27 @@ internal static class MacBackupMigration
                 : CopyFile(entry, target, destinationBoundary, token, cache);
         }
         return copied;
+    }
+
+    private static void CreatePrivateDestinationDirectory(string destination)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(destination);
+            return;
+        }
+        // Existing folders may have deliberate shared/sync permissions: preserve them, including the selected
+        // backup boundary and its parents. Newly created folders are private; message files are always 0600.
+        // Create each missing component explicitly: a single recursive call can give intermediate folders
+        // default permissions even when the requested leaf has the private creation mode.
+        var missing = new Stack<string>();
+        var current = Path.GetFullPath(destination);
+        while (!Directory.Exists(current))
+        {
+            missing.Push(current);
+            current = Path.GetDirectoryName(current) ?? throw new IOException("Backup preservation has no parent directory.");
+        }
+        while (missing.TryPop(out var directory)) Directory.CreateDirectory(directory, PrivateDirectoryMode);
     }
 
     private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token, CopyCache? cache)
@@ -116,8 +142,15 @@ internal static class MacBackupMigration
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            { Copy(input, output, token); output.Flush(flushToDisk: true); }
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+            // The temporary file is private from creation, including copies recovered after a name conflict.
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = PrivateFileMode;
+            using (var output = new FileStream(temporary, options))
+            {
+                CopyStarting.Value?.Invoke(temporary);
+                Copy(input, output, token);
+                output.Flush(flushToDisk: true);
+            }
             token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, overwrite: false);
             return Verified(1);
