@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Confluent.Kafka;
+using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Kafka;
@@ -12,6 +13,86 @@ namespace QueueLoom.Tests;
 
 public sealed partial class ViewModelStateTests
 {
+    [Theory]
+    [InlineData(MessagingProvider.Kafka, MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, true)]
+    [InlineData(MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, true)]
+    [InlineData(null, MessagingProvider.Kafka, MessagingProvider.AzureServiceBus, true)]
+    [InlineData(MessagingProvider.Kafka, null, MessagingProvider.AzureServiceBus, true)]
+    [InlineData(MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, false)]
+    [InlineData(MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, MessagingProvider.Kafka, false)]
+    [InlineData(null, MessagingProvider.AzureServiceBus, MessagingProvider.AzureServiceBus, false)]
+    public async Task KafkaBackupReplay_ConfirmationWarnsFromSelectedSourceProvenanceRatherThanDestination(
+        MessagingProvider? recordedProvider, MessagingProvider? currentSourceProvider,
+        MessagingProvider destinationProvider, bool expectsWarning)
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = KafkaReplayProfile() with { Provider = destinationProvider, Name = "Destination" };
+        var source = KafkaReplayProfile() with { Provider = currentSourceProvider ?? MessagingProvider.AzureServiceBus, Name = "Source" };
+        var azureSource = CreateProfile("Azure source", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        DeadLetterBackupSummary Backup(ServiceBusProfile profile, string file, MessagingProvider? provider) =>
+            new(Path.Combine(directory.Path, file), profile.Id, profile.Name, profile.Environment.ToString(), "source.invalid",
+                ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 7, "shared", null, null, null,
+                DateTimeOffset.UnixEpoch, 10) { Provider = provider };
+        var backups = new ListBackupRepository(Backup(source, "first.json", recordedProvider),
+            Backup(source, "retry.json", recordedProvider), Backup(azureSource, "azure.json", MessagingProvider.AzureServiceBus));
+        var profiles = currentSourceProvider is null ? new[] { destination, azureSource } : [destination, azureSource, source];
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UnixEpoch,
+                [new ServiceBusQueue("target", new ServiceBusEntityRuntime(new ServiceBusMessageCounts()))])
+        };
+        var dialogs = new FakeDialogService { ConfirmResult = false };
+        var store = new BatchReplayStore(directory.Path);
+        await using var vm = CreateViewModel(new FakeProfileRepository(profiles, destination.Id), workspace, dialogs, backups, replayStore: store);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.ReplayDestination = vm.Destinations.First();
+        await vm.RefreshBackupsCommand.ExecuteAsync();
+        Assert.Equal(3, vm.FilteredBackupMessages.Count);
+
+        await vm.RestoreFilteredBackupsCommand.ExecuteAsync();
+
+        var confirmation = Assert.Single(dialogs.Confirmations);
+        if (expectsWarning)
+        {
+            Assert.Contains("Kafka backup files may be repeated captures of the same record.", confirmation.Message, StringComparison.Ordinal);
+            Assert.Contains("Every selected Kafka backup file will be restored, which may produce duplicates.", confirmation.Message, StringComparison.Ordinal);
+            Assert.Contains("Batch size: 3", confirmation.Message, StringComparison.Ordinal);
+        }
+        else Assert.DoesNotContain("Kafka backup files", confirmation.Message, StringComparison.Ordinal);
+        // The operator can decline after reading the warning, before a batch is saved or sent.
+        Assert.Empty(store.List());
+        Assert.Empty(workspace.SentMessages);
+        Assert.Equal(3, (await backups.ListAsync()).Count);
+    }
+
+    [Theory]
+    [InlineData(MessagingProvider.Kafka)]
+    [InlineData(MessagingProvider.AzureServiceBus)]
+    public async Task KafkaBackupReplay_LiveMessageConfirmationDoesNotWarnAboutBackupCaptures(MessagingProvider destinationProvider)
+    {
+        using var directory = new TemporaryDirectory();
+        var destination = KafkaReplayProfile() with { Provider = destinationProvider };
+        var kafkaSource = KafkaReplayProfile();
+        var dialogs = new FakeDialogService { ConfirmResult = false };
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UnixEpoch,
+                [new ServiceBusQueue("target", new ServiceBusEntityRuntime(new ServiceBusMessageCounts()))])
+        };
+        await using var vm = CreateViewModel(new FakeProfileRepository([destination, kafkaSource], destination.Id), workspace, dialogs,
+            replayStore: new BatchReplayStore(directory.Path));
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.ReplayDestination = vm.Destinations.First();
+        vm.Messages.Add(new MessageItemViewModel(KafkaBackupRecord(), kafkaSource.Id, kafkaSource.Name));
+
+        await vm.ReplayLoadedMessagesCommand.ExecuteAsync();
+
+        Assert.DoesNotContain("Kafka backup files", Assert.Single(dialogs.Confirmations).Message, StringComparison.Ordinal);
+        Assert.Empty(workspace.SentMessages);
+    }
+
     private static ServiceBusProfile KafkaReplayProfile(string endpoint = "broker.invalid:9092") =>
         CreateProfile("Kafka", EnvironmentKind.Test, ProfileAccessMode.ReadWrite) with
         {

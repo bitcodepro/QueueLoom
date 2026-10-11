@@ -61,12 +61,16 @@ public sealed partial class MainWindowViewModel
         Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Provider is
             MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns or MessagingProvider.GooglePubSub;
 
+    private bool IsKafkaBackup(DeadLetterBackupSummary summary) =>
+        summary.Provider == MessagingProvider.Kafka ||
+        Profiles.FirstOrDefault(profile => profile.Id == summary.ProfileId)?.Provider == MessagingProvider.Kafka;
+
     private object BackupReplayIdentity(DeadLetterBackupSummary summary)
     {
         var provider = Profiles.FirstOrDefault(profile => profile.Id == summary.ProfileId)?.Provider;
         if (summary.Provider is { } recorded && provider is { } current && recorded != current)
             return summary.FilePath;
-        if (provider == MessagingProvider.Kafka || summary.Provider == MessagingProvider.Kafka)
+        if (IsKafkaBackup(summary))
         {
             // Topic/partition/offset can be reused after topic or cluster recreation. The consumed record
             // carries no incarnation provenance; even equal immutable snapshots cannot prove one original.
@@ -89,6 +93,7 @@ public sealed partial class MainWindowViewModel
         var inputs = new List<(MessageDraft Draft, string Origin)>();
         long totalBytes = 0;
         string selection;
+        var includesKafkaBackups = false;
         if (backups)
         {
             // A failed settlement retried later leaves two backups of one message; restore it once. That identity is
@@ -100,6 +105,7 @@ public sealed partial class MainWindowViewModel
             var unique = FilteredBackupMessages
                 .DistinctBy(item => BackupReplayIdentity(item.Summary))
                 .ToArray();
+            includesKafkaBackups = unique.Any(item => IsKafkaBackup(item.Summary));
             foreach (var item in unique)
             {
                 var message = await _backupRepository!.LoadAsync(item.Summary, token).ConfigureAwait(true);
@@ -119,7 +125,7 @@ public sealed partial class MainWindowViewModel
                 ? $"The {MessageCount(inputs.Count)} you ticked"
                 : $"All {MessageCount(inputs.Count)} in the list";
         }
-        if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token, selection).ConfigureAwait(true)) return;
+        if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token, selection, includesKafkaBackups).ConfigureAwait(true)) return;
         if (!CanWrite || ConnectedProfileId != profile.Id) throw new InvalidOperationException("Environment or write access changed.");
             var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay,
                 ScheduledResend.IdentityFor(profile), profile.Provider).ConfigureAwait(true);
@@ -135,7 +141,7 @@ public sealed partial class MainWindowViewModel
     }
 
     private Task<bool> ConfirmReplayAsync(ServiceBusProfile profile, ServiceBusEntityReference destination,
-        int count, bool preserve, int rate, CancellationToken token, string? selection = null) => _dialogs.ConfirmAsync("Review batch replay",
+        int count, bool preserve, int rate, CancellationToken token, string? selection = null, bool includesKafkaBackups = false) => _dialogs.ConfirmAsync("Review batch replay",
         $"Destination environment: {profile.Name}\n{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\nDestination: {destination.Path}\n" +
         $"Batch size: {count:N0} (resume skips acknowledged items)\nRate: {rate}/second\n" +
         $"Message IDs: {(preserve ? "preserved; duplicate detection may suppress delivery" : "new stable IDs assigned to the batch")}\n\n" +
@@ -143,7 +149,10 @@ public sealed partial class MainWindowViewModel
         "including messages from other environments. " +
         "Originals remain unchanged. Scheduled time is cleared; TTL is retained. " +
         (destination.Kind == ServiceBusEntityKind.Topic ? "The topic can fan out to every matching subscription. " : "") +
-        "A local replay snapshot contains full message bodies. Uncertain deliveries block automatic resume.",
+        "A local replay snapshot contains full message bodies. Uncertain deliveries block automatic resume." +
+        (includesKafkaBackups
+            ? "\n\nKafka backup files may be repeated captures of the same record. Every selected Kafka backup file will be restored, which may produce duplicates."
+            : ""),
         isDangerous: true, requiredText: profile.Environment == EnvironmentKind.Production ? destination.Name : null,
         cancellationToken: token);
 
