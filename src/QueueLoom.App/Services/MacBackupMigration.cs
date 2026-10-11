@@ -77,7 +77,7 @@ internal static class MacBackupMigration
         token.ThrowIfCancellationRequested();
         RejectLinks(source, sourceBoundary);
         RejectLinks(destination, destinationBoundary);
-        CreatePrivateDestinationDirectory(destination, destinationBoundary);
+        CreatePrivateDestinationDirectory(destination);
         var copied = 0;
         foreach (var entry in Directory.EnumerateFileSystemEntries(source))
         {
@@ -90,24 +90,16 @@ internal static class MacBackupMigration
         return copied;
     }
 
-    private static void CreatePrivateDestinationDirectory(string destination, string boundary)
+    private static void CreatePrivateDestinationDirectory(string destination)
     {
         if (OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(destination);
             return;
         }
-        // Create missing folders privately and tighten existing folders before copying raw message bodies.
-        // Only backup folders within the already link-checked boundary are changed, never the installation itself.
+        // Existing folders may have deliberate shared/sync permissions: preserve them, including the selected
+        // backup boundary and its parents. Newly created folders are private; message files are always 0600.
         Directory.CreateDirectory(destination, PrivateDirectoryMode);
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(boundary));
-        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
-        while (true)
-        {
-            File.SetUnixFileMode(current, PrivateDirectoryMode);
-            if (current == root) return;
-            current = Path.GetDirectoryName(current) ?? throw new IOException("Backup preservation has no destination boundary.");
-        }
     }
 
     private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token, CopyCache? cache)

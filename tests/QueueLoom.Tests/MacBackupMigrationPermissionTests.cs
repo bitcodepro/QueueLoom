@@ -56,6 +56,20 @@ public sealed class MacBackupMigrationPermissionTests
     }
 
     [Theory]
+    [InlineData("startup")]
+    [InlineData("preserve")]
+    [InlineData("custom-preserve")]
+    public async Task NewMigrationDirectoriesArePrivateBeforeAnyMessageBytes(string caller)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("New Unix directory modes require Linux or macOS.");
+            return;
+        }
+        await VerifyUnixPermissions(caller, false, existingDirectories: false);
+    }
+
+    [Theory]
     [InlineData("startup", false)]
     [InlineData("startup", true)]
     [InlineData("preserve", false)]
@@ -73,7 +87,7 @@ public sealed class MacBackupMigrationPermissionTests
     }
 
     [UnsupportedOSPlatform("windows")]
-    private static async Task VerifyUnixPermissions(string caller, bool conflict)
+    private static async Task VerifyUnixPermissions(string caller, bool conflict, bool existingDirectories = true)
     {
         using var directory = new TemporaryDirectory();
         // Model a traversable installation/shared directory without altering umask or any real backup folder.
@@ -97,15 +111,20 @@ public sealed class MacBackupMigrationPermissionTests
         var destination = caller == "startup" ? paths.BackupsDirectory
             : QueueLoomPaths.OutsideApplicationBundle(source, executableDirectory);
         var boundary = caller == "startup" ? destination : Path.Combine(directory.Path, "backups");
-        var destinationSession = Directory.CreateDirectory(Path.Combine(destination, "session")).FullName;
+        var destinationSession = Path.Combine(destination, "session");
         // Existing external folders can already be 0755, independently of the runner's umask.
-        var current = destinationSession;
-        while (true)
+        if (existingDirectories)
         {
-            File.SetUnixFileMode(current, TraversableDirectory);
-            if (current == boundary) break;
-            current = Path.GetDirectoryName(current)!;
+            Directory.CreateDirectory(destinationSession);
+            var current = destinationSession;
+            while (true)
+            {
+                File.SetUnixFileMode(current, TraversableDirectory);
+                if (current == boundary) break;
+                current = Path.GetDirectoryName(current)!;
+            }
         }
+        var expectedDirectoryMode = existingDirectories ? TraversableDirectory : PrivateDirectory;
         var requested = Path.Combine(destinationSession, "orders.json");
         if (conflict)
         {
@@ -120,7 +139,7 @@ public sealed class MacBackupMigrationPermissionTests
             observedTemporary = true;
             Assert.Equal(0, new FileInfo(temporary).Length);
             Assert.Equal(PrivateFile, File.GetUnixFileMode(temporary));
-            AssertPrivateDirectories(destinationSession, boundary);
+            AssertDirectoryModes(destinationSession, boundary, expectedDirectoryMode);
         };
         try
         {
@@ -143,18 +162,18 @@ public sealed class MacBackupMigrationPermissionTests
         if (conflict) Assert.Equal("different saved backup", File.ReadAllText(requested));
         Assert.Empty(Directory.GetFiles(boundary, "*.tmp", SearchOption.AllDirectories));
         Assert.Equal(PrivateFile, File.GetUnixFileMode(copied));
-        AssertPrivateDirectories(destinationSession, boundary);
+        AssertDirectoryModes(destinationSession, boundary, expectedDirectoryMode);
         Assert.Equal(TraversableDirectory, File.GetUnixFileMode(directory.Path));
         Assert.Equal(PrivateFile, File.GetUnixFileMode(original));
     }
 
     [UnsupportedOSPlatform("windows")]
-    private static void AssertPrivateDirectories(string destinationSession, string boundary)
+    private static void AssertDirectoryModes(string destinationSession, string boundary, UnixFileMode expected)
     {
         var current = destinationSession;
         while (true)
         {
-            Assert.Equal(PrivateDirectory, File.GetUnixFileMode(current));
+            Assert.Equal(expected, File.GetUnixFileMode(current));
             if (current == boundary) break;
             current = Path.GetDirectoryName(current)!;
         }
