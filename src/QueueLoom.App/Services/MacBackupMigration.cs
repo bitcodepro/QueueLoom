@@ -99,7 +99,16 @@ internal static class MacBackupMigration
         }
         // Existing folders may have deliberate shared/sync permissions: preserve them, including the selected
         // backup boundary and its parents. Newly created folders are private; message files are always 0600.
-        Directory.CreateDirectory(destination, PrivateDirectoryMode);
+        // Create each missing component explicitly: a single recursive call can give intermediate folders
+        // default permissions even when the requested leaf has the private creation mode.
+        var missing = new Stack<string>();
+        var current = Path.GetFullPath(destination);
+        while (!Directory.Exists(current))
+        {
+            missing.Push(current);
+            current = Path.GetDirectoryName(current) ?? throw new IOException("Backup preservation has no parent directory.");
+        }
+        while (missing.TryPop(out var directory)) Directory.CreateDirectory(directory, PrivateDirectoryMode);
     }
 
     private static int CopyFile(string source, string destination, string destinationBoundary, CancellationToken token, CopyCache? cache)
