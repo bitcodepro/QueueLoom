@@ -335,4 +335,46 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(25, sample.Sources["arn:aws:sqs:us-east-1:123:dlq"]);
         Assert.Equal(7, sample.Sources["arn:aws:sqs:eu-west-1:123:dlq"]);
     }
+
+    // History written before shared destinations were recorded by name: upgrading invents no per-source drain.
+    [Theory]
+    [InlineData("orders")]
+    [InlineData("orders,refunds")]
+    public void UpgradedHistoryInventsNoPerSourceDrain(string sources)
+    {
+        var users = sources.Split(',');
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var legacy = new DeadLetterHistorySample(at, profileId, "Test", 25L * users.Length,
+            users.ToDictionary(user => user, _ => 25L), DeadLetterCountQuality.Estimated,
+            users.ToDictionary(user => user, _ => DeadLetterCountQuality.Estimated),
+            users.ToDictionary(user => user, _ => new DeadLetterObservation(null, SharedArn)));
+        var current = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, at.AddMinutes(1),
+            users.Select(user => SharingOrdersDlq(user, 25))), "Test");
+
+        var summary = DeadLetterHistory.Summarize([legacy, current], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.Null(summary.Change);
+        Assert.All(summary.Sources, trend =>
+        {
+            Assert.Null(trend.Change);
+            Assert.NotEqual((0L, DeadLetterCountQuality.Exact), (trend.Now ?? -1, trend.NowQuality));
+            Assert.NotEqual((0L, DeadLetterCountQuality.Exact), (trend.Start ?? -1, trend.StartQuality));
+        });
+    }
+
+    // Growth of a shared destination between two current samples is still its growth.
+    [Fact]
+    public void SharedDestinationGrowthIsKept()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        DeadLetterHistorySample Sample(int minute, long count) => DeadLetterHistorySample.FromSnapshot(
+            new DeadLetterSnapshot(profileId, at.AddMinutes(minute), [SharingOrdersDlq("orders", count), SharingOrdersDlq("refunds", count)]), "Test");
+
+        var summary = DeadLetterHistory.Summarize([Sample(0, 25), Sample(1, 30)], at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.Equal(5, Assert.Single(summary.Sources).Change);
+        Assert.Equal(5, summary.Change);
+    }
 }

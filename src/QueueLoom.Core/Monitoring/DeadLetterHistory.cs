@@ -279,11 +279,12 @@ public static class DeadLetterHistory
         var last = inRange[^1];
         // An uncertain point anywhere in the period may hide a higher real count: the peak is no more certain than any point.
         var peak = points.MaxBy(point => point.Count)! with { Quality = DeadLetterCountQualities.Combine(points.Select(point => point.Quality)) };
+        var migrating = first.CountsSharedOnce != last.CountsSharedOnce;
         // Sampled queues are listed even when nothing was seen in them: their count is unknown, not zero.
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Concat(last.LowerBoundSources).Concat(first.LowerBoundSources)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => (Name: name, Start: CountIn(first, name), Now: CountIn(last, name)))
+            .Select(name => (Name: name, Start: CountAcross(first, name, migrating), Now: CountAcross(last, name, migrating)))
             // A count a sample did not keep is unknown, never exact.
             .Select(source => new DeadLetterSourceTrend(source.Name, source.Start, source.Now)
             {
@@ -339,6 +340,15 @@ public static class DeadLetterHistory
             yield return sample;
         }
     }
+
+    /// <summary>
+    /// A source's count in one end of a summary. Across the change to recording shared destinations once (one sample
+    /// keyed by source, the other by destination), a name the sample did not record itself (a source now an alias of
+    /// its destination, or a destination the old sample knew only through its sources) is unknown: its absence there
+    /// is a change of naming, not an empty queue.
+    /// </summary>
+    private static long? CountAcross(DeadLetterHistorySample sample, string name, bool migrating) =>
+        migrating && !sample.RecordedSources.Contains(name, StringComparer.Ordinal) ? null : CountIn(sample, name);
 
     /// <summary>
     /// A queue's count in a sample. A sample keeps at most <see cref="DeadLetterHistorySample.MaximumSources"/> queues, the
