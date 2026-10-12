@@ -284,7 +284,7 @@ public static class DeadLetterHistory
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Concat(last.LowerBoundSources).Concat(first.LowerBoundSources)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => (Name: name, Start: CountAcross(first, name, migrating), Now: CountAcross(last, name, migrating)))
+            .Select(name => (Name: name, Start: CountAcross(first, last, name, migrating), Now: CountAcross(last, first, name, migrating)))
             // A count a sample did not keep is unknown, never exact.
             .Select(source => new DeadLetterSourceTrend(source.Name, source.Start, source.Now)
             {
@@ -347,8 +347,24 @@ public static class DeadLetterHistory
     /// its destination, or a destination the old sample knew only through its sources) is unknown: its absence there
     /// is a change of naming, not an empty queue.
     /// </summary>
-    private static long? CountAcross(DeadLetterHistorySample sample, string name, bool migrating) =>
-        migrating && !sample.RecordedSources.Contains(name, StringComparer.Ordinal) ? null : CountIn(sample, name);
+    private static long? CountAcross(DeadLetterHistorySample sample, DeadLetterHistorySample other, string name, bool migrating)
+    {
+        if (sample.RecordedSources.Contains(name, StringComparer.Ordinal))
+        {
+            return CountIn(sample, name);
+        }
+        if (migrating)
+        {
+            return null;
+        }
+        // The way of counting changed (a reader's whole count against each source's own sample through it): what the
+        // other end recorded under this name, this end recorded through the same reader under other names. Its
+        // absence here is a change of naming, never a proven empty queue.
+        return (other.TargetOf(name) ?? other.AliasTargetOf(name)) is { } target &&
+               sample.SourceObservations?.Values.Any(observation => observation.MeasuredFrom == target) == true
+            ? null
+            : CountIn(sample, name);
+    }
 
     /// <summary>
     /// A queue's count in a sample. A sample keeps at most <see cref="DeadLetterHistorySample.MaximumSources"/> queues, the

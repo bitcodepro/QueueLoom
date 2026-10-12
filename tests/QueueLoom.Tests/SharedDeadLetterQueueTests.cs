@@ -469,12 +469,18 @@ public sealed partial class ViewModelStateTests
     private sealed class SharedReaderSamplingWorkspace(QueueLoomPaths paths, Dictionary<string, int> counts)
         : QueueLoom.Infrastructure.Messaging.LeasedMessagingWorkspace(new QueueLoom.Infrastructure.Persistence.DeadLetterJsonBackupStore(paths), null)
     {
+        /// <summary>The reader's whole count from Cloud Monitoring, and the time of its point; null while sampling.</summary>
+        public long? Reported { get; set; }
+        public DateTimeOffset? ReportedAt { get; set; }
+
         public override MessagingProvider Provider => MessagingProvider.Kafka;
         protected override Task OpenAsync(ServiceBusProfile profile, CancellationToken token) => Task.CompletedTask;
         protected override ValueTask CloseAsync() => ValueTask.CompletedTask;
         protected override Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken token) => Task.FromResult(new ServiceBusTopology(DateTimeOffset.UtcNow,
-            counts.Keys.Select(name => new ServiceBusQueue(name,
-                new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty) { CountsUnavailable = true, DeadLetterCountSource = PubSubReader })).ToArray()));
+            counts.Keys.Select(name => new ServiceBusQueue(name, Reported is { } reported
+                ? new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: reported))
+                    { CountsAreEstimates = true, DeadLetterCountSource = PubSubReader, DeadLetterCountMeasuredAt = ReportedAt }
+                : new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty) { CountsUnavailable = true, DeadLetterCountSource = PubSubReader })).ToArray()));
         protected override QueueLoom.Infrastructure.Messaging.ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue) =>
             new Channel(source, counts[source.Name]);
         protected override Task SendCoreAsync(ServiceBusTopology topology, ServiceBusEntityReference destination, MessageDraft message, CancellationToken token) =>
@@ -500,5 +506,70 @@ public sealed partial class ViewModelStateTests
                 Task.FromResult<IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage>>([]);
             public void Dispose() { }
         }
+    }
+
+    // Cloud Monitoring comes back with a point a little older than the last samples: the samples are no newer
+    // observation of the reader's whole count, so the reported 25 stands, and no found message is lost.
+    [Fact]
+    public async Task ReturningMonitoringIsNotOverruledByNewerSamples()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var workspace = new SharedReaderSamplingWorkspace(QueueLoomPaths.ForRoot(directory.Path),
+            new Dictionary<string, int> { ["billing"] = 0, ["shipping"] = 25 });
+        await workspace.ConnectAsync(ServiceBusProfile.CreateNew("Sampled", EnvironmentKind.Test, new(AuthenticationKind.KafkaNone))
+            with { Provider = MessagingProvider.Kafka, Kafka = new("broker.invalid:9092") });
+        var sampled = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+        workspace.Reported = 25;
+        workspace.ReportedAt = DateTimeOffset.UtcNow.AddMinutes(-3);
+
+        var reported = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+
+        Assert.Equal(25, sampled.TotalCount);
+        Assert.All(reported.Entities, entity =>
+        {
+            Assert.False(entity.CountsOnlyThisSource);
+            Assert.Equal(25, entity.Count);
+        });
+        Assert.Equal(25, reported.TotalCount);
+
+        // The monitor fed these two snapshots keeps an open incident of 25: nothing is closed as empty.
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var fake = new FakeWorkspace { Snapshots = { [dev.Id] = new DeadLetterSnapshot(dev.Id, sampled.CapturedAt, sampled.Entities) } };
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), fake);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        fake.Snapshots[dev.Id] = new DeadLetterSnapshot(dev.Id, reported.CapturedAt, reported.Entities);
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+
+        Assert.Contains(vm.MonitorNotifications, notification => notification.Count == 25);
+    }
+
+    // Switching between the reader's whole count and each source's sample, either way, shows no exact zero that
+    // nothing measured: the names differ because the way of counting did.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ChangingTheWayOfCountingShowsNoUnmeasuredExactZero(bool reportedFirst)
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var reported = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, at.AddMinutes(reportedFirst ? 0 : 1),
+            [ReportedThroughReader("billing", 25), ReportedThroughReader("shipping", 25)]), "Test");
+        var sampled = DeadLetterHistorySample.FromSnapshot(new DeadLetterSnapshot(profileId, at.AddMinutes(reportedFirst ? 1 : 0),
+            [SampledThroughReader("billing", 0), SampledThroughReader("shipping", 25)]), "Test");
+        DeadLetterHistorySample[] samples = reportedFirst ? [reported, sampled] : [sampled, reported];
+
+        var summary = DeadLetterHistory.Summarize(samples, at.AddMinutes(-1), at.AddMinutes(5))!;
+
+        Assert.All(summary.Sources, trend =>
+        {
+            Assert.Null(trend.Change);
+            Assert.False(trend.Start == 0 && trend.StartQuality == DeadLetterCountQuality.Exact, $"{trend.Name} start");
+            Assert.False(trend.Now == 0 && trend.NowQuality == DeadLetterCountQuality.Exact, $"{trend.Name} now");
+        });
     }
 }
