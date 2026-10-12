@@ -424,10 +424,12 @@ public sealed partial class ViewModelStateTests
         var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
         await WaitUntilAsync(() => alerts.System.Count == 1);
-        var alerted = alerts.System[0].Combined?.Select(alert => alert.Source).ToArray() ?? [alerts.System[0].Source];
-        Assert.Equal(new[] { billing, shipping }.Count(count => count > 0), alerted.Length);
-        if (shipping > 0) Assert.Contains(alerted, source => source.StartsWith("events / shipping", StringComparison.Ordinal));
-        if (billing > 0) Assert.Contains(alerted, source => source.StartsWith("events / billing", StringComparison.Ordinal));
+        // One incident for the reader, of every source's sample added up: B's 25 is never dropped.
+        var alert = Assert.Single(alerts.System);
+        Assert.Null(alert.Combined);
+        Assert.Equal(billing + shipping, alert.Count);
+        Assert.Contains("dlq-reader (dead-letter queue shared by events / billing, events / shipping)", alert.Text, StringComparison.Ordinal);
+        Assert.Equal(billing + shipping, Assert.Single(vm.MonitorNotifications).Count);
     }
 
     // Cloud Monitoring comes and goes: the reader's whole count, then each source's own sample, then the whole count
@@ -571,5 +573,90 @@ public sealed partial class ViewModelStateTests
             Assert.False(trend.Start == 0 && trend.StartQuality == DeadLetterCountQuality.Exact, $"{trend.Name} start");
             Assert.False(trend.Now == 0 && trend.NowQuality == DeadLetterCountQuality.Exact, $"{trend.Name} now");
         });
+    }
+
+    private static DeadLetterEntitySnapshot At(DeadLetterEntitySnapshot entity, DateTimeOffset measuredAt) => entity with { MeasuredAt = measuredAt };
+
+    private async Task<(MainWindowViewModel Vm, Func<DeadLetterEntitySnapshot[], Task> Check)> ScopeMonitorAsync(params DeadLetterEntitySnapshot[] first)
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, first) } };
+        var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        return (vm, async entities =>
+        {
+            workspace.Snapshots[dev.Id] = Snapshot(dev.Id, entities);
+            await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        });
+    }
+
+    // The reader's estimate of 25, then Cloud Monitoring is gone and the samples see nothing: samples are lower
+    // bounds, which never prove the reader empty. The incident stays.
+    [Fact]
+    public async Task ZeroSamplesAfterAReaderEstimateKeepTheIncident()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var (vm, check) = await ScopeMonitorAsync(At(ReportedThroughReader("billing", 25), at), At(ReportedThroughReader("shipping", 25), at));
+        await using var _ = vm;
+        Assert.Single(vm.MonitorNotifications);
+
+        await check([At(SampledThroughReader("billing", 0), at.AddMinutes(1)), At(SampledThroughReader("shipping", 0), at.AddMinutes(1))]);
+        await check([At(SampledThroughReader("billing", 0), at.AddMinutes(2)), At(SampledThroughReader("shipping", 0), at.AddMinutes(2))]);
+
+        Assert.Single(vm.MonitorNotifications);
+    }
+
+    // Samples find 25 in B; Cloud Monitoring comes back with an older point of 0, read again and again: older than
+    // what was seen, it decides nothing. The incident stays.
+    [Fact]
+    public async Task AnOlderReaderZeroAfterSamplesKeepsTheIncident()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var (vm, check) = await ScopeMonitorAsync(At(SampledThroughReader("billing", 0), at), At(SampledThroughReader("shipping", 25), at));
+        await using var _ = vm;
+        Assert.Equal(25, Assert.Single(vm.MonitorNotifications).Count);
+
+        for (var read = 0; read < 3; read++)
+        {
+            await check([At(ReportedThroughReader("billing", 0), at.AddMinutes(-2)), At(ReportedThroughReader("shipping", 0), at.AddMinutes(-2))]);
+        }
+
+        Assert.Equal(25, Assert.Single(vm.MonitorNotifications).Count);
+    }
+
+    // After the switch, a fresh estimated zero needs the usual second, distinct zero point before it resolves.
+    [Fact]
+    public async Task AFreshEstimatedZeroAfterASwitchNeedsConfirmation()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var (vm, check) = await ScopeMonitorAsync(At(SampledThroughReader("billing", 0), at), At(SampledThroughReader("shipping", 25), at));
+        await using var _ = vm;
+
+        await check([At(ReportedThroughReader("billing", 0), at.AddMinutes(1)), At(ReportedThroughReader("shipping", 0), at.AddMinutes(1))]);
+        Assert.Single(vm.MonitorNotifications);
+        await check([At(ReportedThroughReader("billing", 0), at.AddMinutes(1)), At(ReportedThroughReader("shipping", 0), at.AddMinutes(1))]);
+        Assert.Single(vm.MonitorNotifications);
+
+        await check([At(ReportedThroughReader("billing", 0), at.AddMinutes(2)), At(ReportedThroughReader("shipping", 0), at.AddMinutes(2))]);
+        Assert.Empty(vm.MonitorNotifications);
+    }
+
+    // A source that is really gone still resolves its incident.
+    [Fact]
+    public async Task ARemovedSourceStillResolves()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var (vm, check) = await ScopeMonitorAsync(At(SampledThroughReader("shipping", 25), at),
+            new DeadLetterEntitySnapshot(ServiceBusEntityReference.Queue("payments"), 3));
+        await using var _ = vm;
+        Assert.Equal(2, vm.MonitorNotifications.Count);
+
+        await check([At(SampledThroughReader("shipping", 25), at.AddMinutes(1))]);
+
+        Assert.Equal(25, Assert.Single(vm.MonitorNotifications).Count);
     }
 }

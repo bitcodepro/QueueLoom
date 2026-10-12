@@ -467,12 +467,16 @@ public sealed partial class MainWindowViewModel
         // Everything one check finds goes out as one alert: a broker outage that dead-letters into fifty queues sends
         // one notification and one webhook post, not fifty (most of which the in-flight limit would then drop).
         var alerts = new List<MonitorAlert>();
-        // Sources sharing a dead-letter destination all see its one count: they are alerted as that destination, once.
-        var shared = snapshot.SharedTargets;
+        // One incident per monitored destination, however it was counted this time: sources sharing a reader or a
+        // dead-letter queue are alerted as that destination, once.
+        var units = snapshot.MonitorUnits;
+        var usersByKey = units.ToDictionary(unit => unit.Unit.MonitorKey, unit => unit.Sources, StringComparer.Ordinal);
+        bool IsShared(DeadLetterEntitySnapshot entity) =>
+            entity.MeasuredFrom is not null && usersByKey.TryGetValue(entity.MonitorKey, out var users) && users.Count > 1;
         string AlertSource(DeadLetterEntitySnapshot entity) =>
-            entity.SharedTarget is { } target && shared.TryGetValue(target, out var users)
+            entity.MeasuredFrom is { } target && IsShared(entity)
                 ? $"{DeadLetterHistorySample.SharedName(target)} (dead-letter queue shared by " +
-                  string.Join(", ", users.Select(user => user.Entity.DisplayName)) + ")"
+                  string.Join(", ", usersByKey[entity.MonitorKey].Select(user => user.Entity.DisplayName)) + ")"
                 : $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})";
         var changes = new List<(ServiceBusEntityReference Entity, string Text)>();
         var arrivals = new List<(ServiceBusEntityReference Entity, string Text)>();
@@ -481,7 +485,7 @@ public sealed partial class MainWindowViewModel
         {
             // A failed read may not say what it would have measured: its own incident, or any incident of this source.
             foreach (var interrupted in _monitorNotifications
-                         .Where(pair => pair.Key == $"{profile.Id:N}|{failed.PhysicalKey}" ||
+                         .Where(pair => pair.Key == $"{profile.Id:N}|{failed.MonitorKey}" ||
                                         (pair.Key.StartsWith($"{profile.Id:N}|", StringComparison.Ordinal) &&
                                          pair.Value.Source == failed.Entity && pair.Value.SubQueueLabel == FormatSubQueue(failed.SubQueue)))
                          .Select(pair => pair.Value))
@@ -492,11 +496,10 @@ public sealed partial class MainWindowViewModel
         }
         // Each physical destination once per check: two sources sharing one are one observation, never two
         // consecutive zeros in the same check.
-        foreach (var entity in DeadLetterSnapshot.CountOnce(snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue),
-                     item => item.PhysicalKey, _ => true))
+        foreach (var entity in units.Select(unit => unit.Unit))
         {
             // One incident per dead-letter destination: sources sharing one are its aliases, not incidents of their own.
-            var key = $"{profile.Id:N}|{entity.PhysicalKey}";
+            var key = $"{profile.Id:N}|{entity.MonitorKey}";
             var count = entity.Count!.Value;
             var lowerBound = entity.CountIsLowerBound;
             var quality = entity.CountQuality;
@@ -505,7 +508,7 @@ public sealed partial class MainWindowViewModel
             {
                 // Sources join and leave a shared destination: the incident shows who uses it now.
                 existing.Source = entity.Entity;
-                existing.SharedName = entity.SharedTarget is { } sharedTarget && shared.ContainsKey(sharedTarget) ? AlertSource(entity) : null;
+                existing.SharedName = IsShared(entity) ? AlertSource(entity) : null;
             }
             if (existing is not null && entity.MeasuredAt is { } measuredAt && existing.LastMeasuredAt is { } lastMeasured &&
                 measuredAt < lastMeasured)
@@ -637,7 +640,7 @@ public sealed partial class MainWindowViewModel
                 MeasuredFrom = entity.MeasuredFrom,
                 ContentMarkers = entity.ContentMarkers,
                 Offsets = entity.Offsets,
-                SharedName = entity.SharedTarget is { } target && shared.ContainsKey(target) ? AlertSource(entity) : null
+                SharedName = IsShared(entity) ? AlertSource(entity) : null
             };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);

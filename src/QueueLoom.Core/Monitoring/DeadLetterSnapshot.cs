@@ -44,6 +44,34 @@ public sealed record DeadLetterSnapshot
             .Where(group => group.Count() > 1)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<DeadLetterEntitySnapshot>)group.ToArray(), StringComparer.Ordinal);
 
+    /// <summary>
+    /// One observation per monitored destination (<see cref="DeadLetterEntitySnapshot.MonitorKey"/>), with the sources
+    /// it covers: a whole count once; the sources' own samples of one reader added up, which is at least what the reader
+    /// holds (each message is dead-lettered from one source), so a lower bound, as of its oldest sample.
+    /// </summary>
+    public IReadOnlyList<(DeadLetterEntitySnapshot Unit, IReadOnlyList<DeadLetterEntitySnapshot> Sources)> MonitorUnits =>
+        Entities.Where(entity => entity.IsSuccessful && entity.Count.HasValue)
+            .GroupBy(entity => entity.MonitorKey, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var sources = (IReadOnlyList<DeadLetterEntitySnapshot>)group.ToArray();
+                if (sources.Count == 1 || sources.FirstOrDefault(source => !source.CountsOnlyThisSource) is { } whole)
+                {
+                    return (sources.Count == 1 ? sources[0] : sources.First(source => !source.CountsOnlyThisSource), sources);
+                }
+                var first = sources[0];
+                var unit = new DeadLetterEntitySnapshot(first.Entity, checked(sources.Sum(source => source.Count!.Value)), null, null, first.SubQueue)
+                {
+                    CountQuality = DeadLetterCountQualities.Combine(sources.Select(source => source.CountQuality)
+                        .Append(DeadLetterCountQuality.LowerBound)),
+                    MeasuredAt = sources.Min(source => source.MeasuredAt),
+                    MeasuredFrom = first.MeasuredFrom,
+                    CountsOnlyThisSource = true
+                };
+                return (unit, sources);
+            })
+            .ToArray();
+
     public long TotalCount => checked(CountedOnce.Where(entity => entity.Count.HasValue).Sum(entity => entity.Count!.Value));
 
     /// <summary>The total includes a count that is only a lower bound, so the real total may be larger.</summary>

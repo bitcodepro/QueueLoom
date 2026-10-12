@@ -81,6 +81,13 @@ public sealed record DeadLetterEntitySnapshot
     /// says (an SQS dead-letter queue ARN, a Pub/Sub reader subscription), else the source itself. Sources sharing a
     /// destination have one key, whichever of them reports it and however many there are.
     /// </summary>
+    /// <summary>
+    /// What the monitor follows, however it is counted: the destination read through (a Pub/Sub reader, an SQS
+    /// dead-letter queue) whether by its whole count or by each source's own sample of it, else the source itself. A
+    /// change in the way of counting keeps the incident, its freshness and its zero confirmation.
+    /// </summary>
+    public string MonitorKey => MeasuredFrom is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
+
     public string PhysicalKey => SharedTarget is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
 
     /// <summary>

@@ -285,9 +285,10 @@ public sealed partial class MainWindowViewModel
 
     private void CaptureDlqMeasurements(Guid profileId, DeadLetterSnapshot snapshot)
     {
-        foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
+        // Keyed as the monitor keys them, so the two compare one destination with itself.
+        foreach (var (entity, _) in snapshot.MonitorUnits)
         {
-            var key = $"{profileId:N}|{entity.PhysicalKey}";
+            var key = $"{profileId:N}|{entity.MonitorKey}";
             _lastDlqMeasurements[key] = DeadLetterMeasurement.Of(entity);
         }
     }
