@@ -244,6 +244,7 @@ public sealed partial class MainWindowViewModel
             }
         }
 
+        var shared = snapshot.SharedTargets;
         // A sampled queue that showed nothing stays listed: its "none seen" is not proof that it is empty.
         foreach (var entity in snapshot.Entities.Where(item => item.Count > 0 || !item.IsSuccessful || item.CountIsLowerBound))
         {
@@ -261,7 +262,8 @@ public sealed partial class MainWindowViewModel
                 PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
                 MeasuredAt = entity.MeasuredAt,
                 MeasuredFrom = entity.MeasuredFrom,
-                PreviousMeasuredFrom = previous?.MeasuredFrom
+                PreviousMeasuredFrom = previous?.MeasuredFrom,
+                CountsOnlyThisSource = entity.CountsOnlyThisSource
             };
             DeadLetterSources.Add(new DlqSourceItemViewModel(
                 profile.Id,
@@ -269,7 +271,12 @@ public sealed partial class MainWindowViewModel
                 profile.EnvironmentLabel,
                 profile.EnvironmentTone,
                 withHistory,
-                profile.Provider == Core.Profiles.MessagingProvider.Kafka ? "topic" : "queue"));
+                profile.Provider == Core.Profiles.MessagingProvider.Kafka ? "topic" : "queue")
+            {
+                SharedWith = entity.SharedTarget is { } target && shared.TryGetValue(target, out var users)
+                    ? users.Where(user => user != entity).Select(user => user.Entity.DisplayName).ToArray()
+                    : null
+            });
         }
 
         SortDeadLetterSources(selectedProfileId, selectedEntity, selectedSubQueue);
@@ -278,9 +285,10 @@ public sealed partial class MainWindowViewModel
 
     private void CaptureDlqMeasurements(Guid profileId, DeadLetterSnapshot snapshot)
     {
-        foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
+        // Keyed as the monitor keys them, so the two compare one destination with itself.
+        foreach (var (entity, _) in snapshot.MonitorUnits)
         {
-            var key = $"{profileId:N}|{entity.Entity.Path}|{entity.SubQueue}";
+            var key = $"{profileId:N}|{entity.MonitorKey}";
             _lastDlqMeasurements[key] = DeadLetterMeasurement.Of(entity);
         }
     }

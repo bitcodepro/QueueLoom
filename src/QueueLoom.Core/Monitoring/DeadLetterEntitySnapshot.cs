@@ -76,6 +76,32 @@ public sealed record DeadLetterEntitySnapshot
     /// <summary>What the previous count was taken from; a count of another target has no change against this one.</summary>
     public string? PreviousMeasuredFrom { get; init; }
 
+    /// <summary>
+    /// What this count is of, within an environment: the dead-letter destination it was taken from where the service
+    /// says (an SQS dead-letter queue ARN, a Pub/Sub reader subscription), else the source itself. Sources sharing a
+    /// destination have one key, whichever of them reports it and however many there are.
+    /// </summary>
+    /// <summary>
+    /// What the monitor follows, however it is counted: the destination read through (a Pub/Sub reader, an SQS
+    /// dead-letter queue) whether by its whole count or by each source's own sample of it, else the source itself. A
+    /// change in the way of counting keeps the incident, its freshness and its zero confirmation.
+    /// </summary>
+    public string MonitorKey => MeasuredFrom is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
+
+    public string PhysicalKey => SharedTarget is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
+
+    /// <summary>
+    /// The count is of this source's messages only, although read through a destination others share: a Pub/Sub
+    /// sample reads the shared dead-letter topic's reader but keeps only messages dead-lettered from this source.
+    /// </summary>
+    public bool CountsOnlyThisSource { get; init; }
+
+    /// <summary>
+    /// The destination whose whole count this is, when sources sharing it all report that one count (an SQS dead-letter
+    /// queue, a Pub/Sub reader's Cloud Monitoring series); null for a count of this source alone.
+    /// </summary>
+    public string? SharedTarget => CountsOnlyThisSource ? null : MeasuredFrom;
+
     /// <summary>The most messages whose identities are read to tell a replaced message from an unchanged queue.</summary>
     public const int ContentMarkerLimit = 100;
 

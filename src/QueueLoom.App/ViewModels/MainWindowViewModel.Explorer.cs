@@ -48,7 +48,7 @@ public sealed partial class MainWindowViewModel
 
     public long DeadLetterCount => (_topology?.AggregateMessageCounts.DeadLetter ?? 0)
                                    + (_topology?.AggregateMessageCounts.TransferDeadLetter ?? 0);
-    public long GlobalDlqSourceCount => DeadLetterSources.Sum(source => source.Count);
+    public long GlobalDlqSourceCount => DlqSourceItemViewModel.CountOnce(DeadLetterSources);
 
     /// <summary>
     /// The listed total is no more certain than its least certain row, or than any scanned environment (whose

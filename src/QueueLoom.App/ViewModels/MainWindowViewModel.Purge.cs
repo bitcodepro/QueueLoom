@@ -236,7 +236,7 @@ public sealed partial class MainWindowViewModel
                 DeadLetterSources.Insert(index, new DlqSourceItemViewModel(
                     row.ProfileId, row.ProfileName, row.EnvironmentLabel, row.EnvironmentTone,
                     new DeadLetterEntitySnapshot(row.Entity, 0, null, null, row.Snapshot.SubQueue)
-                        { CountIsLowerBound = true, MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom },
+                        { CountIsLowerBound = true, MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom, CountsOnlyThisSource = row.Snapshot.CountsOnlyThisSource },
                     row.QueueKindLabel.ToLowerInvariant()));
             }
         }
