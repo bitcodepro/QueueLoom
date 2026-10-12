@@ -17,8 +17,36 @@ public sealed class MonitorNotificationItemViewModel(
 
     public string Key { get; } = key;
     public string EnvironmentName { get; } = environmentName;
-    public ServiceBusEntityReference Source { get; } = source;
-    public string SourceName => Source.DisplayName;
+    private ServiceBusEntityReference _source = source;
+    private string? _sharedName;
+
+    public ServiceBusEntityReference Source
+    {
+        get => _source;
+        set
+        {
+            if (SetProperty(ref _source, value))
+            {
+                OnPropertyChanged(nameof(SourceName));
+                OnPropertyChanged(nameof(EntityName));
+                OnPropertyChanged(nameof(ParentTopicName));
+                OnPropertyChanged(nameof(IsQueue));
+                OnPropertyChanged(nameof(IsSubscription));
+            }
+        }
+    }
+
+    public string SourceName => SharedName ?? Source.DisplayName;
+
+    /// <summary>The shared dead-letter destination this incident is of, with the sources that use it now.</summary>
+    public string? SharedName
+    {
+        get => _sharedName;
+        set
+        {
+            if (SetProperty(ref _sharedName, value)) OnPropertyChanged(nameof(SourceName));
+        }
+    }
     public string EntityName => Source.Name;
     public string ParentTopicName => Source.TopicName ?? string.Empty;
     public bool IsQueue => Source.Kind == ServiceBusEntityKind.Queue;

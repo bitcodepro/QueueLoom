@@ -398,7 +398,8 @@ public sealed partial class MainWindowViewModel
                         PreviousQuality = row.Snapshot.CountQuality,
                         MeasuredAt = row.Snapshot.MeasuredAt,
                         MeasuredFrom = row.Snapshot.MeasuredFrom,
-                        PreviousMeasuredFrom = row.Snapshot.MeasuredFrom
+                        PreviousMeasuredFrom = row.Snapshot.MeasuredFrom,
+                        CountsOnlyThisSource = row.Snapshot.CountsOnlyThisSource
                     },
                     row.QueueKindLabel.ToLowerInvariant()));
             }

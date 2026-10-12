@@ -23,24 +23,47 @@ public sealed record DeadLetterHistorySample(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyDictionary<string, DeadLetterCountQuality>? SourceQualities = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyDictionary<string, DeadLetterObservation>? SourceObservations = null)
+    IReadOnlyDictionary<string, DeadLetterObservation>? SourceObservations = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, string>? SharedAliases = null,
+    bool CountsSharedOnce = false)
 {
     public const int MaximumSources = 25;
 
     public static DeadLetterHistorySample FromSnapshot(DeadLetterSnapshot snapshot, string environment)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var sources = snapshot.Entities
+        // A count taken from a known destination (an SQS dead-letter queue, a Pub/Sub reader subscription) is recorded
+        // under that destination's name, whichever and however many sources use it: one source joining or leaving a
+        // shared queue changes nothing in its history.
+        // Its short name, unless that is ambiguous in this sample (two destinations with the same short name, or a
+        // source of that name counted by itself): then the full destination.
+        var unmeasured = snapshot.Entities.Where(entity => entity.SharedTarget is null)
+            .Select(DeadLetterHistorySample.SourceName).ToHashSet(StringComparer.Ordinal);
+        var physicalNames = snapshot.Entities.Select(entity => entity.SharedTarget).OfType<string>().Distinct(StringComparer.Ordinal)
+            .GroupBy(SharedName, StringComparer.Ordinal)
+            .SelectMany(group => group.Select(target =>
+                (Target: target, Name: group.Count() > 1 || unmeasured.Contains(group.Key) ? target : group.Key)))
+            .ToDictionary(pair => pair.Target, pair => pair.Name, StringComparer.Ordinal);
+        string SourceName(DeadLetterEntitySnapshot entity) =>
+            entity.SharedTarget is { } target ? physicalNames[target] : DeadLetterHistorySample.SourceName(entity);
+        // Which source used which destination: a source moved to another destination is a target change.
+        var aliases = snapshot.Entities.Where(entity => entity.SharedTarget is not null)
+            .Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: physicalNames[entity.SharedTarget!]))
+            .GroupBy(pair => pair.Alias, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);
+        var sources = snapshot.CountedOnce
             .Where(entity => entity.Count > 0)
             .GroupBy(SourceName, StringComparer.Ordinal)
-            .Select(group => (Name: group.Key, Count: group.Sum(entity => entity.Count!.Value)))
+            .Select(group => (Name: group.Key, Count: checked(group.Sum(entity => entity.Count!.Value))))
             .OrderByDescending(source => source.Count)
             .ThenBy(source => source.Name, StringComparer.Ordinal)
             .Take(MaximumSources)
             .ToDictionary(source => source.Name, source => source.Count, StringComparer.Ordinal);
         // Every source that is not exact, kept in Sources or not: an estimated or sampled zero is never read back as a
         // proven empty queue.
-        var qualities = snapshot.Entities
+        var qualities = snapshot.CountedOnce
             .Where(entity => entity.CountQuality != DeadLetterCountQuality.Exact)
             .GroupBy(SourceName, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
@@ -48,7 +71,7 @@ public sealed record DeadLetterHistorySample(
                 StringComparer.Ordinal);
         // When and through what a count was taken, where the service says (a Cloud Monitoring point's time, a Pub/Sub
         // reader, an SQS dead-letter queue): counts of different targets are never compared later.
-        var observations = snapshot.Entities
+        var observations = snapshot.CountedOnce
             .Where(entity => entity.MeasuredAt is not null || entity.MeasuredFrom is not null)
             .GroupBy(SourceName, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
@@ -58,7 +81,8 @@ public sealed record DeadLetterHistorySample(
                     group.Select(entity => entity.MeasuredFrom).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))),
                 StringComparer.Ordinal);
         return new DeadLetterHistorySample(snapshot.CapturedAt, snapshot.ProfileId, environment, snapshot.TotalCount, sources,
-            snapshot.TotalQuality, qualities.Count == 0 ? null : qualities, observations.Count == 0 ? null : observations);
+            snapshot.TotalQuality, qualities.Count == 0 ? null : qualities, observations.Count == 0 ? null : observations,
+            aliases.Count == 0 ? null : aliases, CountsSharedOnce: true);
     }
 
     /// <summary>The total's quality; an old sample without one is unqualified.</summary>
@@ -91,16 +115,38 @@ public sealed record DeadLetterHistorySample(
     public IEnumerable<string> RecordedSources =>
         Sources.Keys.Concat(SourceQualities?.Keys ?? []).Concat(SourceObservations?.Keys ?? []).Distinct(StringComparer.Ordinal);
 
+    /// <summary>Every source by its own name: those counted through a destination, and those counted by themselves.</summary>
+    [JsonIgnore]
+    public IEnumerable<string> CountedSources =>
+        (SharedAliases?.Keys ?? []).Concat(RecordedSources.Where(name => TargetOf(name) is null)).Distinct(StringComparer.Ordinal);
+
+    /// <summary>
+    /// What a source's dead letters were counted through: the destination its alias names. Aliases are source names,
+    /// apart from the recorded destinations, which can have the same name (a dead-letter queue that is a source too).
+    /// </summary>
+    public string? AliasTargetOf(string source) =>
+        SharedAliases?.TryGetValue(source, out var destination) == true && SourceObservations?.TryGetValue(destination, out var observation) == true
+            ? observation.MeasuredFrom
+            : null;
+
     public string? TargetOf(string source) => SourceObservations?.TryGetValue(source, out var observation) == true ? observation.MeasuredFrom : null;
+
+    /// <summary>A measured destination's name in history: its short name, whoever uses it.</summary>
+    public static string SharedSourceName(string target) => SharedName(target);
 
     /// <summary>Same counts, qualities, sources and observations: a later sample adds nothing.</summary>
     public bool RecordsTheSameAs(DeadLetterHistorySample other) =>
         Total == other.Total && TotalQuality == other.TotalQuality &&
-        Same(SourceQualities, other.SourceQualities) && Same(SourceObservations, other.SourceObservations);
+        Same(SourceQualities, other.SourceQualities) && Same(SourceObservations, other.SourceObservations) &&
+        Same(SharedAliases, other.SharedAliases) && CountsSharedOnce == other.CountsSharedOnce;
 
     private static bool Same<T>(IReadOnlyDictionary<string, T>? first, IReadOnlyDictionary<string, T>? second) =>
         (first ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .SequenceEqual((second ?? new Dictionary<string, T>()).OrderBy(pair => pair.Key, StringComparer.Ordinal));
+
+    /// <summary>The short name of a shared destination: the last part of its ARN or resource name.</summary>
+    public static string SharedName(string target) =>
+        target[(target.LastIndexOfAny([':', '/']) + 1)..] is { Length: > 0 } name ? name : target;
 
     public static string SourceName(DeadLetterEntitySnapshot entity) =>
         entity.SubQueue == ServiceBusSubQueue.TransferDeadLetter
@@ -233,18 +279,20 @@ public static class DeadLetterHistory
         var last = inRange[^1];
         // An uncertain point anywhere in the period may hide a higher real count: the peak is no more certain than any point.
         var peak = points.MaxBy(point => point.Count)! with { Quality = DeadLetterCountQualities.Combine(points.Select(point => point.Quality)) };
+        var migrating = first.CountsSharedOnce != last.CountsSharedOnce;
         // Sampled queues are listed even when nothing was seen in them: their count is unknown, not zero.
         var sources = last.Sources.Keys.Concat(first.Sources.Keys)
             .Concat(last.LowerBoundSources).Concat(first.LowerBoundSources)
             .Distinct(StringComparer.Ordinal)
-            .Select(name => (Name: name, Start: CountIn(first, name), Now: CountIn(last, name)))
+            .Select(name => (Name: name, Start: CountAcross(first, last, name, migrating), Now: CountAcross(last, first, name, migrating)))
             // A count a sample did not keep is unknown, never exact.
             .Select(source => new DeadLetterSourceTrend(source.Name, source.Start, source.Now)
             {
                 StartQuality = source.Start is null ? DeadLetterCountQuality.Unknown : first.QualityOf(source.Name),
                 NowQuality = source.Now is null ? DeadLetterCountQuality.Unknown : last.QualityOf(source.Name),
-                StartMeasuredFrom = first.TargetOf(source.Name),
-                NowMeasuredFrom = last.TargetOf(source.Name)
+                // A name only an alias in a sample (a source counted through a destination) is of that destination.
+                StartMeasuredFrom = first.TargetOf(source.Name) ?? first.AliasTargetOf(source.Name),
+                NowMeasuredFrom = last.TargetOf(source.Name) ?? last.AliasTargetOf(source.Name)
             })
             .OrderByDescending(source => source.Now ?? -1)
             .ThenByDescending(source => Math.Abs(source.Change ?? 0))
@@ -255,7 +303,12 @@ public static class DeadLetterHistory
         // Every source either sample recorded anything of (a count, a quality or an observation), whether or not its
         // count was zero or below the kept largest.
         var targetsChanged = first.RecordedSources.Intersect(last.RecordedSources, StringComparer.Ordinal)
-            .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal));
+            .Any(name => !string.Equals(first.TargetOf(name), last.TargetOf(name), StringComparison.Ordinal)) ||
+            // A source now counted through another destination, compared apart from the destinations' own trends.
+            first.CountedSources.Intersect(last.CountedSources, StringComparer.Ordinal)
+                .Any(source => !string.Equals(first.AliasTargetOf(source), last.AliasTargetOf(source), StringComparison.Ordinal)) ||
+            // Recorded before shared destinations were counted once: its total may count one several times.
+            (first.CountsSharedOnce != last.CountsSharedOnce && (first.SharedAliases ?? last.SharedAliases) is not null);
         return new DeadLetterHistorySummary(points, last.Total, first.Total, peak, sources, inRange.Length)
             { NowQuality = last.Quality, StartQuality = first.Quality, TargetsChanged = targetsChanged };
     }
@@ -269,21 +322,48 @@ public static class DeadLetterHistory
         var latest = new Dictionary<(string Source, string? Target), DateTimeOffset>();
         foreach (var sample in ordered)
         {
+            // By what was measured: a destination is the same one whatever name or sharing it was recorded under.
+            static (string Source, string? Target) KeyOf(KeyValuePair<string, DeadLetterObservation> pair) =>
+                pair.Value.MeasuredFrom is { } target ? (string.Empty, target) : (pair.Key, null);
             var observations = sample.SourceObservations ?? new Dictionary<string, DeadLetterObservation>();
-            if (observations.Any(pair => pair.Value.MeasuredAt is { } at &&
-                                         latest.TryGetValue((pair.Key, pair.Value.MeasuredFrom), out var newer) && at < newer))
+            if (observations.Any(pair => pair.Value.MeasuredAt is { } at && latest.TryGetValue(KeyOf(pair), out var newer) && at < newer))
             {
                 continue;
             }
-            foreach (var (source, observation) in observations)
+            foreach (var pair in observations)
             {
-                if (observation.MeasuredAt is { } at)
+                if (pair.Value.MeasuredAt is { } at && (!latest.TryGetValue(KeyOf(pair), out var known) || at > known))
                 {
-                    latest[(source, observation.MeasuredFrom)] = at;
+                    latest[KeyOf(pair)] = at;
                 }
             }
             yield return sample;
         }
+    }
+
+    /// <summary>
+    /// A source's count in one end of a summary. Across the change to recording shared destinations once (one sample
+    /// keyed by source, the other by destination), a name the sample did not record itself (a source now an alias of
+    /// its destination, or a destination the old sample knew only through its sources) is unknown: its absence there
+    /// is a change of naming, not an empty queue.
+    /// </summary>
+    private static long? CountAcross(DeadLetterHistorySample sample, DeadLetterHistorySample other, string name, bool migrating)
+    {
+        if (sample.RecordedSources.Contains(name, StringComparer.Ordinal))
+        {
+            return CountIn(sample, name);
+        }
+        if (migrating)
+        {
+            return null;
+        }
+        // The way of counting changed (a reader's whole count against each source's own sample through it): what the
+        // other end recorded under this name, this end recorded through the same reader under other names. Its
+        // absence here is a change of naming, never a proven empty queue.
+        return (other.TargetOf(name) ?? other.AliasTargetOf(name)) is { } target &&
+               sample.SourceObservations?.Values.Any(observation => observation.MeasuredFrom == target) == true
+            ? null
+            : CountIn(sample, name);
     }
 
     /// <summary>

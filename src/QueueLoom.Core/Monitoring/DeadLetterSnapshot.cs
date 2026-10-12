@@ -23,7 +23,58 @@ public sealed record DeadLetterSnapshot
 
     public IReadOnlyList<DeadLetterEntitySnapshot> Entities { get; }
 
-    public long TotalCount => checked(Entities.Where(entity => entity.Count.HasValue).Sum(entity => entity.Count!.Value));
+    /// <summary>
+    /// Each dead-letter destination once: sources that share one (an SQS dead-letter queue several queues redrive to,
+    /// a Pub/Sub dead-letter topic read through one subscription) all report its whole count, which is one count.
+    /// </summary>
+    public IEnumerable<DeadLetterEntitySnapshot> CountedOnce => CountOnce(Entities, entity => entity.SharedTarget, entity => entity.Count.HasValue);
+
+    /// <summary>
+    /// Keeps one item per shared target (the first that has a count, else the first), and every item without a target.
+    /// </summary>
+    public static IEnumerable<T> CountOnce<T>(IEnumerable<T> items, Func<T, string?> target, Func<T, bool> hasCount) =>
+        items.Select((item, index) => (Item: item, Key: target(item) is { } shared ? "@" + shared : "#" + index))
+            .GroupBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(group => group.Select(pair => pair.Item).FirstOrDefault(hasCount) ?? group.First().Item);
+
+    /// <summary>The sources that share a dead-letter destination with another, by that destination.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<DeadLetterEntitySnapshot>> SharedTargets =>
+        Entities.Where(entity => entity.SharedTarget is not null)
+            .GroupBy(entity => entity.SharedTarget!, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<DeadLetterEntitySnapshot>)group.ToArray(), StringComparer.Ordinal);
+
+    /// <summary>
+    /// One observation per monitored destination (<see cref="DeadLetterEntitySnapshot.MonitorKey"/>), with the sources
+    /// it covers: a whole count once; the sources' own samples of one reader added up, which is at least what the reader
+    /// holds (each message is dead-lettered from one source), so a lower bound, as of its newest sample.
+    /// </summary>
+    public IReadOnlyList<(DeadLetterEntitySnapshot Unit, IReadOnlyList<DeadLetterEntitySnapshot> Sources)> MonitorUnits =>
+        Entities.Where(entity => entity.IsSuccessful && entity.Count.HasValue)
+            .GroupBy(entity => entity.MonitorKey, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var sources = (IReadOnlyList<DeadLetterEntitySnapshot>)group.ToArray();
+                if (sources.Count == 1 || sources.FirstOrDefault(source => !source.CountsOnlyThisSource) is { } whole)
+                {
+                    return (sources.Count == 1 ? sources[0] : sources.First(source => !source.CountsOnlyThisSource), sources);
+                }
+                var first = sources[0];
+                var unit = new DeadLetterEntitySnapshot(first.Entity, checked(sources.Sum(source => source.Count!.Value)), null, null, first.SubQueue)
+                {
+                    CountQuality = DeadLetterCountQualities.Combine(sources.Select(source => source.CountQuality)
+                        .Append(DeadLetterCountQuality.LowerBound)),
+                    // As of its newest sample: a later reading must be newer than all the evidence it would overrule (a
+                    // zero taken before B's 25 was seen must not clear it), never just newer than the oldest part.
+                    MeasuredAt = sources.Max(source => source.MeasuredAt),
+                    MeasuredFrom = first.MeasuredFrom,
+                    CountsOnlyThisSource = true
+                };
+                return (unit, sources);
+            })
+            .ToArray();
+
+    public long TotalCount => checked(CountedOnce.Where(entity => entity.Count.HasValue).Sum(entity => entity.Count!.Value));
 
     /// <summary>The total includes a count that is only a lower bound, so the real total may be larger.</summary>
     public bool TotalIsLowerBound => TotalQuality == DeadLetterCountQuality.LowerBound;
@@ -32,7 +83,7 @@ public sealed record DeadLetterSnapshot
     /// What the total is worth, unreadable sources included: exact counts with a failed one make a lower bound (the known
     /// part is a floor), and every source failing makes it unknown.
     /// </summary>
-    public DeadLetterCountQuality TotalQuality => DeadLetterCountQualities.Combine(Entities.Select(entity => entity.CountQuality));
+    public DeadLetterCountQuality TotalQuality => DeadLetterCountQualities.Combine(CountedOnce.Select(entity => entity.CountQuality));
 
     public bool HasFailures => Entities.Any(entity => !entity.IsSuccessful);
 

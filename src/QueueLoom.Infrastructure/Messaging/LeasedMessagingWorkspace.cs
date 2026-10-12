@@ -486,7 +486,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         {
             if (source.Runtime.DeadLetterCountError is { } countError)
             {
-                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError));
+                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError)
+                    { MeasuredFrom = source.Runtime.DeadLetterCountSource, CountsOnlyThisSource = source.Runtime.CountsUnavailable });
                 continue;
             }
             long count;
@@ -500,7 +501,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
-                    snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, exception.GetBaseException().Message));
+                    snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, exception.GetBaseException().Message)
+                        { MeasuredFrom = source.Runtime.DeadLetterCountSource, CountsOnlyThisSource = true });
                     continue;
                 }
             }
@@ -520,7 +522,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             var current = new DeadLetterMeasurement(count, quality)
             {
                 MeasuredAt = sampled ? TimeProvider.GetUtcNow() : source.Runtime.DeadLetterCountMeasuredAt,
-                MeasuredFrom = source.Runtime.DeadLetterCountSource
+                MeasuredFrom = source.Runtime.DeadLetterCountSource,
+                // A sample keeps only this source's messages of the shared destination: it is no shared count, and a
+                // fresh sample never stands in for the destination's whole count (nor the reverse).
+                OfSourceOnly = sampled
             };
             var stale = false;
             if (previous is { } newer && DeadLetterMeasurement.SameTarget(current, newer) && DeadLetterMeasurement.IsOlder(current, newer))
@@ -537,6 +542,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 MeasuredAt = current.MeasuredAt,
                 MeasuredFrom = current.MeasuredFrom,
                 PreviousMeasuredFrom = previous?.MeasuredFrom,
+                // What the standing observation is: this read, or a newer one of the same kind it did not overrule.
+                CountsOnlyThisSource = current.OfSourceOnly,
                 // Only with this read's own count: an older observation that was rejected keeps no checkpoint of this read.
                 Offsets = stale ? null : source.Runtime.DeadLetterOffsets
             });
