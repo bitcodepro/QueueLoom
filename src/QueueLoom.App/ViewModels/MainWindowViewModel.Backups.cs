@@ -98,8 +98,8 @@ public sealed partial class MainWindowViewModel
     private async Task RefreshBackupsAsync(CancellationToken cancellationToken)
     {
         var repository = _backupRepository ?? throw new InvalidOperationException("Backup storage is unavailable.");
-        var selectedPath = SelectedBackup?.FilePath;
         var summaries = await repository.ListAsync(cancellationToken).ConfigureAwait(true);
+        var selectedPath = SelectedBackup?.FilePath;
         _backupsLoaded = true;
 
         BackupMessages.Clear();
