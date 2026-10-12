@@ -380,8 +380,10 @@ public sealed partial class MainWindowViewModel
             }
         }
 
-        var total = _lastDlqMeasurements.Values.Sum(measurement => measurement.Count);
-        var totalQuality = DeadLetterCountQualities.Combine(_lastDlqMeasurements.Values.Select(measurement => measurement.Quality));
+        // A dead-letter destination several sources share is one count, in the total and in its growth.
+        var countedOnce = CountedOnce(_lastDlqMeasurements).ToArray();
+        var total = countedOnce.Sum(measurement => measurement.Value.Count);
+        var totalQuality = DeadLetterCountQualities.Combine(countedOnce.Select(measurement => measurement.Value.Quality));
         if (!isComplete)
         {
             MonitorAlert = $"DLQ check was incomplete at {DateTimeOffset.Now:HH:mm:ss}; known counts were not used as a new baseline.";
@@ -392,7 +394,7 @@ public sealed partial class MainWindowViewModel
         ReconcileMonitorNotifications(profilesToCheck, activeScope);
 
         var increases = _hasMonitorBaseline
-            ? _lastDlqMeasurements
+            ? countedOnce
                 // A source now counted through another reader is compared with nothing from before the change.
                 .Where(measurement => !_monitorIncomparable.Contains(measurement.Key))
                 // Only proven growth: a source new to the baseline counts from zero, and a sampled count is compared
@@ -465,24 +467,49 @@ public sealed partial class MainWindowViewModel
         // Everything one check finds goes out as one alert: a broker outage that dead-letters into fifty queues sends
         // one notification and one webhook post, not fifty (most of which the in-flight limit would then drop).
         var alerts = new List<MonitorAlert>();
+        // One incident per monitored destination, however it was counted this time: sources sharing a reader or a
+        // dead-letter queue are alerted as that destination, once.
+        var units = snapshot.MonitorUnits;
+        var usersByKey = units.ToDictionary(unit => unit.Unit.MonitorKey, unit => unit.Sources, StringComparer.Ordinal);
+        bool IsShared(DeadLetterEntitySnapshot entity) =>
+            entity.MeasuredFrom is not null && usersByKey.TryGetValue(entity.MonitorKey, out var users) && users.Count > 1;
+        string AlertSource(DeadLetterEntitySnapshot entity) =>
+            entity.MeasuredFrom is { } target && IsShared(entity)
+                ? $"{DeadLetterHistorySample.SharedName(target)} (dead-letter queue shared by " +
+                  string.Join(", ", usersByKey[entity.MonitorKey].Select(user => user.Entity.DisplayName)) + ")"
+                : $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})";
         var changes = new List<(ServiceBusEntityReference Entity, string Text)>();
         var arrivals = new List<(ServiceBusEntityReference Entity, string Text)>();
         // A source that could not be read interrupts an approximate-zero confirmation: two zeros must be consecutive.
         foreach (var failed in snapshot.Entities.Where(item => !item.IsSuccessful))
         {
-            if (_monitorNotifications.TryGetValue($"{profile.Id:N}|{failed.Entity.Path}|{failed.SubQueue}", out var interrupted))
+            // A failed read may not say what it would have measured: its own incident, or any incident of this source.
+            foreach (var interrupted in _monitorNotifications
+                         .Where(pair => pair.Key == $"{profile.Id:N}|{failed.MonitorKey}" ||
+                                        (pair.Key.StartsWith($"{profile.Id:N}|", StringComparison.Ordinal) &&
+                                         pair.Value.Source == failed.Entity && pair.Value.SubQueueLabel == FormatSubQueue(failed.SubQueue)))
+                         .Select(pair => pair.Value))
             {
                 interrupted.UnconfirmedClearChecks = 0;
                 interrupted.LastClearPointAt = null;
             }
         }
-        foreach (var entity in snapshot.Entities.Where(item => item.IsSuccessful && item.Count.HasValue))
+        // Each physical destination once per check: two sources sharing one are one observation, never two
+        // consecutive zeros in the same check.
+        foreach (var entity in units.Select(unit => unit.Unit))
         {
-            var key = $"{profile.Id:N}|{entity.Entity.Path}|{entity.SubQueue}";
+            // One incident per dead-letter destination: sources sharing one are its aliases, not incidents of their own.
+            var key = $"{profile.Id:N}|{entity.MonitorKey}";
             var count = entity.Count!.Value;
             var lowerBound = entity.CountIsLowerBound;
             var quality = entity.CountQuality;
             _monitorNotifications.TryGetValue(key, out var existing);
+            if (existing is not null)
+            {
+                // Sources join and leave a shared destination: the incident shows who uses it now.
+                existing.Source = entity.Entity;
+                existing.SharedName = IsShared(entity) ? AlertSource(entity) : null;
+            }
             if (existing is not null && entity.MeasuredAt is { } measuredAt && existing.LastMeasuredAt is { } lastMeasured &&
                 measuredAt < lastMeasured)
             {
@@ -577,7 +604,7 @@ public sealed partial class MainWindowViewModel
                     if (DeadLetterMeasurement.ProvenIncrease(previous, now) is { Count: > 0 })
                     {
                         grew = true;
-                        alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
+                        alerts.Add(new MonitorAlert(profile.Name, AlertSource(entity), count, previous.Count)
                             { CountQuality = quality, PreviousQuality = previous.Quality });
                     }
                     changes.Add((entity.Entity, $"{entity.Entity.DisplayName} · {previous} → {now}"));
@@ -590,7 +617,7 @@ public sealed partial class MainWindowViewModel
                 if (!grew && arrived > 0)
                 {
                     existing.LastDetectedAt = detectedAt;
-                    alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, previous.Count)
+                    alerts.Add(new MonitorAlert(profile.Name, AlertSource(entity), count, previous.Count)
                         { CountQuality = quality, PreviousQuality = previous.Quality, NewMessages = arrived, NewMessagesApproximate = upTo });
                     arrivals.Add((entity.Entity, $"{entity.Entity.DisplayName} · {FormatSubQueue(entity.SubQueue)} · " +
                         $"{(upTo ? "up to " : string.Empty)}{arrived:N0} new, {DeadLetterCountText.Format(count, quality)} in total"));
@@ -612,11 +639,12 @@ public sealed partial class MainWindowViewModel
                 LastMeasuredAt = entity.MeasuredAt,
                 MeasuredFrom = entity.MeasuredFrom,
                 ContentMarkers = entity.ContentMarkers,
-                Offsets = entity.Offsets
+                Offsets = entity.Offsets,
+                SharedName = IsShared(entity) ? AlertSource(entity) : null
             };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
-            alerts.Add(new MonitorAlert(profile.Name, $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})", count, null)
+            alerts.Add(new MonitorAlert(profile.Name, AlertSource(entity), count, null)
                 { CountQuality = quality });
             AddActivity(
                 "Warning",
@@ -629,10 +657,18 @@ public sealed partial class MainWindowViewModel
         ReportCountChanges(profile, arrivals, "New dead letters", "New dead letters");
         if (alerts.Count > 0)
         {
-            RaiseMonitorAlert(QueueLoom.App.Services.MonitorAlert.Combine(alerts));
+            RaiseMonitorAlert(QueueLoom.App.Services.MonitorAlert.Combine(
+                alerts.DistinctBy(alert => alert.Source, StringComparer.Ordinal).ToArray()));
         }
         NotifyMonitorNotificationsChanged();
     }
+
+    /// <summary>
+    /// The measurements counted once: they are keyed by physical key (CaptureDlqMeasurements, CaptureMonitorSnapshot), so a
+    /// shared destination already has one, and a source's own sample of it one of its own.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, DeadLetterMeasurement>> CountedOnce(IDictionary<string, DeadLetterMeasurement> measurements) =>
+        measurements;
 
     /// <summary>At most this many count changes of one check are listed one by one; more become one entry.</summary>
     internal const int MaximumSeparateCountChanges = 3;

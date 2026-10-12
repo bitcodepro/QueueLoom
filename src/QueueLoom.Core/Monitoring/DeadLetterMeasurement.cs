@@ -14,15 +14,25 @@ public readonly record struct DeadLetterMeasurement(long Count, DeadLetterCountQ
     /// <summary>What was counted, when not the source itself: a Pub/Sub reader subscription, an SQS dead-letter queue.</summary>
     public string? MeasuredFrom { get; init; }
 
+    /// <summary>
+    /// Only this source's messages were counted, through a destination others share (a Pub/Sub sample), not the
+    /// destination's whole count.
+    /// </summary>
+    public bool OfSourceOnly { get; init; }
+
     public bool IsLowerBound => Quality == DeadLetterCountQuality.LowerBound;
 
     public static DeadLetterMeasurement Of(DeadLetterEntitySnapshot entity) =>
-        new(entity.Count ?? 0, entity.CountQuality) { MeasuredAt = entity.MeasuredAt, MeasuredFrom = entity.MeasuredFrom };
+        new(entity.Count ?? 0, entity.CountQuality)
+            { MeasuredAt = entity.MeasuredAt, MeasuredFrom = entity.MeasuredFrom, OfSourceOnly = entity.CountsOnlyThisSource };
 
-    /// <summary>Two counts of different things (another reader, another dead-letter queue) are never compared.</summary>
+    /// <summary>
+    /// Two counts of different things (another reader, another dead-letter queue, or one source's share of a reader
+    /// against the reader's whole count) are never compared.
+    /// </summary>
     public static bool SameTarget(DeadLetterMeasurement first, DeadLetterMeasurement second) =>
         // A lost identity is not a match: only two counts both of the entity itself, or of the same reader, compare.
-        string.Equals(first.MeasuredFrom, second.MeasuredFrom, StringComparison.Ordinal);
+        string.Equals(first.MeasuredFrom, second.MeasuredFrom, StringComparison.Ordinal) && first.OfSourceOnly == second.OfSourceOnly;
 
     /// <summary>The later observation is older than the earlier one (a delayed point after a fresh read).</summary>
     public static bool IsOlder(DeadLetterMeasurement later, DeadLetterMeasurement earlier) =>

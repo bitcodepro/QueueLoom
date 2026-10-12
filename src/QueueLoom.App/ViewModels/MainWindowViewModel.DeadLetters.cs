@@ -131,7 +131,7 @@ public sealed partial class MainWindowViewModel
         private set => SetProperty(ref _messageListTitle, value);
     }
 
-    public long VisibleDlqSourceCount => FilteredDeadLetterSources.Sum(source => source.Count);
+    public long VisibleDlqSourceCount => DlqSourceItemViewModel.CountOnce(FilteredDeadLetterSources);
 
     public int VisibleDlqSourceRowCount => FilteredDeadLetterSources.Count;
 
