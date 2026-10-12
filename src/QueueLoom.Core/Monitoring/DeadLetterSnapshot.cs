@@ -47,7 +47,7 @@ public sealed record DeadLetterSnapshot
     /// <summary>
     /// One observation per monitored destination (<see cref="DeadLetterEntitySnapshot.MonitorKey"/>), with the sources
     /// it covers: a whole count once; the sources' own samples of one reader added up, which is at least what the reader
-    /// holds (each message is dead-lettered from one source), so a lower bound, as of its oldest sample.
+    /// holds (each message is dead-lettered from one source), so a lower bound, as of its newest sample.
     /// </summary>
     public IReadOnlyList<(DeadLetterEntitySnapshot Unit, IReadOnlyList<DeadLetterEntitySnapshot> Sources)> MonitorUnits =>
         Entities.Where(entity => entity.IsSuccessful && entity.Count.HasValue)
@@ -64,7 +64,9 @@ public sealed record DeadLetterSnapshot
                 {
                     CountQuality = DeadLetterCountQualities.Combine(sources.Select(source => source.CountQuality)
                         .Append(DeadLetterCountQuality.LowerBound)),
-                    MeasuredAt = sources.Min(source => source.MeasuredAt),
+                    // As of its newest sample: a later reading must be newer than all the evidence it would overrule (a
+                    // zero taken before B's 25 was seen must not clear it), never just newer than the oldest part.
+                    MeasuredAt = sources.Max(source => source.MeasuredAt),
                     MeasuredFrom = first.MeasuredFrom,
                     CountsOnlyThisSource = true
                 };

@@ -659,4 +659,26 @@ public sealed partial class ViewModelStateTests
 
         Assert.Equal(25, Assert.Single(vm.MonitorNotifications).Count);
     }
+
+    // Samples of one reader taken at different times: A=0 at t0, B=25 at t5. Reader zeros from t3 and t4 predate B's
+    // 25 and never clear it, also when read again; zeros newer than every sample resolve as usual.
+    [Fact]
+    public async Task ReaderZerosOlderThanTheNewestSampleNeverClearIt()
+    {
+        var t0 = DateTimeOffset.UtcNow;
+        var (vm, check) = await ScopeMonitorAsync(At(SampledThroughReader("billing", 0), t0), At(SampledThroughReader("shipping", 25), t0.AddMinutes(5)));
+        await using var _ = vm;
+        DeadLetterEntitySnapshot[] ReaderZero(int minute) =>
+            [At(ReportedThroughReader("billing", 0), t0.AddMinutes(minute)), At(ReportedThroughReader("shipping", 0), t0.AddMinutes(minute))];
+
+        await check(ReaderZero(3));
+        await check(ReaderZero(4));
+        await check(ReaderZero(4));
+        Assert.Equal(25, Assert.Single(vm.MonitorNotifications).Count);
+
+        await check(ReaderZero(6));
+        Assert.Single(vm.MonitorNotifications);
+        await check(ReaderZero(7));
+        Assert.Empty(vm.MonitorNotifications);
+    }
 }
