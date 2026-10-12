@@ -214,6 +214,8 @@ public sealed partial class MainWindowViewModel
         {
             throw new InvalidOperationException($"At most {ScheduledResend.MaximumPending} resends can wait at once. Run or cancel one on Activity.");
         }
+        // Refused now, with nothing saved: when due, the operation store would refuse it and the job would fail again.
+        QueueLoom.Infrastructure.Persistence.BatchReplayStore.EnsureOperationFits(items.Select(item => item.Message).ToArray());
         var resend = new ScheduledResend(
             Guid.NewGuid(),
             profile.Id,

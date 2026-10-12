@@ -64,11 +64,39 @@ public sealed partial class BatchReplayStore
         Path.Combine(folder, $"{index:D6}.metadata.json"), JsonSerializer.Serialize(
             new OperationItem(index, payload.Origin, payload.Properties.MessageId, destination.Path, "Pending")), token);
 
+    /// <summary>The most messages and body bytes one prepared operation holds.</summary>
+    public const int MaximumOperationMessages = 1000;
+    public const long MaximumOperationBytes = 32L * 1024 * 1024;
+
+    /// <summary>
+    /// Refuses a selection an operation cannot hold, by the bodies that would be sent (after any rewrite). A scheduled
+    /// resend checks this before it is saved: a job the operation store cannot take would otherwise wait, fail when due,
+    /// and stay in the list failing again.
+    /// </summary>
+    public static void EnsureOperationFits(IReadOnlyCollection<MessageDraft> messages)
+    {
+        if (messages.Count is < 1 or > MaximumOperationMessages)
+        {
+            throw new InvalidOperationException($"An operation holds 1 to {MaximumOperationMessages:N0} messages. Narrow the selection.");
+        }
+        long bytes = 0;
+        foreach (var message in messages)
+        {
+            bytes += message.Body.GetBytes().Length;
+            if (bytes > MaximumOperationBytes)
+            {
+                throw new InvalidOperationException(
+                    $"Operation bodies exceed {MaximumOperationBytes / (1024 * 1024):N0} MiB after any text replacement. Narrow the selection.");
+            }
+        }
+    }
+
     public async Task<ReplayPlan> CreateResendAsync(Guid profileId, IReadOnlyList<ResendItem> items, ResendMode mode,
         int rate, string? ns, string configurationIdentity, string kind, CancellationToken token, bool deferActivation = false,
         QueueLoom.Core.Profiles.MessagingProvider? provider = null)
     {
-        if (profileId == Guid.Empty || items.Count is < 1 or > 1000 || rate is < 0 or > 100 ||
+        EnsureOperationFits(items.Select(item => item.Message).ToArray());
+        if (profileId == Guid.Empty || items.Count is < 1 or > MaximumOperationMessages || rate is < 0 or > 100 ||
             items.Any(i => !i.Destination.CanSend || (mode == ResendMode.Move && !i.Key.IsValid)))
             throw new ArgumentException("Invalid resend selection, destination or rate.");
         var plan = new ReplayPlan(Guid.NewGuid(), profileId, items[0].Destination, DateTimeOffset.UtcNow,
@@ -79,12 +107,9 @@ public sealed partial class BatchReplayStore
         AtomicFile.RestrictDirectoryToCurrentUser(folder);
         try
         {
-            long bytes = 0;
             for (var index = 0; index < items.Count; index++)
             {
                 var item = items[index];
-                bytes += item.Message.Body.GetBytes().Length;
-                if (bytes > 32 * 1024 * 1024) throw new InvalidOperationException("Operation bodies exceed 32 MiB. Narrow the selection.");
                 var validation = MessageDraftValidator.Validate(item.Message, provider);
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 var payload = new ReplayPayload(item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToArray(),
