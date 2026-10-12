@@ -470,7 +470,7 @@ public sealed partial class MainWindowViewModel
         // Sources sharing a dead-letter destination all see its one count: they are alerted as that destination, once.
         var shared = snapshot.SharedTargets;
         string AlertSource(DeadLetterEntitySnapshot entity) =>
-            entity.MeasuredFrom is { } target && shared.TryGetValue(target, out var users)
+            entity.SharedTarget is { } target && shared.TryGetValue(target, out var users)
                 ? $"{DeadLetterHistorySample.SharedName(target)} (dead-letter queue shared by " +
                   string.Join(", ", users.Select(user => user.Entity.DisplayName)) + ")"
                 : $"{entity.Entity.DisplayName} ({FormatSubQueue(entity.SubQueue)})";
@@ -505,7 +505,7 @@ public sealed partial class MainWindowViewModel
             {
                 // Sources join and leave a shared destination: the incident shows who uses it now.
                 existing.Source = entity.Entity;
-                existing.SharedName = entity.MeasuredFrom is { } sharedTarget && shared.ContainsKey(sharedTarget) ? AlertSource(entity) : null;
+                existing.SharedName = entity.SharedTarget is { } sharedTarget && shared.ContainsKey(sharedTarget) ? AlertSource(entity) : null;
             }
             if (existing is not null && entity.MeasuredAt is { } measuredAt && existing.LastMeasuredAt is { } lastMeasured &&
                 measuredAt < lastMeasured)
@@ -637,7 +637,7 @@ public sealed partial class MainWindowViewModel
                 MeasuredFrom = entity.MeasuredFrom,
                 ContentMarkers = entity.ContentMarkers,
                 Offsets = entity.Offsets,
-                SharedName = entity.MeasuredFrom is { } target && shared.ContainsKey(target) ? AlertSource(entity) : null
+                SharedName = entity.SharedTarget is { } target && shared.ContainsKey(target) ? AlertSource(entity) : null
             };
             _monitorNotifications[key] = notification;
             MonitorNotifications.Insert(0, notification);
@@ -660,12 +660,12 @@ public sealed partial class MainWindowViewModel
         NotifyMonitorNotificationsChanged();
     }
 
-    /// <summary>One measurement per shared dead-letter destination of an environment (keys start with the profile).</summary>
+    /// <summary>
+    /// The measurements counted once: they are keyed by physical key (CaptureDlqMeasurements, CaptureMonitorSnapshot), so a
+    /// shared destination already has one, and a source's own sample of it one of its own.
+    /// </summary>
     private static IEnumerable<KeyValuePair<string, DeadLetterMeasurement>> CountedOnce(IDictionary<string, DeadLetterMeasurement> measurements) =>
-        DeadLetterSnapshot.CountOnce(
-            measurements.OrderBy(pair => pair.Key, StringComparer.Ordinal),
-            pair => pair.Value.MeasuredFrom is { } target ? $"{pair.Key[..pair.Key.IndexOf('|', StringComparison.Ordinal)]}|{target}" : null,
-            _ => true);
+        measurements;
 
     /// <summary>At most this many count changes of one check are listed one by one; more become one entry.</summary>
     internal const int MaximumSeparateCountChanges = 3;

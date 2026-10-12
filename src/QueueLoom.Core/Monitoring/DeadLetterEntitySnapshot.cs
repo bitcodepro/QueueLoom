@@ -81,7 +81,19 @@ public sealed record DeadLetterEntitySnapshot
     /// says (an SQS dead-letter queue ARN, a Pub/Sub reader subscription), else the source itself. Sources sharing a
     /// destination have one key, whichever of them reports it and however many there are.
     /// </summary>
-    public string PhysicalKey => MeasuredFrom is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
+    public string PhysicalKey => SharedTarget is { } target ? $"@{target}|{SubQueue}" : $"{Entity.Path}|{SubQueue}";
+
+    /// <summary>
+    /// The count is of this source's messages only, although read through a destination others share: a Pub/Sub
+    /// sample reads the shared dead-letter topic's reader but keeps only messages dead-lettered from this source.
+    /// </summary>
+    public bool CountsOnlyThisSource { get; init; }
+
+    /// <summary>
+    /// The destination whose whole count this is, when sources sharing it all report that one count (an SQS dead-letter
+    /// queue, a Pub/Sub reader's Cloud Monitoring series); null for a count of this source alone.
+    /// </summary>
+    public string? SharedTarget => CountsOnlyThisSource ? null : MeasuredFrom;
 
     /// <summary>The most messages whose identities are read to tell a replaced message from an unchanged queue.</summary>
     public const int ContentMarkerLimit = 100;

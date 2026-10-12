@@ -38,18 +38,18 @@ public sealed record DeadLetterHistorySample(
         // shared queue changes nothing in its history.
         // Its short name, unless that is ambiguous in this sample (two destinations with the same short name, or a
         // source of that name counted by itself): then the full destination.
-        var unmeasured = snapshot.Entities.Where(entity => entity.MeasuredFrom is null)
+        var unmeasured = snapshot.Entities.Where(entity => entity.SharedTarget is null)
             .Select(DeadLetterHistorySample.SourceName).ToHashSet(StringComparer.Ordinal);
-        var physicalNames = snapshot.Entities.Select(entity => entity.MeasuredFrom).OfType<string>().Distinct(StringComparer.Ordinal)
+        var physicalNames = snapshot.Entities.Select(entity => entity.SharedTarget).OfType<string>().Distinct(StringComparer.Ordinal)
             .GroupBy(SharedName, StringComparer.Ordinal)
             .SelectMany(group => group.Select(target =>
                 (Target: target, Name: group.Count() > 1 || unmeasured.Contains(group.Key) ? target : group.Key)))
             .ToDictionary(pair => pair.Target, pair => pair.Name, StringComparer.Ordinal);
         string SourceName(DeadLetterEntitySnapshot entity) =>
-            entity.MeasuredFrom is { } target ? physicalNames[target] : DeadLetterHistorySample.SourceName(entity);
+            entity.SharedTarget is { } target ? physicalNames[target] : DeadLetterHistorySample.SourceName(entity);
         // Which source used which destination: a source moved to another destination is a target change.
-        var aliases = snapshot.Entities.Where(entity => entity.MeasuredFrom is not null)
-            .Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: physicalNames[entity.MeasuredFrom!]))
+        var aliases = snapshot.Entities.Where(entity => entity.SharedTarget is not null)
+            .Select(entity => (Alias: DeadLetterHistorySample.SourceName(entity), Key: physicalNames[entity.SharedTarget!]))
             .GroupBy(pair => pair.Alias, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);

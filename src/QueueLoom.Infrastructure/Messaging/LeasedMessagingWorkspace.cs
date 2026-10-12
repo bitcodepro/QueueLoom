@@ -486,7 +486,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         {
             if (source.Runtime.DeadLetterCountError is { } countError)
             {
-                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError) { MeasuredFrom = source.Runtime.DeadLetterCountSource });
+                snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, countError)
+                    { MeasuredFrom = source.Runtime.DeadLetterCountSource, CountsOnlyThisSource = source.Runtime.CountsUnavailable });
                 continue;
             }
             long count;
@@ -501,7 +502,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
                     snapshots.Add(new DeadLetterEntitySnapshot(source.Reference, null, null, exception.GetBaseException().Message)
-                        { MeasuredFrom = source.Runtime.DeadLetterCountSource });
+                        { MeasuredFrom = source.Runtime.DeadLetterCountSource, CountsOnlyThisSource = true });
                     continue;
                 }
             }
@@ -538,6 +539,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 MeasuredAt = current.MeasuredAt,
                 MeasuredFrom = current.MeasuredFrom,
                 PreviousMeasuredFrom = previous?.MeasuredFrom,
+                // A sample keeps only this source's messages of the shared destination: it is no shared count.
+                CountsOnlyThisSource = sampled,
                 // Only with this read's own count: an older observation that was rejected keeps no checkpoint of this read.
                 Offsets = stale ? null : source.Runtime.DeadLetterOffsets
             });

@@ -1,3 +1,6 @@
+using QueueLoom.Core.Abstractions;
+using QueueLoom.Tests.Infrastructure;
+using QueueLoom.Infrastructure.Persistence;
 using System.Reflection;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Monitoring;
@@ -376,5 +379,126 @@ public sealed partial class ViewModelStateTests
 
         Assert.Equal(5, Assert.Single(summary.Sources).Change);
         Assert.Equal(5, summary.Change);
+    }
+
+    private const string PubSubReader = "projects/p/subscriptions/dlq-reader";
+
+    // Without Cloud Monitoring, Pub/Sub samples each source's own dead letters through the shared reader.
+    private static DeadLetterEntitySnapshot SampledThroughReader(string subscription, long count) =>
+        new(ServiceBusEntityReference.Subscription("events", subscription), count)
+            { CountQuality = DeadLetterCountQuality.LowerBound, MeasuredFrom = PubSubReader, CountsOnlyThisSource = true };
+
+    private static DeadLetterEntitySnapshot ReportedThroughReader(string subscription, long count) =>
+        new(ServiceBusEntityReference.Subscription("events", subscription), count)
+            { CountQuality = DeadLetterCountQuality.Estimated, MeasuredFrom = PubSubReader };
+
+    // Samples of different sources through one reader are different counts: none is dropped, in either order.
+    [Theory]
+    [InlineData(0, 25)]
+    [InlineData(10, 25)]
+    [InlineData(25, 0)]
+    public async Task SourceSamplesThroughASharedReaderAreAllCounted(long billing, long shipping)
+    {
+        var profileId = Guid.NewGuid();
+        var snapshot = new DeadLetterSnapshot(profileId, DateTimeOffset.UtcNow,
+            [SampledThroughReader("billing", billing), SampledThroughReader("shipping", shipping)]);
+
+        Assert.Equal(billing + shipping, snapshot.TotalCount);
+        Assert.Empty(snapshot.SharedTargets);
+        var sample = DeadLetterHistorySample.FromSnapshot(snapshot, "Test");
+        Assert.Equal(billing + shipping, sample.Total);
+        Assert.Equal(billing + shipping, sample.Sources.Values.Sum());
+        Assert.DoesNotContain(PubSubReader.Split('/')[^1], sample.Sources.Keys);
+
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var workspace = new FakeWorkspace { Snapshots = { [dev.Id] = Snapshot(dev.Id, SampledThroughReader("billing", billing), SampledThroughReader("shipping", shipping)) } };
+        var alerts = new RecordingAlerts();
+        await using var vm = CreateViewModel(new FakeProfileRepository([dev], dev.Id), workspace, alerts: alerts);
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        await vm.ScanCurrentEnvironmentCommand.ExecuteAsync();
+        Assert.Equal(billing + shipping, vm.GlobalDlqSourceCount);
+        Assert.All(vm.DeadLetterSources, row => Assert.False(row.IsShared));
+
+        vm.MonitorScope = "All environments";
+        var check = typeof(MainWindowViewModel).GetMethod("RunMonitorCheckAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task<bool>)check.Invoke(vm, [CancellationToken.None])!;
+        await WaitUntilAsync(() => alerts.System.Count == 1);
+        var alerted = alerts.System[0].Combined?.Select(alert => alert.Source).ToArray() ?? [alerts.System[0].Source];
+        Assert.Equal(new[] { billing, shipping }.Count(count => count > 0), alerted.Length);
+        if (shipping > 0) Assert.Contains(alerted, source => source.StartsWith("events / shipping", StringComparison.Ordinal));
+        if (billing > 0) Assert.Contains(alerted, source => source.StartsWith("events / billing", StringComparison.Ordinal));
+    }
+
+    // Cloud Monitoring comes and goes: the reader's whole count, then each source's own sample, then the whole count
+    // again. Each is counted as what it is, and no found message disappears from the total.
+    [Fact]
+    public void SwitchingBetweenReportedAndSampledCountsKeepsEveryCount()
+    {
+        var profileId = Guid.NewGuid();
+        var at = DateTimeOffset.UtcNow;
+        var reported = new DeadLetterSnapshot(profileId, at, [ReportedThroughReader("billing", 25), ReportedThroughReader("shipping", 25)]);
+        var sampled = new DeadLetterSnapshot(profileId, at.AddMinutes(1), [SampledThroughReader("billing", 0), SampledThroughReader("shipping", 25)]);
+
+        Assert.Equal(25, reported.TotalCount);
+        Assert.Single(reported.SharedTargets);
+        Assert.Equal(25, sampled.TotalCount);
+        Assert.Empty(sampled.SharedTargets);
+        Assert.Equal(25, DeadLetterHistorySample.FromSnapshot(sampled, "Test").Total);
+        Assert.Equal(25, DeadLetterHistorySample.FromSnapshot(reported, "Test").Total);
+    }
+
+    // The workspace marks a sample as this source's own count, so A=0 and B=25 through one reader stay 0 and 25.
+    [Fact]
+    public async Task TheWorkspaceMarksSourceSamplesAsTheirOwnCounts()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var workspace = new SharedReaderSamplingWorkspace(QueueLoomPaths.ForRoot(directory.Path),
+            new Dictionary<string, int> { ["billing"] = 0, ["shipping"] = 25 });
+        await workspace.ConnectAsync(ServiceBusProfile.CreateNew("Sampled", EnvironmentKind.Test, new(AuthenticationKind.KafkaNone))
+            with { Provider = MessagingProvider.Kafka, Kafka = new("broker.invalid:9092") });
+
+        var snapshot = await workspace.GetDeadLetterSnapshotAsync(DeadLetterMonitorScope.All);
+
+        Assert.All(snapshot.Entities, entity => Assert.True(entity.CountsOnlyThisSource));
+        Assert.All(snapshot.Entities, entity => Assert.Equal(PubSubReader, entity.MeasuredFrom));
+        Assert.Equal(25, snapshot.TotalCount);
+        Assert.Equal(25, DeadLetterHistorySample.FromSnapshot(snapshot, "Test").Total);
+    }
+
+    private sealed class SharedReaderSamplingWorkspace(QueueLoomPaths paths, Dictionary<string, int> counts)
+        : QueueLoom.Infrastructure.Messaging.LeasedMessagingWorkspace(new QueueLoom.Infrastructure.Persistence.DeadLetterJsonBackupStore(paths), null)
+    {
+        public override MessagingProvider Provider => MessagingProvider.Kafka;
+        protected override Task OpenAsync(ServiceBusProfile profile, CancellationToken token) => Task.CompletedTask;
+        protected override ValueTask CloseAsync() => ValueTask.CompletedTask;
+        protected override Task<ServiceBusTopology> ReadTopologyAsync(CancellationToken token) => Task.FromResult(new ServiceBusTopology(DateTimeOffset.UtcNow,
+            counts.Keys.Select(name => new ServiceBusQueue(name,
+                new ServiceBusEntityRuntime(ServiceBusMessageCounts.Empty) { CountsUnavailable = true, DeadLetterCountSource = PubSubReader })).ToArray()));
+        protected override QueueLoom.Infrastructure.Messaging.ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue) =>
+            new Channel(source, counts[source.Name]);
+        protected override Task SendCoreAsync(ServiceBusTopology topology, ServiceBusEntityReference destination, MessageDraft message, CancellationToken token) =>
+            throw new InvalidOperationException("This read-only fixture cannot send.");
+
+        private sealed class Channel(ServiceBusEntityReference source, int count) : QueueLoom.Infrastructure.Messaging.ILeasedMessageChannel
+        {
+            private int _next;
+            public string PhysicalName => "dlq-reader";
+            public int MaximumBatchSize => 100;
+            public Task<IReadOnlyList<QueueLoom.Infrastructure.Messaging.LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
+            {
+                var batch = Enumerable.Range(_next, Math.Max(0, Math.Min(maxMessages, count - _next)))
+                    .Select(index => new QueueLoom.Infrastructure.Messaging.LeasedMessage(new BrowsedMessage(source, ServiceBusSubQueue.DeadLetter, index, "x"u8.ToArray(),
+                        new EditableMessageProperties(MessageId: $"{source.Name}-{index}")), $"lease-{index}"))
+                    .ToArray();
+                _next += batch.Length;
+                return Task.FromResult<IReadOnlyList<QueueLoom.Infrastructure.Messaging.LeasedMessage>>(batch);
+            }
+            public Task ReleaseAsync(IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage> messages, CancellationToken cancellationToken) => Task.CompletedTask;
+            public Task<IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage>> SettleAsync(
+                IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage> messages, CancellationToken cancellationToken) =>
+                Task.FromResult<IReadOnlyCollection<QueueLoom.Infrastructure.Messaging.LeasedMessage>>([]);
+            public void Dispose() { }
+        }
     }
 }

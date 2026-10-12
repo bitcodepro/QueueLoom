@@ -262,7 +262,8 @@ public sealed partial class MainWindowViewModel
                 PreviousQuality = previous?.Quality ?? DeadLetterCountQuality.Exact,
                 MeasuredAt = entity.MeasuredAt,
                 MeasuredFrom = entity.MeasuredFrom,
-                PreviousMeasuredFrom = previous?.MeasuredFrom
+                PreviousMeasuredFrom = previous?.MeasuredFrom,
+                CountsOnlyThisSource = entity.CountsOnlyThisSource
             };
             DeadLetterSources.Add(new DlqSourceItemViewModel(
                 profile.Id,
@@ -272,7 +273,7 @@ public sealed partial class MainWindowViewModel
                 withHistory,
                 profile.Provider == Core.Profiles.MessagingProvider.Kafka ? "topic" : "queue")
             {
-                SharedWith = entity.MeasuredFrom is { } target && shared.TryGetValue(target, out var users)
+                SharedWith = entity.SharedTarget is { } target && shared.TryGetValue(target, out var users)
                     ? users.Where(user => user != entity).Select(user => user.Entity.DisplayName).ToArray()
                     : null
             });

@@ -27,7 +27,7 @@ public sealed record DeadLetterSnapshot
     /// Each dead-letter destination once: sources that share one (an SQS dead-letter queue several queues redrive to,
     /// a Pub/Sub dead-letter topic read through one subscription) all report its whole count, which is one count.
     /// </summary>
-    public IEnumerable<DeadLetterEntitySnapshot> CountedOnce => CountOnce(Entities, entity => entity.MeasuredFrom, entity => entity.Count.HasValue);
+    public IEnumerable<DeadLetterEntitySnapshot> CountedOnce => CountOnce(Entities, entity => entity.SharedTarget, entity => entity.Count.HasValue);
 
     /// <summary>
     /// Keeps one item per shared target (the first that has a count, else the first), and every item without a target.
@@ -39,8 +39,8 @@ public sealed record DeadLetterSnapshot
 
     /// <summary>The sources that share a dead-letter destination with another, by that destination.</summary>
     public IReadOnlyDictionary<string, IReadOnlyList<DeadLetterEntitySnapshot>> SharedTargets =>
-        Entities.Where(entity => entity.MeasuredFrom is not null)
-            .GroupBy(entity => entity.MeasuredFrom!, StringComparer.Ordinal)
+        Entities.Where(entity => entity.SharedTarget is not null)
+            .GroupBy(entity => entity.SharedTarget!, StringComparer.Ordinal)
             .Where(group => group.Count() > 1)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<DeadLetterEntitySnapshot>)group.ToArray(), StringComparer.Ordinal);
 
