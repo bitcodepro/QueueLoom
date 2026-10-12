@@ -45,40 +45,26 @@ internal static class AtomicFile
     private static bool IsHeldOpen(Exception exception) => OperatingSystem.IsWindows() &&
         (exception is UnauthorizedAccessException ||
          exception is IOException io and not FileNotFoundException and not DirectoryNotFoundException && (io.HResult & 0xFFFF) is 32 or 33);
-    public static async Task WriteTextAsync(
+    /// <summary>Tests: called in this async flow with the temporary file, just before its content is written.</summary>
+    internal static readonly AsyncLocal<Action<string>?> ContentWriting = new();
+
+    public static Task WriteTextAsync(
         string path,
         string contents,
-        CancellationToken cancellationToken)
-    {
-        var directory = Path.GetDirectoryName(path)
-            ?? throw new ArgumentException("The file must have a parent directory.", nameof(path));
-        Directory.CreateDirectory(directory);
+        CancellationToken cancellationToken) =>
+        WriteAsync(path, new UTF8Encoding(false).GetBytes(contents), cancellationToken);
 
-        var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                64 * 1024, FileOptions.Asynchronous))
-            {
-                RestrictToCurrentUser(temporaryPath);
-                await stream.WriteAsync(new UTF8Encoding(false).GetBytes(contents), cancellationToken).ConfigureAwait(false);
-                stream.Flush(flushToDisk: true);
-            }
-            await ReplaceAsync(temporaryPath, path, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
-        }
-    }
-
-    public static async Task WriteBytesAsync(
+    public static Task WriteBytesAsync(
         string path,
         ReadOnlyMemory<byte> contents,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        WriteAsync(path, contents, cancellationToken);
+
+    /// <summary>
+    /// Writes a private temporary file and moves it over <paramref name="path"/>. The temporary file is the current
+    /// user's alone before any content is in it: created owner-only on Unix, restricted before writing on Windows.
+    /// </summary>
+    private static async Task WriteAsync(string path, ReadOnlyMemory<byte> contents, CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(path)
             ?? throw new ArgumentException("The file must have a parent directory.", nameof(path));
@@ -87,9 +73,25 @@ internal static class AtomicFile
         var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
         try
         {
-            await File.WriteAllBytesAsync(temporaryPath, contents.ToArray(), cancellationToken)
-                .ConfigureAwait(false);
-            RestrictToCurrentUser(temporaryPath);
+            var options = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                BufferSize = 64 * 1024,
+                Options = FileOptions.Asynchronous
+            };
+            if (!OperatingSystem.IsWindows())
+            {
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+            await using (var stream = new FileStream(temporaryPath, options))
+            {
+                RestrictToCurrentUser(temporaryPath);
+                ContentWriting.Value?.Invoke(temporaryPath);
+                await stream.WriteAsync(contents, cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
             await ReplaceAsync(temporaryPath, path, cancellationToken).ConfigureAwait(false);
         }
         finally
