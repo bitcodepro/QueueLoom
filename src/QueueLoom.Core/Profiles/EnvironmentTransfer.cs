@@ -136,13 +136,14 @@ public static class EnvironmentTransfer
     private static string UniqueName(string name, IReadOnlySet<string> taken)
     {
         var trimmed = string.IsNullOrWhiteSpace(name) ? "Imported environment" : name.Trim();
-        if (!taken.Contains(trimmed))
+        if (trimmed.Length > ProfileValidator.MaxNameLength || !taken.Contains(trimmed))
         {
             return trimmed;
         }
         for (var number = 2; ; number++)
         {
-            var candidate = $"{trimmed} ({number})";
+            var suffix = $" ({number})";
+            var candidate = TextLimits.Head(trimmed, ProfileValidator.MaxNameLength - suffix.Length) + suffix;
             if (!taken.Contains(candidate))
             {
                 return candidate;
