@@ -16,6 +16,7 @@ $parent = $null
 $sender = $null
 $helperLauncher = $null
 $helper = $null
+$primaryFailure = $null
 function Get-SmokeProcesses {
     try {
         # Diagnostics are best effort and restricted to this exact installation and sender PID.
@@ -126,10 +127,15 @@ try {
     # The sender's exit and receipt deletion both precede the real helper's exit in stable-package mode.
     Write-Host "Waiting for restart helper PID $($helper.Id), start ticks $($helper.StartTime.ToUniversalTime().Ticks)."
     if (-not $helper.WaitForExit(45000)) { throw 'The packaged restart helper timed out.' }
-    if ($helper.ExitCode -ne 0) {
+    $helperExitCode = $helper.ExitCode
+    if ($helperExitCode -ne 0) {
         $errorFile = "$receiptPath.error"
-        $detail = if (Test-Path -LiteralPath $errorFile) { [IO.File]::ReadAllText($errorFile) } else { 'No diagnostic file' }
-        throw "Packaged restart helper failed ($($helper.ExitCode)): $detail"
+        try {
+            $detail = if (Test-Path -LiteralPath $errorFile) { [IO.File]::ReadAllText($errorFile) } else { 'No diagnostic file' }
+        } catch {
+            $detail = "Diagnostic detail unavailable ($($_.Exception.GetType().Name))"
+        }
+        throw "Packaged restart helper failed ($helperExitCode): $detail"
     }
     $cleanupWait = [Diagnostics.Stopwatch]::StartNew()
     while (Test-Path -LiteralPath $receiptPath) {
@@ -147,28 +153,37 @@ try {
         $identities = @(Get-SmokeProcesses) | ConvertTo-Json -Depth 4 -Compress
         throw "Expected one running updated GUI payload; found $($updated.Count). Process identities: $identities"
     }
-    Write-Host 'PASS packaged Windows update: delayed exit, paths with spaces, confirmed GUI startup, owned-file cleanup and user-file preservation.'
+} catch {
+    $primaryFailure = $_
+    throw
 } finally {
-    foreach ($process in @($parent, $sender, $helper, $helperLauncher)) {
-        if ($null -ne $process) {
-            if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
-            $process.Dispose()
+    try {
+        foreach ($process in @($parent, $sender, $helper, $helperLauncher)) {
+            if ($null -ne $process) {
+                if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+                $process.Dispose()
+            }
         }
-    }
-    # Match the exact random installation before touching any GUI process.
-    Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -or $_.Path -like "$root\QueueLoom.versions\versions\*\payload\QueueLoom.exe" } | ForEach-Object {
-        if (-not $_.HasExited) { $_.Kill($true); $_.WaitForExit() }; $_.Dispose()
-    }
-    $resolved = [IO.Path]::GetFullPath($root)
-    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-    if (-not $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -or
-        -not ([IO.Path]::GetFileName($resolved)).StartsWith('QueueLoom update smoke with spaces ')) { throw 'Unexpected smoke-test cleanup path.' }
-    $cleanup = [Diagnostics.Stopwatch]::StartNew()
-    while (Test-Path -LiteralPath $resolved) {
-        try { [IO.Directory]::Delete($resolved, $true) }
-        catch {
-            if ($cleanup.Elapsed.TotalSeconds -gt 10) { throw }
-            Start-Sleep -Milliseconds 100
+        # Match the exact random installation before touching any GUI process.
+        Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -or $_.Path -like "$root\QueueLoom.versions\versions\*\payload\QueueLoom.exe" } | ForEach-Object {
+            if (-not $_.HasExited) { $_.Kill($true); $_.WaitForExit() }; $_.Dispose()
         }
+        $resolved = [IO.Path]::GetFullPath($root)
+        $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+        if (-not $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -or
+            -not ([IO.Path]::GetFileName($resolved)).StartsWith('QueueLoom update smoke with spaces ')) { throw 'Unexpected smoke-test cleanup path.' }
+        $cleanup = [Diagnostics.Stopwatch]::StartNew()
+        while (Test-Path -LiteralPath $resolved) {
+            try { [IO.Directory]::Delete($resolved, $true) }
+            catch {
+                if ($cleanup.Elapsed.TotalSeconds -gt 10) { throw }
+                Start-Sleep -Milliseconds 100
+            }
+        }
+    } catch {
+        if ($null -eq $primaryFailure) { throw }
+        # A secondary teardown error must not replace the original helper/assertion failure.
+        try { Write-Warning "Smoke cleanup also failed ($($_.Exception.GetType().Name))." -WarningAction Continue } catch { }
     }
 }
+Write-Host 'PASS packaged Windows update: delayed exit, paths with spaces, confirmed GUI startup, owned-file cleanup and user-file preservation.'

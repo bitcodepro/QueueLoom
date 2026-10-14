@@ -1,10 +1,11 @@
 using System.Diagnostics;
 using System.Text.Json;
+using QueueLoom.Core.Diagnostics;
 using QueueLoom.Tests.Infrastructure;
 
 namespace QueueLoom.Tests;
 
-public sealed partial class WindowsUpdateSmokeTests
+public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput)
 {
     [Theory]
     [InlineData(0, false, false)]
@@ -51,6 +52,7 @@ public sealed partial class WindowsUpdateSmokeTests
             var executable = marker.RootElement.GetProperty("Executable").GetString()!;
             Assert.False(File.Exists(marker.RootElement.GetProperty("Receipt").GetString()));
             using var helper = Process.GetProcessById(helperPid);
+            _ = helper.Handle;
             Assert.Equal(helperTicks, helper.StartTime.ToUniversalTime().Ticks);
             Assert.False(helper.HasExited);
             var guiPid = int.Parse(File.ReadAllText(gate + ".gui.pid"), System.Globalization.CultureInfo.InvariantCulture);
@@ -61,13 +63,15 @@ public sealed partial class WindowsUpdateSmokeTests
                 Assert.Equal(2, ids.Length);
                 Assert.Contains(helperPid, ids);
                 Assert.Contains(guiPid, ids);
-                Console.WriteLine($"Receipt removed with helper PID {helperPid} (start ticks {helperTicks}) and GUI PID {guiPid} sharing {executable}.");
+                LogSmokeOutput($"Receipt removed with helper PID {helperPid} (start ticks {helperTicks}) and GUI PID {guiPid} sharing {executable}.");
             }
             finally { foreach (var process in matching) process.Dispose(); }
             PublishRelease(gate + ".release", helperExit);
             await exited.WaitAsync(TimeSpan.FromSeconds(30));
+            await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            LogSmokeOutput($"Requested helper exit: {helperExit}; observed helper exit: {helper.ExitCode}; observer exit: {script.ExitCode}.");
+            Assert.Equal(helperExit, helper.ExitCode);
             var detail = await output + await error;
-            Console.WriteLine(detail);
             if (helperExit == 0)
             {
                 Assert.True(script.ExitCode == 0, detail);
@@ -88,8 +92,11 @@ public sealed partial class WindowsUpdateSmokeTests
             try { await exited.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (TimeoutException) { if (!script.HasExited) script.Kill(entireProcessTree: true); await exited; }
             await Task.WhenAll(output, error);
+            LogSmokeOutput("Observer stdout:\n" + await output + "\nObserver stderr:\n" + await error);
         }
     }
+
+    private void LogSmokeOutput(string detail) => testOutput.WriteLine(SensitiveDataRedactor.Redact(detail));
 
     private static async Task<string> ReadOutput(Process script, TaskCompletionSource waiting)
     {
