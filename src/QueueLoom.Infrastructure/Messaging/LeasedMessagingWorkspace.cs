@@ -896,20 +896,26 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
     /// <inheritdoc />
     public event EventHandler<string>? CleanupWarning;
 
+    /// <summary>Announces a cleanup failure without allowing a listener to replace the operation's result.</summary>
+    protected void ReportCleanupWarning(string error)
+    {
+        try
+        {
+            CleanupWarning?.Invoke(this, error);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A listener's failure must not turn the operation's result into an error.
+        }
+    }
+
     /// <summary>Releases what is still held; a cleanup failure is returned and announced, never thrown.</summary>
     private async Task<string?> ReleaseQuietlyAsync(ILeasedMessageChannel channel, List<LeasedMessage> held)
     {
         var error = await ReleaseQuietlyCoreAsync(channel, held).ConfigureAwait(false);
         if (error is not null)
         {
-            try
-            {
-                CleanupWarning?.Invoke(this, error);
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                // A listener's failure must not turn the operation's result into an error.
-            }
+            ReportCleanupWarning(error);
         }
         return error;
     }

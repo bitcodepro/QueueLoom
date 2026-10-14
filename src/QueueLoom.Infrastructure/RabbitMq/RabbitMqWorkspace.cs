@@ -260,7 +260,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             _ => throw new InvalidOperationException("Send to a queue, or to an exchange with the routing key as Subject.")
         };
 
-        await using var channel = await Connection.CreateChannelAsync(
+        var channel = await Connection.CreateChannelAsync(
                 new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true),
                 cancellationToken)
             .ConfigureAwait(false);
@@ -277,6 +277,18 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             throw new DeliveryRejectedException(
                 $"Exchange '{exchange}' has no queue bound for routing key '{routingKey}', so the message was not delivered. " +
                 "Set the routing key in Subject.", exception);
+        }
+        finally
+        {
+            try
+            {
+                await channel.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // A confirmed publish stays confirmed, and a return or uncertain failure keeps its original evidence.
+                ReportCleanupWarning("RabbitMQ send channel cleanup failed; the send outcome is unchanged.");
+            }
         }
     }
 
