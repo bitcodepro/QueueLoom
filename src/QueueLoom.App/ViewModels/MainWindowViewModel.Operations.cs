@@ -169,6 +169,8 @@ public sealed partial class MainWindowViewModel
         {
             Start = log ? NextLogStart() : BrowseStart.Oldest
         }, token).ConfigureAwait(true);
+        // A provider may finish after cancellation; do not publish its page or advance the cursor.
+        token.ThrowIfCancellationRequested();
         // A rejected bookmark can clear both the message list and continuation state while this page is pending.
         if (resultsGeneration != _messageResultsGeneration)
         {
