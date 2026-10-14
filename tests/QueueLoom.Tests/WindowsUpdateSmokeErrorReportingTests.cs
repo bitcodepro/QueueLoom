@@ -24,6 +24,7 @@ public sealed partial class WindowsUpdateSmokeTests
         var error = script.StandardError.ReadToEndAsync();
         var exited = script.WaitForExitAsync();
         FileStream? heldFile = null;
+        Process? retainedHelper = null;
         string? ownedRoot = null;
         try
         {
@@ -31,8 +32,8 @@ public sealed partial class WindowsUpdateSmokeTests
             var observed = await Task.WhenAny(waiting.Task, exited).WaitAsync(TimeSpan.FromSeconds(40));
             Assert.True(observed == waiting.Task, await CompletedOutput(script, output, error));
             await WaitForPublishedSmokeMarker(gate + ".helper.json", exited);
-            using var marker = JsonDocument.Parse(File.ReadAllText(gate + ".helper.json"));
-            using var helper = Process.GetProcessById(marker.RootElement.GetProperty("Pid").GetInt32());
+            using var marker = JsonDocument.Parse(ReadPublishedSmokeFile(gate + ".helper.json"));
+            var helper = retainedHelper = Process.GetProcessById(marker.RootElement.GetProperty("Pid").GetInt32());
             _ = helper.Handle;
             Assert.Equal(marker.RootElement.GetProperty("StartTicks").GetInt64(), helper.StartTime.ToUniversalTime().Ticks);
             Assert.Equal(marker.RootElement.GetProperty("Executable").GetString(), helper.MainModule?.FileName);
@@ -67,6 +68,13 @@ public sealed partial class WindowsUpdateSmokeTests
             catch (TimeoutException) { if (!script.HasExited) script.Kill(entireProcessTree: true); await exited; }
             heldFile?.Dispose();
             await Task.WhenAll(output, error);
+            LogSmokeOutput($"Observer final exit: {script.ExitCode}.");
+            if (retainedHelper is not null)
+            {
+                LogSmokeOutput(retainedHelper.HasExited ? $"Retained helper PID {retainedHelper.Id}, final exit: {retainedHelper.ExitCode}." :
+                    $"Retained helper PID {retainedHelper.Id} is still running after observer teardown.");
+                retainedHelper.Dispose();
+            }
             LogSmokeOutput("Observer stdout:\n" + await output + "\nObserver stderr:\n" + await error);
             if (ownedRoot is not null && Directory.Exists(ownedRoot)) Directory.Delete(ValidateSmokeRoot(ownedRoot), recursive: true);
         }
@@ -81,7 +89,9 @@ public sealed partial class WindowsUpdateSmokeTests
         watcher.Error += (_, args) => published.TrySetException(args.GetException());
         watcher.EnableRaisingEvents = true;
         if (File.Exists(path)) published.TrySetResult();
-        var observed = await Task.WhenAny(published.Task, exited).WaitAsync(TimeSpan.FromSeconds(30));
+        // Follow the actual observer's lifetime. Its existing startup/sender/helper/cleanup
+        // phase limits are 15/45/45/10 seconds; a separate 30-second marker limit can preempt it.
+        var observed = await Task.WhenAny(published.Task, exited).WaitAsync(TimeSpan.FromSeconds(15 + 45 + 45 + 10));
         Assert.True(observed == published.Task, "The observer exited before its helper reached the fixture gate.");
         await published.Task;
     }

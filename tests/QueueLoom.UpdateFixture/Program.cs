@@ -232,7 +232,7 @@ if (args.Length == 3 && args[0] == "--smoke-release-reader")
         await Task.Delay(10);
     }
     PublishMarker(args[2], "visible");
-    return int.Parse(File.ReadAllText(args[1]), System.Globalization.CultureInfo.InvariantCulture);
+    return int.Parse(ReadPublishedFixtureText(args[1]), System.Globalization.CultureInfo.InvariantCulture);
 }
 if (UpdateRestart.HandleArguments(args, out var code))
 {
@@ -252,7 +252,7 @@ if (UpdateRestart.HandleArguments(args, out var code))
             if (wait.Elapsed > TimeSpan.FromSeconds(60)) return 71;
             await Task.Delay(10);
         }
-        return int.Parse(File.ReadAllText(gate + ".release"), System.Globalization.CultureInfo.InvariantCulture);
+        return int.Parse(ReadPublishedFixtureText(gate + ".release"), System.Globalization.CultureInfo.InvariantCulture);
     }
     return code;
 }
@@ -296,8 +296,17 @@ else
 }
 return 0;
 
-// A marker a test reads as soon as it exists: written and closed under a temporary name, then renamed, so a reader
-// never sees it partial or still open. With a gate, the temporary file waits for the test before it is renamed.
+static string ReadPublishedFixtureText(string path)
+{
+    // The writer closes before rename. Allow its remaining DELETE-access rename handle,
+    // while continuing to reject an open writer that could expose incomplete content.
+    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+    using var reader = new StreamReader(stream);
+    return reader.ReadToEnd();
+}
+
+// Close the writer before publishing by rename. Readers allow delete sharing while the
+// rename finishes. With a gate, the temporary file waits for the test before publication.
 static void PublishMarker(string marker, string content, string? gate = null)
 {
     var temporary = marker + ".tmp";

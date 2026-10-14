@@ -31,12 +31,16 @@ public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput
         {
             if (gateGuiMarker)
             {
-                await WaitForSmokeMarker(gate + ".gui.pid.tmp", script);
-                using var startup = JsonDocument.Parse(File.ReadAllText(gate + ".gui-startup.json"));
+                await WaitForPublishedSmokeMarker(gate + ".gui.pid.tmp", exited);
+                using var startup = JsonDocument.Parse(ReadPublishedSmokeFile(gate + ".gui-startup.json"));
                 var ready = startup.RootElement.GetProperty("Receipt").GetString() + "." + startup.RootElement.GetProperty("Id").GetString() + ".ready";
                 Assert.False(File.Exists(ready)); // No helper completion may precede the closed GUI marker.
                 Assert.False(File.Exists(gate + ".helper.json"));
+                var published = WaitForPublishedSmokeMarker(gate + ".gui.pid", exited);
+                Assert.False(published.IsCompleted); // The actual GUI is still held before final publication.
+                Assert.False(script.HasExited);
                 File.WriteAllText(gate + ".gui-marker.open", "open");
+                await published;
             }
             var deadline = Stopwatch.StartNew();
             while (!File.Exists(gate + ".helper.json") && !script.HasExited && deadline.Elapsed < TimeSpan.FromSeconds(30))
@@ -46,7 +50,7 @@ public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput
             var observed = await Task.WhenAny(waiting.Task, exited).WaitAsync(TimeSpan.FromSeconds(15));
             Assert.True(observed == waiting.Task, await CompletedOutput(script, output, error));
             Assert.False(script.HasExited);
-            using var marker = JsonDocument.Parse(File.ReadAllText(gate + ".helper.json"));
+            using var marker = JsonDocument.Parse(ReadPublishedSmokeFile(gate + ".helper.json"));
             var helperPid = marker.RootElement.GetProperty("Pid").GetInt32();
             var helperTicks = marker.RootElement.GetProperty("StartTicks").GetInt64();
             var executable = marker.RootElement.GetProperty("Executable").GetString()!;
@@ -55,7 +59,7 @@ public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput
             _ = helper.Handle;
             Assert.Equal(helperTicks, helper.StartTime.ToUniversalTime().Ticks);
             Assert.False(helper.HasExited);
-            var guiPid = int.Parse(File.ReadAllText(gate + ".gui.pid"), System.Globalization.CultureInfo.InvariantCulture);
+            var guiPid = int.Parse(ReadPublishedSmokeFile(gate + ".gui.pid"), System.Globalization.CultureInfo.InvariantCulture);
             var matching = Process.GetProcessesByName("QueueLoom");
             try
             {
@@ -92,6 +96,7 @@ public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput
             try { await exited.WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (TimeoutException) { if (!script.HasExited) script.Kill(entireProcessTree: true); await exited; }
             await Task.WhenAll(output, error);
+            LogSmokeOutput($"Observer final exit: {script.ExitCode}.");
             LogSmokeOutput("Observer stdout:\n" + await output + "\nObserver stderr:\n" + await error);
         }
     }
