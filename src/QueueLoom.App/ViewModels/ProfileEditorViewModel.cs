@@ -370,7 +370,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         : "Stored only in the operating-system-backed QueueLoom vault.";
 
     public string AwsAccessKeyHint => HasExistingSecret
-        ? "Leave both empty to keep the currently encrypted key."
+        ? "Leave the key ID, secret access key and session token empty to keep the currently encrypted key."
         : "Stored only in the operating-system-backed QueueLoom vault. For LocalStack any values work, for example test / test.";
 
     public string SecretNote => Provider switch
@@ -483,7 +483,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
                     AwsSecretAccessKey.Trim(),
                     NullIfWhiteSpace(AwsSessionToken)).ToSecret();
             }
-            else if (hasId || hasSecret || !HasExistingSecret)
+            else if (hasId || hasSecret || !string.IsNullOrWhiteSpace(AwsSessionToken) || !HasExistingSecret)
             {
                 Error = "Enter both the access key ID and the secret access key.";
                 return null;
