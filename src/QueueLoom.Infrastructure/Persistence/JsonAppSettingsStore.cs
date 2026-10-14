@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using QueueLoom.Core.IO;
 using QueueLoom.Core.Settings;
 
 namespace QueueLoom.Infrastructure.Persistence;
@@ -90,11 +91,20 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     AdditionalFields = additionalFields
                 },
                 SerializerOptions);
+            // An already-cancelled update must not create recovery data or start publishing settings.
+            cancellationToken.ThrowIfCancellationRequested();
             paths.EnsureCreated();
             if (state == FileState.Damaged)
             {
-                // The damaged file is kept aside, so saved searches and the webhook can still be recovered from it.
-                File.Move(paths.SettingsFile, paths.SettingsFile + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}");
+                // Keep the primary in place until replacement succeeds. A private, flushed recovery copy is
+                // published first, under the same cross-process lock; no failure needs to roll old bytes back.
+                var recoveryPath = paths.SettingsFile + $".damaged-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
+                await SafeFileWriter.WriteAsync(recoveryPath, async (recovery, token) =>
+                {
+                    await using var original = new FileStream(paths.SettingsFile, FileMode.Open, FileAccess.Read,
+                        FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    await original.CopyToAsync(recovery, token).ConfigureAwait(false);
+                }, cancellationToken).ConfigureAwait(false);
             }
             await AtomicFile.WriteTextAsync(paths.SettingsFile, document, cancellationToken).ConfigureAwait(false);
             return updated;
