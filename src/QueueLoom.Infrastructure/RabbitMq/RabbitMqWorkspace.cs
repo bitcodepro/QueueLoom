@@ -1,4 +1,5 @@
 using QueueLoom.Core;
+using QueueLoom.Core.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -287,7 +288,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 // A confirmed publish stays confirmed, and a return or uncertain failure keeps its original evidence.
-                ReportCleanupWarning("RabbitMQ send channel cleanup failed; the send outcome is unchanged.");
+                ReportCleanupWarning("RabbitMQ send channel cleanup failed; the send outcome is unchanged. " +
+                                     SensitiveDataRedactor.SummarizeException(exception));
             }
         }
     }

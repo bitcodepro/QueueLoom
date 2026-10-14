@@ -76,6 +76,37 @@ public sealed class RabbitPublishCleanupTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task CleanupWarningKeepsUsefulSanitizedDetailAndThePublishOutcome(bool rejected)
+    {
+        var secret = Guid.NewGuid().ToString("N");
+        var refusal = new PublishException(1, true);
+        var broker = new Publisher
+        {
+            PublishError = _ => rejected ? refusal : null,
+            CleanupError = new IOException("cleanup wrapper",
+                new TimeoutException($"channel close timed out; password={secret}\r\nConnection reset"))
+        };
+        await using var workspace = broker.CreateWorkspace();
+        var warnings = new List<string>();
+        workspace.CleanupWarning += (_, warning) => warnings.Add(warning);
+
+        var error = await Record.ExceptionAsync(() => workspace.SendMessageAsync(new(ServiceBusEntityReference.Queue("orders"), MessageDraft.Empty)));
+
+        // Boolean assertions keep synthetic credential material out of failure output as well.
+        Assert.True(rejected ? error is DeliveryRejectedException && ReferenceEquals(error.InnerException, refusal) : error is null);
+        Assert.Single(warnings.Select(_ => true));
+        var warning = warnings[0];
+        Assert.True(warning.Contains("channel close timed out", StringComparison.Ordinal));
+        Assert.True(warning.Contains("Connection reset", StringComparison.Ordinal));
+        Assert.True(warning.Contains("password=[REDACTED]", StringComparison.Ordinal));
+        Assert.False(warning.Contains(secret, StringComparison.Ordinal));
+        Assert.False(warning.Contains('\r') || warning.Contains('\n'));
+        Assert.Equal(1, broker.Disposals);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task PartialBatchKeepsConfirmedCountWhenCleanupFails(bool cancelSecondPublish)
     {
         using var cancellation = new CancellationTokenSource();
