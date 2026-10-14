@@ -90,6 +90,8 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     AdditionalFields = additionalFields
                 },
                 SerializerOptions);
+            // The atomic writer observes cancellation too, but only after a damaged original would be moved.
+            cancellationToken.ThrowIfCancellationRequested();
             paths.EnsureCreated();
             if (state == FileState.Damaged)
             {
