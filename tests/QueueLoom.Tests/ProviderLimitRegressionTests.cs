@@ -214,7 +214,7 @@ public sealed class ProviderLimitRegressionTests
             new EditableMessageProperties(MessageId: "m-1", CorrelationId: "c-1", ContentType: "application/json", Subject: "orders"),
             Enumerable.Range(1, 8).Select(index => new MessageApplicationProperty($"p{index}", ApplicationPropertyType.String, "v")));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Send(ServiceBusEntityReference.Queue("orders"), draft));
+        var error = await Assert.ThrowsAsync<DeliveryRejectedException>(() => fixture.Send(ServiceBusEntityReference.Queue("orders"), draft));
 
         Assert.Contains("at most 10", error.Message, StringComparison.Ordinal);
         Assert.Empty(fixture.Sqs.Sends);
@@ -227,7 +227,7 @@ public sealed class ProviderLimitRegressionTests
         var draft = new MessageDraft(EditableMessageBody.Empty, new EditableMessageProperties(MessageId: "m-1"),
             [new MessageApplicationProperty("aws.trace", ApplicationPropertyType.String, "v")]);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Send(ServiceBusEntityReference.Queue("orders"), draft));
+        var error = await Assert.ThrowsAsync<DeliveryRejectedException>(() => fixture.Send(ServiceBusEntityReference.Queue("orders"), draft));
 
         Assert.Contains("AWS.", error.Message, StringComparison.Ordinal);
         Assert.Empty(fixture.Sqs.Sends);

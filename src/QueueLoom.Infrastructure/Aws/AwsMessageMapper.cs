@@ -183,13 +183,14 @@ internal static class AwsMessageMapper
     /// allowed characters, SQS names starting with "AWS." or "Amazon.", and more than 10 attributes on an SQS message,
     /// counting the correlation ID, subject, content type, reply-to and to that travel as attributes. SNS reserves
     /// "AWS." names for its own mobile push attributes, so those stay allowed there.
+    /// These local refusals prove non-delivery; replay must not treat them as an uncertain SDK send.
     /// </summary>
     public static void EnsureAttributesAccepted(IReadOnlyCollection<string> names, bool sqs)
     {
         var service = sqs ? "Amazon SQS" : "Amazon SNS";
         if (names.FirstOrDefault(name => !QueueLoom.Core.Validation.MessageDraftValidator.IsAwsAttributeName(name)) is { } invalid)
         {
-            throw new InvalidOperationException(
+            throw new DeliveryRejectedException(
                 $"{service} does not accept the attribute name '{invalid}': use up to 256 letters, digits, '_', '-' and '.', " +
                 "not starting or ending with '.' and without '..'. Nothing was sent.");
         }
@@ -200,12 +201,12 @@ internal static class AwsMessageMapper
         if (names.FirstOrDefault(name => name.StartsWith("AWS.", StringComparison.OrdinalIgnoreCase) ||
                                          name.StartsWith("Amazon.", StringComparison.OrdinalIgnoreCase)) is { } reserved)
         {
-            throw new InvalidOperationException(
+            throw new DeliveryRejectedException(
                 $"Amazon SQS reserves attribute names starting with 'AWS.' or 'Amazon.'; rename '{reserved}'. Nothing was sent.");
         }
         if (names.Count > MaximumSqsAttributes)
         {
-            throw new InvalidOperationException(
+            throw new DeliveryRejectedException(
                 $"Amazon SQS accepts at most {MaximumSqsAttributes} message attributes; this message has {names.Count} " +
                 "(application properties plus correlation ID, subject, content type, reply-to and to, which travel as attributes). " +
                 "Remove some before sending. Nothing was sent.");
