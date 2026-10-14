@@ -157,17 +157,28 @@ try {
     $primaryFailure = $_
     throw
 } finally {
-    try {
-        foreach ($process in @($parent, $sender, $helper, $helperLauncher)) {
-            if ($null -ne $process) {
+    $cleanupFailures = [Collections.Generic.List[Management.Automation.ErrorRecord]]::new()
+    function Invoke-SmokeCleanupStep([scriptblock] $Step) {
+        try { & $Step }
+        catch { $cleanupFailures.Add($_) }
+    }
+    foreach ($process in @($parent, $sender, $helper, $helperLauncher)) {
+        if ($null -ne $process) {
+            Invoke-SmokeCleanupStep {
                 if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
-                $process.Dispose()
             }
+            Invoke-SmokeCleanupStep { $process.Dispose() }
         }
+    }
+    Invoke-SmokeCleanupStep {
         # Match the exact random installation before touching any GUI process.
         Get-Process QueueLoom -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe -or $_.Path -like "$root\QueueLoom.versions\versions\*\payload\QueueLoom.exe" } | ForEach-Object {
-            if (-not $_.HasExited) { $_.Kill($true); $_.WaitForExit() }; $_.Dispose()
+            $guiProcess = $_
+            Invoke-SmokeCleanupStep { if (-not $guiProcess.HasExited) { $guiProcess.Kill($true); $guiProcess.WaitForExit() } }
+            Invoke-SmokeCleanupStep { $guiProcess.Dispose() }
         }
+    }
+    Invoke-SmokeCleanupStep {
         $resolved = [IO.Path]::GetFullPath($root)
         $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
         if (-not $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -or
@@ -180,10 +191,14 @@ try {
                 Start-Sleep -Milliseconds 100
             }
         }
-    } catch {
-        if ($null -eq $primaryFailure) { throw }
-        # A secondary teardown error must not replace the original helper/assertion failure.
-        try { Write-Warning "Smoke cleanup also failed ($($_.Exception.GetType().Name))." -WarningAction Continue } catch { }
+    }
+    if ($cleanupFailures.Count -gt 0) {
+        foreach ($failure in $cleanupFailures) {
+            try { Write-Warning "Smoke cleanup also failed ($($failure.Exception.GetType().Name))." -WarningAction Continue } catch { }
+        }
+        # Finish all teardown stages before reporting a cleanup-only failure. A pending
+        # primary helper/assertion failure keeps its original ErrorRecord and stack.
+        if ($null -eq $primaryFailure) { throw $cleanupFailures[0] }
     }
 }
 Write-Host 'PASS packaged Windows update: delayed exit, paths with spaces, confirmed GUI startup, owned-file cleanup and user-file preservation.'
