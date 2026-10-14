@@ -590,7 +590,7 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
             : throw new InvalidDataException($"Backup property '{name}' is missing or invalid.");
 
     private static T ReadEnum<T>(JsonElement root, string name) where T : struct, Enum =>
-        Enum.TryParse<T>(ReadOptionalString(root, name), ignoreCase: true, out var value)
+        Enum.TryParse<T>(ReadOptionalString(root, name), ignoreCase: true, out var value) && Enum.IsDefined(value)
             ? value
             : throw new InvalidDataException($"Backup property '{name}' is missing or invalid.");
 
