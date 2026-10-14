@@ -33,7 +33,7 @@ if (args.Length == 3 && args[0] == "--stage-version")
 if (args.Length is 4 or 5 && args[0] == "--legacy-handoff")
 {
     using var storageLock = new FileStream(args[2], FileMode.Create, FileAccess.ReadWrite, FileShare.None);
-    var helperPid = UpdateRestart.Start(new UpdateTarget(VersionInstallation.CurrentRid(), Path.GetDirectoryName(args[1])!, args[1], null));
+    var helperPid = HandoffAcknowledgementFixture.Start(new UpdateTarget(VersionInstallation.CurrentRid(), Path.GetDirectoryName(args[1])!, args[1], null));
     using var helper = System.Diagnostics.Process.GetProcessById(helperPid);
     var identity = System.Text.Json.JsonSerializer.Serialize(new
     {
@@ -234,8 +234,10 @@ if (args.Length == 3 && args[0] == "--smoke-release-reader")
     PublishMarker(args[2], "visible");
     return int.Parse(ReadPublishedFixtureText(args[1]), System.Globalization.CultureInfo.InvariantCulture);
 }
+HandoffAcknowledgementFixture.Configure(args);
 if (UpdateRestart.HandleArguments(args, out var code))
 {
+    HandoffAcknowledgementFixture.AfterHelper(args, code);
     // Fixture-only gate after the real helper has removed the receipt, before its process exits.
     // Production binaries do not read this environment variable or contain this gate.
     if (args[0] == "--update-helper" && code == 0 &&
@@ -256,6 +258,7 @@ if (UpdateRestart.HandleArguments(args, out var code))
     }
     return code;
 }
+HandoffAcknowledgementFixture.RecordGui(args);
 var root = AppContext.BaseDirectory;
 // An ordinary launch of this harmless fixture stands in for startup that needs the parent's storage lock.
 try
