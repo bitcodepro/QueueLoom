@@ -147,6 +147,23 @@ public sealed partial class WindowsUpdateSmokeTests
                         throw 'Injected diagnostics CIM failure'
                     }
                     $rows = @(CimCmdlets\Get-CimInstance -ClassName $ClassName -Filter $Filter)
+                    if ($env:QUEUELOOM_SMOKE_DISPOSE_PARENT -eq '1' -and $Filter.StartsWith('Name =') -and
+                        $env:QUEUELOOM_SMOKE_PARENT_DISPOSED -ne '1') {
+                        # Called by Get-SmokeProcesses: its caller owns these exact installation objects.
+                        $ownedParent = Get-Variable -Name parent -Scope 2 -ValueOnly -ErrorAction Stop
+                        $ownedRoot = Get-Variable -Name root -Scope 2 -ValueOnly -ErrorAction Stop
+                        if ($ownedParent -isnot [Diagnostics.Process] -or
+                            $ownedParent.StartInfo.WorkingDirectory -ne $ownedRoot -or
+                            $ownedParent.StartInfo.FileName -ne (Join-Path $ownedRoot 'QueueLoom.exe') -or
+                            $ownedParent.StartInfo.ArgumentList.Count -ne 3 -or
+                            $ownedParent.StartInfo.ArgumentList[0] -ne '--hold-lock') {
+                            throw 'Refusing to dispose an unverified fixture process observer.'
+                        }
+                        $identity = @{ Pid = $ownedParent.Id; StartTicks = $ownedParent.StartTime.ToUniversalTime().Ticks; Root = $ownedRoot }
+                        $ownedParent.Dispose() # The process keeps running; only this retained observer becomes unusable.
+                        [IO.File]::WriteAllText($env:QUEUELOOM_SMOKE_FIXTURE_GATE + '.disposed-parent.json', ($identity | ConvertTo-Json))
+                        $env:QUEUELOOM_SMOKE_PARENT_DISPOSED = '1'
+                    }
                     if ($env:QUEUELOOM_SMOKE_PAYLOAD_IDENTITY -and $Filter.StartsWith('ParentProcessId =')) {
                         $identity = [IO.File]::ReadAllText($env:QUEUELOOM_SMOKE_PAYLOAD_IDENTITY) | ConvertFrom-Json
                         foreach ($row in $rows) {
