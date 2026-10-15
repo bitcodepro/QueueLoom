@@ -11,6 +11,8 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "update process with spaces " + Guid.NewGuid().ToString("N"));
     private readonly List<Process> _processes = [];
+    // Keep the basename within Unix's 15-character process-name limit.
+    private string _candidateName = "qlt" + Guid.NewGuid().ToString("N")[..12];
     private string Fixture => Path.Combine(AppContext.BaseDirectory, "UpdateFixture", "QueueLoom.UpdateFixture" + (OperatingSystem.IsWindows() ? ".exe" : ""));
 
     public UpdateRestartProcessTests() => Directory.CreateDirectory(_root);
@@ -380,27 +382,31 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
     {
         if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows process ownership."); return; }
         var target = Installation();
-        var outsideLock = Path.Combine(_root, "outside.lock");
-        // Not registered with Start: only the installation-process cleanup may stop it.
-        var spawn = new ProcessStartInfo(target.Executable) { UseShellExecute = false, WorkingDirectory = _root };
-        foreach (var argument in new[] { "--spawn-outside", Fixture, "--hold-lock", outsideLock, "120000" }) spawn.ArgumentList.Add(argument);
-        using var parent = Process.Start(spawn)!;
-        await WaitFor(Path.Combine(_root, "spawned.pid"));
-        using var outside = Process.GetProcessById(int.Parse(File.ReadAllText(Path.Combine(_root, "spawned.pid")), System.Globalization.CultureInfo.InvariantCulture));
-        try
+        await using var outsideInstallation = new UpdateRestartProcessTests();
+        // Deliberately collide names: the real executable-path guard must reject this child.
+        var outsideTarget = outsideInstallation.Installation(_candidateName);
+        await LiveActors.Run(async actors =>
         {
-            Assert.Contains(parent.Id, OwnedIds());
-            Assert.DoesNotContain(outside.Id, OwnedIds());
-
-            await IsolatedAsync(() => Task.CompletedTask);
-
-            Assert.True(parent.HasExited);
-            Assert.False(outside.HasExited);
-        }
-        finally
-        {
-            if (!outside.HasExited) { outside.Kill(); await outside.WaitForExitAsync(); }
-        }
+            var outside = actors.Start(outsideTarget.Executable, target.Executable);
+            var inspectedOutside = false;
+            _openCandidate = (candidate, root) =>
+            {
+                if (candidate.Id == outside.Process.Id) inspectedOutside = true;
+                return OwnedProcess.Open(candidate, root);
+            };
+            try
+            {
+                Assert.Equal(Path.GetFileName(target.Executable), Path.GetFileName(outsideTarget.Executable));
+                Assert.Contains(outside.Parent!.Id, OwnedIds());
+                Assert.DoesNotContain(outside.Process.Id, OwnedIds());
+                Assert.True(inspectedOutside, "The same-basename outside child must reach the actual path guard.");
+                await IsolatedAsync(() => Task.CompletedTask);
+                await outside.Parent.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.False(outside.Process.HasExited);
+                ActorLog($"Owned parent {outside.Parent.Id} exited; same-basename outside child {outside.Process.Id} remains alive after path rejection.");
+            }
+            finally { _openCandidate = OwnedProcess.Open; }
+        });
     }
 
     // The restarted previous version publishes its PID marker under a temporary name and renames it when complete.
@@ -639,12 +645,16 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
         Directory.CreateDirectory(path + ".error");
         return null;
     }
-    private UpdateTarget Installation()
+    private UpdateTarget Installation(string? candidateName = null)
     {
+        if (candidateName is not null) _candidateName = candidateName; // Deliberate same-name negative control only.
         Assert.True(File.Exists(Fixture), "Update fixture must be built with the tests.");
         foreach (var file in Directory.EnumerateFiles(Path.GetDirectoryName(Fixture)!))
             File.Copy(file, Path.Combine(_root, Path.GetFileName(file)));
-        return AppUpdater.TargetFor(OperatingSystem.IsWindows() ? "win-x64" : "linux-x64", Path.Combine(_root, Path.GetFileName(Fixture)));
+        var executable = Path.Combine(_root, _candidateName + (OperatingSystem.IsWindows() ? ".exe" : ""));
+        // Rename only the copied apphost: its embedded assembly/deps/runtimeconfig binding stays intact.
+        File.Move(Path.Combine(_root, Path.GetFileName(Fixture)), executable);
+        return AppUpdater.TargetFor(OperatingSystem.IsWindows() ? "win-x64" : "linux-x64", executable);
     }
 
     private Process Start(string executable, params string[] arguments)
