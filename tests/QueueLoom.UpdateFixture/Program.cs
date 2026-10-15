@@ -1,6 +1,20 @@
 using QueueLoom.App.Services;
 using QueueLoom.Core.Updates;
 
+if (args.Length == 4 && args[0] == "--test-event-process")
+{
+    if (!OperatingSystem.IsWindows()) return 72;
+    using var ready = EventWaitHandle.OpenExisting(args[1]);
+    using var release = EventWaitHandle.OpenExisting(args[2]);
+    using var self = System.Diagnostics.Process.GetCurrentProcess();
+    QueueLoom.Core.IO.SafeFileWriter.WriteText(args[3], System.Text.Json.JsonSerializer.Serialize(new
+    {
+        Pid = self.Id, StartTicks = self.StartTime.ToUniversalTime().Ticks, Executable = Environment.ProcessPath
+    }), narrowGroup: false);
+    ready.Set();
+    return release.WaitOne(TimeSpan.FromSeconds(60)) ? 0 : 73;
+}
+
 if (args.Length == 3 && args[0] == "--stable-update-probe")
 {
     var target = AppUpdater.TargetFor(VersionInstallation.CurrentRid(), args[1]);
