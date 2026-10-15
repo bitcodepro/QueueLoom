@@ -60,7 +60,7 @@ public static class UpdateRestart
             start.ArgumentList.Add(argument);
         using var helper = Process.Start(start) ?? throw new IOException("The update restart helper could not start.");
         var started = Stopwatch.StartNew();
-        while (!File.Exists(path + ".helper") || File.ReadAllText(path + ".helper") != helper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        while (!HelperAcknowledged(path + ".helper", helper.Id))
         {
             if (helper.HasExited) throw new IOException("The update restart helper exited before accepting the handoff.");
             if (started.Elapsed > TimeSpan.FromSeconds(10))
@@ -72,6 +72,23 @@ public static class UpdateRestart
             Thread.Sleep(20);
         }
         return helper.Id;
+    }
+
+    internal static bool HelperAcknowledged(string path, int expectedPid)
+    {
+        try
+        {
+            // SafeFileWriter closes the writer before rename; an outstanding rename handle
+            // still needs DELETE sharing. Continue to deny a writer exposing incomplete data.
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd() == expectedPid.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (IOException error) when (error.HResult == unchecked((int)0x80070002) || // Ack not published, or removed between polls.
+            (OperatingSystem.IsWindows() && error.HResult == unchecked((int)0x80070020))) // Proven sharing violation.
+        {
+            return false;
+        }
     }
 
     /// <summary>Called before any GUI or MCP initialization.</summary>
