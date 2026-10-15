@@ -21,6 +21,8 @@ public sealed partial class UpdateRestartProcessTests
 
     /// <summary>Why the last cleanup could not prove completion; null after a cleanup that did.</summary>
     private Exception? _cleanupFailure;
+    // Test-local observation/fault seam; the default retains the real ownership/handle checks.
+    private Func<Process, string, OwnedProcess?> _openCandidate = OwnedProcess.Open;
 
     private Task<int> Own(Task<int> helper)
     {
@@ -118,11 +120,11 @@ public sealed partial class UpdateRestartProcessTests
         var owned = new List<OwnedProcess>();
         try
         {
-            foreach (var candidate in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(Fixture)))
+            foreach (var candidate in Process.GetProcessesByName(_candidateName))
             {
                 using (candidate)
                 {
-                    if (OwnedProcess.Open(candidate, root) is { } process) owned.Add(process);
+                    if (_openCandidate(candidate, root) is { } process) owned.Add(process);
                 }
             }
         }
