@@ -108,7 +108,8 @@ public sealed class AzureServiceBusSessionTests : IAsyncLifetime
 
         var dead = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(queue, ServiceBusSubQueue.DeadLetter));
         Assert.Equal(2, dead.Count);
-        var search = await _workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("1042",
+        // The term has a space: a bare number can also occur in a random Message ID.
+        var search = await _workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("order 1042",
             [new DeadLetterSearchTarget(queue, ServiceBusSubQueue.DeadLetter, 2)]));
         var match = Assert.Single(search.Matches);
 
