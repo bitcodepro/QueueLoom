@@ -102,6 +102,13 @@ public sealed partial class MessageSearchQuery
         {
             return true;
         }
+        // Packed bodies (gzip, base64, Avro…) are also searched in their decoded text, as JSON conditions are; a binary
+        // body's hex dump is display only, so its digits are not searched.
+        if (body.Length > 0 && BodyDecoder.Decode(body, contentType) is { } decoded &&
+            (decoded.IsJson || decoded.Steps is [.., "text"]) && IsTextMatch(decoded.Text, ref timedOut))
+        {
+            return true;
+        }
         return timedOut is null ? false : throw timedOut;
     }
 

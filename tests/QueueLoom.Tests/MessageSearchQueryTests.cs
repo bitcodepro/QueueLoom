@@ -55,6 +55,51 @@ public sealed class MessageSearchQueryTests
         Assert.False(query.Matches(Message(string.Empty)));
     }
 
+    // A JSON condition looked inside packed bodies while text and regular-expression search read only the raw bytes as
+    // UTF-8: a gzip or base64 dead letter about order SHIP-77 was found by $.order.id but not by typing SHIP-77.
+    [Theory]
+    [InlineData("gzip", "ship-77", true)]
+    [InlineData("gzip", "/SHIP-\\d+/", true)]
+    [InlineData("gzip", "ORD-9999", false)]
+    [InlineData("base64", "ship-77", true)]
+    [InlineData("base64", "/SHIP-\\d+/", true)]
+    [InlineData("base64", "ORD-9999", false)]
+    public void Text_search_looks_inside_packed_bodies(string packing, string query, bool expected)
+    {
+        var json = Encoding.UTF8.GetBytes("""{"order": {"id": "SHIP-77", "status": "failed"}}""");
+        byte[] raw;
+        if (packing == "gzip")
+        {
+            using var packed = new MemoryStream();
+            using (var gzip = new GZipStream(packed, CompressionLevel.Fastest, leaveOpen: true))
+            {
+                gzip.Write(json);
+            }
+            raw = packed.ToArray();
+        }
+        else
+        {
+            raw = Encoding.ASCII.GetBytes(Convert.ToBase64String(json));
+        }
+        // No other field mentions the order, so only the body can match.
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1, raw,
+            new EditableMessageProperties(MessageId: "m-1"));
+
+        Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(message));
+    }
+
+    // A binary body is decoded into a hex dump for display; searching it would match bytes written as hex digits.
+    [Fact]
+    public void Text_search_does_not_match_the_hex_dump_of_a_binary_body()
+    {
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1,
+            Convert.FromBase64String(Convert.ToBase64String([0x1f, 0x8b, 0x00, 0xde, 0xad, 0xbe, 0xef, 0x01])),
+            new EditableMessageProperties(MessageId: "m-1"));
+
+        Assert.False(MessageSearchQuery.Parse("DEAD").Matches(message));
+        Assert.False(MessageSearchQuery.Parse("/de ?ad/i").Matches(message));
+    }
+
     [Theory]
     [InlineData("/ORD-\\d{4}/", true)]
     [InlineData("/ord-\\d{4}/", false)]
