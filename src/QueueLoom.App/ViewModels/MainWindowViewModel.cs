@@ -143,7 +143,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         IDeadLetterHistoryStore? history = null,
         IScheduledResendStore? scheduledResends = null,
         DiagnosticsJournal? diagnostics = null,
-        LegacyBackupMigration? backupMigration = null)
+        LegacyBackupMigration? backupMigration = null,
+        IComposerTemplateStore? templates = null)
     {
         _profileRepository = profileRepository;
         _secretVault = secretVault;
@@ -291,6 +292,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeRouting();
         InitializeExport();
         InitializeSavedSearches();
+        InitializeComposerTemplates(templates);
         InitializeAlerts(alerts);
         InitializeHistory(history);
         InitializeScheduledResends(scheduledResends);
@@ -443,6 +445,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         {
             // Environments first: a damaged or unreadable activity journal must not leave the app without them.
             await ReloadProfilesAsync(token).ConfigureAwait(true);
+            await LoadComposerTemplatesAsync(token).ConfigureAwait(true);
             try
             {
                 await LoadActivityHistoryAsync().ConfigureAwait(true);
@@ -686,6 +689,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         PurgeTopicDeadLettersCommand.NotifyCanExecuteChanged();
         PurgeSelectedDeadLettersCommand.NotifyCanExecuteChanged();
         NewMessageCommand.NotifyCanExecuteChanged();
+        UseComposerTemplateCommand.NotifyCanExecuteChanged();
         OpenMessageAsDraftCommand.NotifyCanExecuteChanged();
         RefreshBackupsCommand.NotifyCanExecuteChanged();
         LoadSelectedBackupCommand.NotifyCanExecuteChanged();
