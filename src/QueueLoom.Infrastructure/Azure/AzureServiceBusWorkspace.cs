@@ -83,7 +83,7 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
             var isEmulator = false;
             try
             {
-                var clientOptions = CreateMessagingClientOptions();
+                var clientOptions = CreateMessagingClientOptions(profile.UseAmqpWebSockets);
                 var administrationOptions = CreateAdministrationClientOptions();
 
                 if (profile.Authentication.Kind == AuthenticationKind.ConnectionString)
@@ -98,6 +98,11 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
 
                     var parsed = ServiceBusConnectionStringProperties.Parse(connectionString);
                     isEmulator = EmulatorConnection.IsEmulator(connectionString);
+                    if (isEmulator && profile.UseAmqpWebSockets)
+                    {
+                        throw new InvalidOperationException(
+                            "The Service Bus emulator accepts AMQP over TCP only. Turn off AMQP over WebSockets for this environment.");
+                    }
                     if (!string.IsNullOrWhiteSpace(parsed.EntityPath))
                     {
                         throw new InvalidOperationException(
@@ -263,9 +268,10 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
         }
     }
 
-    internal static ServiceBusClientOptions CreateMessagingClientOptions() => new()
+    /// <param name="webSockets">AMQP over WebSockets (port 443) instead of AMQP over TCP (port 5671).</param>
+    internal static ServiceBusClientOptions CreateMessagingClientOptions(bool webSockets = false) => new()
     {
-        TransportType = ServiceBusTransportType.AmqpTcp,
+        TransportType = webSockets ? ServiceBusTransportType.AmqpWebSockets : ServiceBusTransportType.AmqpTcp,
         EnableCrossEntityTransactions = false,
         RetryOptions = new ServiceBusRetryOptions
         {

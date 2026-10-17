@@ -42,6 +42,13 @@ public static partial class ProfileValidator
         ValidateAccessMode(profile, errors);
         ValidateProvider(profile, errors);
         ValidateAuthentication(profile, errors);
+        if (profile.UseAmqpWebSockets && profile.Provider != MessagingProvider.AzureServiceBus)
+        {
+            errors.Add(new ValidationError(
+                "profile.webSockets.provider",
+                "AMQP over WebSockets is an Azure Service Bus option.",
+                nameof(profile.UseAmqpWebSockets)));
+        }
         switch (profile.Provider)
         {
             case MessagingProvider.AmazonSqsSns:

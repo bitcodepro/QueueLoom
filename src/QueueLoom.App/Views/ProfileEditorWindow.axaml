@@ -107,6 +107,13 @@
           </StackPanel>
         </Border>
 
+        <StackPanel Spacing="4" IsVisible="{Binding IsAzure}">
+          <CheckBox IsChecked="{Binding UseAmqpWebSockets}" Content="Connect over WebSockets (port 443)"
+                    AutomationProperties.Name="Connect over WebSockets" />
+          <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap" Margin="28,0,0,0"
+                     Text="For networks that block AMQP's port 5671. The local emulator needs this off." />
+        </StackPanel>
+
         <Border Classes="card" IsVisible="{Binding IsEntraId}">
           <StackPanel Spacing="12">
             <TextBlock Text="Passwordless Entra ID" FontSize="16" FontWeight="SemiBold" />
