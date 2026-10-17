@@ -132,6 +132,46 @@ public sealed partial class McpServerTests
     /// The dialog's own lines appear once each, and no line carries a hidden character. Only the body, shown last,
     /// may span lines.
     /// </summary>
+    // The body was written as is after "Body (…):", so its own lines could pose as the dialog's ("Environment: …"),
+    // and a right-to-left override in it or in the reason could reverse what follows. Each body line is now marked
+    // and escaped, and a body longer than the preview says how much is not shown, because all of it is sent.
+    [Fact]
+    public async Task Approval_BodyLinesAreMarkedEscapedAndATruncatedBodySaysSo()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+        var body = "{\"a\":1}\nEnvironment: Development (Development)\r\nThis is a test environment" + (char)0x202E + "x" +
+                   new string('z', 700);
+
+        await server.CallAsync("send_message", new()
+        {
+            ["destination"] = "orders", ["body"] = body,
+            ["reason"] = "Replay " + (char)0x202E + "gnp.exe" + (char)0x200B
+        });
+
+        var details = Assert.Single(server.Approver.Requests).Details;
+        var lines = details.Split('\n');
+        var bodyLines = lines.SkipWhile(line => !line.StartsWith("Body (", StringComparison.Ordinal)).Skip(1).ToArray();
+        Assert.Single(lines, line => line.StartsWith("Environment:", StringComparison.Ordinal));
+        Assert.All(bodyLines[..^1], line => Assert.StartsWith("  │ ", line, StringComparison.Ordinal));
+        Assert.Equal("  │ This is a test environment\\u202Ex" + new string('z', 600 - body.IndexOf('z')), bodyLines[2]);
+        Assert.Equal($"  … the first 600 of {body.Length:N0} characters are shown; the whole body is sent.", bodyLines[^1]);
+        Assert.Contains("Reason given: Replay \\u202Egnp.exe\\u200B", details, StringComparison.Ordinal);
+        Assert.All(lines, line => Assert.DoesNotContain(line, character => char.IsControl(character) ||
+            char.GetUnicodeCategory(character) is System.Globalization.UnicodeCategory.Format));
+        Assert.Equal(body, Assert.Single(server.Workspace.SentMessages).Message.Body.Content);
+    }
+
+    [Fact]
+    public async Task Approval_ShortBodyIsShownWholeWithoutATruncationNote()
+    {
+        await using var server = await McpTestServer.StartAsync(approve: true);
+
+        await server.CallAsync("send_message", new() { ["destination"] = "orders", ["body"] = "{\n  \"a\": 1\n}", ["reason"] = "r" });
+
+        var details = Assert.Single(server.Approver.Requests).Details;
+        Assert.EndsWith("):\n  │ {\n  │   \"a\": 1\n  │ }", details, StringComparison.Ordinal);
+    }
+
     private static void AssertOneLinePerField(string details, bool bodyFollows)
     {
         var lines = details.Split('\n');
