@@ -70,7 +70,8 @@ public sealed partial class BodyDecoderTests
         Assert.False(vm.DecodedIsJson);
         Assert.Contains("16 MiB", vm.DecodedNote, StringComparison.Ordinal);
         Assert.True(vm.DecodedText.Length < 400_000);
-        Assert.False(MessageSearchQuery.Parse("$.value").Matches(message));
+        // A body past the limit is not a "no": the search reports it as not checked.
+        Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse("$.value").Matches(message));
     }
 
     [Fact]

@@ -102,7 +102,28 @@ public sealed partial class MessageSearchQuery
         {
             return true;
         }
-        return timedOut is null ? false : throw timedOut;
+        // Packed bodies (gzip, base64, Avro…) are also searched in their decoded text, as JSON conditions are; a binary
+        // body's hex dump is display only, so its digits are not searched.
+        var incomplete = false;
+        if (body.Length > 0 && BodyDecoder.Decode(body, contentType) is { } decoded)
+        {
+            // Decoding stops at a limit, and what it then shows is not the body: a cut that splits a character falls
+            // back to a hex view, and a partial Avro preview adds its own closing brackets. A cut body decides nothing
+            // here, whatever its preview looks like.
+            if (!decoded.IsComplete)
+            {
+                incomplete = true;
+            }
+            else if ((decoded.IsJson || decoded.Steps is [.., "text"]) && IsTextMatch(decoded.Text, ref timedOut))
+            {
+                return true;
+            }
+        }
+        if (timedOut is not null)
+        {
+            throw timedOut;
+        }
+        return incomplete ? throw new IncompleteBodySearchException() : false;
     }
 
     private bool IsTextMatch(string? value, ref RegexMatchTimeoutException? timedOut)
@@ -133,6 +154,8 @@ public sealed partial class MessageSearchQuery
             return false;
         }
         JsonDocument? document = null;
+        // Decoding stopped at a limit (the first Avro records): a match in them is real, a miss decides nothing.
+        var partial = false;
         try
         {
             try
@@ -143,14 +166,19 @@ public sealed partial class MessageSearchQuery
             catch (JsonException)
             {
                 // Packed bodies (gzip, base64, Avro…) are searched in their decoded JSON.
-                if (BodyDecoder.Decode(body, contentType) is { IsJson: true } decoded)
+                if (BodyDecoder.Decode(body, contentType) is { } decoded)
                 {
-                    document = JsonDocument.Parse(decoded.Text);
+                    partial = !decoded.IsComplete;
+                    if (decoded.IsJson)
+                    {
+                        document = JsonDocument.Parse(decoded.Text);
+                    }
                 }
             }
             if (document is null)
             {
-                return false;
+                // A body cut while decoding is not JSON that can be checked: not a "no".
+                return partial ? throw new IncompleteBodySearchException() : false;
             }
             var root = document.RootElement;
             // An OR-group whose regular expression timed out is undecided; another group can still match.
@@ -185,7 +213,11 @@ public sealed partial class MessageSearchQuery
                     timedOut ??= groupTimedOut;
                 }
             }
-            return timedOut is null ? false : throw timedOut;
+            if (timedOut is not null)
+            {
+                throw timedOut;
+            }
+            return partial ? throw new IncompleteBodySearchException() : false;
         }
         catch (JsonException)
         {

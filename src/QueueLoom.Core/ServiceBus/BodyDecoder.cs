@@ -8,6 +8,9 @@ namespace QueueLoom.Core.ServiceBus;
 /// <summary>A message body after unpacking, with the steps that were applied ("base64", "gzip", "Avro"…).</summary>
 public sealed record DecodedBody(IReadOnlyList<string> Steps, string Text, bool IsJson, string? Note = null)
 {
+    /// <summary>False when decoding stopped at a limit: <see cref="Text"/> is then only the start of the body.</summary>
+    public bool IsComplete { get; init; } = true;
+
     public string Summary => string.Join(" → ", Steps);
 }
 
@@ -16,11 +19,17 @@ public sealed record DecodedBody(IReadOnlyList<string> Steps, string Text, bool 
 /// files (with the schema they carry) and Protobuf messages (field numbers only, since no .proto file is known).
 /// Returns null for plain text and JSON, which the body view already shows.
 /// </summary>
+/// <summary>Decoding stopped because the output would pass <see cref="BodyDecoder.MaximumDecodedBytes"/>.</summary>
+internal sealed class DecodeLimitException() : FormatException("Avro decoding exceeds the 16 MiB limit.");
+
 public static class BodyDecoder
 {
     public const int MaximumDecodedBytes = 16 * 1024 * 1024;
     private const int MaximumSteps = 5;
     private const int MaximumRecords = 1_000;
+
+    /// <summary>At most this many records of an Avro container are decoded.</summary>
+    public const int MaximumAvroRecords = MaximumRecords;
     private static readonly UTF8Encoding StrictUtf8 = new(false, throwOnInvalidBytes: true);
     private static readonly JsonWriterOptions Indented = new()
     {
@@ -60,6 +69,7 @@ public static class BodyDecoder
 
         var steps = new List<string>();
         string? note = null;
+        var complete = true;
         var current = body;
         for (var round = 0; round < MaximumSteps; round++)
         {
@@ -72,6 +82,7 @@ public static class BodyDecoder
                 {
                     steps.Add(gzip ? "gzip" : "zlib");
                     note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown." : null;
+                    complete &= !truncated;
                     current = bytes;
                     continue;
                 }
@@ -81,13 +92,13 @@ public static class BodyDecoder
 
             if (IsAvroContainer(span))
             {
-                var (json, avroNote) = AvroContainer.ToJson(span);
+                var (json, avroNote, avroTruncated) = AvroContainer.ToJson(span);
                 if (json is not null)
                 {
                     steps.Add("Avro");
-                    return new DecodedBody(steps, json, true, avroNote ?? note);
+                    return new DecodedBody(steps, json, true, avroNote ?? note) { IsComplete = complete && !avroTruncated };
                 }
-                return new DecodedBody([.. steps, "Avro"], HexDump(span), false, avroNote);
+                return new DecodedBody([.. steps, "Avro"], HexDump(span), false, avroNote) { IsComplete = complete && !avroTruncated };
             }
 
             if (TryBase64(span, out var decoded) && IsWorthDecoding(decoded))
@@ -112,7 +123,7 @@ public static class BodyDecoder
                 steps.Add($"Protobuf ({typed.Type.FullName})");
                 var named = protos.Resolve(messageType) == typed.Type;
                 return new DecodedBody(steps, typed.Json, true, note ??
-                    (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body."));
+                    (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body.")) { IsComplete = complete };
             }
             // Guessing fields without a schema is for bodies that are not text, or that say they are Protobuf. A readable
             // body whose only hint is a message type (often a "type" property that text and JSON senders set
@@ -121,7 +132,7 @@ public static class BodyDecoder
             {
                 steps.Add("Protobuf (no schema)");
                 return new DecodedBody(steps, protobuf, true,
-                    note ?? "Without the .proto file, fields are shown by number and nested messages are guessed.");
+                    note ?? "Without the .proto file, fields are shown by number and nested messages are guessed.") { IsComplete = complete };
             }
         }
         if (readable)
@@ -129,12 +140,12 @@ public static class BodyDecoder
             if (TryIndentJson(text, out var json))
             {
                 steps.Add("JSON");
-                return steps.Count > 1 ? new DecodedBody(steps, json, true, note) : null;
+                return steps.Count > 1 ? new DecodedBody(steps, json, true, note) { IsComplete = complete } : null;
             }
-            return steps.Count > 0 ? new DecodedBody([.. steps, "text"], text, false, note) : null;
+            return steps.Count > 0 ? new DecodedBody([.. steps, "text"], text, false, note) { IsComplete = complete } : null;
         }
 
-        return steps.Count > 0 ? new DecodedBody([.. steps, "binary"], HexDump(final), false, note) : null;
+        return steps.Count > 0 ? new DecodedBody([.. steps, "binary"], HexDump(final), false, note) { IsComplete = complete } : null;
     }
 
     /// <summary>
@@ -197,7 +208,7 @@ public static class BodyDecoder
                 {
                     using var document = JsonDocument.Parse(schema.Text);
                     var avro = new AvroSchema(document.RootElement);
-                    if (span.Length > MaximumDecodedBytes) throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+                    if (span.Length > MaximumDecodedBytes) throw new DecodeLimitException();
                     var reader = new AvroReader(span.ToArray(), 0);
                     using var stream = new AvroContainer.BoundedAvroOutput();
                     using (var writer = new Utf8JsonWriter(stream, Indented))
@@ -217,7 +228,8 @@ public static class BodyDecoder
                                                       or InvalidOperationException or KeyNotFoundException)
                 {
                     return new DecodedBody(["Schema Registry", "Avro"], HexDump(span), false,
-                        $"Schema id {schemaId}: the body does not match the schema ({exception.Message}).");
+                        $"Schema id {schemaId}: the body does not match the schema ({exception.Message}).")
+                    { IsComplete = exception is not DecodeLimitException };
                 }
         }
     }
@@ -593,11 +605,11 @@ public static class BodyDecoder
     internal static class AvroContainer
     {
         private const string LimitMessage = "Avro decoding exceeds the 16 MiB limit.";
-        public static (string? Json, string? Note) ToJson(ReadOnlySpan<byte> data)
+        public static (string? Json, string? Note, bool Truncated) ToJson(ReadOnlySpan<byte> data)
         {
             try
             {
-                if (data.Length > MaximumDecodedBytes) throw new InvalidDataException(LimitMessage);
+                if (data.Length > MaximumDecodedBytes) throw new DecodeLimitException();
                 var reader = new AvroReader(data.ToArray(), 4);
                 var metadata = new Dictionary<string, byte[]>(StringComparer.Ordinal);
                 for (var count = reader.ReadLong(); count != 0; count = reader.ReadLong())
@@ -615,13 +627,13 @@ public static class BodyDecoder
                 var sync = reader.ReadFixed(16);
                 if (!metadata.TryGetValue("avro.schema", out var schemaBytes))
                 {
-                    return (null, "The Avro file has no schema.");
+                    return (null, "The Avro file has no schema.", false);
                 }
 
                 var codec = metadata.TryGetValue("avro.codec", out var codecBytes) ? Encoding.UTF8.GetString(codecBytes) : "null";
                 if (codec is not ("null" or "deflate"))
                 {
-                    return (null, $"Avro data compressed with '{codec}' cannot be read here; only uncompressed and deflate are supported.");
+                    return (null, $"Avro data compressed with '{codec}' cannot be read here; only uncompressed and deflate are supported.", false);
                 }
 
                 using var schemaDocument = JsonDocument.Parse(schemaBytes);
@@ -646,7 +658,7 @@ public static class BodyDecoder
                             int read;
                             while ((read = input.Read(buffer, 0, Math.Min(buffer.Length, remainingBytes + 1))) > 0)
                             {
-                                if (read > remainingBytes) throw new InvalidDataException(LimitMessage);
+                                if (read > remainingBytes) throw new DecodeLimitException();
                                 output.Write(buffer, 0, read);
                                 remainingBytes -= read;
                             }
@@ -654,7 +666,7 @@ public static class BodyDecoder
                         }
                         else
                         {
-                            if (block.Length > remainingBytes) throw new InvalidDataException(LimitMessage);
+                            if (block.Length > remainingBytes) throw new DecodeLimitException();
                             remainingBytes -= block.Length;
                         }
 
@@ -670,7 +682,7 @@ public static class BodyDecoder
                         }
                         if (!reader.ReadFixed(16).AsSpan().SequenceEqual(sync))
                         {
-                            return (null, "The Avro file is damaged: a block does not end with the file's sync marker.");
+                            return (null, "The Avro file is damaged: a block does not end with the file's sync marker.", false);
                         }
                     }
                     writer.WriteEndArray();
@@ -682,13 +694,14 @@ public static class BodyDecoder
                     : null;
                 var note = $"{Math.Min(records, MaximumRecords):N0} record(s)" + (name is null ? string.Empty : $" of {name}") +
                            (truncated ? $"; only the first {MaximumRecords:N0} are shown" : string.Empty) + ".";
-                return (Encoding.UTF8.GetString(stream.ToArray()), note);
+                return (Encoding.UTF8.GetString(stream.ToArray()), note, truncated);
             }
             catch (Exception exception) when (exception is FormatException or JsonException or InvalidDataException
                                                   or ArgumentException or OverflowException or IndexOutOfRangeException
                                                   or InvalidOperationException or KeyNotFoundException)
             {
-                return (null, $"The Avro data could not be read: {exception.Message}");
+                // A limit reached is not damage: the body is larger than QueueLoom decodes.
+                return (null, $"The Avro data could not be read: {exception.Message}", exception is DecodeLimitException);
             }
         }
 
@@ -697,13 +710,13 @@ public static class BodyDecoder
         {
             public override void Write(ReadOnlySpan<byte> buffer)
             {
-                if (Length + buffer.Length > MaximumDecodedBytes) throw new InvalidDataException(LimitMessage);
+                if (Length + buffer.Length > MaximumDecodedBytes) throw new DecodeLimitException();
                 var bytes = buffer.ToArray();
                 base.Write(bytes, 0, bytes.Length);
             }
             public override void Write(byte[] buffer, int offset, int count)
             {
-                if (Length + count > MaximumDecodedBytes) throw new InvalidDataException(LimitMessage);
+                if (Length + count > MaximumDecodedBytes) throw new DecodeLimitException();
                 base.Write(buffer, offset, count);
             }
         }
@@ -797,7 +810,7 @@ public static class BodyDecoder
         private static void CheckOutputBudget(Utf8JsonWriter writer)
         {
             if (writer.BytesCommitted + writer.BytesPending > MaximumDecodedBytes)
-                throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+                throw new DecodeLimitException();
         }
 
         private void WriteValue(Utf8JsonWriter writer, JsonElement schema, AvroReader reader, string? enclosingNamespace)
@@ -855,7 +868,7 @@ public static class BodyDecoder
                     return;
                 case "fixed":
                     var fixedSize = schema.GetProperty("size").GetInt32();
-                    if (fixedSize > RemainingJsonBytes(writer) / 2) throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+                    if (fixedSize > RemainingJsonBytes(writer) / 2) throw new DecodeLimitException();
                     writer.WriteStringValue(EncodeBoundedText(writer, Convert.ToHexString(reader.ReadFixed(fixedSize))));
                     return;
                 default:
@@ -885,7 +898,7 @@ public static class BodyDecoder
                     return;
                 case "bytes":
                     var bytes = reader.ReadBytes();
-                    if ((bytes.LongLength + 2) / 3 * 4 > RemainingJsonBytes(writer)) throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+                    if ((bytes.LongLength + 2) / 3 * 4 > RemainingJsonBytes(writer)) throw new DecodeLimitException();
                     writer.WriteStringValue(EncodeBoundedText(writer, Convert.ToBase64String(bytes)));
                     return;
                 case "string":
@@ -914,10 +927,10 @@ public static class BodyDecoder
             {
                 bytes += rune.Value is '"' or '\\' or '\b' or '\f' or '\n' or '\r' or '\t' ? 2 :
                     encoder.WillEncode(rune.Value) ? rune.Value > 0xffff ? 12 : 6 : rune.Utf8SequenceLength;
-                if (bytes > remaining) throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+                if (bytes > remaining) throw new DecodeLimitException();
             }
             var encoded = JsonEncodedText.Encode(text, encoder);
-            if (encoded.EncodedUtf8Bytes.Length > remaining) throw new InvalidDataException("Avro decoding exceeds the 16 MiB limit.");
+            if (encoded.EncodedUtf8Bytes.Length > remaining) throw new DecodeLimitException();
             return encoded;
         }
 

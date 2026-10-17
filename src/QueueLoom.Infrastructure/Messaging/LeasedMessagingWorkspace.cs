@@ -205,6 +205,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 var scanned = received.Messages;
                 var matches = new List<BrowsedMessage>();
                 var undecided = 0;
+                var incomplete = 0;
                 foreach (var message in scanned)
                 {
                     // Outside the "enqueued within" window: never a match, so it cannot use up the result cap.
@@ -221,6 +222,11 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                     {
                         // Not a "no": the source is reported as incomplete, and the scan goes on.
                         undecided++;
+                        continue;
+                    }
+                    catch (IncompleteBodySearchException)
+                    {
+                        incomplete++;
                         continue;
                     }
                     if (!isMatch)
@@ -244,7 +250,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                     // SQS FIFO hands out no more of a group while the scan holds some of it: the rest stays unseen.
                     ScanLimitReached: received.LimitReached ||
                                       (channel.ReadsOneBatchPerMessageGroup && held.Count > 0),
-                    Error: DeadLetterSearchSourceResult.RegexTimeoutError(undecided)));
+                    Error: DeadLetterSearchSourceResult.UndecidedError(undecided, incomplete)));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
