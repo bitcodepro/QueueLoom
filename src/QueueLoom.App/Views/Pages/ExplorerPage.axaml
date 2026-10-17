@@ -13,7 +13,7 @@
                  AutomationProperties.Name="Selected entity delivery note" />
     </StackPanel>
 
-    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
+    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
       <TextBox Grid.Column="0" MinWidth="150" Text="{Binding SearchText}" Classes="search"
                PlaceholderText="Filter entities…  (Ctrl+F)" AutomationProperties.Name="Filter entities">
         <TextBox.InnerLeftContent>
@@ -32,6 +32,9 @@
       <Button Grid.Column="10" Content="Rules…" Classes="quiet" Command="{Binding OpenTopicRoutingCommand}"
               IsVisible="{Binding SupportsRouting}"
               ToolTip.Tip="See which messages each subscription of the selected topic receives, check where a message would go, and change the rules" />
+      <Button Grid.Column="14" Content="Redrive DLQ…" Classes="quiet" Command="{Binding RedriveSelectedDeadLettersCommand}"
+              IsVisible="{Binding SupportsNativeRedrive}"
+              ToolTip.Tip="Amazon SQS: AWS moves every message of the selected queue's dead-letter queue back to the queue it came from" />
       <DropDownButton Grid.Column="12" Content="Manage" IsVisible="{Binding CanManageQueues}"
                       ToolTip.Tip="{Binding ManageQueuesHint}" AutomationProperties.Name="Manage queues">
         <DropDownButton.Flyout>

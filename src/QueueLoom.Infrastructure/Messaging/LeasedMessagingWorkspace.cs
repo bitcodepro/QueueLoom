@@ -412,6 +412,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             backupSession.RootDirectory) { Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray() };
     }
 
+    public virtual bool SupportsNativeRedrive => false;
+
+    public virtual Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
+
+    public virtual Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
+
     public virtual QueueManagementCapabilities? QueueManagement => null;
 
     public virtual Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
@@ -620,6 +628,13 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         }
         catch (Exception error) { _disposalCompletion.TrySetException(error); }
     }
+
+    /// <summary>
+    /// Reads the topology again inside an operation that already holds the operation lease (the public
+    /// <see cref="GetTopologyAsync"/> would wait for that lease itself).
+    /// </summary>
+    protected Task<ServiceBusTopology> RefreshTopologyInOperationAsync(CancellationToken cancellationToken) =>
+        GetTopologyCoreAsync(true, cancellationToken);
 
     protected ServiceBusProfile GetConnectedProfile() =>
         _profile ?? throw new InvalidOperationException("Connect to an environment first.");

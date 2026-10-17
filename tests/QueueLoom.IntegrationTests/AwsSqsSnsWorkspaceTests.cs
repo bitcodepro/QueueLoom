@@ -358,6 +358,39 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
         throw new InvalidOperationException("The message was not moved to the dead-letter queue.");
     }
 
+    // StartMessageMoveTask: AWS moves the whole dead-letter queue back, each message to the queue it came from, also to
+    // a queue that no longer uses it (which is why the confirmation says so).
+    [EmulatorFact(Emulators.LocalStack)]
+    public async Task A_redrive_moves_a_shared_dead_letter_queue_back_to_each_messages_source()
+    {
+        await DeadLetterAsync(_orders, "order 7 failed");
+        await DeadLetterAsync(_payments, "payment 8 failed");
+        // Payments then moves to another dead-letter queue: it no longer uses this one, but its message is still in it.
+        var otherDeadLetters = await CreateQueueAsync(Emulators.Unique("payments-dlq"));
+        await _sqs.SetQueueAttributesAsync((await _sqs.GetQueueUrlAsync(_payments)).QueueUrl, new Dictionary<string, string>
+        {
+            ["RedrivePolicy"] = $$"""{"deadLetterTargetArn":"{{otherDeadLetters}}","maxReceiveCount":"1"}"""
+        });
+
+        var plan = await _workspace.PlanNativeRedriveAsync(ServiceBusEntityReference.Queue(_orders));
+        Assert.Equal(_deadLetters, plan.DeadLetterQueue);
+        Assert.Equal([_orders], plan.SourceQueues);
+        Assert.NotEmpty(await _workspace.StartNativeRedriveAsync(plan));
+
+        async Task<string?> ReceiveFrom(string queue)
+        {
+            var url = (await _sqs.GetQueueUrlAsync(queue)).QueueUrl;
+            for (var attempt = 0; attempt < 30; attempt++)
+            {
+                var received = await _sqs.ReceiveMessageAsync(new ReceiveMessageRequest { QueueUrl = url, WaitTimeSeconds = 1 });
+                if (received.Messages is { Count: > 0 } messages) return messages[0].Body;
+            }
+            return null;
+        }
+        Assert.Equal("order 7 failed", await ReceiveFrom(_orders));
+        Assert.Equal("payment 8 failed", await ReceiveFrom(_payments));
+    }
+
     [EmulatorFact(Emulators.LocalStack)]
     public async Task Queues_are_created_with_a_dead_letter_queue_changed_and_deleted()
     {

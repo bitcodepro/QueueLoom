@@ -63,6 +63,17 @@ public interface IServiceBusWorkspace : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Only Azure Service Bus has scheduled and deferred messages.");
 
+    /// <summary>Amazon SQS: the service can move a whole dead-letter queue back to its source queues itself.</summary>
+    bool SupportsNativeRedrive => false;
+
+    /// <summary>What a redrive of <paramref name="source"/>'s dead-letter queue would move, for the confirmation.</summary>
+    Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
+
+    /// <summary>Starts the confirmed redrive in the service; returns the service's task handle.</summary>
+    Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
+
     /// <summary>What queue management this service offers; null when it offers none.</summary>
     QueueManagementCapabilities? QueueManagement => null;
 
