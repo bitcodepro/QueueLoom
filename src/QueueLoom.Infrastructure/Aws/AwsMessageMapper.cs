@@ -214,6 +214,27 @@ internal static class AwsMessageMapper
     }
 
     /// <summary>
+    /// SNS raw delivery passes the attributes to SQS as message attributes, so the SQS limit of 10 applies to them. SNS
+    /// accepts such a publish and then fails that delivery: refused before sending, so a move keeps its original.
+    /// The envelope (non-raw) delivery carries the attributes inside the body, where the limit does not apply.
+    /// </summary>
+    internal static void EnsureRawSqsDeliveryAccepts(int attributeCount, AwsTopicInfo topic)
+    {
+        if (attributeCount <= MaximumSqsAttributes)
+        {
+            return;
+        }
+        if (topic.Subscriptions.FirstOrDefault(subscription =>
+                subscription.RawMessageDelivery && string.Equals(subscription.Protocol, "sqs", StringComparison.Ordinal)) is { } raw)
+        {
+            throw new DeliveryRejectedException(
+                $"Topic '{topic.Name}' delivers raw messages to Amazon SQS subscription '{raw.Name}', which accepts at most " +
+                $"{MaximumSqsAttributes} message attributes; this message has {attributeCount} (application properties plus " +
+                "correlation ID, subject, content type, reply-to and to). Remove some before sending. Nothing was sent.");
+        }
+    }
+
+    /// <summary>
     /// FIFO MessageGroupId and MessageDeduplicationId: at most 128 characters of letters, digits and ASCII punctuation.
     /// </summary>
     public static void EnsureFifoIdentifiers(string groupId, string deduplicationId)

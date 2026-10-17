@@ -31,6 +31,41 @@ public sealed class AwsPreflightRejectionTests
         Assert.Contains("Nothing was sent", Assert.IsType<DeliveryRejectedException>(error).Message, StringComparison.Ordinal);
     }
 
+    // SNS raw delivery hands the attributes to SQS as message attributes, and SQS takes at most 10: SNS accepts the
+    // publish and then fails that delivery, so a move would delete an original no raw SQS subscriber received.
+    [Theory]
+    [InlineData("sqs", true, 11, true)]
+    [InlineData("sqs", true, 10, false)]
+    [InlineData("sqs", false, 11, false)]
+    [InlineData("https", true, 11, false)]
+    [InlineData("lambda", false, 11, false)]
+    public async Task TopicsWithRawSqsSubscribersRefuseMoreThanTenAttributes(string protocol, bool raw, int attributes, bool refused)
+    {
+        await using var fixture = new AwsFixture(new AwsSubscriptionInfo(
+            "arn:aws:sns:us-east-1:0:events:sub", protocol, protocol == "sqs" ? "arn:aws:sqs:us-east-1:0:billing" : "https://hooks.example/x", null)
+        {
+            RawMessageDelivery = raw
+        });
+        // The subject travels as an attribute too, so 'attributes' counts it.
+        var draft = new MessageDraft(new EditableMessageBody("body", MessageBodyFormat.Text), new EditableMessageProperties(Subject: "orders"),
+            Enumerable.Range(0, attributes - 1).Select(index => new MessageApplicationProperty($"p{index}", ApplicationPropertyType.String, "v")));
+
+        var error = await Record.ExceptionAsync(() => fixture.Send(topic: true, draft));
+
+        if (refused)
+        {
+            var rejected = Assert.IsType<DeliveryRejectedException>(error);
+            Assert.Contains("sqs:billing", rejected.Message, StringComparison.Ordinal);
+            Assert.Contains("Nothing was sent", rejected.Message, StringComparison.Ordinal);
+            Assert.Empty(fixture.Sns.Sends);
+        }
+        else
+        {
+            Assert.Null(error);
+            Assert.Equal(attributes, Assert.Single(fixture.Sns.Sends).MessageAttributes.Count);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -131,14 +166,14 @@ public sealed class AwsPreflightRejectionTests
         private readonly AwsSqsSnsWorkspace _workspace = new(new DeepAuditCloudTests.EmptyVault());
         public ProviderLimitRegressionTests.SendSqs Sqs { get; } = new();
         public ProviderLimitRegressionTests.SendSns Sns { get; } = new();
-        public AwsFixture()
+        public AwsFixture(params AwsSubscriptionInfo[] topicSubscriptions)
         {
             void Set(string name, object value) => typeof(AwsSqsSnsWorkspace).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(_workspace, value);
             Set("_sqs", Sqs);
             Set("_sns", Sns);
             Set("_index", new AwsTopologyIndex(
                 [AwsQueueInfo.From("https://isolated.invalid/orders", new Dictionary<string, string> { ["QueueArn"] = "arn:aws:sqs:us-east-1:0:orders" })],
-                [AwsTopicInfo.From("arn:aws:sns:us-east-1:0:events", [])]));
+                [AwsTopicInfo.From("arn:aws:sns:us-east-1:0:events", topicSubscriptions)]));
         }
         public Task Send(bool topic, MessageDraft draft) => (Task)typeof(AwsSqsSnsWorkspace)
             .GetMethod("SendCoreAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(_workspace,
