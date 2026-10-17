@@ -36,6 +36,15 @@ public sealed class VersionInstallation
     private readonly string? _bundle;
     private readonly string _storeBoundary;
 
+    /// <summary>
+    /// At most this many bytes are unpacked from a payload archive, counted as they are written: a small archive that
+    /// unpacks to gigabytes is refused before it fills the disk. The application is far smaller.
+    /// </summary>
+    internal long MaximumExtractedBytes { get; init; } = 4L * 1024 * 1024 * 1024;
+
+    /// <summary>At most this many archive entries: the manifest allows 10,000 files, plus their folders.</summary>
+    internal int MaximumArchiveEntries { get; init; } = 30_000;
+
     public VersionInstallation(string launcher, Action<string>? checkpoint = null)
     {
         Launcher = Path.GetFullPath(launcher);
@@ -510,7 +519,11 @@ public sealed class VersionInstallation
     private void Extract(string archive, string destination)
     {
         using var zip = ZipFile.OpenRead(archive);
+        if (zip.Entries.Count > MaximumArchiveEntries)
+            throw new InvalidDataException($"The payload archive has more than {MaximumArchiveEntries:N0} entries.");
         var names = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        var remaining = MaximumExtractedBytes;
+        var buffer = new byte[81920];
         foreach (var entry in zip.Entries)
         {
             var name = entry.FullName.TrimEnd('/');
@@ -523,7 +536,17 @@ public sealed class VersionInstallation
             CreateDirectory(Path.GetDirectoryName(path)!);
             using (var input = entry.Open())
             using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            { input.CopyTo(output); output.Flush(flushToDisk: true); }
+            {
+                // Counted as written: the sizes an entry declares are not trusted.
+                int read;
+                while ((read = input.Read(buffer)) > 0)
+                {
+                    if ((remaining -= read) < 0)
+                        throw new InvalidDataException($"The payload archive unpacks to more than {MaximumExtractedBytes:N0} bytes.");
+                    output.Write(buffer, 0, read);
+                }
+                output.Flush(flushToDisk: true);
+            }
         }
         // Permissions are part of the pinned manifest, not inferred from the ZIP's optional host attributes.
         var manifest = ReadJson<PayloadManifest>(Path.Combine(destination, "manifest.json"), _checkpoint);

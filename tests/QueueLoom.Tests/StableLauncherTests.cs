@@ -127,6 +127,43 @@ public sealed class StableLauncherTests
         Assert.Equal(fixture.Initial.Id, new VersionInstallation(fixture.Launcher).SelectForLaunch().Version.Id);
     }
 
+    // Entries were copied with no limit on their size or number before the manifest was checked: a small archive that
+    // unpacks to gigabytes filled the disk under the store. Copying stops at the limit, counting the bytes written.
+    [Theory]
+    [InlineData("size")]
+    [InlineData("entries")]
+    public void AnArchiveThatUnpacksBeyondTheLimitsIsRefusedBeforeItFillsTheDisk(string limit)
+    {
+        if (OperatingSystem.IsMacOS()) return; // The macOS bundle copies a folder; there is no archive.
+        using var fixture = new InstallationFixture();
+        var package = fixture.Package("oversized");
+        var archive = Path.Combine(package.Path, VersionInstallation.ArchiveName);
+        using (var zip = ZipFile.Open(archive, ZipArchiveMode.Update))
+        {
+            if (limit == "size")
+            {
+                using var bomb = zip.CreateEntry("payload/bomb.bin", CompressionLevel.SmallestSize).Open();
+                bomb.Write(new byte[3 * 1024 * 1024]);
+            }
+            else
+            {
+                for (var index = 0; index < 50; index++) zip.CreateEntry($"payload/extra-{index}.txt");
+            }
+        }
+        string Digest() { using var stream = File.OpenRead(archive); return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant(); }
+        File.WriteAllText(InstallationFixture.DescriptorFile(package.Path), JsonSerializer.Serialize(package.Descriptor with { ArchiveSha256 = Digest() }));
+        var installation = new VersionInstallation(fixture.Launcher)
+        {
+            MaximumExtractedBytes = limit == "size" ? 2 * 1024 * 1024 : long.MaxValue,
+            MaximumArchiveEntries = limit == "entries" ? 40 : int.MaxValue
+        };
+
+        var error = Assert.Throws<InvalidDataException>(() => installation.StagePackage(package.Path));
+
+        Assert.Contains(limit == "size" ? "unpacks to more than" : "more than", error.Message, StringComparison.Ordinal);
+        Assert.Equal(fixture.Initial.Id, installation.SelectForLaunch().Version.Id);
+    }
+
     [Fact]
     public void PackagePathsAndProtocolAreValidatedBeforeActivation()
     {
