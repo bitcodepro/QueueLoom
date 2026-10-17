@@ -41,10 +41,14 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
     private string _error = string.Empty;
     public int EmulatorManagementPort { get; set; } = 5300;
 
+    /// <summary>Azure Service Bus: AMQP over WebSockets on port 443, for networks that block port 5671.</summary>
+    public bool UseAmqpWebSockets { get; set; }
+
     public ProfileEditorViewModel(ServiceBusProfile? existing)
     {
         _existing = existing;
         EmulatorManagementPort = existing?.EmulatorManagementPort ?? 5300;
+        UseAmqpWebSockets = existing?.UseAmqpWebSockets ?? false;
         _name = existing?.Name ?? string.Empty;
         _environment = existing?.Environment ?? EnvironmentKind.Development;
         _customEnvironmentName = existing?.CustomEnvironmentName ?? string.Empty;
@@ -535,6 +539,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
             Environment == EnvironmentKind.Production ? ProfileAccessMode.ReadOnly : AccessMode)
         {
             EmulatorManagementPort = EmulatorManagementPort,
+            UseAmqpWebSockets = Provider == MessagingProvider.AzureServiceBus && UseAmqpWebSockets,
             Provider = Provider,
             AllowQueueManagement = AllowQueueManagement
         };

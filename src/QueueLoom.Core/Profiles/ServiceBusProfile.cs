@@ -14,6 +14,13 @@ public sealed record ServiceBusProfile(
     ProfileAccessMode AccessMode = ProfileAccessMode.ReadOnly)
 {
     public int EmulatorManagementPort { get; init; } = 5300;
+
+    /// <summary>
+    /// Azure Service Bus only: AMQP over WebSockets on port 443, for networks that block AMQP's port 5671. Left out of
+    /// the saved JSON when off, so environments saved before it existed keep the same settings hash.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseAmqpWebSockets { get; init; }
     /// <summary>Changes when an environment is edited, including credentials held separately in the vault.</summary>
     public Guid ConfigurationRevision { get; init; }
 
