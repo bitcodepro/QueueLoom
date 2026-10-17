@@ -1,4 +1,5 @@
 using System.Globalization;
+using QueueLoom.Core;
 using System.Text;
 
 namespace QueueLoom.Mcp;
@@ -39,5 +40,21 @@ internal static class ApprovalText
             text.Append(escape);
         }
         return text?.ToString() ?? value;
+    }
+
+    /// <summary>
+    /// A multi-line value (a message body) shown after its heading: each of its lines is escaped like
+    /// <see cref="OneLine"/> and marked, so none can pose as a line of the dialog. A value longer than
+    /// <paramref name="maximumCharacters"/> is cut, with a last line saying how much is shown, because all of it is sent.
+    /// </summary>
+    public static string Block(string value, int maximumCharacters)
+    {
+        var shown = value.Length > maximumCharacters ? TextLimits.Head(value, maximumCharacters) : value;
+        var lines = shown.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n', '\r', '\u0085', '\u2028', '\u2029');
+        var block = string.Join("\n", lines.Select(line => "  │ " + OneLine(line)));
+        return shown.Length == value.Length
+            ? block
+            : block + $"\n  … the first {shown.Length.ToString("N0", CultureInfo.InvariantCulture)} of " +
+              $"{value.Length.ToString("N0", CultureInfo.InvariantCulture)} characters are shown; the whole body is sent.";
     }
 }
