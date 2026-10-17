@@ -304,7 +304,7 @@ public sealed partial class MainWindowViewModel
     private async Task LoadActivityHistoryAsync()
     {
         if (_activityLoaded || _activityJournal is null) return;
-        await _activityViewGate.WaitAsync(CancellationToken.None).ConfigureAwait(true);
+        await EnterActivityViewAsync().ConfigureAwait(true);
         try
         {
             if (_activityLoaded) return;
