@@ -70,6 +70,8 @@
           <Button Content="Restore filtered backups…" Command="{Binding RestoreFilteredBackupsCommand}" Classes="primary" />
           <Button Content="Replay loaded messages…" Command="{Binding ReplayLoadedMessagesCommand}" Classes="quiet" />
           <Button Content="Resume latest batch…" Command="{Binding ResumeReplayCommand}" Classes="quiet" />
+          <Button Content="Replay an export…" Command="{Binding ReplayExportFileCommand}" Classes="quiet"
+                  ToolTip.Tip="Send the messages of a JSON export (Messages → Export) to this destination, at most 1,000 and 32 MiB" />
         </WrapPanel>
       </StackPanel>
     </Expander>
