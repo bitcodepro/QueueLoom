@@ -41,7 +41,7 @@ public sealed class ImprovementUiTests
         Confirm(clearDialog); await clearing;
         Assert.Equal(newer, Assert.Single(fixture.ViewModel.Activity));
         Assert.Single(fixture.OperationStore.List());
-        fixture.ViewModel.RestoreActivityViewCommand.Execute(null);
+        await fixture.ViewModel.RestoreActivityViewCommand.ExecuteAsync();
         Assert.True(fixture.ViewModel.Activity.Count > 1);
         Assert.Single(fixture.OperationStore.List());
         Assert.Empty(BindingErrors.Instance.Messages);

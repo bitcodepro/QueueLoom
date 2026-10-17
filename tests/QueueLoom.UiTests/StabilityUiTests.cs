@@ -69,7 +69,7 @@ public sealed class StabilityUiTests
                 Equals(button.Content, ((ConfirmDialogViewModel)review.DataContext!).ConfirmLabel)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await clearing;
             Assert.Empty(fixture.ViewModel.Activity);
-            fixture.ViewModel.RestoreActivityViewCommand.Execute(null);
+            await fixture.ViewModel.RestoreActivityViewCommand.ExecuteAsync();
             Assert.Equal(before.Length, fixture.ViewModel.Activity.Count);
             Assert.Equal(plan, Assert.Single(fixture.OperationStore.List()));
             Assert.Equal("Pending", Assert.Single(fixture.OperationStore.ReadHistory(plan).Items).State);
