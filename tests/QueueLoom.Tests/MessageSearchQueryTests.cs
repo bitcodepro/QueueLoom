@@ -95,7 +95,7 @@ public sealed class MessageSearchQueryTests
     [InlineData("/!\\z/", null)]
     [InlineData("SHIP-77", null)]
     [InlineData("/SHIP-77/", null)]
-    [InlineData("!!!!", true)]
+    [InlineData("!!!!", null)]
     [InlineData("$.order == 'x'", null)]
     public void A_body_cut_while_decoding_decides_only_what_its_start_proves(string query, bool? expected)
     {
@@ -116,6 +116,67 @@ public sealed class MessageSearchQueryTests
         {
             Assert.Throws<IncompleteBodySearchException>(() => search.Matches(message));
         }
+    }
+
+    // What a cut body's preview shows is not the body: the cut can split a character (the preview falls back to a hex
+    // view), an Avro record can pass the output budget (decoding fails), and a partial Avro preview adds its own closing
+    // brackets. Each of these left the search with a definite answer; each is now undecided.
+    [Theory]
+    [InlineData("split-character", "/SHIP-77\\z/")]
+    [InlineData("split-character", "SHIP-77")]
+    [InlineData("avro-budget", "$[0]")]
+    [InlineData("avro-budget", "x")]
+    [InlineData("avro-records", "0")]
+    [InlineData("avro-records", "$[1000] == 1")]
+    public void A_cut_body_is_undecided_whatever_its_preview_looks_like(string shape, string query)
+    {
+        static byte[] ZigZag(long value)
+        {
+            var zigzag = (ulong)((value << 1) ^ (value >> 63));
+            var bytes = new List<byte>();
+            do { var next = (byte)(zigzag & 0x7F); zigzag >>= 7; bytes.Add(zigzag == 0 ? next : (byte)(next | 0x80)); }
+            while (zigzag != 0);
+            return bytes.ToArray();
+        }
+        byte[] body;
+        if (shape == "split-character")
+        {
+            using var packed = new MemoryStream();
+            using (var gzip = new GZipStream(packed, CompressionLevel.Fastest, leaveOpen: true))
+            {
+                gzip.Write(Encoding.UTF8.GetBytes(new string('!', BodyDecoder.MaximumDecodedBytes - 1) + "€SHIP-77"));
+            }
+            body = packed.ToArray();
+        }
+        else if (shape == "avro-budget")
+        {
+            // 3 MiB of U+0000 is 18 MiB once escaped as JSON.
+            var text = new byte[3 * 1024 * 1024];
+            body = BodyDecoderTests.AvroFile("\"string\"", "deflate", 1, [.. ZigZag(text.Length), .. text]);
+        }
+        else
+        {
+            // 1,000 zeros and then a 1: the preview stops at the zeros and closes the array itself.
+            body = BodyDecoderTests.AvroFile("\"long\"", "null", BodyDecoder.MaximumAvroRecords + 1,
+                [.. Enumerable.Repeat((byte)0, BodyDecoder.MaximumAvroRecords), .. ZigZag(1)]);
+        }
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1, body,
+            new EditableMessageProperties(MessageId: "m-1"));
+
+        Assert.False(BodyDecoder.Decode(body)!.IsComplete);
+        Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse(query).Matches(message));
+    }
+
+    // The records a partial Avro preview does contain are real: a JSON condition they satisfy is a real match.
+    [Fact]
+    public void A_json_condition_met_by_a_decoded_avro_record_matches_although_later_records_were_not_read()
+    {
+        var body = BodyDecoderTests.AvroFile("\"long\"", "null", BodyDecoder.MaximumAvroRecords + 1,
+            [.. Enumerable.Repeat((byte)0, BodyDecoder.MaximumAvroRecords), 2]);
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1, body,
+            new EditableMessageProperties(MessageId: "m-1"));
+
+        Assert.True(MessageSearchQuery.Parse("$[0] == 0").Matches(message));
     }
 
     [Fact]

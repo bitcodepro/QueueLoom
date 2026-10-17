@@ -105,16 +105,19 @@ public sealed partial class MessageSearchQuery
         // Packed bodies (gzip, base64, Avro…) are also searched in their decoded text, as JSON conditions are; a binary
         // body's hex dump is display only, so its digits are not searched.
         var incomplete = false;
-        if (body.Length > 0 && BodyDecoder.Decode(body, contentType) is { } decoded &&
-            (decoded.IsJson || decoded.Steps is [.., "text"]))
+        if (body.Length > 0 && BodyDecoder.Decode(body, contentType) is { } decoded)
         {
-            // Decoding stops at a limit. The start of the body still proves that a literal text occurs in it; a regular
-            // expression can depend on what follows (an end anchor, a lookahead), so on a cut text it decides nothing.
-            if ((decoded.IsComplete || _regex is null) && IsTextMatch(decoded.Text, ref timedOut))
+            // Decoding stops at a limit, and what it then shows is not the body: a cut that splits a character falls
+            // back to a hex view, and a partial Avro preview adds its own closing brackets. A cut body decides nothing
+            // here, whatever its preview looks like.
+            if (!decoded.IsComplete)
+            {
+                incomplete = true;
+            }
+            else if ((decoded.IsJson || decoded.Steps is [.., "text"]) && IsTextMatch(decoded.Text, ref timedOut))
             {
                 return true;
             }
-            incomplete = !decoded.IsComplete;
         }
         if (timedOut is not null)
         {
