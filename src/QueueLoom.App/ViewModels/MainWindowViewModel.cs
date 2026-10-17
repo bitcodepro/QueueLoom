@@ -445,7 +445,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             await ReloadProfilesAsync(token).ConfigureAwait(true);
             try
             {
-                LoadActivityHistory();
+                await LoadActivityHistoryAsync().ConfigureAwait(true);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
