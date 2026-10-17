@@ -165,7 +165,8 @@ public sealed class AwsSqsSnsWorkspaceTests : IAsyncLifetime
         var targets = DeadLetterSearchTargets.ForTopology(topology)
             .Where(target => target.Source.Name == _orders || target.Source.Name == _payments);
 
-        var result = await _workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("1042", targets));
+        // The term has a space: a bare number can also occur in a random message ID.
+        var result = await _workspace.SearchDeadLettersAsync(new DeadLetterSearchRequest("order 1042", targets));
 
         Assert.True(result.IsComplete);
         Assert.Equal(2, result.MatchCount);
