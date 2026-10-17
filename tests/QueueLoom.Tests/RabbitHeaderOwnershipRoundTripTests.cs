@@ -67,4 +67,54 @@ public sealed class RabbitHeaderOwnershipRoundTripTests
         }
         Assert.Equal("body"u8.ToArray(), draft.Body.GetBytes());
     }
+
+    // An export replayed through MessageImport kept every property, so the broker's delivery counters of a quorum
+    // queue went out as ordinary headers. The export now says which headers the broker owns; same-name headers of a
+    // classic queue are a producer's and stay, with their types. An older export says nothing, so nothing is dropped.
+    [Theory]
+    [InlineData(false, "4.2.0", false)]
+    [InlineData(false, "4.3.0", false)]
+    [InlineData(true, "4.2.0", false)]
+    [InlineData(true, "4.3.0", false)]
+    [InlineData(true, "4.3.0", true)]
+    public async Task AnExportReplayRemovesOnlyEstablishedBrokerHeaders(bool quorum, string version, bool olderExport)
+    {
+        var owned = RabbitMqWorkspace.BrokerOwnedHeaders(quorum, Version.Parse(version));
+        var headers = new Dictionary<string, object?>
+        {
+            ["tenant"] = "acme"u8.ToArray(),
+            ["x-delivery-counter"] = (short)7,
+            ["x-delivery-count"] = 3L,
+            ["x-acquired-count"] = 4L
+        };
+        var message = RabbitMqMessageMapper.FromAmqp("body"u8.ToArray(),
+            new BasicProperties { MessageId = "ownership", Headers = headers }, "orders",
+            ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, owned);
+        using var file = new MemoryStream();
+        await MessageExport.WriteJsonAsync(file, [new ExportedMessage("Rabbit", message)], default);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(file.ToArray())!;
+        if (olderExport)
+        {
+            json[0]!.AsObject().Remove("brokerOwnedHeaders");
+            json[0]!["exportVersion"] = 2;
+        }
+
+        var imported = Assert.Single(await MessageImport.ReadAsync(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json.ToJsonString()))));
+        var outgoing = RabbitMqMessageMapper.ToAmqp(imported.Draft).Headers!;
+
+        var expected = olderExport
+            ? headers
+            : headers.Where(pair => !owned.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value);
+        Assert.Equal(expected.Keys.Order(StringComparer.Ordinal), outgoing.Keys.Order(StringComparer.Ordinal));
+        foreach (var (name, value) in expected)
+        {
+            Assert.Equal(RabbitMqMessageMapper.ToTyped(value).ToJsonString(), RabbitMqMessageMapper.ToTyped(outgoing[name]).ToJsonString());
+        }
+        // The same as a copy of the loaded message, for an export that carries the evidence.
+        if (!olderExport)
+        {
+            Assert.Equal(RabbitMqMessageMapper.ToAmqp(message.CreateDraft()).Headers!.Keys.Order(StringComparer.Ordinal),
+                outgoing.Keys.Order(StringComparer.Ordinal));
+        }
+    }
 }

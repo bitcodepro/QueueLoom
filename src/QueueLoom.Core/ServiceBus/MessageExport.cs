@@ -142,6 +142,15 @@ public static class MessageExport
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            // 3: the headers the broker owns (RabbitMQ delivery counters), as the reader established them, so a message
+            // sent again from the export leaves them out as a copy of the loaded message does. Same-name headers a
+            // producer set stay ordinary properties.
+            writer.WriteStartArray("brokerOwnedHeaders");
+            foreach (var name in message.BrokerOwnedHeaders.Order(StringComparer.Ordinal))
+            {
+                writer.WriteStringValue(name);
+            }
+            writer.WriteEndArray();
             if (message.KafkaEnvelope is { } kafka)
             {
                 // The record as Kafka holds it: a binary key, a tombstone, and headers (repeated, binary or null).
@@ -260,7 +269,7 @@ public static class MessageExport
     }
 
     /// <summary>The JSON export's format version, written on every message.</summary>
-    public const int ExportVersion = 2;
+    public const int ExportVersion = 3;
 
     /// <summary>A missing (null) property is left out; an empty one is written, so the two stay apart.</summary>
     private static void WriteOptional(Utf8JsonWriter writer, string name, string? value)

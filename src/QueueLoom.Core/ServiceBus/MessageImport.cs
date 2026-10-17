@@ -168,6 +168,17 @@ public static class MessageImport
             }
         }
 
+        // From version 3 the export says which headers the broker owns; they are left out of the draft, as in a copy of
+        // the loaded message. Older exports carry no such evidence, so every property is kept: none is guessed to be
+        // the broker's by its name, since a producer can set a header of the same name.
+        if (element.TryGetProperty("brokerOwnedHeaders", out var owned) && owned.ValueKind == JsonValueKind.Array)
+        {
+            var names = owned.EnumerateArray()
+                .Select(name => name.ValueKind == JsonValueKind.String ? name.GetString()! : throw new FormatException("a broker-owned header name is not text."))
+                .ToHashSet(StringComparer.Ordinal);
+            applicationProperties.RemoveAll(property => names.Contains(property.Name));
+        }
+
         KafkaEnvelope? kafka = null;
         if (element.TryGetProperty("kafka", out var record) && record.ValueKind == JsonValueKind.Object)
         {
