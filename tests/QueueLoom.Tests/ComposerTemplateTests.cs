@@ -8,6 +8,23 @@ namespace QueueLoom.Tests;
 // A message typed by hand in the Composer could not be kept: each test message was retyped. Templates save it by name.
 public sealed class ComposerTemplateStoreTests
 {
+    /// <summary>
+    /// Waits, bounded, until every started task has finished. When the test body already failed, that failure is kept
+    /// and a drain timeout is ignored; otherwise a timeout fails the test, so nothing waits without end afterwards.
+    /// Tasks' own results are not observed here.
+    /// </summary>
+    internal static async Task DrainAsync(bool bodyCompleted, TimeSpan safety, params Task[] tasks)
+    {
+        var finished = Task.WhenAll(tasks).ContinueWith(_ => { }, TaskScheduler.Default);
+        if (bodyCompleted)
+        {
+            await finished.WaitAsync(safety);
+            return;
+        }
+        try { await finished.WaitAsync(safety); }
+        catch (TimeoutException) { }
+    }
+
     [Fact]
     public async Task ATemplateIsSavedListedReplacedByNameWithoutCaseAndDeleted()
     {
@@ -109,6 +126,7 @@ public sealed class ComposerTemplateStoreTests
         var contended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Task first = Task.CompletedTask, second = Task.CompletedTask;
+        var bodyCompleted = false;
         try
         {
             // The first window is held inside its write, after it was admitted.
@@ -144,13 +162,13 @@ public sealed class ComposerTemplateStoreTests
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() => second.WaitAsync(safety));
             Assert.Contains($"At most {JsonComposerTemplateStore.MaximumTemplates}", error.Message, StringComparison.Ordinal);
             Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, (await store.ListAsync()).Count);
+            bodyCompleted = true;
         }
         finally
         {
-            // Every started writer is released and observed before the folder goes, also after a failed assertion.
+            // Every started writer is released and drained before the folder goes, also after a failed assertion.
             release.TrySetResult();
-            await Task.WhenAll(first, second).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety)
-                .ContinueWith(_ => { }, TaskScheduler.Default);
+            await DrainAsync(bodyCompleted, safety, first, second);
         }
     }
 
@@ -253,6 +271,7 @@ public sealed partial class ViewModelStateTests
 
         var held = store.HoldNextList();
         Task olderOperation = Task.CompletedTask, deleting = Task.CompletedTask;
+        var bodyCompleted = false;
         try
         {
             olderOperation = older == "save" ? vm.SaveComposerTemplateCommand.ExecuteAsync() : vm.LoadComposerTemplatesAsync();
@@ -266,14 +285,15 @@ public sealed partial class ViewModelStateTests
                 await Task.Delay(1);
             }
             Assert.Equal(deletesBefore, store.Deletes); // Delete did not run while the older list was held.
+            bodyCompleted = true;
         }
         finally
         {
             // Released and drained on every path (the direct load is not owned by a command), keeping a failure above.
             held.Release();
-            await Task.WhenAll(olderOperation, deleting).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety)
-                .ContinueWith(_ => { }, TaskScheduler.Default);
+            await ComposerTemplateStoreTests.DrainAsync(bodyCompleted, safety, olderOperation, deleting);
         }
+        // Both have finished (the drain saw to it): their own failures surface here.
         await Task.WhenAll(olderOperation, deleting);
 
         Assert.Empty(await store.ListAsync());
@@ -297,6 +317,7 @@ public sealed partial class ViewModelStateTests
         using var cancellation = new CancellationTokenSource();
         var held = store.HoldNextList();
         Task saving = Task.CompletedTask, starting = Task.CompletedTask;
+        var bodyCompleted = false;
         try
         {
             saving = vm.SaveComposerTemplateCommand.ExecuteAsync();
@@ -318,12 +339,12 @@ public sealed partial class ViewModelStateTests
             Assert.False(vm.IsBusy);
             Assert.Equal(listsBefore, store.Lists);
             Assert.Equal(0, vm.ComposerTemplateWaiters);
+            bodyCompleted = true;
         }
         finally
         {
             held.Release();
-            await Task.WhenAll(saving, starting).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety)
-                .ContinueWith(_ => { }, TaskScheduler.Default);
+            await ComposerTemplateStoreTests.DrainAsync(bodyCompleted, safety, saving, starting);
         }
         await saving;
 
