@@ -86,6 +86,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         var management = _httpHandler is null ? new HttpClient() : new HttpClient(_httpHandler, disposeHandler: false);
         management.BaseAddress = settings.ManagementUri;
         management.Timeout = TimeSpan.FromSeconds(30);
+        // Responses other calls buffer whole (queue details, rule changes) stay bounded too.
+        management.MaxResponseContentBufferSize = MaximumBufferedResponseBytes;
         management.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{settings.UserName}:{password}")));
         _management = management;
@@ -148,8 +150,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     {
         var vhost = Escape(_virtualHost);
         var queues = await GetArrayAsync($"api/queues/{vhost}?columns={QueueColumns}", cancellationToken).ConfigureAwait(false);
-        var exchanges = await GetArrayAsync($"api/exchanges/{vhost}", cancellationToken).ConfigureAwait(false);
-        var bindings = await GetArrayAsync($"api/bindings/{vhost}", cancellationToken).ConfigureAwait(false);
+        var exchanges = await GetArrayAsync($"api/exchanges/{vhost}?columns={ExchangeColumns}", cancellationToken).ConfigureAwait(false);
+        var bindings = await GetArrayAsync($"api/bindings/{vhost}?columns={BindingColumns}", cancellationToken).ConfigureAwait(false);
         _index = new RabbitMqTopologyIndex(
             queues.Select(RabbitQueueInfo.From),
             exchanges.Select(exchange => new RabbitExchangeInfo(
@@ -302,20 +304,42 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     internal const string QueueColumns =
         "name,type,messages_ready,messages_unacknowledged,arguments,effective_policy_definition,state,consumers";
 
+    /// <summary>The exchange fields the topology reads: without a column list each exchange comes with its message rates.</summary>
+    internal const string ExchangeColumns = "name,type";
+
+    /// <summary>The binding fields the topology reads.</summary>
+    internal const string BindingColumns = "source,destination,destination_type,routing_key";
+
     /// <summary>At most this much of an error response is shown; a proxy's HTML page would otherwise fill the status line.</summary>
     internal const int MaximumErrorCharacters = 1_000;
+
+    private const int MaximumBufferedResponseBytes = 64 * 1024 * 1024;
+
+    private static readonly TimeSpan ErrorReadDeadline = TimeSpan.FromSeconds(10);
 
     private async Task<IReadOnlyList<JsonElement>> GetArrayAsync(string path, CancellationToken cancellationToken)
     {
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
-        using var response = await management.GetAsync(path, cancellationToken).ConfigureAwait(false);
-        await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
-        await using var content = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(content, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return document.RootElement.EnumerateArray().Select(item => item.Clone()).ToArray();
+        // HttpClient.Timeout ends when the headers arrive, so the body keeps the same deadline through this token.
+        using var timeout = new CancellationTokenSource(management.Timeout, TimeProvider);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        try
+        {
+            // Headers first: an error body is then read only as far as it is shown, not buffered whole.
+            using var response = await management.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            await EnsureSuccessAsync(response, "the management API", deadline.Token).ConfigureAwait(false);
+            await using var content = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(content, cancellationToken: deadline.Token).ConfigureAwait(false);
+            return document.RootElement.EnumerateArray().Select(item => item.Clone()).ToArray();
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"The RabbitMQ management API did not answer within {management.Timeout.TotalSeconds:0} seconds.", exception);
+        }
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string what)
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string what, CancellationToken cancellationToken = default)
     {
         if (response.IsSuccessStatusCode)
         {
@@ -330,20 +354,36 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 "The virtual host was not found, or the user has no permissions on it."),
             _ => new InvalidOperationException(
                 $"RabbitMQ {what} answered {(int)response.StatusCode} {response.ReasonPhrase}: " +
-                await ReadErrorTextAsync(response).ConfigureAwait(false))
+                await ReadErrorTextAsync(response, cancellationToken).ConfigureAwait(false))
         };
     }
 
-    /// <summary>The start of an error response as one line of text, at most <see cref="MaximumErrorCharacters"/> long.</summary>
-    private static async Task<string> ReadErrorTextAsync(HttpResponseMessage response)
+    /// <summary>
+    /// The start of an error response as one line of text, at most <see cref="MaximumErrorCharacters"/> long. Only the
+    /// start is read: a body without end (a misbehaving proxy) is not buffered, and the read has its own deadline.
+    /// Cancelling the operation cancels the read too.
+    /// </summary>
+    private static async Task<string> ReadErrorTextAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         try
         {
-            var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(ErrorReadDeadline);
+            await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+            // Four bytes per character at most in UTF-8, and room for whitespace that is collapsed.
+            var buffer = new byte[MaximumErrorCharacters * 8];
+            var length = 0;
+            while (length < buffer.Length &&
+                   await stream.ReadAsync(buffer.AsMemory(length), deadline.Token).ConfigureAwait(false) is var read and > 0)
+            {
+                length += read;
+            }
+            var text = System.Text.Encoding.UTF8.GetString(buffer, 0, length);
             var line = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
             return line.Length > MaximumErrorCharacters ? TextLimits.Head(line, MaximumErrorCharacters) + "…" : line;
         }
-        catch (Exception exception) when (exception is IOException or HttpRequestException)
+        catch (Exception exception) when (exception is IOException or HttpRequestException ||
+                                          exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
             return "(the error text could not be read)";
         }
