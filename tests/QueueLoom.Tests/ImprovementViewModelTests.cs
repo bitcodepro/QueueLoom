@@ -117,16 +117,9 @@ public sealed partial class ViewModelStateTests
             Task? running = null;
             try
             {
-                // start() is called on its own thread so that a caller held by synchronous journal work fails the
-                // bounded wait below instead of blocking the test.
-                var returned = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
-                _ = Task.Run(() =>
-                {
-                    try { returned.SetResult(start()); }
-                    catch (Exception exception) { returned.SetException(exception); }
-                });
+                var returned = StartOnItsOwnThread(start);
                 Assert.True(await journal.Entered.WaitAsync(TimeSpan.FromSeconds(30)), call + " never reached the journal");
-                running = await returned.Task.WaitAsync(TimeSpan.FromSeconds(30)); // The caller got control back.
+                running = await returned.WaitAsync(TimeSpan.FromSeconds(30)); // The caller got control back.
                 Assert.False(running.IsCompleted, call + " finished while the journal was still busy");
             }
             finally
@@ -165,13 +158,18 @@ public sealed partial class ViewModelStateTests
         if (older == "restore") await vm.InitializeAsync().WaitAsync(safety);
 
         var held = journal.HoldNextRead();
+        Task<Task>? readingStarted = null, clearingStarted = null;
         Task reading = Task.CompletedTask, clearing = Task.CompletedTask;
         try
         {
-            reading = older == "restore" ? vm.RestoreActivityViewCommand.ExecuteAsync() : vm.InitializeAsync();
+            // Started on their own threads: an operation that does its journal work synchronously would block the test
+            // here, inside the held read, instead of failing the bounded waits.
+            readingStarted = StartOnItsOwnThread(older == "restore" ? () => vm.RestoreActivityViewCommand.ExecuteAsync() : () => vm.InitializeAsync());
             await held.Entered.WaitAsync(safety);
+            reading = await readingStarted.WaitAsync(safety);
             var cutoffsBefore = journal.CutoffsSet;
-            clearing = vm.ClearActivityViewCommand.ExecuteAsync();
+            clearingStarted = StartOnItsOwnThread(() => vm.ClearActivityViewCommand.ExecuteAsync());
+            clearing = await clearingStarted.WaitAsync(safety);
             var deadline = DateTime.UtcNow + safety;
             while (vm.ActivityViewWaiters == 0 && journal.CutoffsSet == cutoffsBefore)
             {
@@ -182,8 +180,11 @@ public sealed partial class ViewModelStateTests
         }
         finally
         {
-            // Released on every path, so a failed assertion does not leave the read blocked during disposal.
+            // Released on every path, so a failed assertion does not leave the read blocked during disposal; then the
+            // launchers are given a bounded time to finish (their failure was already reported above).
             held.Release();
+            await Task.WhenAll(new[] { readingStarted, clearingStarted }.OfType<Task>())
+                .ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety).ContinueWith(_ => { }, TaskScheduler.Default);
         }
         await Task.WhenAll(reading, clearing).WaitAsync(safety);
         // The held read returned its rows: it was not ended by a failure the app would have handled.
@@ -193,6 +194,21 @@ public sealed partial class ViewModelStateTests
         Assert.StartsWith("Activity through", vm.ActivityViewNotice, StringComparison.Ordinal);
         Assert.DoesNotContain(vm.Activity, item => item.Action == "Earlier entry");
         Assert.True(vm.RestoreActivityViewCommand.CanExecute(null));
+    }
+
+    /// <summary>
+    /// Calls <paramref name="start"/> on a thread of its own and completes with the task it returns, once it returns.
+    /// A caller held by synchronous work never completes it, so the test's bounded wait on it fails.
+    /// </summary>
+    private static Task<Task> StartOnItsOwnThread(Func<Task> start)
+    {
+        var returned = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = Task.Run(() =>
+        {
+            try { returned.SetResult(start()); }
+            catch (Exception exception) { returned.SetException(exception); }
+        });
+        return returned.Task;
     }
 
     private sealed class SignalledJournal(DateTimeOffset? cutoff) : QueueLoom.Core.Abstractions.IActivityViewJournal
