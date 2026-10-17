@@ -7,6 +7,9 @@ public sealed partial class MainWindowViewModel
 {
     private DateTimeOffset? _activityCutoff;
     private readonly List<ActivityItemViewModel> _hiddenActivity = [];
+    // Loading the history, Clear view and Restore view each read or change the journal and then the list. They run one
+    // at a time, so an older read cannot land after a newer change and undo it.
+    private readonly SemaphoreSlim _activityViewGate = new(1, 1);
     public AsyncRelayCommand ClearActivityViewCommand { get; private set; } = null!;
     public AsyncRelayCommand RestoreActivityViewCommand { get; private set; } = null!;
     public string ActivityViewNotice => _activityCutoff is { } cutoff
@@ -22,6 +25,7 @@ public sealed partial class MainWindowViewModel
             var cutoff = DateTimeOffset.UtcNow;
             if (!await _dialogs.ConfirmAsync("Clear Activity view", "Hide Activity entries up to now? Newer entries remain visible. This is a restorable display filter; journal files, operation/retry history, backups, schedules and message data are retained.",
                 false, cancellationToken: token)) return;
+            await _activityViewGate.WaitAsync(CancellationToken.None).ConfigureAwait(true);
             try
             {
                 // The journal takes a lock other windows share and writes a file: off the window's thread.
@@ -37,9 +41,11 @@ public sealed partial class MainWindowViewModel
                 RestoreActivityViewCommand.NotifyCanExecuteChanged();
             }
             catch (Exception exception) { ErrorText = SanitizeException(exception); }
+            finally { _activityViewGate.Release(); }
         });
         RestoreActivityViewCommand = _commands.Create(async _ =>
         {
+            await _activityViewGate.WaitAsync(CancellationToken.None).ConfigureAwait(true);
             try
             {
                 var journal = _activityJournal;
@@ -59,6 +65,7 @@ public sealed partial class MainWindowViewModel
                 RestoreActivityViewCommand!.NotifyCanExecuteChanged();
             }
             catch (Exception exception) { ErrorText = SanitizeException(exception); }
+            finally { _activityViewGate.Release(); }
         }, () => _activityCutoff is not null);
     }
 }

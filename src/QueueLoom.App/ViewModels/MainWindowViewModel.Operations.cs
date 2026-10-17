@@ -304,15 +304,22 @@ public sealed partial class MainWindowViewModel
     private async Task LoadActivityHistoryAsync()
     {
         if (_activityLoaded || _activityJournal is null) return;
-        // Up to 500 files are read: off the window's thread.
-        var journal = _activityJournal;
-        var records = await Task.Run(() => journal.ReadRecent(), CancellationToken.None).ConfigureAwait(true);
-        // Entries this window added before the history was read (a start-up warning) are already listed and also
-        // in the journal: they are not listed twice.
-        var shown = Activity.Select(item => (item.Timestamp, item.Level, item.Action)).ToHashSet();
-        foreach (var item in records.Where(record => !shown.Contains((record.Timestamp, record.Level, record.Action))))
-            Activity.Add(new ActivityItemViewModel(item.Timestamp, item.Level, item.Action,
-                $"{item.ProfileName} · {item.Details} · operation {item.OperationId:N}", item.Source));
-        _activityLoaded = true;
+        await _activityViewGate.WaitAsync(CancellationToken.None).ConfigureAwait(true);
+        try
+        {
+            if (_activityLoaded) return;
+            // Up to 500 files are read: off the window's thread.
+            var journal = _activityJournal;
+            var records = await Task.Run(() => journal.ReadRecent(), CancellationToken.None).ConfigureAwait(true);
+            // Entries this window added before the history was read (a start-up warning) are already listed and also
+            // in the journal: they are not listed twice. Entries the current view hides stay hidden.
+            var shown = Activity.Select(item => (item.Timestamp, item.Level, item.Action)).ToHashSet();
+            foreach (var item in records.Where(record => !shown.Contains((record.Timestamp, record.Level, record.Action)) &&
+                                                         !(record.Timestamp <= _activityCutoff)))
+                Activity.Add(new ActivityItemViewModel(item.Timestamp, item.Level, item.Action,
+                    $"{item.ProfileName} · {item.Details} · operation {item.OperationId:N}", item.Source));
+            _activityLoaded = true;
+        }
+        finally { _activityViewGate.Release(); }
     }
 }

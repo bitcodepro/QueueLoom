@@ -131,16 +131,54 @@ public sealed partial class ViewModelStateTests
         Assert.Null(journal.ClearViewCutoff);
     }
 
+    // An older read finishing after a newer Clear view put back the rows that Clear had hidden and the "not hidden"
+    // notice, although the journal kept the newer cutoff. Restore, Clear and the start-up read now run one at a time.
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("startup")]
+    public async Task AClearViewThatOverlapsAnOlderReadIsNotUndoneByIt(string older)
+    {
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var journal = new GatedJournal();
+        if (older == "restore") journal.Preset(DateTimeOffset.UtcNow.AddHours(-1));
+        await using var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), new FakeWorkspace(),
+            new FakeDialogService { ConfirmResult = true }, activityJournal: journal);
+        if (older == "restore") await vm.InitializeAsync();
+
+        // The older read captures the unfiltered rows and is held there.
+        journal.BlockReads = true;
+        journal.Gate.Reset();
+        var reading = older == "restore" ? vm.RestoreActivityViewCommand.ExecuteAsync() : vm.InitializeAsync();
+        Assert.True(await journal.Entered.WaitAsync(TimeSpan.FromSeconds(30)));
+        var clearing = vm.ClearActivityViewCommand.ExecuteAsync();
+        // Clear finishes first if nothing holds it back; the older read is released only then (or after a moment).
+        await Task.WhenAny(clearing, Task.Delay(500));
+        journal.Gate.Set();
+        await Task.WhenAll(reading, clearing).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Console.WriteLine("DBG calls=" + string.Join(",", journal.Calls) + " acts=" + string.Join("|", vm.Activity.Select(a => a.Action)) + " notice=" + vm.ActivityViewNotice);
+        Assert.NotNull(journal.ClearViewCutoff);
+        Assert.StartsWith("Activity through", vm.ActivityViewNotice, StringComparison.Ordinal);
+        Assert.DoesNotContain(vm.Activity, item => item.Action == "Earlier entry");
+        Assert.True(vm.RestoreActivityViewCommand.CanExecute(null));
+    }
+
     private sealed class GatedJournal : QueueLoom.Core.Abstractions.IActivityViewJournal
     {
+        private readonly QueueLoom.Core.Abstractions.ActivityRecord _earlier =
+            new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-1), "Info", "Earlier entry", "d", null, null, null);
         public ManualResetEventSlim Gate { get; } = new(true);
         public SemaphoreSlim Entered { get; } = new(0);
         public List<string> Calls { get; } = [];
+        /// <summary>When set, only reads wait at the gate.</summary>
+        public bool BlockReads { get; set; }
         public DateTimeOffset? ClearViewCutoff { get; private set; }
+        public void Preset(DateTimeOffset cutoff) => ClearViewCutoff = cutoff;
         public void Append(QueueLoom.Core.Abstractions.ActivityRecord record) { }
         private void Enter(string call)
         {
             lock (Calls) Calls.Add(call);
+            if (BlockReads && call != "read") return;
             Entered.Release();
             Gate.Wait(TimeSpan.FromSeconds(10));
         }
@@ -151,8 +189,10 @@ public sealed partial class ViewModelStateTests
         }
         public IReadOnlyList<QueueLoom.Core.Abstractions.ActivityRecord> ReadRecent(int maximum = 500)
         {
+            // Like the file journal: the rows are chosen against the cutoff of the moment, then returned.
+            QueueLoom.Core.Abstractions.ActivityRecord[] rows = _earlier.Timestamp <= ClearViewCutoff ? [] : [_earlier];
             Enter("read");
-            return [new(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-1), "Info", "Earlier entry", "d", null, null, null)];
+            return rows;
         }
     }
 }
