@@ -17,7 +17,8 @@ public sealed record ComposerTemplate(
     string ReplyToSessionId = "",
     string PartitionKey = "",
     string TimeToLiveSeconds = "",
-    string ApplicationProperties = "{}")
+    string ApplicationProperties = "{}",
+    string TransactionPartitionKey = "")
 {
     public const int MaximumNameLength = 80;
 

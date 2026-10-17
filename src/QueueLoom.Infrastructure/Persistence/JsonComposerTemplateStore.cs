@@ -58,6 +58,10 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
         }
         Directory.CreateDirectory(directory);
         var path = PathFor(template.Name);
+        // The count and the write happen under one lock that every window shares, so two windows saving at once
+        // cannot both see room for one more.
+        await using var ownership = await CrossProcessFileLock.AcquireAsync(Path.Combine(directory, ".lock"), cancellationToken)
+            .ConfigureAwait(false);
         if (!File.Exists(path) && Directory.EnumerateFiles(directory, "*.json").Count() >= MaximumTemplates)
         {
             throw new InvalidOperationException($"At most {MaximumTemplates} templates can be saved. Delete one first.");
@@ -91,8 +95,10 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
                 return null;
             }
             var name = ComposerTemplate.NormalizeName(template.Name);
-            // Only a file at the place its own name gives counts, so a copied file cannot shadow another template.
-            return string.Equals(Path.GetFullPath(file), Path.GetFullPath(PathFor(name)), StringComparison.OrdinalIgnoreCase)
+            // Only a file at exactly the place its own name gives counts, so a copied file (also under a file name that
+            // differs only in case, which a case-sensitive file system keeps apart) cannot shadow another template:
+            // saving and deleting use that place.
+            return string.Equals(Path.GetFileName(file), Path.GetFileName(PathFor(name)), StringComparison.Ordinal)
                 ? template with { Name = name }
                 : null;
         }

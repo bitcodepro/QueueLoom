@@ -10,6 +10,9 @@ public sealed partial class MainWindowViewModel
     private IComposerTemplateStore? _templates;
     private ComposerTemplate? _selectedComposerTemplate;
     private string _templateName = string.Empty;
+    // Loading, saving and deleting each change or read the store and then publish its list. They run one at a time,
+    // so an older list cannot land after a newer change and bring back a deleted template.
+    private readonly SemaphoreSlim _templateGate = new(1, 1);
 
     public ObservableCollection<ComposerTemplate> ComposerTemplates { get; } = [];
 
@@ -63,6 +66,7 @@ public sealed partial class MainWindowViewModel
     internal async Task LoadComposerTemplatesAsync(CancellationToken cancellationToken = default)
     {
         if (_templates is null) return;
+        await EnterTemplatesAsync().ConfigureAwait(true);
         try
         {
             var store = _templates;
@@ -72,6 +76,10 @@ public sealed partial class MainWindowViewModel
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             ErrorText = $"Templates could not be read: {SanitizeException(exception)}";
+        }
+        finally
+        {
+            _templateGate.Release();
         }
     }
 
@@ -92,12 +100,21 @@ public sealed partial class MainWindowViewModel
                 DraftReplyToSessionId,
                 DraftPartitionKey,
                 DraftTimeToLiveSeconds,
-                DraftApplicationProperties);
+                DraftApplicationProperties,
+                DraftTransactionPartitionKey);
             var store = _templates ?? throw new InvalidOperationException("Templates are not available here.");
-            await Task.Run(() => store.SaveAsync(template, cancellationToken), cancellationToken).ConfigureAwait(true);
-            var templates = await Task.Run(() => store.ListAsync(cancellationToken), cancellationToken).ConfigureAwait(true);
-            ReplaceComposerTemplates(templates, template.Name);
-            StatusText = $"Template '{template.Name}' saved.";
+            await EnterTemplatesAsync().ConfigureAwait(true);
+            try
+            {
+                await Task.Run(() => store.SaveAsync(template, cancellationToken), cancellationToken).ConfigureAwait(true);
+                var templates = await Task.Run(() => store.ListAsync(cancellationToken), cancellationToken).ConfigureAwait(true);
+                ReplaceComposerTemplates(templates, template.Name);
+                StatusText = $"Template '{template.Name}' saved.";
+            }
+            finally
+            {
+                _templateGate.Release();
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -112,6 +129,8 @@ public sealed partial class MainWindowViewModel
         if (template is null || store is null) return;
         if (!await _dialogs.ConfirmAsync("Delete template", $"Delete the template '{template.Name}'? Messages sent from it are not affected.",
                 false, cancellationToken: cancellationToken).ConfigureAwait(true)) return;
+        // The confirmation is asked before the gate: an open dialog does not hold up the other operations.
+        await EnterTemplatesAsync().ConfigureAwait(true);
         try
         {
             await Task.Run(() => store.DeleteAsync(template.Name, cancellationToken), cancellationToken).ConfigureAwait(true);
@@ -122,6 +141,10 @@ public sealed partial class MainWindowViewModel
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             ErrorText = SanitizeException(exception);
+        }
+        finally
+        {
+            _templateGate.Release();
         }
     }
 
@@ -143,10 +166,23 @@ public sealed partial class MainWindowViewModel
         DraftSessionId = template.SessionId ?? string.Empty;
         DraftReplyToSessionId = template.ReplyToSessionId ?? string.Empty;
         DraftPartitionKey = template.PartitionKey ?? string.Empty;
+        DraftTransactionPartitionKey = template.TransactionPartitionKey ?? string.Empty;
         DraftTimeToLiveSeconds = template.TimeToLiveSeconds ?? string.Empty;
         DraftApplicationProperties = string.IsNullOrWhiteSpace(template.ApplicationProperties) ? "{}" : template.ApplicationProperties;
         DraftOriginNotice = $"New message from template '{template.Name}' · it has a new Message ID; " +
                             "the destination is pinned to the connected environment";
+    }
+
+    private int _templateWaiters;
+
+    /// <summary>Operations waiting for, or just taking, the template gate (tests use it to order overlaps).</summary>
+    internal int ComposerTemplateWaiters => Volatile.Read(ref _templateWaiters);
+
+    private async Task EnterTemplatesAsync()
+    {
+        Interlocked.Increment(ref _templateWaiters);
+        try { await _templateGate.WaitAsync(CancellationToken.None).ConfigureAwait(true); }
+        finally { Interlocked.Decrement(ref _templateWaiters); }
     }
 
     private void ReplaceComposerTemplates(IReadOnlyList<ComposerTemplate> templates, string? select)

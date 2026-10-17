@@ -26,7 +26,7 @@ public sealed class ComposerTemplateStoreTests
         await store.SaveAsync(order with { Name = "ORDER CREATED", Body = "{\"id\":2}" });
         var replaced = Assert.Single(await store.ListAsync(), template => template.Name.Equals("order created", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("{\"id\":2}", replaced.Body);
-        Assert.Equal(2, Directory.GetFiles(directory.Path).Length);
+        Assert.Equal(2, Directory.GetFiles(directory.Path, "*.json").Length);
 
         await store.DeleteAsync("order CREATED");
         Assert.Equal("Another", Assert.Single(await store.ListAsync()).Name);
@@ -65,12 +65,76 @@ public sealed class ComposerTemplateStoreTests
         using var directory = new TemporaryDirectory();
         var store = new JsonComposerTemplateStore(directory.Path);
         await store.SaveAsync(new ComposerTemplate("Kept", "x", MessageBodyFormat.Text));
-        var kept = Assert.Single(Directory.GetFiles(directory.Path));
+        var kept = Assert.Single(Directory.GetFiles(directory.Path, "*.json"));
         File.WriteAllText(Path.Combine(directory.Path, "damaged.json"), "{ not json");
         File.Copy(kept, Path.Combine(directory.Path, "copy.json"));
         File.WriteAllText(Path.Combine(directory.Path, "foreign.json"), "{\"name\":\"Foreign\",\"body\":\"x\",\"bodyFormat\":\"Nope\"}");
 
         Assert.Equal("Kept", Assert.Single(await store.ListAsync()).Name);
+    }
+
+    // On a case-sensitive file system a copy can differ from the real file name only in case; saving and deleting use
+    // the real name, so the copy must not count either.
+    [Fact]
+    public async Task ACopyUnderAFileNameThatDiffersOnlyInCaseIsSkipped()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonComposerTemplateStore(directory.Path);
+        await store.SaveAsync(new ComposerTemplate("Kept", "x", MessageBodyFormat.Text));
+        var kept = Assert.Single(Directory.GetFiles(directory.Path, "*.json"));
+        var upper = Path.Combine(directory.Path, Path.GetFileNameWithoutExtension(kept).ToUpperInvariant() + ".json");
+        if (File.Exists(upper))
+        {
+            return; // A case-insensitive file system cannot hold the two names apart.
+        }
+        File.Copy(kept, upper);
+
+        Assert.Equal("Kept", Assert.Single(await store.ListAsync()).Name);
+        await store.DeleteAsync("Kept");
+        Assert.Empty(await store.ListAsync());
+    }
+
+    // The count and the write were separate: two windows saving different names at 199 templates both saw room.
+    [Fact]
+    public async Task TwoSavesAtTheLastFreePlaceCannotBothBeAdmitted()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonComposerTemplateStore(directory.Path);
+        for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates - 1; index++)
+        {
+            await store.SaveAsync(new ComposerTemplate($"T{index}", "x", MessageBodyFormat.Text));
+        }
+        var writing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task first;
+        var previous = AtomicFile.ContentWriting.Value;
+        AtomicFile.ContentWriting.Value = _ => { writing.TrySetResult(); release.Task.Wait(); };
+        try
+        {
+            first = Task.Run(() => new JsonComposerTemplateStore(directory.Path).SaveAsync(new ComposerTemplate("First", "x", MessageBodyFormat.Text)));
+        }
+        finally
+        {
+            AtomicFile.ContentWriting.Value = previous;
+        }
+        Task second = Task.CompletedTask;
+        try
+        {
+            await writing.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Another window: it must wait for the first save to finish before it counts.
+            second = Task.Run(() => new JsonComposerTemplateStore(directory.Path).SaveAsync(new ComposerTemplate("Second", "x", MessageBodyFormat.Text)));
+            await Task.WhenAny(second, Task.Delay(200));
+            Assert.False(second.IsCompleted, "The second save did not wait for the first one.");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await first.WaitAsync(TimeSpan.FromSeconds(30));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => second.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Contains($"At most {JsonComposerTemplateStore.MaximumTemplates}", error.Message, StringComparison.Ordinal);
+        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, (await store.ListAsync()).Count);
     }
 
     [Fact]
@@ -99,6 +163,13 @@ public sealed partial class ViewModelStateTests
         vm.DraftSubject = "order.created";
         vm.DraftCorrelationId = "corr-1";
         vm.DraftTimeToLiveSeconds = "60";
+        vm.DraftContentType = "application/vnd.order+json";
+        vm.DraftTo = "billing";
+        vm.DraftReplyTo = "replies";
+        vm.DraftSessionId = "cart-7";
+        vm.DraftReplyToSessionId = "reply-7";
+        vm.DraftPartitionKey = "cart-7";
+        vm.DraftTransactionPartitionKey = "tx-7";
         vm.DraftScheduledEnqueueTime = "2030-01-01T00:00:00Z";
         vm.DraftApplicationProperties = "{\"tenant\":{\"type\":\"String\",\"value\":\"acme\"}}";
         vm.TemplateName = "Order 42";
@@ -118,6 +189,14 @@ public sealed partial class ViewModelStateTests
         Assert.Equal("corr-1", vm.DraftCorrelationId);
         Assert.Equal("60", vm.DraftTimeToLiveSeconds);
         Assert.Contains("acme", vm.DraftApplicationProperties, StringComparison.Ordinal);
+        Assert.Equal("application/vnd.order+json", vm.DraftContentType);
+        Assert.Equal("billing", vm.DraftTo);
+        Assert.Equal("replies", vm.DraftReplyTo);
+        Assert.Equal("cart-7", vm.DraftSessionId);
+        Assert.Equal("reply-7", vm.DraftReplyToSessionId);
+        Assert.Equal("cart-7", vm.DraftPartitionKey);
+        Assert.Equal("tx-7", vm.DraftTransactionPartitionKey);
+        Assert.Equal(MessageBodyFormat.Json, vm.DraftBodyFormat);
         // A message made from a template is a new message: new ID, no scheduled time.
         Assert.NotEqual(firstId, vm.DraftMessageId);
         Assert.Empty(vm.DraftScheduledEnqueueTime);
@@ -127,11 +206,94 @@ public sealed partial class ViewModelStateTests
         await using var reopened = new QueueLoom.App.ViewModels.MainWindowViewModel(new FakeProfileRepository([profile], profile.Id),
             new FakeSecretVault(), new FakeWorkspace(), new FakeDialogService { ConfirmResult = true }, templates: store);
         await reopened.InitializeAsync();
-        Assert.Equal("Order 42", Assert.Single(reopened.ComposerTemplates).Name);
+        var kept = Assert.Single(reopened.ComposerTemplates);
+        Assert.Equal("Order 42", kept.Name);
+        Assert.Equal(("tx-7", "reply-7", "billing", "replies"), (kept.TransactionPartitionKey, kept.ReplyToSessionId, kept.To, kept.ReplyTo));
 
         await vm.DeleteComposerTemplateCommand.ExecuteAsync();
         Assert.Empty(vm.ComposerTemplates);
         Assert.Empty(await store.ListAsync());
+    }
+
+    // An older list published after a newer Delete brought the deleted template back and selected it. Loading, saving
+    // and deleting now run one at a time: the older operation is held after it read its list, Delete is started, and
+    // the hold is released only once Delete waits for the gate.
+    [Theory]
+    [InlineData("save")]
+    [InlineData("load")]
+    public async Task ComposerTemplate_AnOlderListDoesNotBringBackADeletedTemplate(string older)
+    {
+        var safety = TimeSpan.FromSeconds(30);
+        using var directory = new TemporaryDirectory();
+        var store = new HeldListStore(new JsonComposerTemplateStore(directory.Path));
+        await store.SaveAsync(new ComposerTemplate("A", "x", MessageBodyFormat.Text));
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        await using var vm = new QueueLoom.App.ViewModels.MainWindowViewModel(new FakeProfileRepository([profile], profile.Id),
+            new FakeSecretVault(), new FakeWorkspace(), new FakeDialogService { ConfirmResult = true }, templates: store);
+        await vm.InitializeAsync().WaitAsync(safety);
+        await vm.ConnectCommand.ExecuteAsync();
+        vm.SelectedComposerTemplate = Assert.Single(vm.ComposerTemplates);
+
+        var held = store.HoldNextList();
+        Task olderOperation = Task.CompletedTask, deleting = Task.CompletedTask;
+        try
+        {
+            olderOperation = older == "save" ? vm.SaveComposerTemplateCommand.ExecuteAsync() : vm.LoadComposerTemplatesAsync();
+            await held.Entered.WaitAsync(safety);
+            var deletesBefore = store.Deletes;
+            deleting = vm.DeleteComposerTemplateCommand.ExecuteAsync();
+            var deadline = DateTime.UtcNow + safety;
+            while (vm.ComposerTemplateWaiters == 0 && store.Deletes == deletesBefore)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "Delete neither waited for the older operation nor deleted.");
+                await Task.Delay(1);
+            }
+            Assert.Equal(deletesBefore, store.Deletes); // Delete did not run while the older list was held.
+        }
+        finally
+        {
+            held.Release();
+        }
+        await Task.WhenAll(olderOperation, deleting).WaitAsync(safety);
+
+        Assert.Empty(await store.ListAsync());
+        Assert.Empty(vm.ComposerTemplates);
+        Assert.Null(vm.SelectedComposerTemplate);
+        Assert.False(vm.UseComposerTemplateCommand.CanExecute(null));
+        Assert.False(vm.DeleteComposerTemplateCommand.CanExecute(null));
+    }
+
+    /// <summary>A store whose next list can be held after it has read the templates.</summary>
+    private sealed class HeldListStore(IComposerTemplateStore inner) : IComposerTemplateStore
+    {
+        public sealed class Hold
+        {
+            private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public Task Entered => _entered.Task;
+            public void Release() => _released.TrySetResult();
+            internal async Task WaitAsync() { _entered.TrySetResult(); await _released.Task; }
+        }
+
+        private Hold? _next;
+        private int _deletes;
+        public int Deletes => Volatile.Read(ref _deletes);
+        public Hold HoldNextList() => _next = new Hold();
+
+        public async Task<IReadOnlyList<ComposerTemplate>> ListAsync(CancellationToken cancellationToken = default)
+        {
+            var templates = await inner.ListAsync(cancellationToken);
+            if (Interlocked.Exchange(ref _next, null) is { } hold) await hold.WaitAsync();
+            return templates;
+        }
+
+        public Task SaveAsync(ComposerTemplate template, CancellationToken cancellationToken = default) => inner.SaveAsync(template, cancellationToken);
+
+        public async Task DeleteAsync(string name, CancellationToken cancellationToken = default)
+        {
+            await inner.DeleteAsync(name, cancellationToken);
+            Interlocked.Increment(ref _deletes);
+        }
     }
 
     [Fact]
