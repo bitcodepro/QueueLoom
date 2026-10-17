@@ -114,12 +114,26 @@ public sealed partial class ViewModelStateTests
         async Task ReturnsWhileTheJournalIsBusy(Func<Task> start, string call)
         {
             journal.Gate.Reset();
-            var running = start();
-            // Synchronous journal work would have held the caller until the gate's own timeout.
-            Assert.True(await journal.Entered.WaitAsync(TimeSpan.FromSeconds(30)), call + " never reached the journal");
-            Assert.False(running.IsCompleted, call + " finished while the journal was still busy");
-            journal.Gate.Set();
-            await running.WaitAsync(TimeSpan.FromSeconds(30));
+            Task? running = null;
+            try
+            {
+                // start() is called on its own thread so that a caller held by synchronous journal work fails the
+                // bounded wait below instead of blocking the test.
+                var returned = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _ = Task.Run(() =>
+                {
+                    try { returned.SetResult(start()); }
+                    catch (Exception exception) { returned.SetException(exception); }
+                });
+                Assert.True(await journal.Entered.WaitAsync(TimeSpan.FromSeconds(30)), call + " never reached the journal");
+                running = await returned.Task.WaitAsync(TimeSpan.FromSeconds(30)); // The caller got control back.
+                Assert.False(running.IsCompleted, call + " finished while the journal was still busy");
+            }
+            finally
+            {
+                journal.Gate.Set();
+            }
+            await running!.WaitAsync(TimeSpan.FromSeconds(30));
         }
 
         await ReturnsWhileTheJournalIsBusy(() => vm.InitializeAsync(), "loading the history");
@@ -127,6 +141,8 @@ public sealed partial class ViewModelStateTests
         await ReturnsWhileTheJournalIsBusy(() => vm.RestoreActivityViewCommand.ExecuteAsync(), "restore view");
 
         Assert.Equal(["read", "cutoff", "cutoff null", "read"], journal.Calls);
+        // Every call returned normally: a failure inside the journal, which the app would handle, is not hidden.
+        Assert.Equal(journal.Calls, journal.Completed);
         Assert.Contains(vm.Activity, item => item.Action == "Earlier entry");
         Assert.Null(journal.ClearViewCutoff);
     }
@@ -149,19 +165,29 @@ public sealed partial class ViewModelStateTests
         if (older == "restore") await vm.InitializeAsync().WaitAsync(safety);
 
         var held = journal.HoldNextRead();
-        var reading = older == "restore" ? vm.RestoreActivityViewCommand.ExecuteAsync() : vm.InitializeAsync();
-        await held.Entered.WaitAsync(safety);
-        var cutoffsBefore = journal.CutoffsSet;
-        var clearing = vm.ClearActivityViewCommand.ExecuteAsync();
-        var deadline = DateTime.UtcNow + safety;
-        while (vm.ActivityViewWaiters == 0 && journal.CutoffsSet == cutoffsBefore)
+        Task reading = Task.CompletedTask, clearing = Task.CompletedTask;
+        try
         {
-            Assert.True(DateTime.UtcNow < deadline, "Clear neither waited for the older read nor changed the journal.");
-            await Task.Delay(1);
+            reading = older == "restore" ? vm.RestoreActivityViewCommand.ExecuteAsync() : vm.InitializeAsync();
+            await held.Entered.WaitAsync(safety);
+            var cutoffsBefore = journal.CutoffsSet;
+            clearing = vm.ClearActivityViewCommand.ExecuteAsync();
+            var deadline = DateTime.UtcNow + safety;
+            while (vm.ActivityViewWaiters == 0 && journal.CutoffsSet == cutoffsBefore)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "Clear neither waited for the older read nor changed the journal.");
+                await Task.Delay(1);
+            }
+            Assert.Equal(cutoffsBefore, journal.CutoffsSet); // Clear did not change the journal while the older read was held.
         }
-        Assert.Equal(cutoffsBefore, journal.CutoffsSet); // Clear did not change the journal while the older read was held.
-        held.Release();
+        finally
+        {
+            // Released on every path, so a failed assertion does not leave the read blocked during disposal.
+            held.Release();
+        }
         await Task.WhenAll(reading, clearing).WaitAsync(safety);
+        // The held read returned its rows: it was not ended by a failure the app would have handled.
+        Assert.True(held.Completed, "The held read did not complete.");
 
         Assert.NotNull(journal.ClearViewCutoff);
         Assert.StartsWith("Activity through", vm.ActivityViewNotice, StringComparison.Ordinal);
@@ -175,13 +201,18 @@ public sealed partial class ViewModelStateTests
         {
             private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _completed;
             public Task Entered => _entered.Task;
+            /// <summary>The read returned its rows after its release.</summary>
+            public bool Completed => Volatile.Read(ref _completed) == 1;
             public void Release() => _released.TrySetResult();
+            // No timeout of its own: the test releases it on every path, and its own waits carry the safety bounds.
             internal void Hold()
             {
                 _entered.TrySetResult();
-                if (!_released.Task.Wait(TimeSpan.FromSeconds(30))) throw new TimeoutException("The held read was never released.");
+                _released.Task.Wait();
             }
+            internal void Complete() => Volatile.Write(ref _completed, 1);
         }
 
         private readonly QueueLoom.Core.Abstractions.ActivityRecord _earlier =
@@ -202,7 +233,9 @@ public sealed partial class ViewModelStateTests
         {
             // Like the file journal: the rows are chosen against the cutoff of the moment, then returned.
             QueueLoom.Core.Abstractions.ActivityRecord[] rows = _earlier.Timestamp <= ClearViewCutoff ? [] : [_earlier];
-            Interlocked.Exchange(ref _next, null)?.Hold();
+            var held = Interlocked.Exchange(ref _next, null);
+            held?.Hold();
+            held?.Complete();
             return rows;
         }
     }
@@ -220,18 +253,24 @@ public sealed partial class ViewModelStateTests
         {
             lock (Calls) Calls.Add(call);
             Entered.Release();
-            if (!Gate.Wait(TimeSpan.FromSeconds(30))) throw new TimeoutException("The gate was never opened.");
+            // No timeout of its own: the test opens the gate on every path.
+            Gate.Wait();
         }
+        /// <summary>Calls that returned normally, in order.</summary>
+        public List<string> Completed { get; } = [];
         public void SetClearViewCutoff(DateTimeOffset? cutoff)
         {
-            Enter(cutoff is null ? "cutoff null" : "cutoff");
+            var call = cutoff is null ? "cutoff null" : "cutoff";
+            Enter(call);
             ClearViewCutoff = cutoff;
+            lock (Calls) Completed.Add(call);
         }
         public IReadOnlyList<QueueLoom.Core.Abstractions.ActivityRecord> ReadRecent(int maximum = 500)
         {
             // Like the file journal: the rows are chosen against the cutoff of the moment, then returned.
             QueueLoom.Core.Abstractions.ActivityRecord[] rows = _earlier.Timestamp <= ClearViewCutoff ? [] : [_earlier];
             Enter("read");
+            lock (Calls) Completed.Add("read");
             return rows;
         }
     }
