@@ -88,6 +88,61 @@ public sealed class MessageSearchQueryTests
         Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(message));
     }
 
+    // Decoding stops at 16 MiB. The cut text ends where the limit fell, so an end anchor matched it although the whole
+    // body ends otherwise, and a term beyond the cut was reported as not matching. A literal text found in the part read
+    // is in the body; anything else on a cut body is undecided, like a regular expression that ran out of time.
+    [Theory]
+    [InlineData("/!\\z/", null)]
+    [InlineData("SHIP-77", null)]
+    [InlineData("/SHIP-77/", null)]
+    [InlineData("!!!!", true)]
+    [InlineData("$.order == 'x'", null)]
+    public void A_body_cut_while_decoding_decides_only_what_its_start_proves(string query, bool? expected)
+    {
+        using var packed = new MemoryStream();
+        using (var gzip = new GZipStream(packed, CompressionLevel.Fastest, leaveOpen: true))
+        {
+            gzip.Write(Encoding.ASCII.GetBytes(new string('!', BodyDecoder.MaximumDecodedBytes) + "SHIP-77"));
+        }
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1, packed.ToArray(),
+            new EditableMessageProperties(MessageId: "m-1"));
+        var search = MessageSearchQuery.Parse(query);
+
+        if (expected is { } match)
+        {
+            Assert.Equal(match, search.Matches(message));
+        }
+        else
+        {
+            Assert.Throws<IncompleteBodySearchException>(() => search.Matches(message));
+        }
+    }
+
+    [Fact]
+    public void A_term_in_another_field_still_matches_a_message_whose_body_was_cut()
+    {
+        using var packed = new MemoryStream();
+        using (var gzip = new GZipStream(packed, CompressionLevel.Fastest, leaveOpen: true))
+        {
+            gzip.Write(new byte[BodyDecoder.MaximumDecodedBytes + 10]);
+        }
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1, packed.ToArray(),
+            new EditableMessageProperties(MessageId: "m-1", Subject: "SHIP-77"));
+
+        Assert.True(MessageSearchQuery.Parse("/SHIP-\\d+/").Matches(message));
+    }
+
+    [Fact]
+    public void Undecided_messages_are_counted_by_cause_in_the_source_error()
+    {
+        Assert.Null(DeadLetterSearchSourceResult.UndecidedError(0, 0));
+        Assert.StartsWith("2 message(s) could not be checked: the regular expression", DeadLetterSearchSourceResult.UndecidedError(2, 0));
+        var both = DeadLetterSearchSourceResult.UndecidedError(1, 3)!;
+        Assert.Contains("3 message(s) could not be checked: their decoded body is longer than 16 MiB", both, StringComparison.Ordinal);
+        Assert.Contains("regular expression took too long", both, StringComparison.Ordinal);
+        Assert.Equal(DeadLetterSearchSourceResult.UndecidedError(4, 0), DeadLetterSearchSourceResult.RegexTimeoutError(4));
+    }
+
     // A binary body is decoded into a hex dump for display; searching it would match bytes written as hex digits.
     [Fact]
     public void Text_search_does_not_match_the_hex_dump_of_a_binary_body()

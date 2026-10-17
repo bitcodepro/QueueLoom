@@ -298,6 +298,7 @@ public sealed partial class AzureServiceBusWorkspace
         var matches = new List<BrowsedMessage>();
         var scanned = 0;
         var undecided = 0;
+        var incomplete = 0;
         try
         {
             var scan = await WalkSearchPagesAsync(
@@ -323,6 +324,11 @@ public sealed partial class AzureServiceBusWorkspace
                             undecided++;
                             return;
                         }
+                        catch (IncompleteBodySearchException)
+                        {
+                            incomplete++;
+                            return;
+                        }
                         if (!isMatch)
                         {
                             return;
@@ -345,7 +351,7 @@ public sealed partial class AzureServiceBusWorkspace
                 scanned,
                 Array.AsReadOnly(matches.ToArray()),
                 scan.SafetyLimitReached,
-                DeadLetterSearchSourceResult.RegexTimeoutError(undecided));
+                DeadLetterSearchSourceResult.UndecidedError(undecided, incomplete));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
