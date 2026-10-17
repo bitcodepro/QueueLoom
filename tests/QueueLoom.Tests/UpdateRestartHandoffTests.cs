@@ -77,7 +77,9 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
                 await Published(Path.Combine(root, "helper-finished.json"), helper.WaitForExitAsync());
                 Assert.Equal(0, ReadJson(Path.Combine(root, "helper-finished.json")).GetProperty("Code").GetInt32());
                 await Published(Path.Combine(root, "gui.json"), helper.WaitForExitAsync());
-                gui = Adopt(ReadJson(Path.Combine(root, "gui.json")), exe);
+                // The started application is a fixture that exits after about a second: on a slow runner it can be gone
+                // before it is adopted, which is a finished start, not a failed one.
+                gui = AdoptIfRunning(ReadJson(Path.Combine(root, "gui.json")), exe);
                 Assert.False(File.Exists(receipt));
             }
             else
@@ -114,7 +116,7 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
             });
             await Cleanup(async () =>
             {
-                if (gui is null && File.Exists(Path.Combine(root, "gui.json"))) gui = Adopt(ReadJson(Path.Combine(root, "gui.json")), exe);
+                if (gui is null && File.Exists(Path.Combine(root, "gui.json"))) gui = AdoptIfRunning(ReadJson(Path.Combine(root, "gui.json")), exe);
                 if (gui is not null)
                 {
                     // The harmless startup fixture exits normally after one second. Observe its
@@ -147,6 +149,32 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
         using var document = JsonDocument.Parse(reader.ReadToEnd());
         return document.RootElement.Clone();
     }
+    /// <summary>The identified process, or null when it has already exited (its PID is free or now names another start).</summary>
+    private static Process? AdoptIfRunning(JsonElement identity, string executable)
+    {
+        Process process;
+        try { process = Process.GetProcessById(identity.GetProperty("Pid").GetInt32()); }
+        catch (ArgumentException) { return null; }
+        try
+        {
+            _ = process.Handle;
+            if (process.HasExited || identity.GetProperty("StartTicks").GetInt64() != process.StartTime.ToUniversalTime().Ticks)
+            {
+                process.Dispose();
+                return null;
+            }
+            Assert.Equal(executable, process.MainModule?.FileName);
+            return process;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // It exited between the lookup and the checks.
+            process.Dispose();
+            return null;
+        }
+        catch { process.Dispose(); throw; }
+    }
+
     private static Process Adopt(JsonElement identity, string executable)
     {
         var process = Process.GetProcessById(identity.GetProperty("Pid").GetInt32());
