@@ -23,6 +23,8 @@ public sealed partial class MainWindowViewModel
     public AsyncRelayCommand RestoreFilteredBackupsCommand { get; private set; } = null!;
     public AsyncRelayCommand ReplayLoadedMessagesCommand { get; private set; } = null!;
     public AsyncRelayCommand ResumeReplayCommand { get; private set; } = null!;
+    /// <summary>Sends the messages of a JSON export (Messages → Export) to the destination, as a batch replay.</summary>
+    public AsyncRelayCommand ReplayExportFileCommand { get; private set; } = null!;
     private bool CanPrepareReplay => !IsBusy && CanWrite && _replayStore is not null && ReplayDestination is not null &&
         Destinations.Contains(ReplayDestination);
 
@@ -38,6 +40,9 @@ public sealed partial class MainWindowViewModel
         ResumeReplayCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Resuming latest batch", ResumeReplayAsync, token),
             () => !IsBusy && CanWrite && _replayStore is not null);
+        ReplayExportFileCommand = _commands.Create(
+            token => RunWorkspaceOperationAsync("Replaying an export", ReplayExportFileAsync, token),
+            () => CanPrepareReplay);
         FilteredBackupMessages.CollectionChanged += (_, _) => NotifyReplayFeatures();
         Destinations.CollectionChanged += (_, _) => NotifyReplayFeatures();
     }
@@ -46,6 +51,7 @@ public sealed partial class MainWindowViewModel
     {
         RestoreFilteredBackupsCommand?.NotifyCanExecuteChanged();
         ReplayLoadedMessagesCommand?.NotifyCanExecuteChanged(); ResumeReplayCommand?.NotifyCanExecuteChanged();
+        ReplayExportFileCommand?.NotifyCanExecuteChanged();
     }
 
     /// <summary>"Replay loaded messages" copies the ticked messages when any are ticked, otherwise every loaded one.</summary>
@@ -128,6 +134,26 @@ public sealed partial class MainWindowViewModel
         if (!CanWrite || ConnectedProfileId != profile.Id) throw new InvalidOperationException("Environment or write access changed.");
             var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay,
                 ScheduledResend.IdentityFor(profile), profile.Provider).ConfigureAwait(true);
+        await ExecuteReplayPlanAsync(plan, token).ConfigureAwait(true);
+    }
+
+    private async Task ReplayExportFileAsync(CancellationToken token)
+    {
+        var profile = _connectedProfile ?? throw new InvalidOperationException("Connect first.");
+        var destination = ReplayDestination?.Reference ?? throw new InvalidOperationException("Choose a destination.");
+        var path = await _dialogs.ChooseOpenFileAsync("Replay an export", [("QueueLoom JSON export", "*.json")], token)
+            .ConfigureAwait(true);
+        if (path is null) return;
+        var preserve = PreserveReplayMessageIds;
+        var rate = ReplayRate;
+        var messages = await Task.Run(() => MessageImport.ReadAsync(path, token), token).ConfigureAwait(true);
+        var inputs = messages.Select(message => (message.Draft, message.Origin)).ToList();
+        if (!await ConfirmReplayAsync(profile, destination, inputs.Count, preserve, rate, token,
+                $"The {MessageCount(inputs.Count)} of {Path.GetFileName(path)}",
+                includesKafkaBackups: false).ConfigureAwait(true)) return;
+        if (!CanWrite || ConnectedProfileId != profile.Id) throw new InvalidOperationException("Environment or write access changed.");
+        var plan = await _replayStore!.CreateAsync(profile.Id, destination, inputs, preserve, rate, token, profile.EndpointDisplay,
+            ScheduledResend.IdentityFor(profile), profile.Provider).ConfigureAwait(true);
         await ExecuteReplayPlanAsync(plan, token).ConfigureAwait(true);
     }
 
