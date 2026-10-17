@@ -18,6 +18,8 @@ public sealed partial class AwsSqsSnsWorkspace
         ArgumentNullException.ThrowIfNull(source);
         using var operation = await EnterReadOperationAsync(cancellationToken).ConfigureAwait(false);
         GetConnectedProfile();
+        // Fresh from AWS, not from the last refresh: the confirmation must describe the setup as it is.
+        await RefreshTopologyInOperationAsync(cancellationToken).ConfigureAwait(false);
         var (deadLetterQueue, sources) = ResolveRedrive(source);
         var attributes = (await Sqs.GetQueueAttributesAsync(new GetQueueAttributesRequest
         {
@@ -26,7 +28,11 @@ public sealed partial class AwsSqsSnsWorkspace
         }, cancellationToken).ConfigureAwait(false)).Attributes ?? [];
         var messages = long.TryParse(attributes.GetValueOrDefault("ApproximateNumberOfMessages"), NumberStyles.Integer,
             CultureInfo.InvariantCulture, out var count) ? count : deadLetterQueue.Visible;
-        return new NativeRedrivePlan(source, deadLetterQueue.Name, sources, messages);
+        return new NativeRedrivePlan(source, deadLetterQueue.Name, sources, messages)
+        {
+            DeadLetterArn = deadLetterQueue.Arn,
+            ConfigurationIdentity = ConnectedConfigurationIdentity
+        };
     }
 
     public override async Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default)
@@ -39,9 +45,16 @@ public sealed partial class AwsSqsSnsWorkspace
             throw new InvalidOperationException(
                 $"Environment '{profile.Name}' is read-only. Unlock write access before moving messages.");
         }
-        // What was confirmed must still be true: the same dead-letter queue, shared by the same queues.
+        if (!string.Equals(ConnectedConfigurationIdentity, plan.ConfigurationIdentity, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The environment changed since you confirmed. Start the redrive again. Nothing was moved.");
+        }
+        // What was confirmed must still be true in AWS right now: the same dead-letter queue (by ARN), used by the
+        // same queues, and by no SNS subscription.
+        await RefreshTopologyInOperationAsync(cancellationToken).ConfigureAwait(false);
         var (deadLetterQueue, sources) = ResolveRedrive(plan.Source);
-        if (!string.Equals(deadLetterQueue.Name, plan.DeadLetterQueue, StringComparison.Ordinal) ||
+        if (!string.Equals(deadLetterQueue.Arn, plan.DeadLetterArn, StringComparison.Ordinal) ||
             !sources.SequenceEqual(plan.SourceQueues, StringComparer.Ordinal))
         {
             throw new InvalidOperationException(

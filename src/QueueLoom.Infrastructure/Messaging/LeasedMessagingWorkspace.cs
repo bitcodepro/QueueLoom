@@ -629,6 +629,13 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         catch (Exception error) { _disposalCompletion.TrySetException(error); }
     }
 
+    /// <summary>
+    /// Reads the topology again inside an operation that already holds the operation lease (the public
+    /// <see cref="GetTopologyAsync"/> would wait for that lease itself).
+    /// </summary>
+    protected Task<ServiceBusTopology> RefreshTopologyInOperationAsync(CancellationToken cancellationToken) =>
+        GetTopologyCoreAsync(true, cancellationToken);
+
     protected ServiceBusProfile GetConnectedProfile() =>
         _profile ?? throw new InvalidOperationException("Connect to an environment first.");
 
