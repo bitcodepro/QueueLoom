@@ -321,8 +321,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     {
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
         // HttpClient.Timeout ends when the headers arrive, so the body keeps the same deadline through this token.
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(management.Timeout);
+        using var timeout = new CancellationTokenSource(management.Timeout, TimeProvider);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
             // Headers first: an error body is then read only as far as it is shown, not buffered whole.
@@ -332,7 +332,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             using var document = await JsonDocument.ParseAsync(content, cancellationToken: deadline.Token).ConfigureAwait(false);
             return document.RootElement.EnumerateArray().Select(item => item.Clone()).ToArray();
         }
-        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
             throw new TimeoutException(
                 $"The RabbitMQ management API did not answer within {management.Timeout.TotalSeconds:0} seconds.", exception);
