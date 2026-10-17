@@ -215,6 +215,7 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                 Subject = AwsMessageMapper.SnsSubject(message)
             };
             AwsMessageMapper.EnsureAttributesAccepted(request.MessageAttributes.Keys, sqs: false);
+            AwsMessageMapper.EnsureRawSqsDeliveryAccepts(request.MessageAttributes.Count, topic);
             // The topic's MaximumMessageSize (256 KiB unless raised, up to 1 MiB); when it could not be read, only the
             // 1 MiB ceiling is certain.
             MessageSizeLimits.EnsureWithin(MessageSizeLimits.AwsSize(message),
