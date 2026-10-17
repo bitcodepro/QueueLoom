@@ -412,6 +412,14 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             backupSession.RootDirectory) { Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray() };
     }
 
+    public virtual bool SupportsNativeRedrive => false;
+
+    public virtual Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
+
+    public virtual Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
+
     public virtual QueueManagementCapabilities? QueueManagement => null;
 
     public virtual Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
