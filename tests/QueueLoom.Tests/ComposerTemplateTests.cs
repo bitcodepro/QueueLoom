@@ -104,37 +104,54 @@ public sealed class ComposerTemplateStoreTests
         {
             await store.SaveAsync(new ComposerTemplate($"T{index}", "x", MessageBodyFormat.Text));
         }
+        var safety = TimeSpan.FromSeconds(30);
         var writing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var contended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Task first;
-        var previous = AtomicFile.ContentWriting.Value;
-        AtomicFile.ContentWriting.Value = _ => { writing.TrySetResult(); release.Task.Wait(); };
+        Task first = Task.CompletedTask, second = Task.CompletedTask;
         try
         {
-            first = Task.Run(() => new JsonComposerTemplateStore(directory.Path).SaveAsync(new ComposerTemplate("First", "x", MessageBodyFormat.Text)));
-        }
-        finally
-        {
-            AtomicFile.ContentWriting.Value = previous;
-        }
-        Task second = Task.CompletedTask;
-        try
-        {
-            await writing.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            // Another window: it must wait for the first save to finish before it counts.
-            second = Task.Run(() => new JsonComposerTemplateStore(directory.Path).SaveAsync(new ComposerTemplate("Second", "x", MessageBodyFormat.Text)));
-            await Task.WhenAny(second, Task.Delay(200));
-            Assert.False(second.IsCompleted, "The second save did not wait for the first one.");
-        }
-        finally
-        {
-            release.TrySetResult();
-        }
-        await first.WaitAsync(TimeSpan.FromSeconds(30));
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => second.WaitAsync(TimeSpan.FromSeconds(30)));
+            // The first window is held inside its write, after it was admitted.
+            var previousWriting = AtomicFile.ContentWriting.Value;
+            AtomicFile.ContentWriting.Value = _ => { writing.TrySetResult(); release.Task.Wait(); };
+            try
+            {
+                first = Task.Run(() => new JsonComposerTemplateStore(directory.Path).SaveAsync(new ComposerTemplate("First", "x", MessageBodyFormat.Text)));
+            }
+            finally
+            {
+                AtomicFile.ContentWriting.Value = previousWriting;
+            }
+            await writing.Task.WaitAsync(safety);
 
-        Assert.Contains($"At most {JsonComposerTemplateStore.MaximumTemplates}", error.Message, StringComparison.Ordinal);
-        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, (await store.ListAsync()).Count);
+            // Another window: it signals when it finds the lock taken. Without the lock it would be admitted and
+            // finish instead, which the test reports at once.
+            var previousContended = CrossProcessFileLock.Contended.Value;
+            CrossProcessFileLock.Contended.Value = _ => contended.TrySetResult();
+            try
+            {
+                second = Task.Run(() => new JsonComposerTemplateStore(directory.Path).SaveAsync(new ComposerTemplate("Second", "x", MessageBodyFormat.Text)));
+            }
+            finally
+            {
+                CrossProcessFileLock.Contended.Value = previousContended;
+            }
+            var reached = await Task.WhenAny(contended.Task, second).WaitAsync(safety);
+            Assert.True(ReferenceEquals(reached, contended.Task), "The second save was not held at the lock while the first one wrote.");
+
+            release.TrySetResult();
+            await first.WaitAsync(safety);
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => second.WaitAsync(safety));
+            Assert.Contains($"At most {JsonComposerTemplateStore.MaximumTemplates}", error.Message, StringComparison.Ordinal);
+            Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, (await store.ListAsync()).Count);
+        }
+        finally
+        {
+            // Every started writer is released and observed before the folder goes, also after a failed assertion.
+            release.TrySetResult();
+            await Task.WhenAll(first, second).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety)
+                .ContinueWith(_ => { }, TaskScheduler.Default);
+        }
     }
 
     [Fact]
@@ -252,15 +269,67 @@ public sealed partial class ViewModelStateTests
         }
         finally
         {
+            // Released and drained on every path (the direct load is not owned by a command), keeping a failure above.
             held.Release();
+            await Task.WhenAll(olderOperation, deleting).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety)
+                .ContinueWith(_ => { }, TaskScheduler.Default);
         }
-        await Task.WhenAll(olderOperation, deleting).WaitAsync(safety);
+        await Task.WhenAll(olderOperation, deleting);
 
         Assert.Empty(await store.ListAsync());
         Assert.Empty(vm.ComposerTemplates);
         Assert.Null(vm.SelectedComposerTemplate);
         Assert.False(vm.UseComposerTemplateCommand.CanExecute(null));
         Assert.False(vm.DeleteComposerTemplateCommand.CanExecute(null));
+    }
+
+    // Waiting for the template gate ignored cancellation: a start-up queued behind a held save stayed busy after Esc.
+    [Fact]
+    public async Task ComposerTemplate_ACancelledStartUpDoesNotWaitForAHeldSave()
+    {
+        var safety = TimeSpan.FromSeconds(30);
+        using var directory = new TemporaryDirectory();
+        var store = new HeldListStore(new JsonComposerTemplateStore(directory.Path));
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        await using var vm = new QueueLoom.App.ViewModels.MainWindowViewModel(new FakeProfileRepository([profile], profile.Id),
+            new FakeSecretVault(), new FakeWorkspace(), new FakeDialogService { ConfirmResult = true }, templates: store);
+        vm.TemplateName = "Held";
+        using var cancellation = new CancellationTokenSource();
+        var held = store.HoldNextList();
+        Task saving = Task.CompletedTask, starting = Task.CompletedTask;
+        try
+        {
+            saving = vm.SaveComposerTemplateCommand.ExecuteAsync();
+            await held.Entered.WaitAsync(safety);
+            var listsBefore = store.Lists;
+            starting = vm.InitializeAsync(cancellation.Token);
+            var deadline = DateTime.UtcNow + safety;
+            while (vm.ComposerTemplateWaiters == 0)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "Start-up never waited for the template gate.");
+                await Task.Delay(1);
+            }
+
+            cancellation.Cancel();
+            await starting.ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety);
+
+            // Ended while the save is still held, without reading or publishing templates.
+            Assert.False(saving.IsCompleted);
+            Assert.False(vm.IsBusy);
+            Assert.Equal(listsBefore, store.Lists);
+            Assert.Equal(0, vm.ComposerTemplateWaiters);
+        }
+        finally
+        {
+            held.Release();
+            await Task.WhenAll(saving, starting).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(safety)
+                .ContinueWith(_ => { }, TaskScheduler.Default);
+        }
+        await saving;
+
+        // The gate was not taken by the cancelled wait: later operations still get it.
+        await vm.LoadComposerTemplatesAsync().WaitAsync(safety);
+        Assert.Equal("Held", Assert.Single(vm.ComposerTemplates).Name);
     }
 
     /// <summary>A store whose next list can be held after it has read the templates.</summary>
@@ -280,8 +349,13 @@ public sealed partial class ViewModelStateTests
         public int Deletes => Volatile.Read(ref _deletes);
         public Hold HoldNextList() => _next = new Hold();
 
+        private int _lists;
+        /// <summary>How many lists were read.</summary>
+        public int Lists => Volatile.Read(ref _lists);
+
         public async Task<IReadOnlyList<ComposerTemplate>> ListAsync(CancellationToken cancellationToken = default)
         {
+            Interlocked.Increment(ref _lists);
             var templates = await inner.ListAsync(cancellationToken);
             if (Interlocked.Exchange(ref _next, null) is { } hold) await hold.WaitAsync();
             return templates;

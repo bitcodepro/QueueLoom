@@ -7,6 +7,9 @@ internal sealed class CrossProcessFileLock : IAsyncDisposable, IDisposable
     /// <summary>Test seam: replaces restricting the lock file's permissions.</summary>
     internal static readonly AsyncLocal<Action<string>?> RestrictOverride = new();
 
+    /// <summary>Test seam: called in this async flow each time the lock is held elsewhere and the caller waits.</summary>
+    internal static readonly AsyncLocal<Action<string>?> Contended = new();
+
     private CrossProcessFileLock(FileStream stream)
     {
         _stream = stream;
@@ -48,6 +51,7 @@ internal sealed class CrossProcessFileLock : IAsyncDisposable, IDisposable
             }
             catch (IOException) when (DateTimeOffset.UtcNow < deadline)
             {
+                Contended.Value?.Invoke(path);
                 await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken)
                     .ConfigureAwait(false);
             }

@@ -66,7 +66,7 @@ public sealed partial class MainWindowViewModel
     internal async Task LoadComposerTemplatesAsync(CancellationToken cancellationToken = default)
     {
         if (_templates is null) return;
-        await EnterTemplatesAsync().ConfigureAwait(true);
+        await EnterTemplatesAsync(cancellationToken).ConfigureAwait(true);
         try
         {
             var store = _templates;
@@ -103,7 +103,7 @@ public sealed partial class MainWindowViewModel
                 DraftApplicationProperties,
                 DraftTransactionPartitionKey);
             var store = _templates ?? throw new InvalidOperationException("Templates are not available here.");
-            await EnterTemplatesAsync().ConfigureAwait(true);
+            await EnterTemplatesAsync(cancellationToken).ConfigureAwait(true);
             try
             {
                 await Task.Run(() => store.SaveAsync(template, cancellationToken), cancellationToken).ConfigureAwait(true);
@@ -130,7 +130,7 @@ public sealed partial class MainWindowViewModel
         if (!await _dialogs.ConfirmAsync("Delete template", $"Delete the template '{template.Name}'? Messages sent from it are not affected.",
                 false, cancellationToken: cancellationToken).ConfigureAwait(true)) return;
         // The confirmation is asked before the gate: an open dialog does not hold up the other operations.
-        await EnterTemplatesAsync().ConfigureAwait(true);
+        await EnterTemplatesAsync(cancellationToken).ConfigureAwait(true);
         try
         {
             await Task.Run(() => store.DeleteAsync(template.Name, cancellationToken), cancellationToken).ConfigureAwait(true);
@@ -178,10 +178,14 @@ public sealed partial class MainWindowViewModel
     /// <summary>Operations waiting for, or just taking, the template gate (tests use it to order overlaps).</summary>
     internal int ComposerTemplateWaiters => Volatile.Read(ref _templateWaiters);
 
-    private async Task EnterTemplatesAsync()
+    /// <summary>
+    /// Takes the template gate, or ends with the caller's cancellation while waiting for it: a cancelled start-up does
+    /// not wait for an unrelated save. Released by the caller only once taken.
+    /// </summary>
+    private async Task EnterTemplatesAsync(CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _templateWaiters);
-        try { await _templateGate.WaitAsync(CancellationToken.None).ConfigureAwait(true); }
+        try { await _templateGate.WaitAsync(cancellationToken).ConfigureAwait(true); }
         finally { Interlocked.Decrement(ref _templateWaiters); }
     }
 
