@@ -67,6 +67,57 @@ public sealed class RabbitManagementResponseTests
         Assert.True(stream.Served < 1024 * 1024, $"{stream.Served:N0} bytes were read.");
     }
 
+    // With headers read first, HttpClient.Timeout no longer covered the body: a 200 whose body stalls hung the refresh
+    // past the client's timeout. The whole request, body included, keeps that deadline.
+    [Fact]
+    public async Task ASuccessfulResponseWhoseBodyStallsStillEndsAtTheClientTimeout()
+    {
+        var handler = new Recording(HttpStatusCode.OK, new StalledStream());
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+        var error = await Assert.ThrowsAsync<TimeoutException>(() =>
+            ReadTopologyAsync(handler, timeout: TimeSpan.FromSeconds(1)).WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Contains("did not answer within", error.Message, StringComparison.Ordinal);
+        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(15), $"{elapsed.Elapsed} elapsed.");
+    }
+
+    // The error text had only its own ten-second deadline: cancelling during a stalled error body waited for it and
+    // ended as an error instead of a cancellation.
+    [Fact]
+    public async Task CancellingWhileAnErrorBodyStallsEndsAsACancellation()
+    {
+        var handler = new Recording(HttpStatusCode.BadGateway, new StalledStream());
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ReadTopologyAsync(handler, cancellation: cancellation.Token).WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(5), $"{elapsed.Elapsed} elapsed.");
+    }
+
+    private sealed class StalledStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException("Read asynchronously.");
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private sealed class EndlessStream : Stream
     {
         public long Served { get; private set; }
@@ -87,13 +138,13 @@ public sealed class RabbitManagementResponseTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    private static async Task ReadTopologyAsync(HttpMessageHandler handler)
+    private static async Task ReadTopologyAsync(HttpMessageHandler handler, TimeSpan? timeout = null, CancellationToken cancellation = default)
     {
         await using var workspace = new RabbitMqWorkspace(new DeepAuditCloudTests.EmptyVault());
         typeof(RabbitMqWorkspace).GetField("_management", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(workspace, new HttpClient(handler) { BaseAddress = new Uri("http://broker.invalid/") });
+            .SetValue(workspace, new HttpClient(handler) { BaseAddress = new Uri("http://broker.invalid/"), Timeout = timeout ?? TimeSpan.FromSeconds(100) });
         var read = typeof(RabbitMqWorkspace).GetMethod("ReadTopologyAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        await (Task<ServiceBusTopology>)read.Invoke(workspace, [CancellationToken.None])!;
+        await (Task<ServiceBusTopology>)read.Invoke(workspace, [cancellation])!;
     }
 
     private sealed class Recording : HttpMessageHandler

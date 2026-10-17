@@ -320,15 +320,26 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     private async Task<IReadOnlyList<JsonElement>> GetArrayAsync(string path, CancellationToken cancellationToken)
     {
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
-        // Headers first: an error body is then read only as far as it is shown, not buffered whole.
-        using var response = await management.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
-        await using var content = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(content, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return document.RootElement.EnumerateArray().Select(item => item.Clone()).ToArray();
+        // HttpClient.Timeout ends when the headers arrive, so the body keeps the same deadline through this token.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(management.Timeout);
+        try
+        {
+            // Headers first: an error body is then read only as far as it is shown, not buffered whole.
+            using var response = await management.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            await EnsureSuccessAsync(response, "the management API", deadline.Token).ConfigureAwait(false);
+            await using var content = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(content, cancellationToken: deadline.Token).ConfigureAwait(false);
+            return document.RootElement.EnumerateArray().Select(item => item.Clone()).ToArray();
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"The RabbitMQ management API did not answer within {management.Timeout.TotalSeconds:0} seconds.", exception);
+        }
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string what)
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string what, CancellationToken cancellationToken = default)
     {
         if (response.IsSuccessStatusCode)
         {
@@ -343,19 +354,21 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                 "The virtual host was not found, or the user has no permissions on it."),
             _ => new InvalidOperationException(
                 $"RabbitMQ {what} answered {(int)response.StatusCode} {response.ReasonPhrase}: " +
-                await ReadErrorTextAsync(response).ConfigureAwait(false))
+                await ReadErrorTextAsync(response, cancellationToken).ConfigureAwait(false))
         };
     }
 
     /// <summary>
     /// The start of an error response as one line of text, at most <see cref="MaximumErrorCharacters"/> long. Only the
     /// start is read: a body without end (a misbehaving proxy) is not buffered, and the read has its own deadline.
+    /// Cancelling the operation cancels the read too.
     /// </summary>
-    private static async Task<string> ReadErrorTextAsync(HttpResponseMessage response)
+    private static async Task<string> ReadErrorTextAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         try
         {
-            using var deadline = new CancellationTokenSource(ErrorReadDeadline);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(ErrorReadDeadline);
             await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
             // Four bytes per character at most in UTF-8, and room for whitespace that is collapsed.
             var buffer = new byte[MaximumErrorCharacters * 8];
@@ -369,7 +382,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             var line = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
             return line.Length > MaximumErrorCharacters ? TextLimits.Head(line, MaximumErrorCharacters) + "…" : line;
         }
-        catch (Exception exception) when (exception is IOException or HttpRequestException or OperationCanceledException)
+        catch (Exception exception) when (exception is IOException or HttpRequestException ||
+                                          exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
             return "(the error text could not be read)";
         }
