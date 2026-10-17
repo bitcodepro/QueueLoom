@@ -163,16 +163,24 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
                 process.Dispose();
                 return null;
             }
-            Assert.Equal(executable, process.MainModule?.FileName);
-            return process;
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (InvalidOperationException)
         {
             // It exited between the lookup and the checks.
             process.Dispose();
             return null;
         }
-        catch { process.Dispose(); throw; }
+        // A running process is kept even when its module cannot be read (it may be starting or ending): the test waits
+        // for it to exit before its files are removed. When the module can be read, it must be the fixture.
+        string? module = null;
+        try { module = process.MainModule?.FileName; }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+        if (module is not null)
+        {
+            try { Assert.Equal(executable, module); }
+            catch { process.Dispose(); throw; }
+        }
+        return process;
     }
 
     private static Process Adopt(JsonElement identity, string executable)
