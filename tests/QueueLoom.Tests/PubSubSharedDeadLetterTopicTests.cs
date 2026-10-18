@@ -436,6 +436,87 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Equal([r2], subscriber.AcknowledgedOn);
     }
 
+    // A move captured with orders bound to T through R1 passes orders and is held on middle. Meanwhile a fact that
+    // invalidates that binding is observed through another reader, by a topology refresh or by a fresh check:
+    //  - "sharing": an attached R0 (sorting before R1) joins T, so refresh and checks now bind orders to R0;
+    //  - "policy" / "read": T is recreated with R2 its only reader (R1 kept under "_deleted-topic_"), orders is
+    //    validated through R2, and then orders' policy moves to V or its subscription can no longer be read.
+    // The fact applies to the captured R1 binding too: the move is refused and publishes nothing, a saved move's items
+    // stay Pending, and a lease already held through R1 cannot be acknowledged and is released.
+    [Theory]
+    [InlineData("sharing", "refresh", false)]
+    [InlineData("sharing", "refresh", true)]
+    [InlineData("sharing", "check", false)]
+    [InlineData("sharing", "check", true)]
+    [InlineData("policy", "refresh", false)]
+    [InlineData("policy", "refresh", true)]
+    [InlineData("policy", "check", false)]
+    [InlineData("policy", "check", true)]
+    [InlineData("read", "check", false)]
+    [InlineData("read", "check", true)]
+    public async Task AFactObservedThroughAnotherReaderAppliesToTheCapturedBinding(string fact, string producer, bool durable)
+    {
+        const string u = "projects/p/topics/u-dlq";
+        const string r0 = "projects/p/subscriptions/aaa-r0";
+        const string r1 = "projects/p/subscriptions/dlq-reader";
+        const string r2 = "projects/p/subscriptions/dlq-reader-2";
+        Subscription Source(string id, string topic) => new() { Name = $"projects/p/subscriptions/{id}", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = topic, MaxDeliveryAttempts = 5 } };
+        Subscription Reader(string name, string topic) => new() { Name = name, Topic = topic };
+        var uReader = Reader("projects/p/subscriptions/u-reader", u);
+        var (workspace, publisher, subscriber) = Connect([[r1]], layout: [Source("orders", DeadLetterTopic), Source("middle", u), Reader(r1, DeadLetterTopic), uReader]);
+        subscriber.Policies["middle"] = u;
+        publisher.OtherTopicReaders[u] = [uReader.Name];
+        var middle = ServiceBusEntityReference.Subscription("events", "middle");
+        var oldChannel = OpenChannel(workspace, Orders);
+        var oldLease = await oldChannel.ReceiveAsync(10, CancellationToken.None);
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replays"));
+        var items = new[] { Item(Orders, 1), Item(middle, 2) };
+        var plan = await store.CreateResendAsync(workspace.ConnectedProfileId!.Value, items.Select(item => item.WithNewMessageId()).ToArray(),
+            ResendMode.Move, 50, workspace.ConnectedNamespace, workspace.ConnectedConfigurationIdentity ?? string.Empty, "resend", default);
+        var gate = new Gate();
+        subscriber.BeforeGet = id => id == "middle" ? Take() : Task.CompletedTask;
+        Task Take() { subscriber.BeforeGet = null; return gate.Hold(); }
+
+        var move = durable
+            ? store.RunItemsAsync(plan, [0, 1], false, workspace, () => true, null, default)
+            : DeadLetterResender.ResendAsync(workspace, items, ResendMode.Move);
+        await gate.Run(move, async () =>
+        {
+            if (fact == "sharing")
+            {
+                subscriber.All = [Source("orders", DeadLetterTopic), Source("middle", u), Reader(r0, DeadLetterTopic), Reader(r1, DeadLetterTopic), uReader];
+                publisher.Pages = [[r0, r1]];
+                await workspace.GetTopologyAsync(forceRefresh: true);
+                if (producer == "check")
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]));
+                return;
+            }
+            // T recreated: R1 keeps its backlog under "_deleted-topic_", R2 is the only reader; orders is valid through R2.
+            subscriber.All = [Source("orders", DeadLetterTopic), Source("middle", u), Reader(r1, "_deleted-topic_"), Reader(r2, DeadLetterTopic), uReader];
+            publisher.Pages = [[r2]];
+            await workspace.GetTopologyAsync(forceRefresh: true);
+            await workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+            if (fact == "read") subscriber.Policies.Remove("orders");
+            else subscriber.Policies["orders"] = "projects/p/topics/v-dlq";
+            if (producer == "refresh")
+            {
+                subscriber.All = [Source("orders", "projects/p/topics/v-dlq"), Source("middle", u), Reader(r1, "_deleted-topic_"), Reader(r2, DeadLetterTopic), uReader];
+                await workspace.GetTopologyAsync(forceRefresh: true);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]));
+            }
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => move);
+        Assert.Equal(0, publisher.Published);
+        if (durable) Assert.All(store.ReadHistory(plan).Items, item => Assert.Equal("Pending", item.State));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => oldChannel.SettleAsync(oldLease, CancellationToken.None));
+        Assert.Empty(subscriber.AcknowledgedIds);
+        Assert.Contains("a1", subscriber.ReleasedIds);
+    }
+
     // A two-source move passes orders, then is held on billing; meanwhile another check records that orders' topic is
     // shared. Before the move is admitted every source's latest state is consulted again, so it is refused.
     [Fact]
