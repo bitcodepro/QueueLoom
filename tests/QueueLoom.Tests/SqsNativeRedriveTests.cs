@@ -65,6 +65,7 @@ public sealed class SqsNativeRedriveTests
     [Theory]
     [InlineData("another queue starts using it")]
     [InlineData("the dead-letter queue is created again")]
+    [InlineData("the dead-letter queue is created again under the same name")]
     [InlineData("the source points elsewhere")]
     [InlineData("an SNS subscription starts using it")]
     public async Task AChangeInAwsAfterThePlanMovesNothing(string change)
@@ -83,6 +84,10 @@ public sealed class SqsNativeRedriveTests
                 fixture.Sqs.Queues["orders"] = DeadLetterArn + "-v2";
                 fixture.Sqs.Queues["payments"] = DeadLetterArn + "-v2";
                 break;
+            case "the dead-letter queue is created again under the same name":
+                // SQS builds the ARN from the account, region and name: only the creation time differs.
+                fixture.Sqs.CreatedAt["orders-dlq"] = 1_700_000_500;
+                break;
             case "the source points elsewhere":
                 fixture.Sqs.Queues["other-dlq"] = null;
                 fixture.Sqs.Queues["orders"] = "arn:aws:sqs:us-east-1:0:other-dlq";
@@ -94,6 +99,20 @@ public sealed class SqsNativeRedriveTests
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Workspace.StartNativeRedriveAsync(plan));
 
         Assert.Matches("changed since you confirmed|SNS subscription", error.Message);
+        Assert.Empty(fixture.Sqs.Moves);
+    }
+
+    // The start's token also ends with temporary write access; it ended while AWS was read again before the move.
+    [Fact]
+    public async Task ATokenThatEndsBeforeSubmissionMovesNothing()
+    {
+        await using var fixture = new Fixture(ProfileAccessMode.ReadWrite);
+        var plan = await fixture.Workspace.PlanNativeRedriveAsync(ServiceBusEntityReference.Queue("orders"));
+        using var cancellation = new CancellationTokenSource();
+        fixture.Sqs.OnListQueues = cancellation.Cancel;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Workspace.StartNativeRedriveAsync(plan, cancellation.Token));
+
         Assert.Empty(fixture.Sqs.Moves);
     }
 
@@ -175,12 +194,21 @@ public sealed class SqsNativeRedriveTests
         /// <summary>Appended to the dead-letter queue's ARN, as when it is deleted and created again.</summary>
         public string ArnSuffix { get; set; } = string.Empty;
 
+        /// <summary>Each queue's CreatedTimestamp, in Unix seconds.</summary>
+        public Dictionary<string, long> CreatedAt { get; } = [];
+
+        /// <summary>Called on each ListQueues (each topology read).</summary>
+        public Action? OnListQueues { get; set; }
+
         public List<StartMessageMoveTaskRequest> Moves { get; } = [];
 
         private string ArnOf(string name) => $"arn:aws:sqs:us-east-1:0:{name}" + (name == "orders-dlq" ? ArnSuffix : string.Empty);
 
-        public override Task<ListQueuesResponse> ListQueuesAsync(ListQueuesRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ListQueuesResponse { QueueUrls = Queues.Keys.Select(name => $"https://isolated.invalid/{name}").ToList() });
+        public override Task<ListQueuesResponse> ListQueuesAsync(ListQueuesRequest request, CancellationToken cancellationToken = default)
+        {
+            OnListQueues?.Invoke();
+            return Task.FromResult(new ListQueuesResponse { QueueUrls = Queues.Keys.Select(name => $"https://isolated.invalid/{name}").ToList() });
+        }
 
         public override Task<GetQueueAttributesResponse> GetQueueAttributesAsync(GetQueueAttributesRequest request,
             CancellationToken cancellationToken = default)
@@ -189,6 +217,7 @@ public sealed class SqsNativeRedriveTests
             var attributes = new Dictionary<string, string>
             {
                 ["QueueArn"] = ArnOf(name),
+                ["CreatedTimestamp"] = CreatedAt.GetValueOrDefault(name, 1_700_000_000).ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["ApproximateNumberOfMessages"] = name == "orders-dlq" ? "42" : "0"
             };
             if (Queues[name] is { } deadLetter)

@@ -952,11 +952,16 @@ public sealed partial class ViewModelStateTests
         public bool SupportsNativeRedrive => RedrivePlan is not null;
         public Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
             Task.FromResult(RedrivePlan ?? throw new NotSupportedException());
-        public Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default)
+        /// <summary>Awaited as a redrive starts, like the provider reading AWS again before it submits.</summary>
+        public Func<CancellationToken, Task>? RedriveStartGate { get; set; }
+        public async Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default)
         {
             OnRedriveStart?.Invoke();
+            if (RedriveStartGate is { } gate) await gate(cancellationToken);
+            // Like the provider: the token is checked just before the move is submitted.
+            cancellationToken.ThrowIfCancellationRequested();
             RedriveStarts.Add(plan);
-            return Task.FromResult("task-1");
+            return "task-1";
         }
 
         public IReadOnlyList<string> ResultWarnings { get; set; } = [];

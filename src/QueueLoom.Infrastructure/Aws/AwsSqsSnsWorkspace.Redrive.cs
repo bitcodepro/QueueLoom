@@ -31,6 +31,7 @@ public sealed partial class AwsSqsSnsWorkspace
         return new NativeRedrivePlan(source, deadLetterQueue.Name, sources, messages)
         {
             DeadLetterArn = deadLetterQueue.Arn,
+            DeadLetterCreatedAt = deadLetterQueue.CreatedAt,
             ConfigurationIdentity = ConnectedConfigurationIdentity
         };
     }
@@ -50,16 +51,20 @@ public sealed partial class AwsSqsSnsWorkspace
             throw new InvalidOperationException(
                 "The environment changed since you confirmed. Start the redrive again. Nothing was moved.");
         }
-        // What was confirmed must still be true in AWS right now: the same dead-letter queue (by ARN), used by the
-        // same queues, and by no SNS subscription.
+        // What was confirmed must still be true in AWS right now: the same dead-letter queue (its ARN and, since a
+        // queue created again under the same name keeps the ARN, its creation time), used by the same queues, and by no
+        // SNS subscription.
         await RefreshTopologyInOperationAsync(cancellationToken).ConfigureAwait(false);
         var (deadLetterQueue, sources) = ResolveRedrive(plan.Source);
         if (!string.Equals(deadLetterQueue.Arn, plan.DeadLetterArn, StringComparison.Ordinal) ||
+            deadLetterQueue.CreatedAt != plan.DeadLetterCreatedAt ||
             !sources.SequenceEqual(plan.SourceQueues, StringComparer.Ordinal))
         {
             throw new InvalidOperationException(
                 "The dead-letter queue setup changed since you confirmed. Refresh and start the redrive again. Nothing was moved.");
         }
+        // The caller's token also ends with temporary write access: checked last, just before the move is submitted.
+        cancellationToken.ThrowIfCancellationRequested();
         var response = await Sqs.StartMessageMoveTaskAsync(new StartMessageMoveTaskRequest { SourceArn = deadLetterQueue.Arn },
             cancellationToken).ConfigureAwait(false);
         return response.TaskHandle ?? string.Empty;

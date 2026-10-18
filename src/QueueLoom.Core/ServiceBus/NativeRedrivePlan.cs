@@ -12,8 +12,12 @@ public sealed record NativeRedrivePlan(
     IReadOnlyList<string> SourceQueues,
     long ApproximateMessages)
 {
-    /// <summary>The dead-letter queue itself (its ARN): a queue of the same name created again is another queue.</summary>
+    /// <summary>The dead-letter queue's ARN. SQS builds it from the account, region and name, so it stays the same
+    /// when a queue of that name is deleted and created again; <see cref="DeadLetterCreatedAt"/> tells the two apart.</summary>
     public string DeadLetterArn { get; init; } = string.Empty;
+
+    /// <summary>When the dead-letter queue was created (SQS CreatedTimestamp), or null when SQS did not say.</summary>
+    public DateTimeOffset? DeadLetterCreatedAt { get; init; }
 
     /// <summary>The environment's settings the plan was made with; a changed environment refuses the plan.</summary>
     public string? ConfigurationIdentity { get; init; }

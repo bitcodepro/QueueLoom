@@ -71,7 +71,19 @@ public sealed partial class MainWindowViewModel
             $"{profile.Name} · {plan.DeadLetterQueue} ({plan.DeadLetterArn}) → the queue each message came from · " +
             $"about {plan.ApproximateMessages:N0} message(s) · queues using it now: {string.Join(", ", plan.SourceQueues)}",
             entity.Reference);
-        var handle = await _workspace.StartNativeRedriveAsync(plan, cancellationToken).ConfigureAwait(true);
+        // Temporary write access can end while the provider reads AWS again before submitting: the token ends with it,
+        // and the provider checks it just before the move. A move AWS already accepted is not stopped by it.
+        using var writeCancellation = CreateExpiryBoundedWriteCancellation(profile.Id, cancellationToken);
+        string handle;
+        try
+        {
+            handle = await _workspace.StartNativeRedriveAsync(plan, writeCancellation.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "Write access expired before the redrive was submitted to AWS. Unlock it and start the redrive again. Nothing was moved.");
+        }
         AddActivity("Success", "DLQ redrive accepted by AWS",
             $"{profile.Name} · {plan.DeadLetterQueue} → source queues · task {handle}",
             entity.Reference);

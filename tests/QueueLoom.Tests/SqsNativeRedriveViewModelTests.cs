@@ -63,6 +63,60 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("Write access expired", vm.ErrorText, StringComparison.Ordinal);
     }
 
+    // Approved in time, but the grant ran out while the provider read AWS again: the token passed to the start ends
+    // with it, and nothing is submitted.
+    [Fact]
+    public async Task Redrive_WriteAccessThatExpiresBeforeSubmissionMovesNothing()
+    {
+        var clock = new RedriveClock();
+        var workspace = RedriveWorkspace();
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        var profile = CreateProfile("AWS", EnvironmentKind.Development);
+        await using var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
+        vm.Clock = clock;
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        await vm.UnlockWritesCommand.ExecuteAsync();
+        vm.SelectedEntity = vm.Entities.Single(entity => entity.IsQueue);
+        workspace.RedriveStartGate = _ =>
+        {
+            clock.Advance(TimeSpan.FromMinutes(11));
+            return Task.CompletedTask;
+        };
+
+        await vm.RedriveSelectedDeadLettersCommand.ExecuteAsync();
+
+        Assert.Empty(workspace.RedriveStarts);
+        Assert.Contains("Write access expired before the redrive was submitted", vm.ErrorText, StringComparison.Ordinal);
+    }
+
+    private sealed class RedriveClock : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        private readonly List<(DateTimeOffset At, TimerCallback Callback, object? State, Timer Handle)> _timers = [];
+        public override DateTimeOffset GetUtcNow() => _now;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new Timer();
+            if (dueTime != Timeout.InfiniteTimeSpan) lock (_timers) _timers.Add((_now + dueTime, callback, state, timer));
+            return timer;
+        }
+        public void Advance(TimeSpan elapsed)
+        {
+            _now += elapsed;
+            (DateTimeOffset At, TimerCallback Callback, object? State, Timer Handle)[] due;
+            lock (_timers) due = _timers.Where(timer => timer.At <= _now && !timer.Handle.Disposed).ToArray();
+            foreach (var timer in due) timer.Callback(timer.State);
+        }
+        private sealed class Timer : ITimer
+        {
+            public bool Disposed { get; private set; }
+            public bool Change(TimeSpan dueTime, TimeSpan period) => !Disposed;
+            public void Dispose() => Disposed = true;
+            public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
+        }
+    }
+
     // A durable record comes before the move, which cannot be undone; without it, nothing is moved.
     [Fact]
     public async Task Redrive_IsRecordedDurablyBeforeItStartsAndNotStartedWhenTheRecordFails()
