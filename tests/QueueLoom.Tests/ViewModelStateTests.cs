@@ -1112,6 +1112,9 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        /// <summary>The result a purge reports for a target; a clean, verified purge when null.</summary>
+        public Func<DeadLetterPurgeTarget, DeadLetterPurgeSourceResult>? PurgeResultFor { get; set; }
+
         public Task<DeadLetterPurgeResult> PurgeDeadLettersAsync(
             DeadLetterPurgeRequest request,
             CancellationToken cancellationToken = default,
@@ -1119,7 +1122,7 @@ public sealed partial class ViewModelStateTests
         {
             PurgeRequests.Add(request);
             var now = DateTimeOffset.UtcNow;
-            var results = request.Targets.Select(target =>
+            var results = request.Targets.Select(target => PurgeResultFor?.Invoke(target) ??
                 new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, 0));
             return Task.FromResult(new DeadLetterPurgeResult(
                 ConnectedProfileId ?? throw new InvalidOperationException("Not connected."),

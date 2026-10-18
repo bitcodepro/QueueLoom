@@ -219,14 +219,18 @@ public sealed partial class MainWindowViewModel
     {
         var completedSources = result.Sources
             .Where(source => source.IsSuccessful)
-            .Select(source => (source.Source, source.SubQueue))
-            .ToHashSet();
+            .ToDictionary(source => (source.Source, source.SubQueue), source => source.VerificationPending);
         foreach (var row in DeadLetterSources
-                     .Where(row => row.ProfileId == result.ProfileId && completedSources.Contains((row.Entity, row.Snapshot.SubQueue)))
+                     .Where(row => row.ProfileId == result.ProfileId && completedSources.ContainsKey((row.Entity, row.Snapshot.SubQueue)))
                      .ToArray())
         {
-            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] = new(0, row.Snapshot.CountQuality)
-                { MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom };
+            // A source proven empty compares the next scan with zero. One whose counter after the purge still showed
+            // messages, or could not be read, was never measured empty: it is known only to hold at least none, so the
+            // next scan's change is unknown rather than growth from a zero.
+            var pending = completedSources[(row.Entity, row.Snapshot.SubQueue)];
+            _previousDlqCounts[$"{row.ProfileId:N}|{row.Entity.Path}|{row.Snapshot.SubQueue}"] =
+                new(0, pending ? DeadLetterCountQuality.LowerBound : row.Snapshot.CountQuality)
+                    { MeasuredAt = row.Snapshot.MeasuredAt, MeasuredFrom = row.Snapshot.MeasuredFrom };
             var index = DeadLetterSources.IndexOf(row);
             DeadLetterSources.RemoveAt(index);
             if (row.CountIsLowerBound)
