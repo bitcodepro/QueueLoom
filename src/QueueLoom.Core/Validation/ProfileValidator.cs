@@ -354,7 +354,9 @@ public static partial class ProfileValidator
     [GeneratedRegex("^([a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$")]
     private static partial Regex GoogleProjectPattern();
 
-    [GeneratedRegex("^[A-Za-z0-9.-]+:[0-9]{1,5}$")]
+    // Underscores are allowed: Docker Compose service names (kafka_1) resolve through Docker's DNS, and librdkafka and
+    // gRPC take them.
+    [GeneratedRegex("^[A-Za-z0-9._-]+:[0-9]{1,5}$")]
     private static partial Regex HostAndPortPattern();
 
     /// <summary>
