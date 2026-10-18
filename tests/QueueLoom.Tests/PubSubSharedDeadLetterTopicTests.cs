@@ -653,6 +653,57 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         await AssertRefusedAndNothingChanged(move!, publisher, subscriber, oldChannel, oldLease, store, plan, durable);
     }
 
+    // Seeing the same adverse fact again is a newer observation of it. Check A's read of orders is held before it reads;
+    // the policy moves to V and check B records V; the policy is restored to T and the move's read captures T and is
+    // held; the policy moves back to V and A resumes, seeing V again; the move's stale T then finishes. Issued before A
+    // re-recorded V, it cannot replace it: the move is refused and publishes nothing.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ARepeatedAdverseFactIsReRecordedSoAStaleReadCannotReplaceIt(bool durable)
+    {
+        var (workspace, publisher, subscriber, oldChannel, oldLease, store, plan, items) = await TwoSourceLayoutAsync();
+        const string v = "projects/p/topics/v-dlq";
+        var checkGate = new Gate();
+        var moveGate = new Gate();
+        subscriber.BeforeGet = id => id == "orders" ? TakeCheck() : Task.CompletedTask;
+        Task TakeCheck() { subscriber.BeforeGet = null; return checkGate.Hold(); }
+
+        var checkA = workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        Task? move = null;
+        await checkGate.Run(checkA, async () =>
+        {
+            subscriber.Policies["orders"] = v;
+            await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)])); // B: V
+            subscriber.Policies["orders"] = DeadLetterTopic;
+            subscriber.AfterGet = id => id == "orders" ? TakeMove() : Task.CompletedTask;
+            Task TakeMove() { subscriber.AfterGet = null; return moveGate.Hold(); }
+            move = Move(workspace, store, plan, items, durable);
+            await moveGate.Run(move, async () =>
+            {
+                subscriber.Policies["orders"] = v;
+                checkGate.Release();
+                await Assert.ThrowsAsync<InvalidOperationException>(() => checkA.WaitAsync(TimeSpan.FromSeconds(10))); // A: V again
+            });
+        });
+
+        await AssertRefusedAndNothingChanged(move!, publisher, subscriber, oldChannel, oldLease, store, plan, durable);
+    }
+
+    // Every clock value is taken atomically from one counter: many concurrent checks allocate exactly as many values as
+    // they performed reads and recordings (two reads and three recordings each), none lost or duplicated.
+    [Fact]
+    public async Task ConcurrentChecksNeverLoseOrRepeatAClockValue()
+    {
+        var (workspace, _, _) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        const int checks = 400;
+
+        await Task.WhenAll(Enumerable.Range(0, checks).Select(_ => Task.Run(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]))))
+            .WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.Equal(checks * 5L, (long)typeof(GooglePubSubWorkspace).GetField("_observationClock", Any)!.GetValue(workspace)!);
+    }
+
     // A complete refresh alone disproves the captured binding: orders itself was deleted, or T was recreated so that R1
     // now reads "_deleted-topic_" (keeping its backlog) and R2 is T's only reader, with orders still naming T. Nothing
     // validates R2 first, so the refresh's own facts must refuse the move and the R1 lease.

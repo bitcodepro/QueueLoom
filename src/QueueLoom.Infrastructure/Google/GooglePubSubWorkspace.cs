@@ -246,13 +246,16 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     /// Records an observation issued at <paramref name="started"/>. It replaces the recorded fact only when it began after
     /// that fact was recorded: then it is genuinely newer. A read that overlapped the recorded one and saw something else
     /// marks the scope contradicted, recorded now, so that only a read issued after this point can settle it; an older
-    /// read finishing late can neither overwrite an adverse fact nor clear a contradiction. Equal facts change nothing.
+    /// read finishing late can neither overwrite an adverse fact nor clear a contradiction. Equal facts are re-recorded
+    /// now: seeing the same fact again is a newer observation of it, so a stale read issued before it cannot replace it.
+    /// Every clock value (read starts and recordings alike) is taken atomically from the same counter, so it never goes
+    /// backwards.
     /// </summary>
     private void Observe(Dictionary<string, Observation> observations, string key, long started, string? problem, string? value, string what)
     {
         lock (_topicObservations)
         {
-            var now = ++_observationClock;
+            var now = Interlocked.Increment(ref _observationClock);
             if (!observations.TryGetValue(key, out var recorded) || started > recorded.Recorded)
             {
                 observations[key] = new Observation(started, now, problem, value);
@@ -260,6 +263,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             else if (recorded.Problem != problem || recorded.Value != value)
             {
                 observations[key] = recorded with { Recorded = now, Problem = problem ?? recorded.Problem ?? $"{what} {Contradiction}" };
+            }
+            else
+            {
+                observations[key] = recorded with { Recorded = now };
             }
         }
     }
