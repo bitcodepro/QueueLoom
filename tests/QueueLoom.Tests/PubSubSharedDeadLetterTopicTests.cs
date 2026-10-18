@@ -704,6 +704,43 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Equal(checks * 5L, (long)typeof(GooglePubSubWorkspace).GetField("_observationClock", Any)!.GetValue(workspace)!);
     }
 
+    // Clock order under a coordinated interleaving: check A's read is issued (its start value taken) and held; check B
+    // reads and records orders; A resumes and re-records it. B's recording is later than A's start, and A's recording is
+    // later than B's: values are handed out in the order things happen, whichever thread takes them.
+    [Fact]
+    public async Task ClockValuesFollowTheOrderOfStartsAndRecordings()
+    {
+        var (workspace, _, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        var clock = typeof(GooglePubSubWorkspace).GetField("_observationClock", Any)!;
+        long Recorded() => (long)SourceFact(workspace, "orders").GetType().GetProperty("Recorded")!.GetValue(SourceFact(workspace, "orders"))!;
+        var gate = new Gate();
+        long aStarted = 0;
+        subscriber.BeforeGet = _ =>
+        {
+            subscriber.BeforeGet = null;
+            aStarted = (long)clock.GetValue(workspace)!; // A's start was the last value handed out
+            return gate.Hold();
+        };
+
+        var checkA = workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        long bRecorded = 0;
+        await gate.Run(checkA, async () =>
+        {
+            await workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+            bRecorded = Recorded();
+        });
+        await checkA.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(aStarted > 0 && bRecorded > aStarted, $"B recorded at {bRecorded}, not after A started at {aStarted}.");
+        Assert.True(Recorded() > bRecorded, $"A's recording ({Recorded()}) is not after B's ({bRecorded}).");
+    }
+
+    private static object SourceFact(GooglePubSubWorkspace workspace, string source)
+    {
+        var facts = (System.Collections.IDictionary)typeof(GooglePubSubWorkspace).GetField("_sourceObservations", Any)!.GetValue(workspace)!;
+        lock (typeof(GooglePubSubWorkspace).GetField("_topicObservations", Any)!.GetValue(workspace)!) return facts[source]!;
+    }
+
     // A complete refresh alone disproves the captured binding: orders itself was deleted, or T was recreated so that R1
     // now reads "_deleted-topic_" (keeping its backlog) and R2 is T's only reader, with orders still naming T. Nothing
     // validates R2 first, so the refresh's own facts must refuse the move and the R1 lease.
@@ -956,7 +993,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         public override PagedAsyncEnumerable<ListTopicSubscriptionsResponse, string> ListTopicSubscriptionsAsync(
             ListTopicSubscriptionsRequest request, CallSettings? callSettings = null)
         {
-            ListedTopics.Add(request.Topic);
+            lock (ListedTopics) ListedTopics.Add(request.Topic);
             if (ListFailure is { } failure) throw new RpcException(new Status(failure, "listing refused"));
             var pages = request.Topic == DeadLetterTopic ? Pages : [OtherTopicReaders.GetValueOrDefault(request.Topic, [])];
             return new FakePaged(pages.Select(names => new ListTopicSubscriptionsResponse { Subscriptions = { names } }).ToArray(), BeforeLastPage);
@@ -964,7 +1001,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
 
         public override Task<PublishResponse> PublishAsync(PublishRequest request, CallSettings? callSettings = null)
         {
-            Published += request.Messages.Count;
+            lock (ListedTopics) Published += request.Messages.Count;
             return Task.FromResult(new PublishResponse { MessageIds = { request.Messages.Select(_ => "published") } });
         }
     }
@@ -1056,7 +1093,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         // One dead letter of "orders", attributed with both its subscription and project, then nothing.
         public override Task<PullResponse> PullAsync(PullRequest request, CallSettings? callSettings = null)
         {
-            Pulls++;
+            lock (AcknowledgedIds) Pulls++;
             var response = new PullResponse();
             if (!_delivered)
             {
@@ -1083,7 +1120,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         {
             if (request.AckDeadlineSeconds == 0)
             {
-                ReleasedIds.AddRange(request.AckIds);
+                lock (AcknowledgedIds) ReleasedIds.AddRange(request.AckIds);
                 _delivered = false; // released: it can be pulled again
             }
             return Task.CompletedTask;
@@ -1094,8 +1131,11 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
 
         public override Task AcknowledgeAsync(SubscriptionName subscription, IEnumerable<string> ackIds, CallSettings? callSettings = null)
         {
-            AcknowledgedOn.Add(subscription.ToString());
-            AcknowledgedIds.AddRange(ackIds);
+            lock (AcknowledgedIds)
+            {
+                AcknowledgedOn.Add(subscription.ToString());
+                AcknowledgedIds.AddRange(ackIds);
+            }
             return Task.CompletedTask;
         }
     }
