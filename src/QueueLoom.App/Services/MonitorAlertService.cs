@@ -160,11 +160,47 @@ public sealed class MonitorAlertService(
     /// into a RichTextBlock TextRun, which Adaptive Cards documents as not supporting Markdown
     /// (https://learn.microsoft.com/adaptive-cards/authoring-cards/text-features): it is shown literally.
     /// </summary>
+    /// <summary>Slack's own hosts only: slack.com and its subdomains, not a host that merely ends in "slack.com".</summary>
+    internal static bool IsSlack(string webhookUrl) =>
+        Uri.TryCreate(webhookUrl, UriKind.Absolute, out var uri) &&
+        (uri.Host.Equals("slack.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host.EndsWith(".slack.com", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Keeps text literal for a Markdown receiver: every ASCII punctuation character gets a backslash (CommonMark allows
+    /// one before any of them), so no link, emphasis, entity (&amp;), list marker or heading can form; a control
+    /// character such as a line break becomes its Unicode control picture (U+2400 block), so the text stays on one line
+    /// and cannot start a block. Bare addresses may still be linked by a receiver that links them on its own.
+    /// </summary>
+    internal static string EscapeMarkdown(string text)
+    {
+        var escaped = new System.Text.StringBuilder(text.Length + 8);
+        foreach (var character in text)
+        {
+            if (char.IsAsciiLetterOrDigit(character) || character == ' ' || character > '\u007F')
+            {
+                escaped.Append(character);
+            }
+            else if (character < ' ')
+            {
+                escaped.Append((char)(0x2400 + character));
+            }
+            else if (character == '\u007F')
+            {
+                escaped.Append('\u2421');
+            }
+            else
+            {
+                escaped.Append('\\').Append(character);
+            }
+        }
+        return escaped.ToString();
+    }
+
     public static JsonObject BuildWebhookPayload(string webhookUrl, MonitorAlert alert)
     {
         var text = $"{alert.Title} — {alert.Text}";
-        if (Uri.TryCreate(webhookUrl, UriKind.Absolute, out var uri) &&
-            uri.Host.EndsWith("slack.com", StringComparison.OrdinalIgnoreCase))
+        if (IsSlack(webhookUrl))
         {
             // Slack parses <!channel>, <@user> and <url|label> in text; broker names must stay literal.
             return new JsonObject { ["text"] = text.Replace("&", "&amp;", StringComparison.Ordinal)
@@ -174,7 +210,9 @@ public sealed class MonitorAlertService(
         return new JsonObject
         {
             ["type"] = "message",
-            ["text"] = text,
+            // Receivers that read this field (classic Office 365 connectors and others) render Markdown: the broker's
+            // names are escaped so "[click](https://evil)" stays text. The title is QueueLoom's own.
+            ["text"] = $"{alert.Title} — {EscapeMarkdown(alert.Text)}",
             ["attachments"] = new JsonArray(new JsonObject
             {
                 ["contentType"] = "application/vnd.microsoft.card.adaptive",
