@@ -47,6 +47,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     private IReadOnlyDictionary<(string Topic, string Subscription), Subscription> _subscriptions =
         new Dictionary<(string, string), Subscription>();
     private IReadOnlyDictionary<string, Subscription> _deadLetterReaders = new Dictionary<string, Subscription>();
+    private IReadOnlyDictionary<string, string[]> _sharedDeadLetterTopics = new Dictionary<string, string[]>();
 
     public GooglePubSubWorkspace(
         ISecretVault secretVault,
@@ -115,6 +116,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         _metrics = null;
         _subscriptions = new Dictionary<(string, string), Subscription>();
         _deadLetterReaders = new Dictionary<string, Subscription>();
+        _sharedDeadLetterTopics = new Dictionary<string, string[]>();
         var channels = _channels.ToArray();
         _channels.Clear();
         foreach (var channel in channels)
@@ -163,6 +165,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             undelivered?.ToDictionary(pair => pair.Key, pair => pair.Value.At, StringComparer.Ordinal));
         _subscriptions = index.Subscriptions;
         _deadLetterReaders = index.DeadLetterReaders;
+        _sharedDeadLetterTopics = index.SharedDeadLetterTopics;
         return index.Topology;
     }
 
@@ -201,7 +204,16 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                 "Create a subscription on it first; messages published before that are not kept.");
         }
 
-        return new PubSubChannel(this, source, subQueue, reader.SubscriptionName, belongsTo: subscription.SubscriptionName);
+        // Several subscriptions on the dead-letter topic each hold a copy, and some may be another consumer's: what is
+        // acknowledged through one stays in the others. Such a topic is viewed, never acknowledged through.
+        return new PubSubChannel(this, source, subQueue, reader.SubscriptionName, belongsTo: subscription.SubscriptionName)
+        {
+            SettleRefusal = _sharedDeadLetterTopics.TryGetValue(deadLetterTopic, out var readers)
+                ? $"Dead-letter topic '{GooglePubSubTopology.TopicIdOf(deadLetterTopic)}' has {readers.Length:N0} subscriptions " +
+                  $"({string.Join(", ", readers)}). Each keeps its own copy and some may belong to another consumer, so QueueLoom " +
+                  "does not delete or move its messages; it only shows them. Keep one subscription on the topic to manage them here."
+                : null
+        };
     }
 
     protected override async Task SendCoreAsync(
@@ -382,6 +394,9 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
         public int MaximumBatchSize => MaximumBatch;
 
+        /// <summary>Why messages read here must not be acknowledged, when they must not; they are released instead.</summary>
+        public string? SettleRefusal { get; init; }
+
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {
             PullResponse response;
@@ -511,6 +526,11 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             {
                 return [];
             }
+            if (SettleRefusal is not null)
+            {
+                await ReleaseAsync(messages, cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException(SettleRefusal);
+            }
 
             // Chunks acknowledged before a failure are gone; only the rest are reported as not settled.
             var acknowledged = 0;
@@ -570,6 +590,9 @@ internal sealed record GooglePubSubTopology(
     IReadOnlyDictionary<(string Topic, string Subscription), Subscription> Subscriptions,
     IReadOnlyDictionary<string, Subscription> DeadLetterReaders)
 {
+    /// <summary>Dead-letter topics read by more than one subscription, with those subscriptions' names.</summary>
+    public IReadOnlyDictionary<string, string[]> SharedDeadLetterTopics { get; init; } = new Dictionary<string, string[]>();
+
     public static GooglePubSubTopology Build(
         string projectId,
         IEnumerable<string> topicIds,
@@ -588,6 +611,10 @@ internal sealed record GooglePubSubTopology(
             .Where(topic => !string.IsNullOrEmpty(topic) && byTopic.ContainsKey(topic))
             .Distinct(StringComparer.Ordinal)
             .ToDictionary(topic => topic!, topic => byTopic[topic!][0], StringComparer.Ordinal);
+        var sharedDeadLetterTopics = deadLetterReaders.Keys
+            .Where(topic => byTopic[topic].Length > 1)
+            .ToDictionary(topic => topic, topic => byTopic[topic].Select(item => item.SubscriptionName.SubscriptionId).ToArray(),
+                StringComparer.Ordinal);
         var deadLetterUsers = subscriptions
             .Where(subscription => !string.IsNullOrEmpty(subscription.DeadLetterPolicy?.DeadLetterTopic))
             .GroupBy(subscription => subscription.DeadLetterPolicy.DeadLetterTopic, StringComparer.Ordinal)
@@ -622,7 +649,9 @@ internal sealed record GooglePubSubTopology(
                 {
                     var deadLetterTopicId = TopicIdOf(deadLetterTopic);
                     note = hasDeadLetters
-                        ? $"Dead letters go to {deadLetterTopicId}"
+                        ? sharedDeadLetterTopics.ContainsKey(deadLetterTopic)
+                            ? $"Dead letters go to {deadLetterTopicId}, which several subscriptions read: read-only here"
+                            : $"Dead letters go to {deadLetterTopicId}"
                         : $"Dead letters go to {deadLetterTopicId}, which has no subscription to read them from";
                 }
                 else if (deadLetterUsers.TryGetValue(resource, out var users))
@@ -672,7 +701,7 @@ internal sealed record GooglePubSubTopology(
             HasMessageCounts = undelivered is not null,
             UsesSampledCounts = undelivered is null
         };
-        return new GooglePubSubTopology(topology, index, deadLetterReaders);
+        return new GooglePubSubTopology(topology, index, deadLetterReaders) { SharedDeadLetterTopics = sharedDeadLetterTopics };
 
         // Active: the subscription's undelivered messages. Dead letters: those of the subscription reading its
         // dead-letter topic, which covers every subscription that shares the topic.
