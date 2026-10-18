@@ -317,6 +317,63 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Equal(["a1"], subscriber.AcknowledgedIds);
     }
 
+    // Three sources: orders and billing dead-letter to T (one reader), middle to U. A move of all three passes orders and
+    // is held reading middle; meanwhile orders' policy moves to V (or its subscription can no longer be read) and a
+    // separate check records that failure. The move then checks billing, whose binding to T is fine. Billing's success
+    // must not clear orders' failure: the move is refused, publishes nothing, orders' open channel still refuses, while
+    // billing's stays usable. A fresh check of orders, once it is back on T, makes it eligible again.
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task ASiblingSourcesSuccessDoesNotClearAnotherSourcesFailure(bool readFails, bool durable)
+    {
+        const string u = "projects/p/topics/u-dlq";
+        var (workspace, publisher, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]], layout:
+        [
+            new Subscription { Name = "projects/p/subscriptions/orders", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = DeadLetterTopic, MaxDeliveryAttempts = 5 } },
+            new Subscription { Name = "projects/p/subscriptions/middle", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = u, MaxDeliveryAttempts = 5 } },
+            new Subscription { Name = "projects/p/subscriptions/billing", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = DeadLetterTopic, MaxDeliveryAttempts = 5 } },
+            new Subscription { Name = "projects/p/subscriptions/dlq-reader", Topic = DeadLetterTopic },
+            new Subscription { Name = "projects/p/subscriptions/u-reader", Topic = u }
+        ]);
+        subscriber.Policies["middle"] = u;
+        subscriber.Policies["billing"] = DeadLetterTopic;
+        publisher.OtherTopicReaders[u] = ["projects/p/subscriptions/u-reader"];
+        var middle = ServiceBusEntityReference.Subscription("events", "middle");
+        var ordersChannel = OpenChannel(workspace, Orders);
+        var billingChannel = OpenChannel(workspace, Billing);
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replays"));
+        var items = new[] { Item(Orders, 1), Item(middle, 2), Item(Billing, 3) };
+        var plan = await store.CreateResendAsync(workspace.ConnectedProfileId!.Value, items.Select(item => item.WithNewMessageId()).ToArray(),
+            ResendMode.Move, 50, workspace.ConnectedNamespace, workspace.ConnectedConfigurationIdentity ?? string.Empty, "resend", default);
+        var gate = new Gate();
+        subscriber.BeforeGet = id => id == "middle" ? Take() : Task.CompletedTask;
+        Task Take() { subscriber.BeforeGet = null; return gate.Hold(); }
+
+        var move = durable
+            ? store.RunItemsAsync(plan, [0, 1, 2], false, workspace, () => true, null, default)
+            : DeadLetterResender.ResendAsync(workspace, items, ResendMode.Move);
+        await gate.Run(move, async () =>
+        {
+            if (readFails) subscriber.Policies.Remove("orders");
+            else subscriber.Policies["orders"] = "projects/p/topics/v-dlq";
+            await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]));
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => move);
+        Assert.Equal(0, publisher.Published);
+        Assert.Empty(subscriber.AcknowledgedIds);
+        if (durable) Assert.All(store.ReadHistory(plan).Items, item => Assert.Equal("Pending", item.State));
+        Assert.NotNull(Refusal(ordersChannel));
+        Assert.Null(Refusal(billingChannel));
+
+        subscriber.Policies["orders"] = DeadLetterTopic;
+        await workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        Assert.Null(Refusal(ordersChannel));
+    }
+
     // A two-source move passes orders, then is held on billing; meanwhile another check records that orders' topic is
     // shared. Before the move is admitted every source's latest state is consulted again, so it is refused.
     [Fact]
@@ -492,12 +549,13 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         ];
 
     private (GooglePubSubWorkspace Workspace, FakePublisher Publisher, FakeSubscriber Subscriber) Connect(
-        string[][] pages, StatusCode? listFailure = null, string[]? detached = null)
+        string[][] pages, StatusCode? listFailure = null, string[]? detached = null, Subscription[]? layout = null)
     {
         // The cached topology knows this project's readers only.
-        var index = Build(pages.SelectMany(page => page).ToArray(), detached);
-        var publisher = new FakePublisher { Pages = pages, ListFailure = listFailure, Topics = ["events", "events-dlq", "billing-dlq"] };
-        var subscriber = new FakeSubscriber { All = Subscriptions(pages.SelectMany(page => page).ToArray(), detached) };
+        var all = layout ?? Subscriptions(pages.SelectMany(page => page).ToArray(), detached);
+        var index = GooglePubSubTopology.Build("p", ["events", "events-dlq", "billing-dlq", "u-dlq"], all, DateTimeOffset.UtcNow);
+        var publisher = new FakePublisher { Pages = pages, ListFailure = listFailure, Topics = ["events", "events-dlq", "billing-dlq", "u-dlq"] };
+        var subscriber = new FakeSubscriber { All = all };
         var workspace = new GooglePubSubWorkspace(new DeepAuditCloudTests.EmptyVault(), backupStore: new DeadLetterJsonBackupStore(Paths));
         var profile = ViewModelStateTests.CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite) with { Provider = MessagingProvider.GooglePubSub };
         Set(typeof(GooglePubSubWorkspace), workspace, "_publisher", publisher);
@@ -514,6 +572,8 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
     private static ILeasedMessageChannel OpenChannel(GooglePubSubWorkspace workspace, ServiceBusEntityReference source) =>
         (ILeasedMessageChannel)typeof(GooglePubSubWorkspace).GetMethod("OpenChannel", Any)!.Invoke(workspace,
             [typeof(LeasedMessagingWorkspace).GetField("_cachedTopology", Any)!.GetValue(workspace), source, ServiceBusSubQueue.DeadLetter])!;
+
+    private static string? Refusal(ILeasedMessageChannel channel) => (string?)channel.GetType().GetProperty("SettleRefusal")!.GetValue(channel);
 
     private static void Set(Type type, object target, string name, object value) => type.GetField(name, Any)!.SetValue(target, value);
 
