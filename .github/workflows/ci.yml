@@ -226,13 +226,19 @@ jobs:
             exit 0
           fi
           for dump in "${dumps[@]}"; do
-            # Blame names a dump <process>_<pid>_<time>_crashdump.dmp. xUnit v3 test projects run as their own apphost
-            # (QueueLoom.UiTests), so the dump is read against that executable, not dotnet.
-            process="$(basename "$dump")"; process="${process%%_*}"
-            executable="$(find tests -path "*/bin/Release/*/$process" -type f -perm -u+x -print -quit)"
-            if [ -z "$executable" ] && [ "$process" = dotnet ]; then executable="$(command -v dotnet)"; fi
+            # xUnit v3 test projects run as their own apphost (QueueLoom.UiTests), so the dump must be read against that
+            # executable, not dotnet. The dump's file name carries the kernel's process name, cut to 15 characters
+            # ("QueueLoom.UiTes"), so the path is taken from the core itself: AT_EXECFN in its auxiliary vector.
+            executable="$(file -b "$dump" | sed -n "s/.*execfn: '\([^']*\)'.*/\1/p")"
             if [ -z "$executable" ]; then
-              echo "::error::No executable named '$process' was found for $dump; it is uploaded unanalysed."
+              # Without it, only an unambiguous match of the truncated name among the built test apphosts is used.
+              process="$(basename "$dump")"; process="${process%%_*}"
+              mapfile -t matches < <(find tests -path '*/bin/Release/*' -type f -perm -u+x -name "$process*" ! -name '*.*.*' | sort -u)
+              if [ ${#matches[@]} -eq 1 ]; then executable="${matches[0]}"; fi
+              echo "The core names no executable; the name '$process' matches ${#matches[@]} test apphost(s)."
+            fi
+            if [ -z "$executable" ] || [ ! -x "$executable" ]; then
+              echo "::error::The executable of $dump could not be determined ('${executable:-none}'); it is uploaded unanalysed."
               continue
             fi
             echo "::group::Backtrace of $dump against $executable"
