@@ -17,8 +17,15 @@ internal static class HandoffAcknowledgementFixture
         {
             var root = Environment.GetEnvironmentVariable("QL_PROBE_ROOT");
             if (root is not null) File.WriteAllText(Path.Combine(root, "reader-error.json"), JsonSerializer.Serialize(new
-            { Pid = Environment.ProcessId, Type = error.GetType().FullName, HResult = $"0x{unchecked((uint)error.HResult):X8}", NativeCode = error.HResult & 0xffff, error.Message }));
-            throw;
+            { Pid = Environment.ProcessId, Type = error.GetType().FullName, HResult = $"0x{unchecked((uint)error.HResult):X8}", NativeCode = error.HResult & 0xffff, error.Message,
+              FailedAtUtcTicks = DateTime.UtcNow.Ticks }));
+            // The tests assert the code an unhandled exception gives (0xE0434352) and the complete error on stderr. Ending
+            // here instead of through the runtime's crash path keeps both, without waiting on system crash handling
+            // (error reporting), which on a busy runner kept the process alive well past the test's bound.
+            Console.Error.WriteLine("Unhandled exception. " + error);
+            Console.Error.Flush();
+            Environment.Exit(unchecked((int)0xE0434352));
+            throw; // not reached
         }
     }
     internal static void Configure(string[] args)

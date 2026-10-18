@@ -29,12 +29,24 @@ public sealed partial class WindowsUpdateSmokeTests
             var start = SmokeStart(fixture, directory, payloadCandidate);
             start.Environment[payloadCandidate ? "QUEUELOOM_SMOKE_PAYLOAD_IDENTITY" : "QUEUELOOM_SMOKE_FIXTURE_IDENTITY"] = identity;
             script = StartPowerShell(start);
-            var output = script.StandardOutput.ReadToEndAsync();
-            var error = script.StandardError.ReadToEndAsync();
-            await script.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
-            var detail = await output + await error;
-            Assert.NotEqual(0, script.ExitCode);
-            Assert.Contains(payloadCandidate ? "payload identity changed" : "unexpected restart helper identity", detail, StringComparison.Ordinal);
+            var output = new System.Text.StringBuilder();
+            script.OutputDataReceived += (_, line) => { if (line.Data is not null) lock (output) output.AppendLine(line.Data); };
+            script.ErrorDataReceived += (_, line) => { if (line.Data is not null) lock (output) output.AppendLine("stderr: " + line.Data); };
+            script.BeginOutputReadLine();
+            script.BeginErrorReadLine();
+            string Detail() { lock (output) return output.ToString(); }
+            var watch = Stopwatch.StartNew();
+            try { await script.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30)); }
+            catch (TimeoutException)
+            {
+                throw new Xunit.Sdk.XunitException($"The smoke script had not exited after {watch.Elapsed.TotalSeconds:F1} s. Its output so far:\n{Detail()}");
+            }
+            await script.WaitForExitAsync(); // the redirected streams are drained
+            var detail = Detail();
+            testOutput.WriteLine($"Smoke script exit {script.ExitCode} after {watch.Elapsed.TotalSeconds:F1} s. Output:\n{detail}");
+            Assert.True(script.ExitCode != 0, "The smoke script succeeded although the identity was wrong. Output:\n" + detail);
+            var expected = payloadCandidate ? "payload identity changed" : "unexpected restart helper identity";
+            Assert.True(detail.Contains(expected, StringComparison.Ordinal), $"Expected \"{expected}\" in the smoke output:\n{detail}");
             Assert.False(sentinel.HasExited, "A rejected outside process identity was killed by smoke cleanup. " + detail);
         }
         finally

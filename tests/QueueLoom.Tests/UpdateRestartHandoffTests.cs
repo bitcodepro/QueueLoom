@@ -70,7 +70,7 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
                 Assert.Equal(helper.StartTime.ToUniversalTime().Ticks, accepted.GetProperty("StartTicks").GetInt64());
                 File.WriteAllText(claimed, "caller accepted exact owned identity");
             }
-            await sender.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            await SenderExit(sender, helper, root, receipt, handoff, elapsed);
             Assert.Equal(expectedSenderExit, sender.ExitCode);
             if (expectedSenderExit == 0)
             {
@@ -142,6 +142,36 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
     }
 
     private void Log(string value) => output.WriteLine(SensitiveDataRedactor.Redact(value));
+
+    /// <summary>
+    /// Waits (bounded) for the sender to exit. When it has not, the failure says, before any teardown, how long the case
+    /// has run, whether the sender and helper are alive, which handoff files exist, and what error the sender recorded and
+    /// when, so a slow exit is told apart from a sender that never reached its error.
+    /// </summary>
+    private static async Task SenderExit(Process sender, Process? helper, string root, string receipt, string handoff, Stopwatch elapsed)
+    {
+        try
+        {
+            await sender.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
+            var errorFile = Path.Combine(root, "reader-error.json");
+            string recorded = "none";
+            if (File.Exists(errorFile))
+            {
+                var error = ReadJson(errorFile);
+                recorded = error.ToString();
+                if (error.TryGetProperty("FailedAtUtcTicks", out var at))
+                    recorded += $" (recorded {(DateTime.UtcNow - new DateTime(at.GetInt64(), DateTimeKind.Utc)).TotalSeconds:F1} s ago)";
+            }
+            bool Alive(Process? process) { try { return process is not null && !process.HasExited; } catch (InvalidOperationException) { return false; } }
+            throw new Xunit.Sdk.XunitException(
+                $"The sender (PID {sender.Id}) had not exited {elapsed.Elapsed.TotalSeconds:F1} s into the case. Sender alive: {Alive(sender)}; " +
+                $"helper alive: {Alive(helper)}; acknowledgement: {File.Exists(receipt + ".helper")}; accepted identity: " +
+                $"{File.Exists(handoff + ".helper.json")}; receipt: {File.Exists(receipt)}; sender error: {recorded}.");
+        }
+    }
     private static JsonElement ReadJson(string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
