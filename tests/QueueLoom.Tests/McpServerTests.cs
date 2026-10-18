@@ -180,6 +180,30 @@ public sealed partial class McpServerTests
             explained.GetProperty("summary").GetString(), StringComparison.Ordinal);
     }
 
+    // get_entities returned every entity in one answer: thousands in a large namespace, filling the assistant's
+    // context. It returns at most maxEntities (200 unless asked, never over 1,000) and says how many matched.
+    [Theory]
+    [InlineData(null, null, 200, true)]
+    [InlineData(30, null, 30, true)]
+    [InlineData(5000, null, 1000, true)]
+    [InlineData(0, null, 1, true)]
+    [InlineData(null, "queue-000", 10, false)]
+    public async Task GetEntities_ReturnsABoundedListAndSaysHowManyMatched(int? maxEntities, string? filter, int returned, bool truncated)
+    {
+        await using var server = await McpTestServer.StartAsync();
+        server.Workspace.Topology = new ServiceBusTopology(DateTimeOffset.UtcNow,
+            Enumerable.Range(0, 1500).Select(index => new ServiceBusQueue($"queue-{index:0000}", ServiceBusEntityRuntime.Empty, ServiceBusEntityStatus.Active)));
+        var arguments = new Dictionary<string, object?>();
+        if (maxEntities is { } max) arguments["maxEntities"] = max;
+        if (filter is not null) arguments["filter"] = filter;
+
+        var entities = await server.CallAsync("get_entities", arguments);
+
+        Assert.Equal(returned, entities.GetProperty("entities").GetArrayLength());
+        Assert.Equal(filter is null ? 1500 : 10, entities.GetProperty("totalEntities").GetInt32());
+        Assert.Equal(truncated, entities.GetProperty("truncated").GetBoolean());
+    }
+
     [Fact]
     public async Task TraceForwarding_FollowsTheChainAndFindsLoops()
     {
