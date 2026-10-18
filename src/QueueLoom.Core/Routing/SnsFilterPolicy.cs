@@ -71,27 +71,34 @@ public static class SnsFilterPolicy
     public const int MaximumCombinations = 150;
 
     /// <summary>
-    /// The number of value combinations, as SNS counts them: the values of each key multiplied together (nested keys
-    /// too), and the alternatives of an $or added up. Saturates instead of overflowing.
+    /// The number of value combinations, as SNS counts them: each leaf's values times its nesting depth (1 at the top,
+    /// 2 inside one object), multiplied together; the alternatives of a genuine $or added up, at the depth the $or sits.
+    /// A $or whose objects hold operators ("numeric", "prefix"...) is, as for AWS, an ordinary field. Saturates instead
+    /// of overflowing.
     /// </summary>
-    internal static long Combinations(JsonElement policy)
+    internal static long Combinations(JsonElement policy, int depth = 1)
     {
         long total = 1;
         foreach (var property in policy.EnumerateObject())
         {
-            long factor = property.Name == "$or" && property.Value.ValueKind == JsonValueKind.Array
-                ? property.Value.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object)
-                    .Aggregate(0L, (sum, alternative) => Saturate(sum + Combinations(alternative)))
+            long factor = property.Name == "$or" && IsGenuineOr(property.Value)
+                ? property.Value.EnumerateArray().Aggregate(0L, (sum, alternative) => Saturate(sum + Combinations(alternative, depth)))
                 : property.Value.ValueKind switch
                 {
-                    JsonValueKind.Array => Math.Max(1, property.Value.GetArrayLength()),
-                    JsonValueKind.Object => Combinations(property.Value),
+                    JsonValueKind.Array => Saturate((long)Math.Max(1, property.Value.GetArrayLength()) * depth),
+                    JsonValueKind.Object => Combinations(property.Value, depth + 1),
                     _ => 1
                 };
             total = factor != 0 && total > long.MaxValue / factor ? long.MaxValue : total * factor;
         }
         return total;
     }
+
+    // AWS: a $or holds two or more objects, none of which uses an operator name as a key.
+    private static bool IsGenuineOr(JsonElement value) =>
+        value.ValueKind == JsonValueKind.Array && value.GetArrayLength() >= 2 &&
+        value.EnumerateArray().All(item => item.ValueKind == JsonValueKind.Object &&
+                                           item.EnumerateObject().All(key => !Operators.Contains(key.Name)));
 
     private static long Saturate(long value) => value < 0 ? long.MaxValue : value;
 

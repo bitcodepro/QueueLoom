@@ -36,10 +36,10 @@ public sealed class SnsFilterCombinationTests
         }
     }
 
-    // The alternatives of an $or add up; nested keys of a body policy multiply.
+    // The alternatives of an $or add up; a body leaf counts its values times its nesting depth (10x2 by 16x2).
     [Theory]
     [InlineData("or", false, 160)]
-    [InlineData("nested", true, 160)]
+    [InlineData("nested", true, 640)]
     public void OrAndNestedKeysCountAsSnsCountsThem(string shape, bool onBody, long expected)
     {
         var policy = shape == "or"
@@ -57,5 +57,45 @@ public sealed class SnsFilterCombinationTests
         var error = Assert.Throws<FilterPolicyException>(() => SnsFilterPolicy.Validate(Policy(Enumerable.Repeat(100, 12).ToArray()), onBody: false));
 
         Assert.Contains("too many cases", error.Message, StringComparison.Ordinal);
+    }
+
+    // A body leaf at depth two counts double: 75 values are 150 cases, 76 are 152.
+    [Theory]
+    [InlineData(75, true)]
+    [InlineData(76, false)]
+    public void ABodyLeafCountsItsNestingDepth(int values, bool accepted)
+    {
+        var policy = new JsonObject { ["order"] = new JsonObject { ["region"] = Values(values) } }.ToJsonString();
+
+        if (accepted)
+        {
+            SnsFilterPolicy.Validate(policy, onBody: true);
+        }
+        else
+        {
+            Assert.Contains("152 cases", Assert.Throws<FilterPolicyException>(() => SnsFilterPolicy.Validate(policy, onBody: true)).Message, StringComparison.Ordinal);
+        }
+    }
+
+    // $or branches keep the depth they sit at: inside "order" each branch's leaf counts double (40x2 + 40x2 = 160).
+    [Fact]
+    public void OrBranchesKeepTheirNestingDepth()
+    {
+        var policy = new JsonObject
+        {
+            ["order"] = new JsonObject { ["$or"] = new JsonArray(new JsonObject { ["a"] = Values(40) }, new JsonObject { ["b"] = Values(40) }) }
+        }.ToJsonString();
+
+        Assert.Contains("160 cases", Assert.Throws<FilterPolicyException>(() => SnsFilterPolicy.Validate(policy, onBody: true)).Message, StringComparison.Ordinal);
+    }
+
+    // AWS reads a $or whose objects hold operators (numeric ranges here) as an ordinary field: 5 x 4 x 2 = 40, accepted.
+    [Fact]
+    public void AnOrOfOperatorObjectsCountsAsAnOrdinaryField()
+    {
+        const string policy = """{"gate":[1,2,3,4,5],"stage":[1,2,3,4],"$or":[{"numeric":[">",0,"<",10]},{"numeric":[">",20,"<",30]}]}""";
+
+        Assert.Equal(40, SnsFilterPolicy.Combinations(System.Text.Json.JsonDocument.Parse(policy).RootElement));
+        SnsFilterPolicy.Validate(policy, onBody: true);
     }
 }
