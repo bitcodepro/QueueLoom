@@ -76,15 +76,22 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         McpGuard.RunAsync<IReadOnlyList<EnvironmentInfo>>(async () =>
             (await session.ListProfilesAsync(cancellationToken).ConfigureAwait(false)).Select(McpMapping.ToInfo).ToArray());
 
+    /// <summary>The most entities one get_entities answer holds.</summary>
+    public const int MaximumEntities = 1_000;
+
     [McpServerTool(Name = "get_entities", Title = "List queues, topics and subscriptions", ReadOnly = true, Idempotent = true)]
     [Description("Lists queues, topics and subscriptions with active, dead-letter, transfer dead-letter and scheduled message counts. " +
                    "Subscriptions are named 'topic/subscription'. Use typedEntity to disambiguate queues and exchanges with the same name.")]
     public Task<TopologyInfo> GetEntitiesAsync(
         [Description(EnvironmentDescription)] string? environment = null,
         [Description("Optional case-insensitive text that entity names must contain.")] string? filter = null,
+        [Description("How many entities at most, 1-1,000. The result says how many matched and whether some were left out.")] int maxEntities = 200,
         CancellationToken cancellationToken = default) =>
         McpGuard.RunAsync(async () =>
         {
+            // A namespace can hold thousands of queues and subscriptions: one answer with all of them would fill the
+            // assistant's context. The first ones by name are returned, with the total.
+            var limit = Math.Clamp(maxEntities, 1, MaximumEntities);
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
             var topology = await session.ReadAsync(profile,
                     (workspace, token) => workspace.GetTopologyAsync(forceRefresh: true, token), cancellationToken)
@@ -99,7 +106,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                   .Where(entity => string.IsNullOrWhiteSpace(filter) ||
                                  entity.Entity.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase))
                 .ToArray();
-            return new TopologyInfo(profile.Name, topology.FetchedAt, topology.UsesSampledCounts, entities);
+            return new TopologyInfo(profile.Name, topology.FetchedAt, topology.UsesSampledCounts, entities.Take(limit).ToArray())
+            {
+                TotalEntities = entities.Length,
+                Truncated = entities.Length > limit
+            };
         });
 
     [McpServerTool(Name = "scan_dead_letters", Title = "Scan dead-letter queues", ReadOnly = true, Idempotent = true)]

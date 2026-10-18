@@ -37,7 +37,14 @@ public sealed record EntityInfo(
     public string? TypedEntity { get; init; }
 }
 
-public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, bool CountsAreSampled, IReadOnlyList<EntityInfo> Entities);
+public sealed record TopologyInfo(string Environment, DateTimeOffset FetchedAt, bool CountsAreSampled, IReadOnlyList<EntityInfo> Entities)
+{
+    /// <summary>How many entities matched the filter, also those left out of <see cref="Entities"/>.</summary>
+    public int TotalEntities { get; init; }
+
+    /// <summary>True when more entities matched than were returned: narrow the filter or raise maxEntities.</summary>
+    public bool Truncated { get; init; }
+}
 
 public sealed record DeadLetterSourceInfo(string Entity, string SubQueue, long? Count, string? Error)
 {
