@@ -70,15 +70,12 @@ public sealed partial class AzureServiceBusWorkspace
     {
         // Check that the sequence number still belongs to the same scheduled message before cancelling it: by the time
         // the operator confirms, it may have been delivered, and cancelling a sequence number the broker no longer
-        // holds is no error, so the result would say "deleted" for a message consumers already got. A message
-        // scheduled on a topic was read through one of its subscriptions, and is checked there.
+        // holds is no error, so the result would say "deleted" for a message consumers already got. A scheduled
+        // message is peeked where it is scheduled: a queue, or a topic (it stays on the topic until it is enqueued,
+        // and a subscription's peek does not return it).
+        var scheduledIn = PendingMessages.ScheduledIn(message);
         var source = message.Source;
-        await using var peeker = source.Kind switch
-        {
-            ServiceBusEntityKind.Queue => GetMessagingClient().CreateReceiver(source.Name),
-            ServiceBusEntityKind.Subscription => GetMessagingClient().CreateReceiver(source.TopicName!, source.Name),
-            _ => throw new InvalidOperationException($"Scheduled messages are read through a queue or a subscription, not {source.Kind}.")
-        };
+        await using var peeker = GetMessagingClient().CreateReceiver(scheduledIn.Name);
         var current = await peeker.PeekMessageAsync(message.SequenceNumber, cancellationToken).ConfigureAwait(false);
         if (current is null || current.SequenceNumber != message.SequenceNumber ||
             current.State != AzureMessageState.Scheduled || !SameMessageId(current.MessageId, message))
@@ -88,7 +85,6 @@ public sealed partial class AzureServiceBusWorkspace
         }
         await backupSession.BackupAsync(current, source, ServiceBusSubQueue.Active, cancellationToken).ConfigureAwait(false);
 
-        var scheduledIn = PendingMessages.ScheduledIn(message);
         var sender = _senders.GetOrAdd(scheduledIn.Name, name => GetMessagingClient().CreateSender(name));
         cancellationToken.ThrowIfCancellationRequested();
         try
