@@ -144,6 +144,52 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
     private void Log(string value) => output.WriteLine(SensitiveDataRedactor.Redact(value));
 
     /// <summary>
+    /// The sender's recorded error as evidence, best effort: the live sender may be writing it right now (sharing
+    /// violation) or have written part of it (incomplete JSON). Either is reported as unavailable with its reason, so
+    /// the timeout it accompanies is never replaced by a failure to read it.
+    /// </summary>
+    internal static string RecordedError(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return "none";
+        }
+        try
+        {
+            var error = ReadJson(path);
+            var recorded = error.ToString();
+            if (error.TryGetProperty("FailedAtUtcTicks", out var at) && at.TryGetInt64(out var ticks))
+                recorded += $" (recorded {(DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc)).TotalSeconds:F1} s ago)";
+            return recorded;
+        }
+        catch (Exception unavailable) when (unavailable is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return $"unavailable ({unavailable.GetType().Name}: {unavailable.Message})";
+        }
+    }
+
+    // Reading the sender's error while it is still being written, or after only part of it was written, gives a reason
+    // instead of throwing.
+    [Fact]
+    public void RecordedErrorIsBestEffortEvidence()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "reader-error.json");
+        Assert.Equal("none", RecordedError(path));
+
+        File.WriteAllText(path, "{\"Type\":\"System.IO.IOException\",\"Mess");
+        Assert.StartsWith("unavailable (", RecordedError(path), StringComparison.Ordinal);
+
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.StartsWith("unavailable (IOException", RecordedError(path), StringComparison.Ordinal);
+        }
+
+        File.WriteAllText(path, $"{{\"Type\":\"System.IO.IOException\",\"FailedAtUtcTicks\":{DateTime.UtcNow.Ticks}}}");
+        Assert.Contains("recorded", RecordedError(path), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Waits (bounded) for the sender to exit. When it has not, the failure says, before any teardown, how long the case
     /// has run, whether the sender and helper are alive, which handoff files exist, and what error the sender recorded and
     /// when, so a slow exit is told apart from a sender that never reached its error.
@@ -156,15 +202,7 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
         }
         catch (TimeoutException)
         {
-            var errorFile = Path.Combine(root, "reader-error.json");
-            string recorded = "none";
-            if (File.Exists(errorFile))
-            {
-                var error = ReadJson(errorFile);
-                recorded = error.ToString();
-                if (error.TryGetProperty("FailedAtUtcTicks", out var at))
-                    recorded += $" (recorded {(DateTime.UtcNow - new DateTime(at.GetInt64(), DateTimeKind.Utc)).TotalSeconds:F1} s ago)";
-            }
+            var recorded = RecordedError(Path.Combine(root, "reader-error.json"));
             bool Alive(Process? process) { try { return process is not null && !process.HasExited; } catch (InvalidOperationException) { return false; } }
             throw new Xunit.Sdk.XunitException(
                 $"The sender (PID {sender.Id}) had not exited {elapsed.Elapsed.TotalSeconds:F1} s into the case. Sender alive: {Alive(sender)}; " +
