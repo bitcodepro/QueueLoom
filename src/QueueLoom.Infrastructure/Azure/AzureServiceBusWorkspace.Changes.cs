@@ -376,6 +376,15 @@ public sealed partial class AzureServiceBusWorkspace
                 }
             }
 
+            // The limit is reached: whether anything is left decides between "done" and "limit reached". A peek locks
+            // and removes nothing.
+            if (await receiver.PeekMessageAsync(cancellationToken: cancellationToken).ConfigureAwait(false) is null)
+            {
+                var remainingCount = await TryReadPurgeCountAsync(source, subQueue, cancellationToken).ConfigureAwait(false);
+                progress?.Report(new DeadLetterPurgeProgress(
+                    source, subQueue, targetNumber, targetCount, backedUp, deleted, DeadLetterPurgeStage.Completed));
+                return new DeadLetterPurgeSourceResult(source, subQueue, deleted, VerificationPending: remainingCount is null or > 0);
+            }
             return new DeadLetterPurgeSourceResult(
                 source,
                 subQueue,
