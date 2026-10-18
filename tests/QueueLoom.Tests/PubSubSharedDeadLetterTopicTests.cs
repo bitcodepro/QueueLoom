@@ -517,6 +517,169 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Contains("a1", subscriber.ReleasedIds);
     }
 
+    private const string R0 = "projects/p/subscriptions/aaa-r0";
+    private const string R1 = "projects/p/subscriptions/dlq-reader";
+    private const string R2 = "projects/p/subscriptions/dlq-reader-2";
+    private const string U = "projects/p/topics/u-dlq";
+    private static Subscription SourceOn(string id, string topic) => new() { Name = $"projects/p/subscriptions/{id}", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = topic, MaxDeliveryAttempts = 5 } };
+    private static Subscription ReaderOn(string name, string topic) => new() { Name = name, Topic = topic };
+    private static readonly Subscription UReader = ReaderOn("projects/p/subscriptions/u-reader", U);
+
+    /// <summary>orders dead-letters to T read by R1, middle to U; an R1 lease is held before anything else happens.</summary>
+    private async Task<(GooglePubSubWorkspace Workspace, FakePublisher Publisher, FakeSubscriber Subscriber, ILeasedMessageChannel OldChannel,
+        IReadOnlyList<LeasedMessage> OldLease, BatchReplayStore Store, ReplayPlan Plan, ResendItem[] Items)> TwoSourceLayoutAsync()
+    {
+        var (workspace, publisher, subscriber) = Connect([[R1]], layout: [SourceOn("orders", DeadLetterTopic), SourceOn("middle", U), ReaderOn(R1, DeadLetterTopic), UReader]);
+        subscriber.Policies["middle"] = U;
+        publisher.OtherTopicReaders[U] = [UReader.Name];
+        await workspace.GetTopologyAsync(forceRefresh: true); // the facts a refresh records before the move starts
+        var oldChannel = OpenChannel(workspace, Orders);
+        var oldLease = await oldChannel.ReceiveAsync(10, CancellationToken.None);
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replays"));
+        var items = new[] { Item(Orders, 1), Item(ServiceBusEntityReference.Subscription("events", "middle"), 2) };
+        var plan = await store.CreateResendAsync(workspace.ConnectedProfileId!.Value, items.Select(item => item.WithNewMessageId()).ToArray(),
+            ResendMode.Move, 50, workspace.ConnectedNamespace, workspace.ConnectedConfigurationIdentity ?? string.Empty, "resend", default);
+        return (workspace, publisher, subscriber, oldChannel, oldLease, store, plan, items);
+    }
+
+    private static Task Move(GooglePubSubWorkspace workspace, BatchReplayStore store, ReplayPlan plan, ResendItem[] items, bool durable) =>
+        durable ? store.RunItemsAsync(plan, [0, 1], false, workspace, () => true, null, default) : DeadLetterResender.ResendAsync(workspace, items, ResendMode.Move);
+
+    private static async Task AssertRefusedAndNothingChanged(Task move, FakePublisher publisher, FakeSubscriber subscriber, ILeasedMessageChannel oldChannel,
+        IReadOnlyList<LeasedMessage> oldLease, BatchReplayStore store, ReplayPlan plan, bool durable)
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() => move);
+        Assert.Equal(0, publisher.Published);
+        if (durable) Assert.All(store.ReadHistory(plan).Items, item => Assert.Equal("Pending", item.State));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => oldChannel.SettleAsync(oldLease, CancellationToken.None));
+        Assert.Empty(subscriber.AcknowledgedIds);
+        Assert.Contains("a1", subscriber.ReleasedIds);
+    }
+
+    // A refresh begins (its subscription listing is issued) and is held; the move then lists T and sees only R1, and is
+    // held before it is admitted; an attached R0 joins T; the refresh resumes and records the sharing; the move resumes.
+    // Its read was issued before the sharing was recorded and saw something else, so it cannot overwrite it: refused.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AReadThatOverlappedARefreshCannotOverwriteTheSharingItFound(bool durable)
+    {
+        var (workspace, publisher, subscriber, oldChannel, oldLease, store, plan, items) = await TwoSourceLayoutAsync();
+        var refreshGate = new Gate();
+        var moveGate = new Gate();
+        subscriber.BeforeList = () => { subscriber.BeforeList = null; return refreshGate.Hold(); };
+
+        var refresh = workspace.GetTopologyAsync(forceRefresh: true);
+        Task? move = null;
+        await refreshGate.Run(refresh, async () =>
+        {
+            publisher.BeforeLastPage = () => { publisher.BeforeLastPage = null; return moveGate.Hold(); };
+            move = Move(workspace, store, plan, items, durable);
+            await moveGate.Run(move, async () =>
+            {
+                subscriber.All = [SourceOn("orders", DeadLetterTopic), SourceOn("middle", U), ReaderOn(R0, DeadLetterTopic), ReaderOn(R1, DeadLetterTopic), UReader];
+                publisher.Pages = [[R0, R1]];
+                refreshGate.Release();
+                await refresh.WaitAsync(TimeSpan.FromSeconds(10));
+            });
+        });
+
+        await AssertRefusedAndNothingChanged(move!, publisher, subscriber, oldChannel, oldLease, store, plan, durable);
+    }
+
+    // Check A's policy read of orders is issued and held before it reads. The move's read of orders is issued later and
+    // captures T, then is held before it returns. orders' policy moves to V and A resumes and records V. The move's read
+    // finishes last with the older T: although issued after A's, it overlapped A's recorded fact and disagrees, so it
+    // cannot overwrite it, and the move is refused.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ALaterIssuedButStalerPolicyReadCannotOverwriteANewerOne(bool durable)
+    {
+        var (workspace, publisher, subscriber, oldChannel, oldLease, store, plan, items) = await TwoSourceLayoutAsync();
+        var checkGate = new Gate();
+        var moveGate = new Gate();
+        subscriber.BeforeGet = id => id == "orders" ? TakeCheck() : Task.CompletedTask;
+        Task TakeCheck() { subscriber.BeforeGet = null; return checkGate.Hold(); }
+
+        var check = workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        Task? move = null;
+        await checkGate.Run(check, async () =>
+        {
+            subscriber.AfterGet = id => id == "orders" ? TakeMove() : Task.CompletedTask;
+            Task TakeMove() { subscriber.AfterGet = null; return moveGate.Hold(); }
+            move = Move(workspace, store, plan, items, durable);
+            await moveGate.Run(move, async () =>
+            {
+                subscriber.Policies["orders"] = "projects/p/topics/v-dlq";
+                checkGate.Release();
+                await Assert.ThrowsAsync<InvalidOperationException>(() => check.WaitAsync(TimeSpan.FromSeconds(10)));
+            });
+        });
+
+        await AssertRefusedAndNothingChanged(move!, publisher, subscriber, oldChannel, oldLease, store, plan, durable);
+    }
+
+    // A read issued before a contradiction was recorded cannot clear it, even when it finishes later with clean facts.
+    // Check A's read of orders is held; check B reads T and completes; the move's read is issued and held; the policy
+    // moves to V and A resumes (A and B overlapped and disagree: contradiction, recorded now); the policy moves back to T
+    // and the move's read finishes with T. It was issued before the contradiction was recorded: the move is refused.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AReadIssuedBeforeAContradictionCannotClearIt(bool durable)
+    {
+        var (workspace, publisher, subscriber, oldChannel, oldLease, store, plan, items) = await TwoSourceLayoutAsync();
+        var checkGate = new Gate();
+        var moveGate = new Gate();
+        var reads = 0;
+        subscriber.BeforeGet = id => id != "orders" ? Task.CompletedTask : ++reads switch { 1 => checkGate.Hold(), 3 => moveGate.Hold(), _ => Task.CompletedTask };
+
+        var check = workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        Task? move = null;
+        await checkGate.Run(check, async () =>
+        {
+            await workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]); // B: T, clean
+            move = Move(workspace, store, plan, items, durable);
+            await moveGate.Run(move, async () =>
+            {
+                subscriber.Policies["orders"] = "projects/p/topics/v-dlq";
+                checkGate.Release();
+                await Assert.ThrowsAsync<InvalidOperationException>(() => check.WaitAsync(TimeSpan.FromSeconds(10)));
+                subscriber.Policies["orders"] = DeadLetterTopic;
+            });
+        });
+
+        await AssertRefusedAndNothingChanged(move!, publisher, subscriber, oldChannel, oldLease, store, plan, durable);
+    }
+
+    // A complete refresh alone disproves the captured binding: orders itself was deleted, or T was recreated so that R1
+    // now reads "_deleted-topic_" (keeping its backlog) and R2 is T's only reader, with orders still naming T. Nothing
+    // validates R2 first, so the refresh's own facts must refuse the move and the R1 lease.
+    [Theory]
+    [InlineData("source-deleted", false)]
+    [InlineData("source-deleted", true)]
+    [InlineData("reader-moved", false)]
+    [InlineData("reader-moved", true)]
+    public async Task ACompleteRefreshAloneDisprovesTheCapturedBinding(string change, bool durable)
+    {
+        var (workspace, publisher, subscriber, oldChannel, oldLease, store, plan, items) = await TwoSourceLayoutAsync();
+        var gate = new Gate();
+        subscriber.BeforeGet = id => id == "middle" ? Take() : Task.CompletedTask;
+        Task Take() { subscriber.BeforeGet = null; return gate.Hold(); }
+
+        var move = Move(workspace, store, plan, items, durable);
+        await gate.Run(move, async () =>
+        {
+            subscriber.All = change == "source-deleted"
+                ? [SourceOn("middle", U), ReaderOn(R1, DeadLetterTopic), UReader]
+                : [SourceOn("orders", DeadLetterTopic), SourceOn("middle", U), ReaderOn(R1, "_deleted-topic_"), ReaderOn(R2, DeadLetterTopic), UReader];
+            await workspace.GetTopologyAsync(forceRefresh: true);
+        });
+
+        await AssertRefusedAndNothingChanged(move, publisher, subscriber, oldChannel, oldLease, store, plan, durable);
+    }
+
     // A two-source move passes orders, then is held on billing; meanwhile another check records that orders' topic is
     // shared. Before the move is admitted every source's latest state is consulted again, so it is refused.
     [Fact]
@@ -732,7 +895,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         public string[] Topics { get; init; } = [];
 
         public override PagedAsyncEnumerable<ListTopicsResponse, Topic> ListTopicsAsync(ListTopicsRequest request, CallSettings? callSettings = null) =>
-            new OnePage<ListTopicsResponse, Topic>(new ListTopicsResponse { Topics = { Topics.Select(id => new Topic { Name = $"projects/p/topics/{id}" }) } }, page => page.Topics);
+            new OnePage<ListTopicsResponse, Topic>(() => new ListTopicsResponse { Topics = { Topics.Select(id => new Topic { Name = $"projects/p/topics/{id}" }) } }, page => page.Topics, null);
         public List<string> ListedTopics { get; } = [];
         public int Published { get; private set; }
 
@@ -755,7 +918,8 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         }
     }
 
-    private sealed class OnePage<TResponse, TResource>(TResponse page, Func<TResponse, IEnumerable<TResource>> items) : PagedAsyncEnumerable<TResponse, TResource>
+    /// <summary>One page, built when it is read (after <paramref name="gate"/>, when set), as a listing that reads current state.</summary>
+    private sealed class OnePage<TResponse, TResource>(Func<TResponse> read, Func<TResponse, IEnumerable<TResource>> items, Func<Task>? gate) : PagedAsyncEnumerable<TResponse, TResource>
     {
         public override IAsyncEnumerable<TResponse> AsRawResponses() => Raw();
 
@@ -765,13 +929,15 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         public override async IAsyncEnumerator<TResource> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
             await Task.Yield();
-            foreach (var item in items(page)) yield return item;
+            if (gate is not null) await gate();
+            foreach (var item in items(read())) yield return item;
         }
 
         private async IAsyncEnumerable<TResponse> Raw()
         {
             await Task.Yield();
-            yield return page;
+            if (gate is not null) await gate();
+            yield return read();
         }
     }
 
@@ -812,8 +978,14 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         /// <summary>The project's subscriptions, listed when a deletion refreshes the topology.</summary>
         public Subscription[] All { get; set; } = [];
 
+        /// <summary>When set, awaited before a subscription listing hands out its page.</summary>
+        public Func<Task>? BeforeList { get; set; }
+
         public override PagedAsyncEnumerable<ListSubscriptionsResponse, Subscription> ListSubscriptionsAsync(ListSubscriptionsRequest request, CallSettings? callSettings = null) =>
-            new OnePage<ListSubscriptionsResponse, Subscription>(new ListSubscriptionsResponse { Subscriptions = { All } }, page => page.Subscriptions);
+            new OnePage<ListSubscriptionsResponse, Subscription>(() => new ListSubscriptionsResponse { Subscriptions = { All } }, page => page.Subscriptions, BeforeList);
+
+        /// <summary>When set, awaited (with the subscription's id) after a subscription was read, before it is returned.</summary>
+        public Func<string, Task>? AfterGet { get; set; }
 
         /// <summary>When set, awaited (with the subscription's id) before a subscription is read.</summary>
         public Func<string, Task>? BeforeGet { get; set; }
@@ -822,6 +994,9 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         {
             var id = request.SubscriptionAsSubscriptionName.SubscriptionId;
             if (BeforeGet is { } gate) await gate(id);
+            var read = Policies.TryGetValue(id, out var current) ? current : null;
+            if (AfterGet is { } after) await after(id);
+            if (read is not null) return new Subscription { Name = request.Subscription, DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = read, MaxDeliveryAttempts = 5 } };
             return await (Policies.TryGetValue(id, out var topic)
                 ? Task.FromResult(new Subscription { Name = request.Subscription, DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = topic, MaxDeliveryAttempts = 5 } })
                 : Task.FromException<Subscription>(new RpcException(new Status(StatusCode.NotFound, "no such subscription"))));
