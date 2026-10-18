@@ -68,25 +68,23 @@ public sealed partial class AzureServiceBusWorkspace
         Persistence.DeadLetterJsonBackupSession backupSession,
         CancellationToken cancellationToken)
     {
-        if (message.Source.Kind == ServiceBusEntityKind.Queue)
-        {
-            // Check that the sequence number still belongs to the same scheduled message before cancelling it.
-            await using var peeker = GetMessagingClient().CreateReceiver(message.Source.Name);
-            var current = await peeker.PeekMessageAsync(message.SequenceNumber, cancellationToken).ConfigureAwait(false);
-            if (current is null || current.SequenceNumber != message.SequenceNumber ||
-                current.State != AzureMessageState.Scheduled || !SameMessageId(current.MessageId, message))
-            {
-                return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.NotFound,
-                    "It is no longer scheduled: it was delivered, cancelled or expired.");
-            }
-            await backupSession.BackupAsync(current, message.Source, ServiceBusSubQueue.Active, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await backupSession.BackupAsync(message, cancellationToken).ConfigureAwait(false);
-        }
-
+        // Check that the sequence number still belongs to the same scheduled message before cancelling it: by the time
+        // the operator confirms, it may have been delivered, and cancelling a sequence number the broker no longer
+        // holds is no error, so the result would say "deleted" for a message consumers already got. A scheduled
+        // message is peeked where it is scheduled: a queue, or a topic (it stays on the topic until it is enqueued,
+        // and a subscription's peek does not return it).
         var scheduledIn = PendingMessages.ScheduledIn(message);
+        var source = message.Source;
+        await using var peeker = GetMessagingClient().CreateReceiver(scheduledIn.Name);
+        var current = await peeker.PeekMessageAsync(message.SequenceNumber, cancellationToken).ConfigureAwait(false);
+        if (current is null || current.SequenceNumber != message.SequenceNumber ||
+            current.State != AzureMessageState.Scheduled || !SameMessageId(current.MessageId, message))
+        {
+            return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.NotFound,
+                "It is no longer scheduled: it was delivered, cancelled or expired.");
+        }
+        await backupSession.BackupAsync(current, source, ServiceBusSubQueue.Active, cancellationToken).ConfigureAwait(false);
+
         var sender = _senders.GetOrAdd(scheduledIn.Name, name => GetMessagingClient().CreateSender(name));
         cancellationToken.ThrowIfCancellationRequested();
         try
