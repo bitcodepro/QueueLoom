@@ -52,7 +52,7 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
     public async Task ParentExitTimeout_PreservesBothVersions_AndDoesNotKillTheParent()
     {
         var target = Installation();
-        var parent = Start(target.Executable, "--hold-lock", Path.Combine(_root, "storage.lock"), "1500");
+        var parent = Start(target.Executable, "--hold-lock", Path.Combine(_root, "storage.lock"), "60000"); // Outlives the test on a loaded runner; disposal stops it.
         await WaitFor(Path.Combine(_root, "storage.lock.held"));
         var staging = Path.Combine(_root, "staging");
         Directory.CreateDirectory(staging);

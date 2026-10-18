@@ -20,14 +20,12 @@ internal static class Program
                 installation.RejectOwnedPath(ready);
                 using (var file = new FileStream(ready, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { file.WriteByte(1); file.Flush(flushToDisk: true); }
-                try
-                {
-                    using var parent = Process.GetProcessById(int.Parse(args[1], CultureInfo.InvariantCulture));
-                    var start = long.Parse(args[2], CultureInfo.InvariantCulture);
-                    if (!OperatingSystem.IsWindows() || parent.StartTime.ToUniversalTime().Ticks == start)
-                        await parent.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(2));
-                }
-                catch (ArgumentException) { /* Already stopped. */ }
+                // An orderly close can take minutes (a large backup); a PID reused by another process is not waited for.
+                var closed = await ApplicationExitWait.WaitAsync(int.Parse(args[1], CultureInfo.InvariantCulture),
+                    long.Parse(args[2], CultureInfo.InvariantCulture), ApplicationExitWait.DefaultLimit);
+                if (closed == ApplicationExitWait.Result.StillRunning)
+                    throw new TimeoutException(
+                        $"the previous QueueLoom was still closing after {ApplicationExitWait.DefaultLimit.TotalMinutes:N0} minutes. Start QueueLoom again once it has closed.");
                 args = [];
             }
             var selection = installation.SelectForLaunch();
