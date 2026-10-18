@@ -48,9 +48,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         new Dictionary<(string, string), Subscription>();
     private IReadOnlyDictionary<string, Subscription> _deadLetterReaders = new Dictionary<string, Subscription>();
     // Why messages must not be acknowledged, with the version of the last publication, keyed by what the refusal is
-    // about: a dead-letter topic (another reader, no or a different reader, a listing that failed) or one source's
-    // binding to it (its policy changed, its subscription could not be read; see BindingKey), so that checking a sibling
-    // source of the same topic never clears another source's failure. A
+    // about: a dead-letter topic as read through one physical reader (another reader, no or a different reader, a
+    // listing that failed; see TopicKey) or one source's binding to it (its policy changed, its subscription could not
+    // be read; see BindingKey). Checking a sibling source never clears another source's failure, and validating a
+    // replacement reader never clears what was found about the reader an older operation captured. A
     // topology read only adds refusals (it sees this project's subscriptions alone); the check before each deletion,
     // which lists every reader, records refusals or clears them. A refusal is always recorded. A check that passed
     // clears a refusal only when nothing was published for the topic since that check began, so an in-flight result
@@ -179,7 +180,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         _deadLetterReaders = index.DeadLetterReaders;
         foreach (var (topic, readers) in index.SharedDeadLetterTopics)
         {
-            RecordRefusal(topic, SharedRefusal(topic, readers));
+            if (index.DeadLetterReaders.TryGetValue(topic, out var reader))
+            {
+                RecordRefusal(TopicKey(topic, reader.SubscriptionName), SharedRefusal(topic, readers));
+            }
         }
         return index.Topology;
     }
@@ -277,11 +281,17 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     /// <summary>What a deletion of a source's dead letters reads: the dead-letter topic and the subscription read from.</summary>
     private readonly record struct DeadLetterBinding(string Source, string Topic, SubscriptionName Reader)
     {
+        /// <summary>The key of refusals about this binding's topic as read through its reader.</summary>
+        public string TopicKey => GooglePubSubWorkspace.TopicKey(Topic, Reader);
+
         /// <summary>The key of refusals about this source's binding alone, as opposed to its dead-letter topic.</summary>
         public string Key => BindingKey(Source, Topic, Reader);
     }
 
     internal static string BindingKey(string source, string topic, SubscriptionName reader) => $"binding|{source}|{topic}|{reader}";
+
+    /// <summary>The key of refusals about a dead-letter topic as read through this physical reader.</summary>
+    internal static string TopicKey(string topic, SubscriptionName reader) => $"topic|{topic}|{reader}";
 
     /// <summary>
     /// Right before a deletion or a move, checks each source against the service, bound to what the operation will
@@ -302,21 +312,21 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             .ToArray();
         foreach (var binding in bindings)
         {
-            var topicSince = PublicationVersion(binding.Topic);
+            var topicSince = PublicationVersion(binding.TopicKey);
             var bindingSince = PublicationVersion(binding.Key);
             var (refusal, aboutSource) = await CheckAsync(binding, cancellationToken).ConfigureAwait(false);
             if (refusal is not null)
             {
-                RecordRefusal(aboutSource ? binding.Key : binding.Topic, refusal);
+                RecordRefusal(aboutSource ? binding.Key : binding.TopicKey, refusal);
                 throw new InvalidOperationException(refusal);
             }
             // This binding was checked whole: its topic and its own binding are both clear as of when it began.
-            ClearRefusal(binding.Topic, topicSince);
+            ClearRefusal(binding.TopicKey, topicSince);
             ClearRefusal(binding.Key, bindingSince);
         }
         foreach (var binding in bindings)
         {
-            if ((DeadLetterRefusal(binding.Topic) ?? DeadLetterRefusal(binding.Key)) is { } recorded)
+            if ((DeadLetterRefusal(binding.TopicKey) ?? DeadLetterRefusal(binding.Key)) is { } recorded)
             {
                 throw new InvalidOperationException(recorded);
             }
@@ -576,7 +586,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         /// <summary>Why messages read here must not be acknowledged, when they must not; they are released instead.</summary>
         public string? SettleRefusal => DeadLetterTopic is null
             ? null
-            : owner.DeadLetterRefusal(DeadLetterTopic) ?? owner.DeadLetterRefusal(BindingKey(source.Name, DeadLetterTopic, subscription));
+            : owner.DeadLetterRefusal(TopicKey(DeadLetterTopic, subscription)) ?? owner.DeadLetterRefusal(BindingKey(source.Name, DeadLetterTopic, subscription));
 
         /// <summary>The dead-letter topic read here, when this channel reads one.</summary>
         public string? DeadLetterTopic { get; init; }

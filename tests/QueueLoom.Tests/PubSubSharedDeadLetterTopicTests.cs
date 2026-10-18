@@ -374,6 +374,68 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Null(Refusal(ordersChannel));
     }
 
+    // T was deleted and recreated while its reader R1 was kept: Google moves R1 (and its backlog) to "_deleted-topic_",
+    // and a new R2 becomes T's only reader. A move captured with R1 passes orders and is held on middle; a check bound
+    // to R1 records that T is no longer read by R1; the topology is refreshed and orders is validated against R2. R2's
+    // permission must not rehabilitate R1: the old move is refused and publishes nothing, the old R1 channel cannot
+    // acknowledge, and a new operation through R2 succeeds and acknowledges on R2.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AReplacementReadersPermissionDoesNotRehabilitateTheCapturedReader(bool durable)
+    {
+        const string u = "projects/p/topics/u-dlq";
+        const string r1 = "projects/p/subscriptions/dlq-reader";
+        const string r2 = "projects/p/subscriptions/dlq-reader-2";
+        Subscription Source(string id, string topic) => new() { Name = $"projects/p/subscriptions/{id}", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = topic, MaxDeliveryAttempts = 5 } };
+        var (workspace, publisher, subscriber) = Connect([[r1]], layout:
+        [
+            Source("orders", DeadLetterTopic), Source("middle", u),
+            new Subscription { Name = r1, Topic = DeadLetterTopic },
+            new Subscription { Name = "projects/p/subscriptions/u-reader", Topic = u }
+        ]);
+        subscriber.Policies["middle"] = u;
+        publisher.OtherTopicReaders[u] = ["projects/p/subscriptions/u-reader"];
+        var middle = ServiceBusEntityReference.Subscription("events", "middle");
+        var oldChannel = OpenChannel(workspace, Orders);
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replays"));
+        var items = new[] { Item(Orders, 1), Item(middle, 2) };
+        var plan = await store.CreateResendAsync(workspace.ConnectedProfileId!.Value, items.Select(item => item.WithNewMessageId()).ToArray(),
+            ResendMode.Move, 50, workspace.ConnectedNamespace, workspace.ConnectedConfigurationIdentity ?? string.Empty, "resend", default);
+        var gate = new Gate();
+        subscriber.BeforeGet = id => id == "middle" ? Take() : Task.CompletedTask;
+        Task Take() { subscriber.BeforeGet = null; return gate.Hold(); }
+
+        var move = durable
+            ? store.RunItemsAsync(plan, [0, 1], false, workspace, () => true, null, default)
+            : DeadLetterResender.ResendAsync(workspace, items, ResendMode.Move);
+        await gate.Run(move, async () =>
+        {
+            subscriber.All =
+            [
+                Source("orders", DeadLetterTopic), Source("middle", u),
+                new Subscription { Name = r1, Topic = "_deleted-topic_" },
+                new Subscription { Name = r2, Topic = DeadLetterTopic },
+                new Subscription { Name = "projects/p/subscriptions/u-reader", Topic = u }
+            ];
+            publisher.Pages = [[r2]];
+            await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)])); // bound to R1
+            await workspace.GetTopologyAsync(forceRefresh: true);
+            await workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]); // bound to R2 now
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => move);
+        Assert.Equal(0, publisher.Published);
+        if (durable) Assert.All(store.ReadHistory(plan).Items, item => Assert.Equal("Pending", item.State));
+        Assert.NotNull(Refusal(oldChannel));
+        Assert.Empty(subscriber.AcknowledgedIds);
+
+        var purge = await workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest([Orders], [ServiceBusSubQueue.DeadLetter]));
+
+        Assert.Equal(1, purge.Sources.Single().DeletedCount);
+        Assert.Equal([r2], subscriber.AcknowledgedOn);
+    }
+
     // A two-source move passes orders, then is held on billing; meanwhile another check records that orders' topic is
     // shared. Before the move is admitted every source's latest state is consulted again, so it is refused.
     [Fact]
@@ -720,8 +782,12 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
             return Task.CompletedTask;
         }
 
+        /// <summary>The subscriptions acknowledgements went to, one entry per request.</summary>
+        public List<string> AcknowledgedOn { get; } = [];
+
         public override Task AcknowledgeAsync(SubscriptionName subscription, IEnumerable<string> ackIds, CallSettings? callSettings = null)
         {
+            AcknowledgedOn.Add(subscription.ToString());
             AcknowledgedIds.AddRange(ackIds);
             return Task.CompletedTask;
         }
