@@ -51,6 +51,15 @@ internal sealed class WindowsDpapiMasterKeyStore(QueueLoomPaths paths) : IPlatfo
                 }
             }
 
+            // The key file is gone but secrets encrypted with it remain (an antivirus quarantine, a partial restore): a
+            // new key would never open them, and secrets saved with it would not open once the old file came back.
+            if (HasStoredSecrets(paths.SecretsFile))
+            {
+                throw new SecretVaultException(
+                    $"The QueueLoom vault key file is missing ({paths.ProtectedMasterKeyFile}) although saved secrets remain. " +
+                    "Restore the file from a backup, or remove the secrets file to start over and enter the passwords again.");
+            }
+
             var newKey = RandomNumberGenerator.GetBytes(MasterKeySize);
             byte[]? protectedNewKey = null;
             try
@@ -76,6 +85,27 @@ internal sealed class WindowsDpapiMasterKeyStore(QueueLoomPaths paths) : IPlatfo
         finally
         {
             CryptographicOperations.ZeroMemory(entropy);
+        }
+    }
+
+    /// <summary>Whether the secrets file holds any entry; a file that cannot be read counts as holding some.</summary>
+    private static bool HasStoredSecrets(string secretsFile)
+    {
+        if (!File.Exists(secretsFile))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(secretsFile));
+            return !document.RootElement.TryGetProperty("entries", out var entries) ||
+                   entries.ValueKind != System.Text.Json.JsonValueKind.Object ||
+                   entries.EnumerateObject().Any();
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        {
+            return true;
         }
     }
 }

@@ -57,7 +57,50 @@ public static class SnsFilterPolicy
             throw new FilterPolicyException("A filter policy is a JSON object, for example {\"region\": [\"EU\"]}.");
         }
         ValidateObject(document.RootElement, onBody, string.Empty);
+        // SNS refuses a policy whose values combine into more than 150 cases; checked here, before the policy is saved.
+        var combinations = Combinations(document.RootElement);
+        if (combinations > MaximumCombinations)
+        {
+            throw new FilterPolicyException(
+                $"The policy combines into {(combinations == long.MaxValue ? "too many" : combinations.ToString("N0", System.Globalization.CultureInfo.CurrentCulture))} " +
+                $"cases; Amazon SNS allows at most {MaximumCombinations}. Use fewer values or keys.");
+        }
     }
+
+    /// <summary>Amazon SNS: "the total combination of values must not exceed 150".</summary>
+    public const int MaximumCombinations = 150;
+
+    /// <summary>
+    /// The number of value combinations, as SNS counts them: each leaf's values times its nesting depth (1 at the top,
+    /// 2 inside one object), multiplied together; the alternatives of a genuine $or added up, at the depth the $or sits.
+    /// A $or whose objects hold operators ("numeric", "prefix"...) is, as for AWS, an ordinary field. Saturates instead
+    /// of overflowing.
+    /// </summary>
+    internal static long Combinations(JsonElement policy, int depth = 1)
+    {
+        long total = 1;
+        foreach (var property in policy.EnumerateObject())
+        {
+            long factor = property.Name == "$or" && IsGenuineOr(property.Value)
+                ? property.Value.EnumerateArray().Aggregate(0L, (sum, alternative) => Saturate(sum + Combinations(alternative, depth)))
+                : property.Value.ValueKind switch
+                {
+                    JsonValueKind.Array => Saturate((long)Math.Max(1, property.Value.GetArrayLength()) * depth),
+                    JsonValueKind.Object => Combinations(property.Value, depth + 1),
+                    _ => 1
+                };
+            total = factor != 0 && total > long.MaxValue / factor ? long.MaxValue : total * factor;
+        }
+        return total;
+    }
+
+    // AWS: a $or holds two or more objects, none of which uses an operator name as a key.
+    private static bool IsGenuineOr(JsonElement value) =>
+        value.ValueKind == JsonValueKind.Array && value.GetArrayLength() >= 2 &&
+        value.EnumerateArray().All(item => item.ValueKind == JsonValueKind.Object &&
+                                           item.EnumerateObject().All(key => !Operators.Contains(key.Name)));
+
+    private static long Saturate(long value) => value < 0 ? long.MaxValue : value;
 
     /// <summary>Whether SNS would deliver the message to a subscription with this policy, and why.</summary>
     public static (RoutingOutcome Outcome, string Explanation) Evaluate(string policy, bool onBody, RoutingMessage message)
