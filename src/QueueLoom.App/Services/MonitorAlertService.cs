@@ -167,20 +167,32 @@ public sealed class MonitorAlertService(
          uri.Host.EndsWith(".slack.com", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Escapes the Markdown characters that make links, inline HTML, emphasis, code or headings, with a backslash
-    /// (CommonMark allows one before any ASCII punctuation). Bare addresses may still be linked by a receiver that links
-    /// them on its own.
+    /// Keeps text literal for a Markdown receiver: every ASCII punctuation character gets a backslash (CommonMark allows
+    /// one before any of them), so no link, emphasis, entity (&amp;), list marker or heading can form; a control
+    /// character such as a line break becomes its Unicode control picture (U+2400 block), so the text stays on one line
+    /// and cannot start a block. Bare addresses may still be linked by a receiver that links them on its own.
     /// </summary>
     internal static string EscapeMarkdown(string text)
     {
         var escaped = new System.Text.StringBuilder(text.Length + 8);
         foreach (var character in text)
         {
-            if (character is '\\' or '[' or ']' or '(' or ')' or '<' or '>' or '*' or '_' or '`' or '~' or '#' or '!' or '|')
+            if (char.IsAsciiLetterOrDigit(character) || character == ' ' || character > '\u007F')
             {
-                escaped.Append('\\');
+                escaped.Append(character);
             }
-            escaped.Append(character);
+            else if (character < ' ')
+            {
+                escaped.Append((char)(0x2400 + character));
+            }
+            else if (character == '\u007F')
+            {
+                escaped.Append('\u2421');
+            }
+            else
+            {
+                escaped.Append('\\').Append(character);
+            }
         }
         return escaped.ToString();
     }
