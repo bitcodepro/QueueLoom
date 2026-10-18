@@ -70,7 +70,7 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
                 Assert.Equal(helper.StartTime.ToUniversalTime().Ticks, accepted.GetProperty("StartTicks").GetInt64());
                 File.WriteAllText(claimed, "caller accepted exact owned identity");
             }
-            await sender.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            await SenderExit(sender, helper, root, receipt, handoff, elapsed);
             Assert.Equal(expectedSenderExit, sender.ExitCode);
             if (expectedSenderExit == 0)
             {
@@ -142,6 +142,74 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
     }
 
     private void Log(string value) => output.WriteLine(SensitiveDataRedactor.Redact(value));
+
+    /// <summary>
+    /// The sender's recorded error as evidence, best effort: the live sender may be writing it right now (sharing
+    /// violation) or have written part of it (incomplete JSON). Either is reported as unavailable with its reason, so
+    /// the timeout it accompanies is never replaced by a failure to read it.
+    /// </summary>
+    internal static string RecordedError(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return "none";
+        }
+        try
+        {
+            var error = ReadJson(path);
+            var recorded = error.ToString();
+            if (error.TryGetProperty("FailedAtUtcTicks", out var at) && at.TryGetInt64(out var ticks))
+                recorded += $" (recorded {(DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc)).TotalSeconds:F1} s ago)";
+            return recorded;
+        }
+        catch (Exception unavailable) when (unavailable is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return $"unavailable ({unavailable.GetType().Name}: {unavailable.Message})";
+        }
+    }
+
+    // Reading the sender's error while it is still being written, or after only part of it was written, gives a reason
+    // instead of throwing.
+    [Fact]
+    public void RecordedErrorIsBestEffortEvidence()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "reader-error.json");
+        Assert.Equal("none", RecordedError(path));
+
+        File.WriteAllText(path, "{\"Type\":\"System.IO.IOException\",\"Mess");
+        Assert.StartsWith("unavailable (", RecordedError(path), StringComparison.Ordinal);
+
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.StartsWith("unavailable (IOException", RecordedError(path), StringComparison.Ordinal);
+        }
+
+        File.WriteAllText(path, $"{{\"Type\":\"System.IO.IOException\",\"FailedAtUtcTicks\":{DateTime.UtcNow.Ticks}}}");
+        Assert.Contains("recorded", RecordedError(path), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Waits (bounded) for the sender to exit. When it has not, the failure says, before any teardown, how long the case
+    /// has run, whether the sender and helper are alive, which handoff files exist, and what error the sender recorded and
+    /// when, so a slow exit is told apart from a sender that never reached its error.
+    /// </summary>
+    private static async Task SenderExit(Process sender, Process? helper, string root, string receipt, string handoff, Stopwatch elapsed)
+    {
+        try
+        {
+            await sender.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
+            var recorded = RecordedError(Path.Combine(root, "reader-error.json"));
+            bool Alive(Process? process) { try { return process is not null && !process.HasExited; } catch (InvalidOperationException) { return false; } }
+            throw new Xunit.Sdk.XunitException(
+                $"The sender (PID {sender.Id}) had not exited {elapsed.Elapsed.TotalSeconds:F1} s into the case. Sender alive: {Alive(sender)}; " +
+                $"helper alive: {Alive(helper)}; acknowledgement: {File.Exists(receipt + ".helper")}; accepted identity: " +
+                $"{File.Exists(handoff + ".helper.json")}; receipt: {File.Exists(receipt)}; sender error: {recorded}.");
+        }
+    }
     private static JsonElement ReadJson(string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
