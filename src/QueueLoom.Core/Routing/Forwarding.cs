@@ -13,6 +13,13 @@ public static class Forwarding
     /// <summary>Service Bus moves a message through at most this many forwards (its transfer hop count).</summary>
     public const int MaximumHops = 4;
 
+    /// <summary>
+    /// At most this many steps are walked for one entity. Paths are listed, not nodes, so subscriptions that forward
+    /// into the same queues ("diamonds") multiply them level by level; past this the chain is reported as not fully
+    /// followed instead of holding up the topology refresh.
+    /// </summary>
+    public const int MaximumSteps = 10_000;
+
     /// <summary>The entity name a ForwardTo value points at; Service Bus also accepts a full sb:// or https:// address.</summary>
     public static string? TargetName(string? forwardTo)
     {
@@ -41,7 +48,11 @@ public static class Forwarding
     {
         var walk = new WalkResult();
         Walk(map, start, [], 0, walk);
-        return new ForwardingReport(entity, walk.Paths, walk.Loops, walk.Missing) { LongestChain = walk.LongestChain };
+        return new ForwardingReport(entity, walk.Paths, walk.Loops, walk.Missing)
+        {
+            LongestChain = walk.LongestChain,
+            IsTruncated = walk.Truncated
+        };
     }
 
     /// <summary>
@@ -126,11 +137,21 @@ public static class Forwarding
         public List<IReadOnlyList<string>> Missing { get; } = [];
 
         public int LongestChain { get; set; }
+
+        public int Steps { get; set; }
+
+        /// <summary>The walk stopped at <see cref="MaximumSteps"/>: what it found is only part of the picture.</summary>
+        public bool Truncated { get; set; }
     }
 
     /// <param name="hops">Forwards so far; a topic copying to its subscription is not one.</param>
     private static void Walk(Map map, Node node, List<Node> path, int hops, WalkResult result)
     {
+        if (++result.Steps > MaximumSteps)
+        {
+            result.Truncated = true;
+            return;
+        }
         result.LongestChain = Math.Max(result.LongestChain, hops);
         if (path.Any(item => item.Is(node)))
         {
@@ -257,6 +278,12 @@ public sealed record ForwardingReport(
 
     public bool IsTooLong => LongestChain > Forwarding.MaximumHops;
 
+    /// <summary>
+    /// The forwarding fans out into more paths than QueueLoom follows (<see cref="Forwarding.MaximumSteps"/>): the
+    /// paths, loops and destinations are those found before it stopped.
+    /// </summary>
+    public bool IsTruncated { get; init; }
+
     /// <summary>Where messages finally stay: the last entity of each path.</summary>
     public IReadOnlyList<string> Destinations => Paths.Select(path => path[^1]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
@@ -276,8 +303,9 @@ public sealed record ForwardingReport(
             : Destinations.Count > 1 || Destinations.Count == 1 && !string.Equals(Destinations[0], target, StringComparison.OrdinalIgnoreCase)
                 ? $"Forwards to {target}; messages end up in {string.Join(", ", Destinations.Take(3))}" + (Destinations.Count > 3 ? $" and {Destinations.Count - 3} more" : string.Empty)
                 : $"Forwards to {target}";
-        return IsTooLong
+        var described = IsTooLong
             ? $"{chain}; {LongestChain} forwards is more than Service Bus allows ({Forwarding.MaximumHops}), so messages are dead-lettered on the way"
             : chain;
+        return IsTruncated ? $"{described}; it fans out into too many paths to follow them all" : described;
     }
 }
