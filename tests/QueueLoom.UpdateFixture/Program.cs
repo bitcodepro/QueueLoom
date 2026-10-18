@@ -228,11 +228,18 @@ if (args.Length > 0 && args[0] == "--hold-lock")
 {
     using var locked = new FileStream(args[1], FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     File.WriteAllText(args[1] + ".held", "ready");
-    // "until-released": held until the test writes <file>.release (bounded), instead of for a fixed time.
+    // "until-released": held until the test writes <file>.release, instead of for a fixed time. A watchdog ends a
+    // forgotten holder with a failure code (72), never as if it had been released.
     if (args[2] == "until-released")
     {
         var held = System.Diagnostics.Stopwatch.StartNew();
-        while (!File.Exists(args[1] + ".release") && held.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(10);
+        while (!File.Exists(args[1] + ".release"))
+        {
+            // QUEUELOOM_FIXTURE_WATCHDOG_MS shortens the watchdog for the test that checks it fires.
+            var watchdog = int.TryParse(Environment.GetEnvironmentVariable("QUEUELOOM_FIXTURE_WATCHDOG_MS"), out var ms) ? ms : 120_000;
+            if (held.Elapsed > TimeSpan.FromMilliseconds(watchdog)) return 72;
+            await Task.Delay(10);
+        }
     }
     else await Task.Delay(int.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture));
     return 0;

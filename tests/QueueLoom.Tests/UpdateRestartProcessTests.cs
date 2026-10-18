@@ -52,7 +52,8 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
     public async Task ParentExitTimeout_PreservesBothVersions_AndDoesNotKillTheParent()
     {
         var target = Installation();
-        var parent = Start(target.Executable, "--hold-lock", Path.Combine(_root, "storage.lock"), "1500");
+        // Held until released after the assertions, so a loaded runner cannot let it exit early.
+        var parent = Start(target.Executable, "--hold-lock", Path.Combine(_root, "storage.lock"), "until-released");
         await WaitFor(Path.Combine(_root, "storage.lock.held"));
         var staging = Path.Combine(_root, "staging");
         Directory.CreateDirectory(staging);
@@ -68,6 +69,9 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
         Assert.True(File.Exists(receipt.Entries.Single().Backup));
         Assert.False(File.Exists(Path.Combine(_root, "updated-started.txt")));
         Assert.Contains("Waiting", File.ReadAllText(path + ".error"), StringComparison.Ordinal);
+        File.WriteAllText(Path.Combine(_root, "storage.lock.release"), "go");
+        Assert.True(parent.WaitForExit(15_000), "The held parent did not exit once released.");
+        Assert.Equal(0, parent.ExitCode);
     }
 
     [Fact]
