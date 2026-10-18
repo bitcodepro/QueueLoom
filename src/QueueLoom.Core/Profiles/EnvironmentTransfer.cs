@@ -77,13 +77,25 @@ public static class EnvironmentTransfer
         {
             throw new InvalidOperationException($"The file is not a QueueLoom environments file: {exception.Message}", exception);
         }
-        if (root?["format"]?.GetValue<string>() != Format || root["environments"] is not JsonArray environments)
+        // Read without throwing: a value of the wrong JSON type is a malformed file, not the JSON library's own error.
+        if (root is not JsonObject document ||
+            document["format"] is not JsonValue format || !format.TryGetValue<string>(out var formatName) || formatName != Format ||
+            document["environments"] is not JsonArray environments)
         {
             throw new InvalidOperationException("The file is not a QueueLoom environments file. Export one from Environments → Export.");
         }
-        if (root["version"]?.GetValue<int>() is not Version)
+        if (document["version"] is not JsonValue versionValue || !versionValue.TryGetValue<int>(out var version) || version < 1)
+        {
+            throw new InvalidOperationException(
+                "The file has no valid version (a whole number from 1). Export the environments from QueueLoom again and import that file.");
+        }
+        if (version > Version)
         {
             throw new InvalidOperationException("The file was written by a newer QueueLoom. Update QueueLoom and import it again.");
+        }
+        if (version != Version)
+        {
+            throw new InvalidOperationException($"The file has version {version}, which this QueueLoom does not read. Export the environments again.");
         }
         if (environments.Count > MaximumEnvironments)
         {
