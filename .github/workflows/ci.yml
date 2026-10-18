@@ -194,9 +194,26 @@ jobs:
           QUEUELOOM_SERVICEBUS_EMULATOR: Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
           QUEUELOOM_RABBITMQ: localhost:5673
           QUEUELOOM_KAFKA: localhost:9092
+        # The UI test host has intermittently aborted with "free(): double free" (exit 134) and no stack. Blame records
+        # which test each host was running (Sequence_*.xml) and writes a full dump when a host crashes; the normal
+        # console logger prints each test as it starts and ends. Nothing is retried or suppressed.
         run: >-
-          dotnet test QueueLoom.slnx -c Release --no-build --logger trx --results-directory TestResults
+          dotnet test QueueLoom.slnx -c Release --no-build --logger trx --logger "console;verbosity=detailed"
+          --results-directory TestResults --blame-crash --blame-crash-dump-type full
           --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests|FullyQualifiedName~KafkaUiTests"
+
+      - name: Print native backtraces of crashed test hosts
+        if: failure()
+        run: |
+          mapfile -t dumps < <(find TestResults -name '*.dmp' -type f)
+          if [ ${#dumps[@]} -eq 0 ]; then echo "No crash dump was written."; exit 0; fi
+          sudo apt-get install -y --no-install-recommends gdb >/dev/null
+          for dump in "${dumps[@]}"; do
+            echo "::group::Backtrace of $dump"
+            gdb -batch -ex "info sharedlibrary" -ex "thread apply all bt" "$(command -v dotnet)" "$dump" 2>&1 | tee "$dump.backtrace.txt"
+            echo "::endgroup::"
+          done
+          find TestResults -name 'Sequence_*.xml' -exec sh -c 'echo "::group::$1"; cat "$1"; echo; echo "::endgroup::"' _ {} \;
 
       - name: Upload test results
         if: failure()
