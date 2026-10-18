@@ -364,11 +364,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
         EnsureWriteAllowed();
-        var topology = await GetTopologyCoreAsync(false, cancellationToken).ConfigureAwait(false);
-        var distinct = sources.Distinct().ToArray();
-        foreach (var (source, subQueue) in distinct)
-            if (OpenChannel(topology, source, subQueue).SourceAttributionError is { } error) throw new InvalidOperationException(error);
-        await ValidateDeletionAsync(distinct, cancellationToken).ConfigureAwait(false);
+        // Only the provider's own check against the service: no topology read and no channel, so a provider without
+        // such a check (Kafka, whose topology read lists consumer groups) is not touched at all.
+        await ValidateDeletionAsync(sources.Distinct().ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
