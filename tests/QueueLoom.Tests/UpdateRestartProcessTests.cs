@@ -629,6 +629,57 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
         Assert.True(JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!.Recovered);
     }
 
+    // Linux CI refused to run the restored executable once with "Text file busy" (ETXTBSY): a file just moved back can
+    // still be open for writing in a process forked meanwhile. The recovery start now retries that error (and the
+    // Windows sharing violation) a bounded number of times; the restored application still starts.
+    [Fact]
+    public async Task FailedStartup_RestartsTheRestoredApplicationAfterItWasBrieflyBusy()
+    {
+        var (target, receipt) = ChangedInstallation();
+        var path = UpdateRestart.ReceiptPath(target);
+        var previousBytes = File.ReadAllBytes(receipt.Entries.Single().Backup!);
+        File.WriteAllText(Path.Combine(_root, "fail-startup"), "fail only updated startup");
+        // Only the two injected refusals are counted; real starts keep the production backoff, in case the real file is
+        // briefly busy as well.
+        var injected = 2;
+        UpdateRestart.StartProcess.Value = start =>
+        {
+            if (injected > 0)
+            {
+                injected--;
+                throw Busy();
+            }
+            return Process.Start(start);
+        };
+
+        var result = await UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0);
+        await WaitFor(Path.Combine(_root, "recovered-started.txt"));
+
+        Assert.Equal(1, result);
+        Assert.Equal(0, injected); // Both injected refusals were met, and the start went on.
+        Assert.Equal(previousBytes, File.ReadAllBytes(target.Executable));
+        Assert.True(JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!.Recovered);
+    }
+
+    [Fact]
+    public async Task ARestoredStartRetriesOnlyABusyFileAndOnlyABoundedNumberOfTimes()
+    {
+        UpdateRestart.RetryDelay.Value = TimeSpan.Zero;
+        var attempts = 0;
+        UpdateRestart.StartProcess.Value = _ => { attempts++; throw Busy(); };
+        await Assert.ThrowsAsync<System.ComponentModel.Win32Exception>(() => UpdateRestart.StartRestoredAsync(new ProcessStartInfo("app")));
+        Assert.Equal(UpdateRestart.MaximumStartAttempts, attempts);
+
+        attempts = 0;
+        UpdateRestart.StartProcess.Value = _ => { attempts++; throw new System.ComponentModel.Win32Exception(2, "No such file"); };
+        await Assert.ThrowsAsync<System.ComponentModel.Win32Exception>(() => UpdateRestart.StartRestoredAsync(new ProcessStartInfo("app")));
+        Assert.Equal(1, attempts);
+    }
+
+    private static System.ComponentModel.Win32Exception Busy() => OperatingSystem.IsWindows()
+        ? new System.ComponentModel.Win32Exception(32, "The process cannot access the file because it is being used by another process.")
+        : new System.ComponentModel.Win32Exception(26, "Text file busy");
+
     private (UpdateTarget Target, UpdateRestart.Receipt Receipt) ChangedInstallation()
     {
         var target = Installation();

@@ -61,5 +61,5 @@ try {
     $process.Dispose()
     # This exact random directory belongs only to this smoke test.
     if (-not $data.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Smoke directory escaped the temporary workspace' }
-    if (Test-Path -LiteralPath $data) { [IO.Directory]::Delete($data, $true) }
+    Remove-SmokeDirectory $data
 }

@@ -214,7 +214,7 @@ public static class UpdateRestart
             // Written through a temporary file: a crash here must not leave the receipt empty or cut short.
             SafeFileWriter.WriteText(path, JsonSerializer.Serialize(receipt with { Recovered = true }), narrowGroup: false);
             // The helper may still map the failed executable on Windows. Keep it as evidence, never delete the backup first.
-            using var recovered = Process.Start(new ProcessStartInfo(receipt.Target.Executable)
+            using var recovered = await StartRestoredAsync(new ProcessStartInfo(receipt.Target.Executable)
                 { UseShellExecute = false, WorkingDirectory = receipt.Target.InstallDirectory });
             return 1;
         }
@@ -228,6 +228,39 @@ public static class UpdateRestart
         }
         return 0;
     }
+
+    /// <summary>Test seam: starts a process (Process.Start by default).</summary>
+    internal static readonly AsyncLocal<Func<ProcessStartInfo, Process?>?> StartProcess = new();
+
+    /// <summary>Test seam: the pause between two start attempts.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> RetryDelay = new();
+
+    internal const int MaximumStartAttempts = 50;
+
+    /// <summary>
+    /// Starts the restored application. A file just moved back can be briefly busy: Linux refuses to run a file another
+    /// process still holds open for writing ("Text file busy", ETXTBSY, for example a process forked meanwhile that
+    /// has not run its new program yet), and Windows reports a sharing violation while a scanner holds it. Those two
+    /// are retried a bounded number of times; any other failure is not.
+    /// </summary>
+    internal static async Task<Process?> StartRestoredAsync(ProcessStartInfo start)
+    {
+        var startProcess = StartProcess.Value ?? Process.Start;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return startProcess(start);
+            }
+            catch (System.ComponentModel.Win32Exception exception) when (IsBusy(exception) && attempt < MaximumStartAttempts)
+            {
+                await Task.Delay(RetryDelay.Value ?? TimeSpan.FromMilliseconds(100));
+            }
+        }
+    }
+
+    private static bool IsBusy(System.ComponentModel.Win32Exception exception) =>
+        OperatingSystem.IsWindows() ? exception.NativeErrorCode is 32 or 33 : exception.NativeErrorCode == 26;
 
     public static void Restore(Receipt receipt)
     {
