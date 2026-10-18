@@ -322,6 +322,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             throw new NotSupportedException($"{Provider.DisplayName()} has no transfer dead-letter queues.");
         foreach (var target in targets)
             if (target.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
+        await ValidateDeletionAsync(targets.Select(target => (target.Target.Source, target.Target.SubQueue)).ToArray(), cancellationToken)
+            .ConfigureAwait(false);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterPurgeSourceResult>(targets.Length);
@@ -353,6 +355,30 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         return new DeadLetterPurgeResult(profile.Id, startedAt, TimeProvider.GetUtcNow(), results, backupSession.RootDirectory);
     }
 
+    public async Task EnsureDeletableAsync(
+        IReadOnlyCollection<(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue)> sources,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sources);
+        ThrowIfDisposed();
+        using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
+        EnsureWriteAllowed();
+        var topology = await GetTopologyCoreAsync(false, cancellationToken).ConfigureAwait(false);
+        var distinct = sources.Distinct().ToArray();
+        foreach (var (source, subQueue) in distinct)
+            if (OpenChannel(topology, source, subQueue).SourceAttributionError is { } error) throw new InvalidOperationException(error);
+        await ValidateDeletionAsync(distinct, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Checks with the service, not the cached topology, that dead letters of these sources may be deleted, before
+    /// anything is backed up, deleted or published. Throws when one may not.
+    /// </summary>
+    protected virtual Task ValidateDeletionAsync(
+        IReadOnlyCollection<(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue)> sources,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
     public async Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
         DeleteDeadLetterMessagesRequest request,
         CancellationToken cancellationToken = default,
@@ -377,6 +403,8 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             .ToArray();
         foreach (var group in groups)
             if (group.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
+        await ValidateDeletionAsync(groups.Select(group => (group.Group.Key.Source, group.Group.Key.SubQueue)).ToArray(), cancellationToken)
+            .ConfigureAwait(false);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
         var results = new List<DeadLetterMessageDeletionResult>(request.Messages.Count);

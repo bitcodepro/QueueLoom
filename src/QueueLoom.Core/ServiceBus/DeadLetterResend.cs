@@ -109,6 +109,11 @@ public static class DeadLetterResender
         }
         ArgumentOutOfRangeException.ThrowIfNegative(messagesPerSecond);
         EnsureSafeMessageIds(workspace.ConnectedProvider, items, mode);
+        // A move whose originals could not be deleted must not publish a single copy.
+        if (mode == ResendMode.Move)
+        {
+            await workspace.EnsureDeletableAsync(SourcesOf(items), cancellationToken).ConfigureAwait(false);
+        }
 
         var results = new ResendItemResult?[items.Count];
         var delay = messagesPerSecond > 0 ? TimeSpan.FromSeconds(1.0 / messagesPerSecond) : TimeSpan.Zero;
@@ -195,6 +200,10 @@ public static class DeadLetterResender
 
         return new ResendResult(results.Select(result => result!).ToArray(), backupDirectory) { Warnings = warnings };
     }
+
+    /// <summary>The dead-letter sources whose originals a move deletes.</summary>
+    public static IReadOnlyCollection<(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue)> SourcesOf(IEnumerable<ResendItem> items) =>
+        items.Select(item => (item.Original.Source, item.Original.SubQueue)).Distinct().ToArray();
 
     public static void EnsureSafeMessageIds(QueueLoom.Core.Profiles.MessagingProvider? provider,
         IReadOnlyList<ResendItem> items, ResendMode mode)

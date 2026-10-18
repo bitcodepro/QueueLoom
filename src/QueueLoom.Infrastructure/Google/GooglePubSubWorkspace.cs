@@ -47,7 +47,9 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     private IReadOnlyDictionary<(string Topic, string Subscription), Subscription> _subscriptions =
         new Dictionary<(string, string), Subscription>();
     private IReadOnlyDictionary<string, Subscription> _deadLetterReaders = new Dictionary<string, Subscription>();
-    private IReadOnlyDictionary<string, string[]> _sharedDeadLetterTopics = new Dictionary<string, string[]>();
+    // Why a dead-letter topic must not be acknowledged through, by topic. A topology read only adds entries (it sees
+    // this project's subscriptions alone); the check before each deletion, which lists every reader, sets or clears them.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _deadLetterRefusals = new(StringComparer.Ordinal);
 
     public GooglePubSubWorkspace(
         ISecretVault secretVault,
@@ -116,7 +118,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         _metrics = null;
         _subscriptions = new Dictionary<(string, string), Subscription>();
         _deadLetterReaders = new Dictionary<string, Subscription>();
-        _sharedDeadLetterTopics = new Dictionary<string, string[]>();
+        _deadLetterRefusals.Clear();
         var channels = _channels.ToArray();
         _channels.Clear();
         foreach (var channel in channels)
@@ -165,7 +167,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             undelivered?.ToDictionary(pair => pair.Key, pair => pair.Value.At, StringComparer.Ordinal));
         _subscriptions = index.Subscriptions;
         _deadLetterReaders = index.DeadLetterReaders;
-        _sharedDeadLetterTopics = index.SharedDeadLetterTopics;
+        foreach (var (topic, readers) in index.SharedDeadLetterTopics)
+        {
+            _deadLetterRefusals[topic] = SharedRefusal(topic, readers);
+        }
         return index.Topology;
     }
 
@@ -208,12 +213,68 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         // acknowledged through one stays in the others. Such a topic is viewed, never acknowledged through.
         return new PubSubChannel(this, source, subQueue, reader.SubscriptionName, belongsTo: subscription.SubscriptionName)
         {
-            SettleRefusal = _sharedDeadLetterTopics.TryGetValue(deadLetterTopic, out var readers)
-                ? $"Dead-letter topic '{GooglePubSubTopology.TopicIdOf(deadLetterTopic)}' has {readers.Length:N0} subscriptions " +
-                  $"({string.Join(", ", readers)}). Each keeps its own copy and some may belong to another consumer, so QueueLoom " +
-                  "does not delete or move its messages; it only shows them. Keep one subscription on the topic to manage them here."
-                : null
+            DeadLetterTopic = deadLetterTopic
         };
+    }
+
+    private static string SharedRefusal(string topic, IReadOnlyCollection<string> readers) =>
+        $"Dead-letter topic '{GooglePubSubTopology.TopicIdOf(topic)}' has {readers.Count:N0} subscriptions ({string.Join(", ", readers)}). " +
+        "Each keeps its own copy and some may belong to another consumer, so QueueLoom does not delete or move its messages; " +
+        "it only shows them. Keep one subscription on the topic to manage them here.";
+
+    /// <summary>Why messages of this dead-letter topic must not be acknowledged now, as last established.</summary>
+    internal string? DeadLetterRefusal(string deadLetterTopic) =>
+        _deadLetterRefusals.TryGetValue(deadLetterTopic, out var refusal) ? refusal : null;
+
+    /// <summary>
+    /// Lists every subscription attached to each dead-letter topic involved, in any project and over every page, right
+    /// before a deletion or a move. More than one, or a listing that could not be completed, refuses the operation.
+    /// Detached subscriptions are not listed: they receive nothing and hold no backlog.
+    /// </summary>
+    protected override async Task ValidateDeletionAsync(
+        IReadOnlyCollection<(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue)> sources,
+        CancellationToken cancellationToken)
+    {
+        var topics = sources
+            .Where(source => source.SubQueue == ServiceBusSubQueue.DeadLetter && source.Source.TopicName is not null)
+            .Select(source => _subscriptions.TryGetValue((source.Source.TopicName!, source.Source.Name), out var subscription)
+                ? subscription.DeadLetterPolicy?.DeadLetterTopic : null)
+            .Where(topic => !string.IsNullOrEmpty(topic))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        string? firstRefusal = null;
+        foreach (var topic in topics)
+        {
+            string? refusal;
+            try
+            {
+                var readers = new List<string>();
+                await foreach (var name in Publisher.ListTopicSubscriptionsAsync(new ListTopicSubscriptionsRequest { Topic = topic })
+                                   .WithCancellation(cancellationToken).ConfigureAwait(false))
+                {
+                    readers.Add(name);
+                }
+                refusal = readers.Count > 1 ? SharedRefusal(topic!, readers) : null;
+            }
+            catch (RpcException exception)
+            {
+                refusal = $"QueueLoom could not list the subscriptions of dead-letter topic '{GooglePubSubTopology.TopicIdOf(topic!)}' " +
+                          $"({exception.Status.StatusCode}), so it cannot tell whether another consumer reads it. Nothing was deleted or moved.";
+            }
+            if (refusal is null)
+            {
+                _deadLetterRefusals.TryRemove(topic!, out _);
+            }
+            else
+            {
+                _deadLetterRefusals[topic!] = refusal;
+                firstRefusal ??= refusal;
+            }
+        }
+        if (firstRefusal is not null)
+        {
+            throw new InvalidOperationException(firstRefusal);
+        }
     }
 
     protected override async Task SendCoreAsync(
@@ -395,7 +456,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         public int MaximumBatchSize => MaximumBatch;
 
         /// <summary>Why messages read here must not be acknowledged, when they must not; they are released instead.</summary>
-        public string? SettleRefusal { get; init; }
+        public string? SettleRefusal => DeadLetterTopic is null ? null : owner.DeadLetterRefusal(DeadLetterTopic);
+
+        /// <summary>The dead-letter topic read here, when this channel reads one.</summary>
+        public string? DeadLetterTopic { get; init; }
 
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {

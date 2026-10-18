@@ -210,6 +210,9 @@ public sealed partial class BatchReplayStore
             prepared.Add(index, new ResendItem(original, destination, draft));
         }
         DeadLetterResender.EnsureSafeMessageIds(workspace.ConnectedProvider, prepared.Values.ToArray(), plan.Mode);
+        // A move whose originals could not be deleted must not publish a single copy.
+        if (plan.Mode == ResendMode.Move)
+            await workspace.EnsureDeletableAsync(DeadLetterResender.SourcesOf(prepared.Values), token);
         var results = new List<ResendItemResult>();
         var sentForMove = new List<(int Position, int Index)>();
         string? backup = null;
