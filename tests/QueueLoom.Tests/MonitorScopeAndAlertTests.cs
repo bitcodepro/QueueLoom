@@ -61,4 +61,36 @@ public sealed class SlackWebhookEscapingTests
         Assert.DoesNotContain("<!channel>", text, StringComparison.Ordinal);
         Assert.Contains("&lt;!channel&gt; &lt;https://evil.example|reset password&gt;", text, StringComparison.Ordinal);
     }
+
+    // The Teams/other payload put broker names raw into its top-level "text", which Markdown-reading receivers render:
+    // a queue named "[click](https://evil)" became a link there. The card body was already literal.
+    [Fact]
+    public void TheOtherPayloadsTopLevelTextKeepsBrokerNamesLiteral()
+    {
+        var alert = new MonitorAlert("Production", "[click](https://evil.example) **urgent** `x` <b>", 3, null);
+
+        var payload = MonitorAlertService.BuildWebhookPayload("https://contoso.webhook.office.com/workflows/1", alert);
+        var text = payload["text"]!.GetValue<string>();
+
+        Assert.StartsWith("QueueLoom: dead letters — ", text, StringComparison.Ordinal);
+        Assert.Contains(@"\[click\]\(https://evil.example\)", text, StringComparison.Ordinal);
+        Assert.Contains(@"\*\*urgent\*\*", text, StringComparison.Ordinal);
+        Assert.Contains(@"\`x\` \<b\>", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("[click](", text, StringComparison.Ordinal);
+        // The card's TextRun shows the names as they are: it renders no Markdown.
+        Assert.Contains("[click](https://evil.example)", payload.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    // A host that only ends in "slack.com" is not Slack.
+    [Theory]
+    [InlineData("https://hooks.slack.com/services/T/B/X", true)]
+    [InlineData("https://slack.com/api/x", true)]
+    [InlineData("https://notslack.com/hook", false)]
+    [InlineData("https://evilslack.com/hook", false)]
+    public void OnlySlacksOwnHostsGetTheSlackPayload(string url, bool slack)
+    {
+        var payload = MonitorAlertService.BuildWebhookPayload(url, new MonitorAlert("Production", "orders", 3, null));
+
+        Assert.Equal(!slack, payload.ContainsKey("attachments"));
+    }
 }
