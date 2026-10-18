@@ -123,6 +123,27 @@ public sealed class LauncherRestartWaitTests
         Assert.Contains("exited before it was ready", error.Message, StringComparison.Ordinal);
     }
 
+    // A failure right after the process started (before anything was read from it) is the error reported, and the
+    // process and its folder are still cleaned up.
+    [Fact]
+    public async Task AFailureRightAfterStartStillCleansUp()
+    {
+        Process? started = null;
+        string? folder = null;
+
+        var error = await Assert.ThrowsAsync<IOException>(() => HeldFixture.StartAsync(afterStart: (process, root) =>
+        {
+            started = process;
+            folder = root;
+            throw new IOException("injected after start");
+        }));
+
+        Assert.Equal("injected after start", error.Message);
+        Assert.NotNull(started);
+        Assert.False(Directory.Exists(folder), "The fixture's folder was left behind.");
+        Assert.Throws<InvalidOperationException>(() => started!.Id); // disposed: the wrapper was released too
+    }
+
     /// <summary>
     /// The update fixture holding a lock until released, owned from the moment it starts: a failed start, a failed
     /// release or a failed test still stops it (within a bound), checks that it stopped, and only then removes its folder.
@@ -171,12 +192,14 @@ public sealed class LauncherRestartWaitTests
 
         public int Id => _process.Id;
 
-        public long StartTicks { get; private init; }
+        /// <summary>Read only while the fixture is held alive (before it is released).</summary>
+        public long StartTicks => _process.StartTime.ToUniversalTime().Ticks;
 
         private static string Executable => Path.Combine(AppContext.BaseDirectory, "UpdateFixture",
             "QueueLoom.UpdateFixture" + (OperatingSystem.IsWindows() ? ".exe" : ""));
 
-        public static async Task<HeldFixture> StartAsync(int? watchdogMilliseconds = null, bool lockInMissingFolder = false)
+        public static async Task<HeldFixture> StartAsync(int? watchdogMilliseconds = null, bool lockInMissingFolder = false,
+            Action<Process, string>? afterStart = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "QueueLoom.Tests", "exit-wait " + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -188,9 +211,11 @@ public sealed class LauncherRestartWaitTests
             try
             {
                 process = Process.Start(start) ?? throw new InvalidOperationException("The fixture did not start.");
-                var fixture = new HeldFixture(process, root, lockFile) { StartTicks = process.StartTime.ToUniversalTime().Ticks };
+                // Owned from here on: nothing that can fail runs before cleanup is in place.
+                var fixture = new HeldFixture(process, root, lockFile);
                 try
                 {
+                    afterStart?.Invoke(process, root);
                     var waiting = Stopwatch.StartNew();
                     while (!File.Exists(lockFile + ".held"))
                     {
