@@ -236,11 +236,27 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     }
 
     internal static string ConsumerGroupsUnreadable(KafkaException exception) =>
-        $"Consumer groups could not be read ({OneLine(exception.Error.Reason)}), so their lag is not shown";
+        $"Consumer groups could not be read ({OneLine(ReasonOf(exception))}), so their lag is not shown";
 
     internal static string SomeConsumerGroupsUnreadable(int count, KafkaException first) =>
         $"The offsets of {count.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} consumer group(s) could not be read " +
-        $"({OneLine(first.Error.Reason)}), so their lag is not shown";
+        $"({OneLine(ReasonOf(first))}), so their lag is not shown";
+
+    /// <summary>
+    /// The broker's reason. Confluent's aggregate exceptions carry a generic message of their own; the broker's errors
+    /// are in their results, and the first real one is shown.
+    /// </summary>
+    internal static string? ReasonOf(KafkaException exception) => exception switch
+    {
+        ListConsumerGroupsException listing =>
+            listing.Results?.Errors?.FirstOrDefault(error => error.IsError)?.Reason ?? exception.Error.Reason,
+        ListConsumerGroupOffsetsException offsets =>
+            offsets.Results?.Select(report => report.Error).FirstOrDefault(error => error is { IsError: true })?.Reason
+            ?? offsets.Results?.SelectMany(report => report.Partitions ?? []).Select(partition => partition.Error)
+                .FirstOrDefault(error => error is { IsError: true })?.Reason
+            ?? exception.Error.Reason,
+        _ => exception.Error.Reason
+    };
 
     private static string OneLine(string? text)
     {

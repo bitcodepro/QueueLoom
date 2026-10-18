@@ -35,6 +35,44 @@ public sealed class KafkaConsumerGroupNoteTests
         Assert.Contains("The offsets of 2 consumer group(s) could not be read (denied)", orders.Note, StringComparison.Ordinal);
     }
 
+    // Confluent's aggregate exceptions carry generic text ("error listing consumer groups"); the broker's reason is in
+    // their results, and that is what the note shows.
+    [Fact]
+    public async Task TheBrokersReasonIsShownForAFailedGroupListing()
+    {
+        var topology = await LagAsync(listGroups: () => throw new ListConsumerGroupsException(new ListConsumerGroupsReport
+        {
+            Valid = [],
+            Errors = [new Error(ErrorCode.NoError), new Error(ErrorCode.ClusterAuthorizationFailed, "Cluster authorization failed")]
+        }));
+
+        var note = Assert.Single(topology.Queues).Note;
+        Assert.Contains("Consumer groups could not be read (Cluster authorization failed)", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("error listing consumer groups", note, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("report")]
+    [InlineData("partition")]
+    public async Task TheBrokersReasonIsShownForFailedGroupOffsets(string where)
+    {
+        var topology = await LagAsync(
+            listGroups: () => [Group("billing"), Group("audit")],
+            offsets: group => group == "billing"
+                ? [new TopicPartitionOffsetError("orders", 0, 4, new Error(ErrorCode.NoError))]
+                : throw new ListConsumerGroupOffsetsException([new ListConsumerGroupOffsetsReport
+                {
+                    Group = group,
+                    Error = where == "report" ? new Error(ErrorCode.GroupAuthorizationFailed, "denied") : new Error(ErrorCode.NoError),
+                    Partitions = where == "report" ? [] :
+                        [new TopicPartitionOffsetError("orders", 0, Offset.Unset, new Error(ErrorCode.TopicAuthorizationFailed, "denied"))]
+                }]));
+
+        var orders = Assert.Single(topology.Queues);
+        Assert.Equal("billing", Assert.Single(orders.Consumers!.Groups).Group);
+        Assert.Contains("The offsets of 1 consumer group(s) could not be read (denied)", orders.Note, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ReadableGroupsAddNoNote()
     {
