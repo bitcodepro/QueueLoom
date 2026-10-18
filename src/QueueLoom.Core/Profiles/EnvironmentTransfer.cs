@@ -26,6 +26,8 @@ public static class EnvironmentTransfer
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private static readonly string[] ComputedProperties = ["canWrite", "endpointDisplay", "environmentDisplayName", "authenticationDisplayName"];
+
     public static string Export(IEnumerable<ServiceBusProfile> profiles)
     {
         ArgumentNullException.ThrowIfNull(profiles);
@@ -45,6 +47,11 @@ public static class EnvironmentTransfer
             node.Remove("configurationRevision");
             node.Remove("accessMode");
             node.Remove("allowQueueManagement");
+            // Computed from the settings, not settings themselves: written, they could contradict the importer's own
+            // decisions (canWrite, while the access mode is left out on purpose).
+            foreach (var computed in ComputedProperties) node.Remove(computed);
+            (node["rabbitMq"] as JsonObject)?.Remove("managementUri");
+            (node["kafka"] as JsonObject)?.Remove("effectiveDeadLetterSuffixes");
             environments.Add(node);
         }
         var document = new JsonObject
