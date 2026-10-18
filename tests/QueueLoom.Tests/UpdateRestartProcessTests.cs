@@ -635,15 +635,24 @@ public sealed partial class UpdateRestartProcessTests : IAsyncDisposable
         var path = UpdateRestart.ReceiptPath(target);
         var previousBytes = File.ReadAllBytes(receipt.Entries.Single().Backup!);
         File.WriteAllText(Path.Combine(_root, "fail-startup"), "fail only updated startup");
-        var busy = 2;
-        UpdateRestart.RetryDelay.Value = TimeSpan.Zero;
-        UpdateRestart.StartProcess.Value = start => busy-- > 0 ? throw Busy() : Process.Start(start);
+        // Only the two injected refusals are counted; real starts keep the production backoff, in case the real file is
+        // briefly busy as well.
+        var injected = 2;
+        UpdateRestart.StartProcess.Value = start =>
+        {
+            if (injected > 0)
+            {
+                injected--;
+                throw Busy();
+            }
+            return Process.Start(start);
+        };
 
         var result = await UpdateRestart.RunAsync(path, receipt.Id, int.MaxValue, 0);
         await WaitFor(Path.Combine(_root, "recovered-started.txt"));
 
         Assert.Equal(1, result);
-        Assert.Equal(-1, busy);
+        Assert.Equal(0, injected); // Both injected refusals were met, and the start went on.
         Assert.Equal(previousBytes, File.ReadAllBytes(target.Executable));
         Assert.True(JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path))!.Recovered);
     }
