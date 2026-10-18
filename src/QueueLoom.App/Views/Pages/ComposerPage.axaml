@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:QueueLoom.App.ViewModels"
              xmlns:controls="using:QueueLoom.App.Controls"
+             xmlns:core="using:QueueLoom.Core.ServiceBus"
              x:Class="QueueLoom.App.Views.Pages.ComposerPage"
              x:DataType="vm:MainWindowViewModel">
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
@@ -9,6 +10,24 @@
       <StackPanel Spacing="4">
         <TextBlock Text="Composer" Classes="pageTitle" />
         <TextBlock Text="{Binding DraftOriginNotice}" Classes="muted" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0" IsVisible="{Binding SupportsComposerTemplates}">
+          <ComboBox ItemsSource="{Binding ComposerTemplates}" SelectedItem="{Binding SelectedComposerTemplate}"
+                    PlaceholderText="Templates" MinWidth="180" IsEnabled="{Binding HasComposerTemplates}"
+                    AutomationProperties.Name="Templates">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="core:ComposerTemplate">
+                <TextBlock Text="{Binding Name}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <Button Content="Use" Classes="quiet" Command="{Binding UseComposerTemplateCommand}"
+                  ToolTip.Tip="Start a new message from this template, with a new Message ID" />
+          <Button Content="Delete" Classes="quiet" Command="{Binding DeleteComposerTemplateCommand}" />
+          <TextBox Text="{Binding TemplateName}" PlaceholderText="Template name" MinWidth="160" MaxLength="80"
+                   AutomationProperties.Name="Template name" />
+          <Button Content="Save as template" Classes="quiet" Command="{Binding SaveComposerTemplateCommand}"
+                  ToolTip.Tip="Save this draft's body and properties (not its Message ID or scheduled time) under this name" />
+        </StackPanel>
         <StackPanel Orientation="Horizontal" Spacing="16" IsVisible="{Binding CanMoveDraftOriginal}" Margin="0,4,0,0">
           <RadioButton GroupName="draftResendMode" IsChecked="{Binding DraftKeepsOriginal}"
                        Content="Send a copy (keep the original in the DLQ)" />
