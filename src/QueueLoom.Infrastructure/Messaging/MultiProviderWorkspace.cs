@@ -111,6 +111,14 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace, ICleanupWarni
         IProgress<DeadLetterMessageDeletionProgress>? progress = null) =>
         WithWorkspaceAsync(workspace => workspace.DeleteDeadLetterMessagesAsync(request, cancellationToken, progress), cancellationToken);
 
+    public bool SupportsNativeRedrive => _current?.SupportsNativeRedrive == true;
+
+    public Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
+        WithWorkspaceAsync(workspace => workspace.PlanNativeRedriveAsync(source, cancellationToken), cancellationToken);
+
+    public Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default) =>
+        WithWorkspaceAsync(workspace => workspace.StartNativeRedriveAsync(plan, cancellationToken), cancellationToken);
+
     public QueueManagementCapabilities? QueueManagement => _current?.QueueManagement;
 
     public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>

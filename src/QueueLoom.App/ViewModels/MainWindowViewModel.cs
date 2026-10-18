@@ -297,6 +297,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         InitializeHistory(history);
         InitializeScheduledResends(scheduledResends);
         InitializeQueueManagement();
+        InitializeNativeRedrive();
         InitializeRetention();
         InitializeReasons();
         InitializeProtobuf();

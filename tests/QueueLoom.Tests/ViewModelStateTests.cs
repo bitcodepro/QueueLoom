@@ -944,6 +944,29 @@ public sealed partial class ViewModelStateTests
 
     internal sealed class FakeWorkspace : IServiceBusWorkspace, ICleanupWarningSource
     {
+        /// <summary>When set, the service offers a native redrive with this plan.</summary>
+        public NativeRedrivePlan? RedrivePlan { get; set; }
+        public List<NativeRedrivePlan> RedriveStarts { get; } = [];
+        /// <summary>Called as a redrive starts, before it is recorded.</summary>
+        public Action? OnRedriveStart { get; set; }
+        public bool SupportsNativeRedrive => RedrivePlan is not null;
+        public Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RedrivePlan ?? throw new NotSupportedException());
+        /// <summary>Called once the move was submitted and accepted, before the answer reaches the caller.</summary>
+        public Action? AfterRedriveSubmitted { get; set; }
+        /// <summary>Awaited as a redrive starts, like the provider reading AWS again before it submits.</summary>
+        public Func<CancellationToken, Task>? RedriveStartGate { get; set; }
+        public async Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default)
+        {
+            OnRedriveStart?.Invoke();
+            if (RedriveStartGate is { } gate) await gate(cancellationToken);
+            // Like the provider: the token is checked just before the move is submitted.
+            cancellationToken.ThrowIfCancellationRequested();
+            RedriveStarts.Add(plan);
+            AfterRedriveSubmitted?.Invoke();
+            return "task-1";
+        }
+
         public IReadOnlyList<string> ResultWarnings { get; set; } = [];
         public Dictionary<Guid, DeadLetterSnapshot> Snapshots { get; } = [];
 
