@@ -77,16 +77,22 @@ public sealed partial class AwsSqsSnsWorkspace
                 CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not AmazonSQSException &&
-                                          exception is OperationCanceledException or HttpRequestException or IOException
-                                              or Amazon.Runtime.AmazonClientException)
+                                          exception is OperationCanceledException or TimeoutException or HttpRequestException
+                                              or IOException or Amazon.Runtime.AmazonClientException)
         {
-            throw new InvalidOperationException(
-                $"The redrive request was sent, but no answer came back ({exception.Message}). AWS may be moving the messages " +
-                $"of '{deadLetterQueue.Name}' now. Check its move tasks in the AWS console (or ListMessageMoveTasks) before " +
-                "starting it again.", exception);
+            throw UnknownRedriveOutcome(deadLetterQueue.Name, exception);
         }
         return response.TaskHandle ?? string.Empty;
     }
+
+    /// <summary>
+    /// The request left and no answer came back. The guidance comes first and the failure after it, in the message
+    /// itself: displays show an exception's innermost message, which must not be the transport error alone.
+    /// </summary>
+    internal static InvalidOperationException UnknownRedriveOutcome(string deadLetterQueue, Exception failure) => new(
+        $"The redrive request was sent, but no answer came back, so AWS may be moving the messages of '{deadLetterQueue}' now. " +
+        "Check its move tasks in the AWS console (or ListMessageMoveTasks) before starting it again. " +
+        $"({failure.GetType().Name}: {failure.GetBaseException().Message})");
 
     /// <summary>The dead-letter queue of <paramref name="source"/> and every queue that uses it, by name.</summary>
     private (AwsQueueInfo DeadLetterQueue, IReadOnlyList<string> Sources) ResolveRedrive(ServiceBusEntityReference source)

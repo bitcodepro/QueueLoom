@@ -113,6 +113,25 @@ public sealed partial class ViewModelStateTests
         Assert.DoesNotContain("Nothing was moved", vm.ErrorText ?? string.Empty, StringComparison.Ordinal);
     }
 
+    // AWS accepted the move and the answer was lost: the window and Activity keep the guidance, not the transport error alone.
+    [Fact]
+    public async Task Redrive_ALostAnswerAfterSubmissionShowsTheUnknownOutcomeAndWhatToCheck()
+    {
+        var workspace = RedriveWorkspace();
+        workspace.AfterRedriveSubmitted = () =>
+            throw QueueLoom.Infrastructure.Aws.AwsSqsSnsWorkspace.UnknownRedriveOutcome("orders-dlq", new HttpRequestException("connection reset"));
+        await using var vm = await ConnectedForRedrive(workspace, new FakeDialogService { ConfirmResult = true });
+
+        await vm.RedriveSelectedDeadLettersCommand.ExecuteAsync();
+
+        Assert.Single(workspace.RedriveStarts);
+        Assert.Contains("AWS may be moving the messages of 'orders-dlq' now", vm.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("before starting it again", vm.ErrorText, StringComparison.Ordinal);
+        Assert.Contains("connection reset", vm.ErrorText, StringComparison.Ordinal);
+        Assert.Contains(vm.Activity, item => item.Details.Contains("AWS may be moving the messages", StringComparison.Ordinal));
+        Assert.DoesNotContain("Nothing was moved", vm.ErrorText, StringComparison.Ordinal);
+    }
+
     private sealed class RedriveClock : TimeProvider
     {
         private DateTimeOffset _now = DateTimeOffset.UtcNow;

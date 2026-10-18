@@ -137,19 +137,29 @@ public sealed class SqsNativeRedriveTests
     [Theory]
     [InlineData("network")]
     [InlineData("timeout")]
+    [InlineData("sdk timeout")]
     public async Task ALostAnswerToTheMoveRequestIsReportedAsUnknown(string failure)
     {
         await using var fixture = new Fixture(ProfileAccessMode.ReadWrite);
         var plan = await fixture.Workspace.PlanNativeRedriveAsync(ServiceBusEntityReference.Queue("orders"));
-        fixture.Sqs.DuringMove = _ => throw (failure == "network"
-            ? new HttpRequestException("connection reset")
-            : new TaskCanceledException("The request timed out."));
+        // The AWS SDK unwraps HttpClient's timeout to its inner TimeoutException when the caller's token was not
+        // cancelled, as it is not here.
+        fixture.Sqs.DuringMove = _ => throw (failure switch
+        {
+            "network" => new HttpRequestException("connection reset"),
+            "timeout" => new TaskCanceledException("The request timed out."),
+            _ => (Exception)new TimeoutException("The operation has timed out.")
+        });
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Workspace.StartNativeRedriveAsync(plan));
 
         Assert.Contains("AWS may be moving the messages of 'orders-dlq' now", error.Message, StringComparison.Ordinal);
         Assert.Contains("before starting it again", error.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("Nothing was moved", error.Message, StringComparison.Ordinal);
+        // What the window shows (an exception's innermost message, redacted) keeps the guidance.
+        var shown = QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(error);
+        Assert.Contains("AWS may be moving the messages of 'orders-dlq' now", shown, StringComparison.Ordinal);
+        Assert.Contains("before starting it again", shown, StringComparison.Ordinal);
     }
 
     // A refusal from SQS is a definite answer and is shown as it is.
