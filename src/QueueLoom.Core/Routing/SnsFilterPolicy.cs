@@ -57,7 +57,43 @@ public static class SnsFilterPolicy
             throw new FilterPolicyException("A filter policy is a JSON object, for example {\"region\": [\"EU\"]}.");
         }
         ValidateObject(document.RootElement, onBody, string.Empty);
+        // SNS refuses a policy whose values combine into more than 150 cases; checked here, before the policy is saved.
+        var combinations = Combinations(document.RootElement);
+        if (combinations > MaximumCombinations)
+        {
+            throw new FilterPolicyException(
+                $"The policy combines into {(combinations == long.MaxValue ? "too many" : combinations.ToString("N0", System.Globalization.CultureInfo.CurrentCulture))} " +
+                $"cases; Amazon SNS allows at most {MaximumCombinations}. Use fewer values or keys.");
+        }
     }
+
+    /// <summary>Amazon SNS: "the total combination of values must not exceed 150".</summary>
+    public const int MaximumCombinations = 150;
+
+    /// <summary>
+    /// The number of value combinations, as SNS counts them: the values of each key multiplied together (nested keys
+    /// too), and the alternatives of an $or added up. Saturates instead of overflowing.
+    /// </summary>
+    internal static long Combinations(JsonElement policy)
+    {
+        long total = 1;
+        foreach (var property in policy.EnumerateObject())
+        {
+            long factor = property.Name == "$or" && property.Value.ValueKind == JsonValueKind.Array
+                ? property.Value.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object)
+                    .Aggregate(0L, (sum, alternative) => Saturate(sum + Combinations(alternative)))
+                : property.Value.ValueKind switch
+                {
+                    JsonValueKind.Array => Math.Max(1, property.Value.GetArrayLength()),
+                    JsonValueKind.Object => Combinations(property.Value),
+                    _ => 1
+                };
+            total = factor != 0 && total > long.MaxValue / factor ? long.MaxValue : total * factor;
+        }
+        return total;
+    }
+
+    private static long Saturate(long value) => value < 0 ? long.MaxValue : value;
 
     /// <summary>Whether SNS would deliver the message to a subscription with this policy, and why.</summary>
     public static (RoutingOutcome Outcome, string Explanation) Evaluate(string policy, bool onBody, RoutingMessage message)
