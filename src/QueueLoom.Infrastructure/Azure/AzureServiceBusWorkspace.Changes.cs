@@ -108,10 +108,7 @@ public sealed partial class AzureServiceBusWorkspace
         }
 
         _cachedTopology = null;
-        foreach (var result in results.Where(result => result.IsSuccessful))
-        {
-            _previousDeadLetterCounts[$"{result.Source.Path}|{result.SubQueue}"] = new DeadLetterMeasurement(0, DeadLetterCountQuality.Exact);
-        }
+        RecordPurgeBaselines(results);
 
         return new DeadLetterPurgeResult(
             profile.Id,
@@ -119,6 +116,27 @@ public sealed partial class AzureServiceBusWorkspace
             _timeProvider.GetUtcNow(),
             results,
             backupSession.RootDirectory) { Warnings = Array.AsReadOnly(warnings.Distinct().ToArray()) };
+    }
+
+    /// <summary>
+    /// What the monitor compares its next reading with. A source proven empty after the purge starts from an exact
+    /// zero. One whose counter still showed messages, or could not be read, was never measured empty: an exact zero
+    /// there would make whatever the next check finds look new, so it starts from no reading instead.
+    /// </summary>
+    internal void RecordPurgeBaselines(IEnumerable<DeadLetterPurgeSourceResult> results)
+    {
+        foreach (var result in results.Where(result => result.IsSuccessful))
+        {
+            var key = $"{result.Source.Path}|{result.SubQueue}";
+            if (result.VerificationPending)
+            {
+                _previousDeadLetterCounts.TryRemove(key, out _);
+            }
+            else
+            {
+                _previousDeadLetterCounts[key] = new DeadLetterMeasurement(0, DeadLetterCountQuality.Exact);
+            }
+        }
     }
 
     public async Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
