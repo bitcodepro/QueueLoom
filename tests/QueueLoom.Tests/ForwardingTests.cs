@@ -22,6 +22,57 @@ public sealed class ForwardingTests
     public void Forward_targets_are_entity_names(string forwardTo, string? expected) =>
         Assert.Equal(expected, Forwarding.TargetName(forwardTo));
 
+    // Paths were listed, not nodes: five subscriptions per topic all forwarding into the next level's queue multiply
+    // the paths by five at each level, and the walk ran for every forwarding entity on each topology refresh. It now
+    // stops at a budget and says the chain was not fully followed.
+    [Fact]
+    public void A_chain_that_fans_out_into_too_many_paths_is_followed_up_to_a_budget()
+    {
+        const int levels = 7;
+        var queues = new List<ServiceBusQueue>();
+        var topics = new List<ServiceBusTopic>();
+        for (var level = 0; level < levels; level++)
+        {
+            queues.Add(Queue($"q{level}", $"t{level}"));
+            var next = level + 1 < levels ? $"q{level + 1}" : null;
+            topics.Add(Topic($"t{level}", Enumerable.Range(0, 5).Select(index => Subscription($"t{level}", $"s{index}", next)).ToArray()));
+        }
+        var topology = new ServiceBusTopology(DateTimeOffset.UtcNow, queues, topics);
+
+        var report = Forwarding.Follow(topology, "q0");
+        var annotated = Forwarding.Annotate(topology);
+
+        Assert.True(report.IsTruncated);
+        Assert.True(report.Paths.Count <= Forwarding.MaximumSteps);
+        Assert.EndsWith("it fans out into too many paths to follow them all", annotated.Queues[0].Note, StringComparison.Ordinal);
+        // A short chain is followed whole and says nothing of the kind.
+        Assert.False(Forwarding.Follow(topology, $"q{levels - 1}").IsTruncated);
+        Assert.DoesNotContain("too many paths", annotated.Queues[levels - 1].Note, StringComparison.Ordinal);
+    }
+
+    // A loop or a missing target was described alone, dropping the warning that the walk stopped before the end.
+    [Theory]
+    [InlineData("nowhere", "which does not exist")]
+    [InlineData("q0", "Forwarding loop")]
+    public void A_loop_or_missing_target_keeps_the_warning_that_the_walk_stopped(string firstTarget, string found)
+    {
+        const int levels = 7;
+        var queues = new List<ServiceBusQueue>();
+        var topics = new List<ServiceBusTopic>();
+        for (var level = 0; level < levels; level++)
+        {
+            queues.Add(Queue($"q{level}", $"t{level}"));
+            var next = level + 1 < levels ? $"q{level + 1}" : null;
+            topics.Add(Topic($"t{level}", Enumerable.Range(0, 5)
+                .Select(index => Subscription($"t{level}", $"s{index}", level == 0 && index == 0 ? firstTarget : next)).ToArray()));
+        }
+
+        var note = Forwarding.Annotate(new ServiceBusTopology(DateTimeOffset.UtcNow, queues, topics)).Queues[0].Note!;
+
+        Assert.Contains(found, note, StringComparison.Ordinal);
+        Assert.Contains("it fans out into too many paths to follow them all", note, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Chains_are_followed_through_topics_and_described_on_each_entity()
     {
