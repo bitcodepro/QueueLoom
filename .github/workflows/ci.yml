@@ -28,6 +28,10 @@ on:
         description: Measure pinned image pull/save/local-load and corrupt-cache fallback (no cache writes)
         type: boolean
         default: false
+      crash_diagnostics_self_test:
+        description: Abort the emulator UI test host natively to prove its dump and backtrace are kept (the run fails)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -194,26 +198,52 @@ jobs:
           QUEUELOOM_SERVICEBUS_EMULATOR: Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
           QUEUELOOM_RABBITMQ: localhost:5673
           QUEUELOOM_KAFKA: localhost:9092
-        # The UI test host has intermittently aborted with "free(): double free" (exit 134) and no stack. Blame records
-        # which test each host was running (Sequence_*.xml) and writes a full dump when a host crashes; the normal
-        # console logger prints each test as it starts and ends. Nothing is retried or suppressed.
+          QUEUELOOM_NATIVE_CRASH_SELF_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.crash_diagnostics_self_test && '1' || '' }}
+        # The UI test host has intermittently aborted with "free(): double free" (exit 134) and no stack. Blame keeps,
+        # per test host, the tests it started in order (Sequence_*.xml: the last one without a result is the one that
+        # was running) and a full dump when a host crashes. The detailed console logger lists completed tests.
+        # Nothing is retried or suppressed.
         run: >-
           dotnet test QueueLoom.slnx -c Release --no-build --logger trx --logger "console;verbosity=detailed"
           --results-directory TestResults --blame-crash --blame-crash-dump-type full
-          --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests|FullyQualifiedName~KafkaUiTests"
+          --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests|FullyQualifiedName~KafkaUiTests|FullyQualifiedName~NativeCrashSelfTest"
 
-      - name: Print native backtraces of crashed test hosts
+      - name: Print test sequences and native backtraces of crashed test hosts
         if: failure()
         run: |
+          # Sequences first: they are evidence on their own, even when no dump was written or analysis cannot run.
+          mapfile -t sequences < <(find TestResults -name 'Sequence_*.xml' -type f)
+          echo "Test sequence files: ${#sequences[@]}"
+          for sequence in "${sequences[@]}"; do
+            echo "::group::$sequence"; cat "$sequence"; echo; echo "::endgroup::"
+          done
           mapfile -t dumps < <(find TestResults -name '*.dmp' -type f)
-          if [ ${#dumps[@]} -eq 0 ]; then echo "No crash dump was written."; exit 0; fi
-          sudo apt-get install -y --no-install-recommends gdb >/dev/null
+          echo "Crash dumps: ${#dumps[@]}"
+          [ ${#dumps[@]} -eq 0 ] && exit 0
+          if ! sudo apt-get install -y --no-install-recommends gdb > gdb-install.log 2>&1; then
+            cat gdb-install.log
+            echo "::error::gdb could not be installed; the dumps are uploaded unanalysed."
+            exit 0
+          fi
           for dump in "${dumps[@]}"; do
-            echo "::group::Backtrace of $dump"
-            gdb -batch -ex "info sharedlibrary" -ex "thread apply all bt" "$(command -v dotnet)" "$dump" 2>&1 | tee "$dump.backtrace.txt"
+            # Blame names a dump <process>_<pid>_<time>_crashdump.dmp. xUnit v3 test projects run as their own apphost
+            # (QueueLoom.UiTests), so the dump is read against that executable, not dotnet.
+            process="$(basename "$dump")"; process="${process%%_*}"
+            executable="$(find tests -path "*/bin/Release/*/$process" -type f -perm -u+x -print -quit)"
+            if [ -z "$executable" ] && [ "$process" = dotnet ]; then executable="$(command -v dotnet)"; fi
+            if [ -z "$executable" ]; then
+              echo "::error::No executable named '$process' was found for $dump; it is uploaded unanalysed."
+              continue
+            fi
+            echo "::group::Backtrace of $dump against $executable"
+            if gdb -batch -ex "info sharedlibrary" -ex "thread apply all bt" "$executable" "$dump" > "$dump.backtrace.txt" 2>&1; then
+              cat "$dump.backtrace.txt"
+            else
+              cat "$dump.backtrace.txt"
+              echo "::error::gdb could not analyse $dump."
+            fi
             echo "::endgroup::"
           done
-          find TestResults -name 'Sequence_*.xml' -exec sh -c 'echo "::group::$1"; cat "$1"; echo; echo "::endgroup::"' _ {} \;
 
       - name: Upload test results
         if: failure()
