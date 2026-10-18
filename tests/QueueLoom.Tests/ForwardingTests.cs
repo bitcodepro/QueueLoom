@@ -50,6 +50,29 @@ public sealed class ForwardingTests
         Assert.DoesNotContain("too many paths", annotated.Queues[levels - 1].Note, StringComparison.Ordinal);
     }
 
+    // A loop or a missing target was described alone, dropping the warning that the walk stopped before the end.
+    [Theory]
+    [InlineData("nowhere", "which does not exist")]
+    [InlineData("q0", "Forwarding loop")]
+    public void A_loop_or_missing_target_keeps_the_warning_that_the_walk_stopped(string firstTarget, string found)
+    {
+        const int levels = 7;
+        var queues = new List<ServiceBusQueue>();
+        var topics = new List<ServiceBusTopic>();
+        for (var level = 0; level < levels; level++)
+        {
+            queues.Add(Queue($"q{level}", $"t{level}"));
+            var next = level + 1 < levels ? $"q{level + 1}" : null;
+            topics.Add(Topic($"t{level}", Enumerable.Range(0, 5)
+                .Select(index => Subscription($"t{level}", $"s{index}", level == 0 && index == 0 ? firstTarget : next)).ToArray()));
+        }
+
+        var note = Forwarding.Annotate(new ServiceBusTopology(DateTimeOffset.UtcNow, queues, topics)).Queues[0].Note!;
+
+        Assert.Contains(found, note, StringComparison.Ordinal);
+        Assert.Contains("it fans out into too many paths to follow them all", note, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Chains_are_followed_through_topics_and_described_on_each_entity()
     {

@@ -290,6 +290,13 @@ public sealed record ForwardingReport(
     /// <summary>One line for an entity that forwards to <paramref name="target"/>.</summary>
     public string Describe(string target)
     {
+        var described = DescribeFound(target);
+        return IsTruncated ? $"{described}; it fans out into too many paths to follow them all" : described;
+    }
+
+    /// <summary>What the walk found: a loop first, then a missing target, then the chain.</summary>
+    private string DescribeFound(string target)
+    {
         if (Loops.Count > 0)
         {
             return $"Forwarding loop: {string.Join(" → ", Loops[0])}; Service Bus dead-letters these messages after {Forwarding.MaximumHops} forwards";
@@ -303,9 +310,8 @@ public sealed record ForwardingReport(
             : Destinations.Count > 1 || Destinations.Count == 1 && !string.Equals(Destinations[0], target, StringComparison.OrdinalIgnoreCase)
                 ? $"Forwards to {target}; messages end up in {string.Join(", ", Destinations.Take(3))}" + (Destinations.Count > 3 ? $" and {Destinations.Count - 3} more" : string.Empty)
                 : $"Forwards to {target}";
-        var described = IsTooLong
+        return IsTooLong
             ? $"{chain}; {LongestChain} forwards is more than Service Bus allows ({Forwarding.MaximumHops}), so messages are dead-lettered on the way"
             : chain;
-        return IsTruncated ? $"{described}; it fans out into too many paths to follow them all" : described;
     }
 }
