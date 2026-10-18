@@ -47,6 +47,16 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     private IReadOnlyDictionary<(string Topic, string Subscription), Subscription> _subscriptions =
         new Dictionary<(string, string), Subscription>();
     private IReadOnlyDictionary<string, Subscription> _deadLetterReaders = new Dictionary<string, Subscription>();
+    // What QueueLoom last observed about each source subscription (its dead-letter policy, or why it could not read
+    // it), each dead-letter topic (its attached readers, or why it could not list them) and each reader subscription
+    // (the topic it is attached to, or that it is detached or gone). Whether a deletion may go ahead is decided per
+    // binding (source, topic, reader) from these facts, so a fact observed through any reader, by any check or refresh,
+    // applies to every binding it contradicts, while one reader's eligibility never makes another reader eligible.
+    // See Observe for how concurrent observations are ordered.
+    private readonly Dictionary<string, Observation> _sourceObservations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Observation> _topicObservations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Observation> _readerObservations = new(StringComparer.Ordinal);
+    private long _observationClock;
 
     public GooglePubSubWorkspace(
         ISecretVault secretVault,
@@ -115,6 +125,12 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         _metrics = null;
         _subscriptions = new Dictionary<(string, string), Subscription>();
         _deadLetterReaders = new Dictionary<string, Subscription>();
+        lock (_topicObservations)
+        {
+            _sourceObservations.Clear();
+            _topicObservations.Clear();
+            _readerObservations.Clear();
+        }
         var channels = _channels.ToArray();
         _channels.Clear();
         foreach (var channel in channels)
@@ -151,6 +167,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         }
 
         var subscriptions = new List<Subscription>();
+        var started = Interlocked.Increment(ref _observationClock);
         await foreach (var subscription in Subscriber.ListSubscriptionsAsync(project).WithCancellation(cancellationToken)
                            .ConfigureAwait(false))
         {
@@ -163,6 +180,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             undelivered?.ToDictionary(pair => pair.Key, pair => pair.Value.At, StringComparer.Ordinal));
         _subscriptions = index.Subscriptions;
         _deadLetterReaders = index.DeadLetterReaders;
+        ObserveListing(subscriptions, index, started);
         return index.Topology;
     }
 
@@ -201,7 +219,264 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                 "Create a subscription on it first; messages published before that are not kept.");
         }
 
-        return new PubSubChannel(this, source, subQueue, reader.SubscriptionName, belongsTo: subscription.SubscriptionName);
+        // Several subscriptions on the dead-letter topic each hold a copy, and some may be another consumer's: what is
+        // acknowledged through one stays in the others. Such a topic is viewed, never acknowledged through.
+        return new PubSubChannel(this, source, subQueue, reader.SubscriptionName, belongsTo: subscription.SubscriptionName)
+        {
+            DeadLetterTopic = deadLetterTopic
+        };
+    }
+
+    private static string SharedRefusal(string topic, IReadOnlyCollection<string> readers) =>
+        $"Dead-letter topic '{GooglePubSubTopology.TopicIdOf(topic)}' has {readers.Count:N0} subscriptions ({string.Join(", ", readers)}). " +
+        "Each keeps its own copy and some may belong to another consumer, so QueueLoom does not delete or move its messages; " +
+        "it only shows them. Keep one subscription on the topic to manage them here.";
+
+    /// <summary>
+    /// One observed fact: <see cref="Value"/> (a source's dead-letter topic, a topic's readers, a reader's topic) or a
+    /// <see cref="Problem"/>, from a read issued at <see cref="Started"/> and recorded at <see cref="Recorded"/> (both on
+    /// <see cref="_observationClock"/>).
+    /// </summary>
+    private sealed record Observation(long Started, long Recorded, string? Problem, string? Value);
+
+    private const string Contradiction =
+        "was observed differently by reads running at the same time. Refresh and try again; nothing was deleted or moved.";
+
+    /// <summary>
+    /// Records an observation issued at <paramref name="started"/>. It replaces the recorded fact only when it began after
+    /// that fact was recorded: then it is genuinely newer. A read that overlapped the recorded one and saw something else
+    /// marks the scope contradicted, recorded now, so that only a read issued after this point can settle it; an older
+    /// read finishing late can neither overwrite an adverse fact nor clear a contradiction. Equal facts are re-recorded
+    /// now: seeing the same fact again is a newer observation of it, so a stale read issued before it cannot replace it.
+    /// Every clock value (read starts and recordings alike) is taken atomically from the same counter, so it never goes
+    /// backwards.
+    /// </summary>
+    private void Observe(Dictionary<string, Observation> observations, string key, long started, string? problem, string? value, string what)
+    {
+        lock (_topicObservations)
+        {
+            var now = Interlocked.Increment(ref _observationClock);
+            if (!observations.TryGetValue(key, out var recorded) || started > recorded.Recorded)
+            {
+                observations[key] = new Observation(started, now, problem, value);
+            }
+            else if (recorded.Problem != problem || recorded.Value != value)
+            {
+                observations[key] = recorded with { Recorded = now, Problem = problem ?? recorded.Problem ?? $"{what} {Contradiction}" };
+            }
+            else
+            {
+                observations[key] = recorded with { Recorded = now };
+            }
+        }
+    }
+
+    /// <summary>
+    /// What a complete listing of this project's subscriptions shows: each one's dead-letter policy, the topic each one
+    /// reads (or that it is detached), sources and readers known before that are gone, and sharing among this project's
+    /// readers. One local reader is not recorded as a topic's reader set: another project may read the topic too.
+    /// </summary>
+    private void ObserveListing(IReadOnlyCollection<Subscription> subscriptions, GooglePubSubTopology index, long started)
+    {
+        var local = subscriptions.Where(subscription => subscription.SubscriptionName.ProjectId == _projectId).ToArray();
+        foreach (var subscription in local)
+        {
+            var id = subscription.SubscriptionName.SubscriptionId;
+            Observe(_sourceObservations, id, started, null,
+                subscription.DeadLetterPolicy?.DeadLetterTopic is { Length: > 0 } policy ? policy : null, $"The dead-letter policy of '{id}'");
+            Observe(_readerObservations, subscription.Name, started,
+                subscription.Detached ? $"Subscription '{id}' is detached from its topic. Nothing was deleted or moved." : null,
+                subscription.Detached ? null : subscription.Topic, $"The topic of '{id}'");
+        }
+        string[] knownSources, knownReaders;
+        lock (_topicObservations)
+        {
+            knownSources = [.. _sourceObservations.Keys];
+            knownReaders = [.. _readerObservations.Keys];
+        }
+        var present = local.Select(subscription => subscription.SubscriptionName.SubscriptionId).ToHashSet(StringComparer.Ordinal);
+        foreach (var gone in knownSources.Where(id => !present.Contains(id)))
+        {
+            Observe(_sourceObservations, gone, started, $"Subscription '{gone}' no longer exists. Nothing was deleted or moved.", null,
+                $"Subscription '{gone}'");
+        }
+        var localPrefix = $"projects/{_projectId}/subscriptions/";
+        var presentReaders = local.Select(subscription => subscription.Name).ToHashSet(StringComparer.Ordinal);
+        foreach (var gone in knownReaders.Where(name => name.StartsWith(localPrefix, StringComparison.Ordinal) && !presentReaders.Contains(name)))
+        {
+            Observe(_readerObservations, gone, started, $"Subscription '{gone[localPrefix.Length..]}' no longer exists. Nothing was deleted or moved.",
+                null, $"Subscription '{gone}'");
+        }
+        foreach (var (topic, readers) in index.SharedDeadLetterTopics)
+        {
+            Observe(_topicObservations, topic, started, SharedRefusal(topic, readers), null, $"The readers of '{GooglePubSubTopology.TopicIdOf(topic)}'");
+        }
+    }
+
+    /// <summary>What a deletion of a source's dead letters reads: the dead-letter topic and the subscription read from.</summary>
+    private readonly record struct DeadLetterBinding(string Source, string Topic, SubscriptionName Reader);
+
+    /// <summary>Why a deletion bound to (source, topic, reader) must not go ahead now, from the latest facts; null if it may.</summary>
+    internal string? DeadLetterRefusal(string source, string topic, SubscriptionName reader)
+    {
+        lock (_topicObservations)
+        {
+            return Refusal(new DeadLetterBinding(source, topic, reader), _sourceObservations.GetValueOrDefault(source),
+                _topicObservations.GetValueOrDefault(topic), _readerObservations.GetValueOrDefault(reader.ToString()));
+        }
+    }
+
+    /// <summary>Whether these facts allow a deletion bound to <paramref name="binding"/>; null if they do.</summary>
+    private static string? Refusal(DeadLetterBinding binding, Observation? source, Observation? topic, Observation? reader)
+    {
+        var topicId = GooglePubSubTopology.TopicIdOf(binding.Topic);
+        const string again = "Refresh and try again; nothing was deleted or moved.";
+        if (source is null)
+        {
+            return $"QueueLoom has not checked the dead letters of '{binding.Source}' yet. Nothing was deleted or moved.";
+        }
+        if (source.Problem is { } sourceProblem)
+        {
+            return sourceProblem;
+        }
+        if (!string.Equals(source.Value, binding.Topic, StringComparison.Ordinal))
+        {
+            return source.Value is null
+                ? $"Subscription '{binding.Source}' has no dead-letter topic now. {again}"
+                : $"The dead-letter topic of '{binding.Source}' is now '{GooglePubSubTopology.TopicIdOf(source.Value)}', not '{topicId}'. {again}";
+        }
+        if (reader is not null)
+        {
+            if (reader.Problem is { } readerProblem)
+            {
+                return readerProblem;
+            }
+            if (!string.Equals(reader.Value, binding.Topic, StringComparison.Ordinal))
+            {
+                return $"Subscription '{binding.Reader.SubscriptionId}' no longer reads '{topicId}' (it reads '{reader.Value}'). {again}";
+            }
+        }
+        if (topic is null)
+        {
+            return $"QueueLoom has not checked dead-letter topic '{topicId}' yet. Nothing was deleted or moved.";
+        }
+        if (topic.Problem is { } topicProblem)
+        {
+            return topicProblem;
+        }
+        var readers = topic.Value is { Length: > 0 } listed ? listed.Split('\n') : [];
+        if (readers.Length > 1)
+        {
+            return SharedRefusal(binding.Topic, readers);
+        }
+        if (readers.Length == 0 || !string.Equals(readers[0], binding.Reader.ToString(), StringComparison.Ordinal))
+        {
+            return $"Dead-letter topic '{topicId}' is no longer read by '{binding.Reader.SubscriptionId}'" +
+                   (readers.Length == 0 ? " (no subscription reads it now)" : $" but by '{readers[0]}'") + $". {again}";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Right before a deletion or a move, observes each source against the service, bound to what the operation will
+    /// actually read: the open channel's dead-letter topic and reader, or (for a move, which opens its channel later)
+    /// the ones the cached topology names when the check starts. The source's current policy must still name that
+    /// topic, and the topic must have exactly one attached subscription, that very reader, in any project and over every
+    /// page. What a check observes decides its own outcome; once every source passed, every binding is judged again
+    /// from the latest facts, so anything another check or a refresh observed meanwhile counts too.
+    /// </summary>
+    protected override async Task ValidateDeletionAsync(IReadOnlyList<DeletionTarget> targets, CancellationToken cancellationToken)
+    {
+        // Bindings are taken before anything is awaited, so a refresh during the check cannot change what is checked.
+        var bindings = targets
+            .Where(target => target.SubQueue == ServiceBusSubQueue.DeadLetter)
+            .Select(target => BindingOf(target))
+            .Distinct()
+            .ToArray();
+        foreach (var binding in bindings)
+        {
+            if (await ObserveAsync(binding, cancellationToken).ConfigureAwait(false) is { } own)
+            {
+                throw new InvalidOperationException(own);
+            }
+        }
+        foreach (var binding in bindings)
+        {
+            if (DeadLetterRefusal(binding.Source, binding.Topic, binding.Reader) is { } recorded)
+            {
+                throw new InvalidOperationException(recorded);
+            }
+        }
+    }
+
+    private DeadLetterBinding BindingOf(DeletionTarget target)
+    {
+        if (target.Channel is PubSubChannel { DeadLetterTopic: { } openTopic } channel)
+        {
+            return new DeadLetterBinding(target.Source.Name, openTopic, channel.ReaderSubscription);
+        }
+        if (target.Source.TopicName is not null &&
+            _subscriptions.TryGetValue((target.Source.TopicName, target.Source.Name), out var subscription) &&
+            subscription.DeadLetterPolicy?.DeadLetterTopic is { Length: > 0 } topic &&
+            _deadLetterReaders.TryGetValue(topic, out var reader))
+        {
+            return new DeadLetterBinding(target.Source.Name, topic, reader.SubscriptionName);
+        }
+        throw new InvalidOperationException(
+            $"QueueLoom has not read where the dead letters of '{target.Source.Name}' are yet. Refresh and try again; nothing was deleted or moved.");
+    }
+
+    /// <summary>
+    /// Reads the source's subscription and, when its policy still names the binding's topic, lists that topic's readers;
+    /// records what was seen (the source, the topic and each listed reader) and returns this check's own verdict, judged
+    /// from what it saw itself.
+    /// </summary>
+    private async Task<string?> ObserveAsync(DeadLetterBinding binding, CancellationToken cancellationToken)
+    {
+        var started = Interlocked.Increment(ref _observationClock);
+        Observation source;
+        try
+        {
+            var live = await Subscriber.GetSubscriptionAsync(SubscriptionName.FromProjectSubscription(_projectId, binding.Source), cancellationToken)
+                .ConfigureAwait(false);
+            source = new Observation(started, started, null, live.DeadLetterPolicy?.DeadLetterTopic is { Length: > 0 } policy ? policy : null);
+        }
+        catch (RpcException exception)
+        {
+            source = new Observation(started, started,
+                $"QueueLoom could not read subscription '{binding.Source}' ({exception.Status.StatusCode}), so it cannot check where its " +
+                "dead letters are. Nothing was deleted or moved.", null);
+        }
+        Observe(_sourceObservations, binding.Source, started, source.Problem, source.Value, $"The dead-letter policy of '{binding.Source}'");
+        if (source.Problem is not null || !string.Equals(source.Value, binding.Topic, StringComparison.Ordinal))
+        {
+            return Refusal(binding, source, null, null);
+        }
+
+        started = Interlocked.Increment(ref _observationClock);
+        Observation topic;
+        try
+        {
+            var readers = new List<string>();
+            await foreach (var name in Publisher.ListTopicSubscriptionsAsync(new ListTopicSubscriptionsRequest { Topic = binding.Topic })
+                               .WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                readers.Add(name);
+            }
+            topic = new Observation(started, started, null, string.Join('\n', readers.Order(StringComparer.Ordinal)));
+            foreach (var reader in readers)
+            {
+                Observe(_readerObservations, reader, started, null, binding.Topic, $"The topic of '{reader}'");
+            }
+        }
+        catch (RpcException exception)
+        {
+            topic = new Observation(started, started,
+                $"QueueLoom could not list the subscriptions of dead-letter topic '{GooglePubSubTopology.TopicIdOf(binding.Topic)}' " +
+                $"({exception.Status.StatusCode}), so it cannot tell whether another consumer reads it. Nothing was deleted or moved.", null);
+        }
+        Observe(_topicObservations, binding.Topic, started, topic.Problem, topic.Value, $"The readers of '{GooglePubSubTopology.TopicIdOf(binding.Topic)}'");
+        return Refusal(binding, source, topic, null);
     }
 
     protected override async Task SendCoreAsync(
@@ -382,6 +657,17 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
 
         public int MaximumBatchSize => MaximumBatch;
 
+        /// <summary>Why messages read here must not be acknowledged, when they must not; they are released instead.</summary>
+        public string? SettleRefusal => DeadLetterTopic is null
+            ? null
+            : owner.DeadLetterRefusal(source.Name, DeadLetterTopic, subscription);
+
+        /// <summary>The dead-letter topic read here, when this channel reads one.</summary>
+        public string? DeadLetterTopic { get; init; }
+
+        /// <summary>The subscription this channel reads from.</summary>
+        public SubscriptionName ReaderSubscription => subscription;
+
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {
             PullResponse response;
@@ -511,6 +797,11 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             {
                 return [];
             }
+            if (SettleRefusal is not null)
+            {
+                await ReleaseAsync(messages, cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException(SettleRefusal);
+            }
 
             // Chunks acknowledged before a failure are gone; only the rest are reported as not settled.
             var acknowledged = 0;
@@ -570,6 +861,9 @@ internal sealed record GooglePubSubTopology(
     IReadOnlyDictionary<(string Topic, string Subscription), Subscription> Subscriptions,
     IReadOnlyDictionary<string, Subscription> DeadLetterReaders)
 {
+    /// <summary>Dead-letter topics read by more than one subscription, with those subscriptions' names.</summary>
+    public IReadOnlyDictionary<string, string[]> SharedDeadLetterTopics { get; init; } = new Dictionary<string, string[]>();
+
     public static GooglePubSubTopology Build(
         string projectId,
         IEnumerable<string> topicIds,
@@ -578,6 +872,12 @@ internal sealed record GooglePubSubTopology(
         IReadOnlyDictionary<string, long>? undelivered = null,
         IReadOnlyDictionary<string, DateTimeOffset>? measuredAt = null)
     {
+        // Detached subscriptions receive nothing and hold no backlog: they are shown, but never read or counted as readers.
+        var readersByTopic = subscriptions
+            .Where(subscription => !subscription.Detached)
+            .GroupBy(subscription => subscription.Topic, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.OrderBy(item => item.Name, StringComparer.Ordinal).ToArray(),
+                StringComparer.Ordinal);
         var byTopic = subscriptions
             .GroupBy(subscription => subscription.Topic, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.OrderBy(item => item.Name, StringComparer.Ordinal).ToArray(),
@@ -585,9 +885,13 @@ internal sealed record GooglePubSubTopology(
         // The subscription QueueLoom reads a dead-letter topic through: the first one by name.
         var deadLetterReaders = subscriptions
             .Select(subscription => subscription.DeadLetterPolicy?.DeadLetterTopic)
-            .Where(topic => !string.IsNullOrEmpty(topic) && byTopic.ContainsKey(topic))
+            .Where(topic => !string.IsNullOrEmpty(topic) && readersByTopic.ContainsKey(topic))
             .Distinct(StringComparer.Ordinal)
-            .ToDictionary(topic => topic!, topic => byTopic[topic!][0], StringComparer.Ordinal);
+            .ToDictionary(topic => topic!, topic => readersByTopic[topic!][0], StringComparer.Ordinal);
+        var sharedDeadLetterTopics = deadLetterReaders.Keys
+            .Where(topic => readersByTopic[topic].Length > 1)
+            .ToDictionary(topic => topic, topic => readersByTopic[topic].Select(item => item.SubscriptionName.SubscriptionId).ToArray(),
+                StringComparer.Ordinal);
         var deadLetterUsers = subscriptions
             .Where(subscription => !string.IsNullOrEmpty(subscription.DeadLetterPolicy?.DeadLetterTopic))
             .GroupBy(subscription => subscription.DeadLetterPolicy.DeadLetterTopic, StringComparer.Ordinal)
@@ -622,7 +926,9 @@ internal sealed record GooglePubSubTopology(
                 {
                     var deadLetterTopicId = TopicIdOf(deadLetterTopic);
                     note = hasDeadLetters
-                        ? $"Dead letters go to {deadLetterTopicId}"
+                        ? sharedDeadLetterTopics.ContainsKey(deadLetterTopic)
+                            ? $"Dead letters go to {deadLetterTopicId}, which several subscriptions read: read-only here"
+                            : $"Dead letters go to {deadLetterTopicId}"
                         : $"Dead letters go to {deadLetterTopicId}, which has no subscription to read them from";
                 }
                 else if (deadLetterUsers.TryGetValue(resource, out var users))
@@ -672,7 +978,7 @@ internal sealed record GooglePubSubTopology(
             HasMessageCounts = undelivered is not null,
             UsesSampledCounts = undelivered is null
         };
-        return new GooglePubSubTopology(topology, index, deadLetterReaders);
+        return new GooglePubSubTopology(topology, index, deadLetterReaders) { SharedDeadLetterTopics = sharedDeadLetterTopics };
 
         // Active: the subscription's undelivered messages. Dead letters: those of the subscription reading its
         // dead-letter topic, which covers every subscription that shares the topic.

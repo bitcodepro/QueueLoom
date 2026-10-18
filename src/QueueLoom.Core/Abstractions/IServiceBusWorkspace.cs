@@ -55,6 +55,14 @@ public interface IServiceBusWorkspace : IAsyncDisposable
         IProgress<DeadLetterMessageDeletionProgress>? progress = null);
 
     /// <summary>
+    /// Fails when dead letters of these sources could not be deleted now, checked against the service rather than a
+    /// cached view. A move calls it before publishing its first copy, so a refused deletion never leaves copies behind.
+    /// </summary>
+    Task EnsureDeletableAsync(
+        IReadOnlyCollection<(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue)> sources,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    /// <summary>
     /// Backs up, then cancels scheduled messages and removes deferred ones (Azure Service Bus only). Every message
     /// must satisfy <see cref="PendingMessages.IsPending"/>.
     /// </summary>
