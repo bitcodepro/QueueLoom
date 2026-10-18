@@ -21,6 +21,12 @@ internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, 
 {
     public static KafkaTopologyIndex Empty { get; } = new([], Core.Profiles.KafkaSettings.DefaultDeadLetterSuffixes);
 
+    /// <summary>
+    /// Why consumer lag is missing or partial (the groups could not be listed, or some of their offsets not read), or
+    /// null. Shown with every topic, so "no consumer groups" and "groups not readable" are not mistaken for each other.
+    /// </summary>
+    public string? ConsumerGroupNote { get; init; }
+
     public KafkaTopicInfo? Find(string name) => Topics.FirstOrDefault(topic => topic.Name == name);
 
     /// <summary>"orders.DLT" for "orders" when that topic exists; the first ending in the configured order wins.</summary>
@@ -49,6 +55,10 @@ internal sealed record KafkaTopologyIndex(IReadOnlyList<KafkaTopicInfo> Topics, 
             if (topic.CountError is not null || deadLetter?.CountError is not null)
             {
                 note += $" · {topic.CountError ?? deadLetter!.CountError}";
+            }
+            if (ConsumerGroupNote is not null)
+            {
+                note += $" · {ConsumerGroupNote}";
             }
             return new ServiceBusQueue(topic.Name,
                 new ServiceBusEntityRuntime(new ServiceBusMessageCounts(active: topic.Retained, deadLetter: deadLetter?.Retained ?? 0))

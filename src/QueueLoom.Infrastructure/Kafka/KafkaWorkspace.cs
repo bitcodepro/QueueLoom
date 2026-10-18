@@ -183,11 +183,14 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 .Take(MaximumConsumerGroups)
                 .ToList();
         }
-        catch (KafkaException)
+        catch (KafkaException exception)
         {
-            return index;
+            // The topics are still shown; the note says why no group or lag is (missing ACLs look like no groups otherwise).
+            return index with { ConsumerGroupNote = ConsumerGroupsUnreadable(exception) };
         }
 
+        var unreadable = 0;
+        KafkaException? firstFailure = null;
         var lags = new Dictionary<string, List<ConsumerGroupLag>>(StringComparer.Ordinal);
         foreach (var group in groups)
         {
@@ -200,8 +203,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                         new ListConsumerGroupOffsetsOptions { RequestTimeout = RequestTimeout, RequireStableOffsets = false })
                     .ConfigureAwait(false);
             }
-            catch (KafkaException)
+            catch (KafkaException exception)
             {
+                unreadable++;
+                firstFailure ??= exception;
                 continue;
             }
 
@@ -225,8 +230,22 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 
         return index with
         {
-            Topics = index.Topics.Select(topic => lags.TryGetValue(topic.Name, out var list) ? topic with { Groups = list } : topic).ToArray()
+            Topics = index.Topics.Select(topic => lags.TryGetValue(topic.Name, out var list) ? topic with { Groups = list } : topic).ToArray(),
+            ConsumerGroupNote = firstFailure is null ? null : SomeConsumerGroupsUnreadable(unreadable, firstFailure)
         };
+    }
+
+    internal static string ConsumerGroupsUnreadable(KafkaException exception) =>
+        $"Consumer groups could not be read ({OneLine(exception.Error.Reason)}), so their lag is not shown";
+
+    internal static string SomeConsumerGroupsUnreadable(int count, KafkaException first) =>
+        $"The offsets of {count.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} consumer group(s) could not be read " +
+        $"({OneLine(first.Error.Reason)}), so their lag is not shown";
+
+    private static string OneLine(string? text)
+    {
+        var line = string.Join(' ', (text ?? "unknown error").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return line.Length > 200 ? QueueLoom.Core.TextLimits.Head(line, 200) + "…" : line;
     }
 
     protected override ILeasedMessageChannel OpenChannel(ServiceBusTopology topology, ServiceBusEntityReference source, ServiceBusSubQueue subQueue)
