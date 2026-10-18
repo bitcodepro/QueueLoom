@@ -256,6 +256,67 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Empty(subscriber.AcknowledgedIds);
     }
 
+    // Check A is held reading the subscription. Move B then reads one reader and is held before its listing completes.
+    // A second reader appears (or the listing starts failing), A resumes and records a refusal, then B resumes with its
+    // one-reader result. B began before A's refusal was recorded, so it cannot clear it: B is refused, publishes
+    // nothing, and a channel already open still may not acknowledge. Ordinary and saved moves alike.
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task AnInFlightPassCannotEraseARefusalRecordedMeanwhile(bool listingFails, bool durable)
+    {
+        var (workspace, publisher, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        var channel = OpenChannel(workspace, Orders);
+        var leased = await channel.ReceiveAsync(10, CancellationToken.None);
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replays"));
+        var plan = await store.CreateResendAsync(workspace.ConnectedProfileId!.Value, [Item(Orders, 2).WithNewMessageId()],
+            ResendMode.Move, 50, workspace.ConnectedNamespace, workspace.ConnectedConfigurationIdentity ?? string.Empty, "resend", default);
+        var gateA = new Gate();
+        var gateB = new Gate();
+        subscriber.BeforeGet = _ => { subscriber.BeforeGet = null; return gateA.Hold(); };
+
+        var checkA = workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        Task? moveB = null;
+        await gateA.Run(checkA, async () =>
+        {
+            publisher.BeforeLastPage = () => { publisher.BeforeLastPage = null; return gateB.Hold(); };
+            moveB = durable
+                ? store.RunItemsAsync(plan, [0], false, workspace, () => true, null, default)
+                : DeadLetterResender.ResendAsync(workspace, [Item(Orders, 1)], ResendMode.Move);
+            await gateB.Run(moveB, async () =>
+            {
+                if (listingFails) publisher.ListFailure = StatusCode.Unavailable;
+                else publisher.Pages = [["projects/p/subscriptions/dlq-reader", "projects/q/subscriptions/audit"]];
+                gateA.Release();
+                await Assert.ThrowsAsync<InvalidOperationException>(() => checkA.WaitAsync(TimeSpan.FromSeconds(10)));
+            });
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => moveB!);
+        Assert.Equal(0, publisher.Published);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => channel.SettleAsync(leased, CancellationToken.None));
+        Assert.Empty(subscriber.AcknowledgedIds);
+        if (durable) Assert.Equal("Pending", Assert.Single(store.ReadHistory(plan).Items).State);
+    }
+
+    // A refusal recorded earlier (the topic was shared) is cleared by a check that begins after it and finds the one
+    // reader again: the move then goes ahead.
+    [Fact]
+    public async Task AFreshCheckClearsAnObsoleteRefusal()
+    {
+        var (workspace, publisher, subscriber) = Connect([["projects/p/subscriptions/dlq-reader", "projects/q/subscriptions/audit"]]);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]));
+        publisher.Pages = [["projects/p/subscriptions/dlq-reader"]];
+        subscriber.All = Subscriptions(["projects/p/subscriptions/dlq-reader"], null);
+
+        var result = await DeadLetterResender.ResendAsync(workspace, [Item(Orders, 1)], ResendMode.Move);
+
+        Assert.Equal(ResendOutcome.Moved, result.Items.Single().Outcome);
+        Assert.Equal(["a1"], subscriber.AcknowledgedIds);
+    }
+
     // A two-source move passes orders, then is held on billing; meanwhile another check records that orders' topic is
     // shared. Before the move is admitted every source's latest state is consulted again, so it is refused.
     [Fact]
@@ -364,20 +425,36 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
             return _released.Task.WaitAsync(Bound);
         }
 
-        /// <summary>Waits for the operation to arrive, runs <paramref name="meanwhile"/>, then always releases it.</summary>
+        /// <summary>Lets the held operation go on (again: harmless).</summary>
+        public void Release() => _released.TrySetResult();
+
+        /// <summary>
+        /// Waits for the operation to arrive, runs <paramref name="meanwhile"/> (bounded too), then always releases the
+        /// held operation and drains both: nothing is left suspended, even when a step times out.
+        /// </summary>
         public async Task Run(Task held, Func<Task> meanwhile)
         {
+            Task? concurrent = null;
             try
             {
                 await Task.WhenAny(_reached.Task, held).WaitAsync(Bound);
                 Assert.True(_reached.Task.IsCompleted, "The operation finished without reaching the held point.");
-                await meanwhile();
+                concurrent = meanwhile();
+                await concurrent.WaitAsync(Bound);
             }
             finally
             {
-                _released.TrySetResult();
-                try { await held.WaitAsync(Bound); } catch (Exception) when (held.IsCompleted) { } // observed by the test
+                Release();
+                await Drain(held);
+                if (concurrent is not null) await Drain(concurrent);
             }
+        }
+
+        /// <summary>Waits a bounded time for a task; its outcome is the test's to assert.</summary>
+        private static async Task Drain(Task task)
+        {
+            try { await task.WaitAsync(Bound); }
+            catch (Exception) when (task.IsCompleted) { }
         }
     }
 
@@ -530,7 +607,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         public Dictionary<string, string> Policies { get; } = new() { ["orders"] = DeadLetterTopic, ["billing"] = BillingTopic };
 
         /// <summary>The project's subscriptions, listed when a deletion refreshes the topology.</summary>
-        public Subscription[] All { get; init; } = [];
+        public Subscription[] All { get; set; } = [];
 
         public override PagedAsyncEnumerable<ListSubscriptionsResponse, Subscription> ListSubscriptionsAsync(ListSubscriptionsRequest request, CallSettings? callSettings = null) =>
             new OnePage<ListSubscriptionsResponse, Subscription>(new ListSubscriptionsResponse { Subscriptions = { All } }, page => page.Subscriptions);

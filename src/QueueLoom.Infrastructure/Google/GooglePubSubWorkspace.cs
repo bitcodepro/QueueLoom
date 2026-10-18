@@ -47,12 +47,13 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
     private IReadOnlyDictionary<(string Topic, string Subscription), Subscription> _subscriptions =
         new Dictionary<(string, string), Subscription>();
     private IReadOnlyDictionary<string, Subscription> _deadLetterReaders = new Dictionary<string, Subscription>();
-    // Why a dead-letter topic must not be acknowledged through, by topic, with the ticket of the observation that set it.
-    // A topology read only adds entries (it sees this project's subscriptions alone); the check before each deletion,
-    // which lists every reader, sets or clears them. Tickets are taken when an observation starts, and an older
-    // observation never replaces a newer one, so a slow check cannot clear a refusal a later check recorded.
-    private readonly Dictionary<string, (string? Refusal, long Ticket)> _deadLetterRefusals = new(StringComparer.Ordinal);
-    private long _observationTicket;
+    // Why a dead-letter topic must not be acknowledged through, by topic, with the version of the last publication. A
+    // topology read only adds refusals (it sees this project's subscriptions alone); the check before each deletion,
+    // which lists every reader, records refusals or clears them. A refusal is always recorded. A check that passed
+    // clears a refusal only when nothing was published for the topic since that check began, so an in-flight result
+    // can never erase evidence observed meanwhile, while a genuinely fresh check still clears an obsolete refusal.
+    private readonly Dictionary<string, (string? Refusal, long Version)> _deadLetterRefusals = new(StringComparer.Ordinal);
+    private long _publicationVersion;
 
     public GooglePubSubWorkspace(
         ISecretVault secretVault,
@@ -160,7 +161,6 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             topicIds.Add(topic.TopicName.TopicId);
         }
 
-        var ticket = Interlocked.Increment(ref _observationTicket);
         var subscriptions = new List<Subscription>();
         await foreach (var subscription in Subscriber.ListSubscriptionsAsync(project).WithCancellation(cancellationToken)
                            .ConfigureAwait(false))
@@ -176,7 +176,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         _deadLetterReaders = index.DeadLetterReaders;
         foreach (var (topic, readers) in index.SharedDeadLetterTopics)
         {
-            PublishRefusal(topic, SharedRefusal(topic, readers), ticket);
+            RecordRefusal(topic, SharedRefusal(topic, readers));
         }
         return index.Topology;
     }
@@ -238,20 +238,36 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         }
     }
 
-    /// <summary>
-    /// Records what an observation found. A refusal is always recorded: whatever its age, it is evidence against
-    /// acknowledging. A permission clears a refusal only when no newer observation of the topic was recorded.
-    /// </summary>
-    private void PublishRefusal(string topic, string? refusal, long ticket)
+    /// <summary>The version of the topic's last publication: taken when a check begins.</summary>
+    private long PublicationVersion(string topic)
     {
         lock (_deadLetterRefusals)
         {
-            var known = _deadLetterRefusals.TryGetValue(topic, out var current);
-            if (refusal is null && known && current.Ticket > ticket)
+            return _deadLetterRefusals.TryGetValue(topic, out var entry) ? entry.Version : 0;
+        }
+    }
+
+    /// <summary>Records a refusal, whatever else was observed: it is evidence against acknowledging.</summary>
+    private void RecordRefusal(string topic, string refusal)
+    {
+        lock (_deadLetterRefusals)
+        {
+            _deadLetterRefusals[topic] = (refusal, ++_publicationVersion);
+        }
+    }
+
+    /// <summary>
+    /// Clears the topic's refusal after a passing check, but only when nothing was published for the topic since the
+    /// check began (<paramref name="since"/>): a refusal observed meanwhile stands.
+    /// </summary>
+    private void ClearRefusal(string topic, long since)
+    {
+        lock (_deadLetterRefusals)
+        {
+            if (_deadLetterRefusals.TryGetValue(topic, out var entry) && entry.Version == since && entry.Refusal is not null)
             {
-                return;
+                _deadLetterRefusals[topic] = (null, ++_publicationVersion);
             }
-            _deadLetterRefusals[topic] = (refusal, Math.Max(ticket, known ? current.Ticket : 0));
         }
     }
 
@@ -277,13 +293,14 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             .ToArray();
         foreach (var binding in bindings)
         {
-            var ticket = Interlocked.Increment(ref _observationTicket);
+            var since = PublicationVersion(binding.Topic);
             var refusal = await CheckAsync(binding, cancellationToken).ConfigureAwait(false);
-            PublishRefusal(binding.Topic, refusal, ticket);
             if (refusal is not null)
             {
+                RecordRefusal(binding.Topic, refusal);
                 throw new InvalidOperationException(refusal);
             }
+            ClearRefusal(binding.Topic, since);
         }
         foreach (var binding in bindings)
         {
