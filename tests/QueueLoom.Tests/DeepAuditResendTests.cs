@@ -73,6 +73,7 @@ public sealed class DeepAuditResendTests
                 {
                     case "get_ConnectedProvider": return (MessagingProvider?)Provider;
                     case "get_ConnectionState": return WorkspaceConnectionState.Connected;
+                    case "EnsureDeletableAsync": return Task.CompletedTask;
                     case "SendMessageAsync":
                         var id = ((SendMessageRequest)args![0]!).Message.Properties.MessageId!;
                         // Azure accepts a repeated MessageId but silently suppresses its delivery.
