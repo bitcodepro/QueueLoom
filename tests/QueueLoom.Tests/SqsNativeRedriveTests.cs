@@ -116,6 +116,55 @@ public sealed class SqsNativeRedriveTests
         Assert.Empty(fixture.Sqs.Moves);
     }
 
+    // Once sent, the request is not cancelled: write access ending while AWS answers must not turn a move AWS accepted
+    // into a reported "nothing was moved".
+    [Fact]
+    public async Task ACancellationDuringTheMoveRequestDoesNotCancelIt()
+    {
+        await using var fixture = new Fixture(ProfileAccessMode.ReadWrite);
+        var plan = await fixture.Workspace.PlanNativeRedriveAsync(ServiceBusEntityReference.Queue("orders"));
+        using var cancellation = new CancellationTokenSource();
+        var cancellable = true;
+        fixture.Sqs.DuringMove = token => { cancellable = token.CanBeCanceled; cancellation.Cancel(); };
+
+        Assert.Equal("task-1", await fixture.Workspace.StartNativeRedriveAsync(plan, cancellation.Token));
+
+        Assert.False(cancellable);
+        Assert.Single(fixture.Sqs.Moves);
+    }
+
+    // The request left and no answer came back: AWS may be moving the messages, so starting again is not advised blindly.
+    [Theory]
+    [InlineData("network")]
+    [InlineData("timeout")]
+    public async Task ALostAnswerToTheMoveRequestIsReportedAsUnknown(string failure)
+    {
+        await using var fixture = new Fixture(ProfileAccessMode.ReadWrite);
+        var plan = await fixture.Workspace.PlanNativeRedriveAsync(ServiceBusEntityReference.Queue("orders"));
+        fixture.Sqs.DuringMove = _ => throw (failure == "network"
+            ? new HttpRequestException("connection reset")
+            : new TaskCanceledException("The request timed out."));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Workspace.StartNativeRedriveAsync(plan));
+
+        Assert.Contains("AWS may be moving the messages of 'orders-dlq' now", error.Message, StringComparison.Ordinal);
+        Assert.Contains("before starting it again", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Nothing was moved", error.Message, StringComparison.Ordinal);
+    }
+
+    // A refusal from SQS is a definite answer and is shown as it is.
+    [Fact]
+    public async Task ARefusalFromSqsIsReportedAsIs()
+    {
+        await using var fixture = new Fixture(ProfileAccessMode.ReadWrite);
+        var plan = await fixture.Workspace.PlanNativeRedriveAsync(ServiceBusEntityReference.Queue("orders"));
+        fixture.Sqs.DuringMove = _ => throw new AmazonSQSException("A move task is already running for this queue.");
+
+        var error = await Assert.ThrowsAsync<AmazonSQSException>(() => fixture.Workspace.StartNativeRedriveAsync(plan));
+
+        Assert.Contains("already running", error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task APlanFromAnotherEnvironmentSetupMovesNothing()
     {
@@ -227,10 +276,14 @@ public sealed class SqsNativeRedriveTests
             return Task.FromResult(new GetQueueAttributesResponse { Attributes = attributes });
         }
 
+        /// <summary>Called inside the move request, after AWS accepted it; may throw to stand for a lost answer.</summary>
+        public Action<CancellationToken>? DuringMove { get; set; }
+
         public override Task<StartMessageMoveTaskResponse> StartMessageMoveTaskAsync(StartMessageMoveTaskRequest request,
             CancellationToken cancellationToken = default)
         {
             Moves.Add(request);
+            DuringMove?.Invoke(cancellationToken);
             return Task.FromResult(new StartMessageMoveTaskResponse { TaskHandle = "task-1" });
         }
     }

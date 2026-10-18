@@ -90,6 +90,29 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("Write access expired before the redrive was submitted", vm.ErrorText, StringComparison.Ordinal);
     }
 
+    // Write access ending after AWS accepted the move does not undo it, and the window says the move was accepted.
+    [Fact]
+    public async Task Redrive_WriteAccessThatEndsAfterSubmissionStillReportsTheAcceptedMove()
+    {
+        var clock = new RedriveClock();
+        var workspace = RedriveWorkspace();
+        var profile = CreateProfile("AWS", EnvironmentKind.Development);
+        await using var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace,
+            new FakeDialogService { ConfirmResult = true });
+        vm.Clock = clock;
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        await vm.UnlockWritesCommand.ExecuteAsync();
+        vm.SelectedEntity = vm.Entities.Single(entity => entity.IsQueue);
+        workspace.AfterRedriveSubmitted = () => clock.Advance(TimeSpan.FromMinutes(11));
+
+        await vm.RedriveSelectedDeadLettersCommand.ExecuteAsync();
+
+        Assert.Single(workspace.RedriveStarts);
+        Assert.Contains(vm.Activity, item => item.Action == "DLQ redrive accepted by AWS");
+        Assert.DoesNotContain("Nothing was moved", vm.ErrorText ?? string.Empty, StringComparison.Ordinal);
+    }
+
     private sealed class RedriveClock : TimeProvider
     {
         private DateTimeOffset _now = DateTimeOffset.UtcNow;

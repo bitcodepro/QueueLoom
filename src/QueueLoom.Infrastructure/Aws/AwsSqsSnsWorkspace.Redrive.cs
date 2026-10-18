@@ -1,4 +1,5 @@
 using System.Globalization;
+using Amazon.SQS;
 using Amazon.SQS.Model;
 using QueueLoom.Core.ServiceBus;
 
@@ -65,8 +66,25 @@ public sealed partial class AwsSqsSnsWorkspace
         }
         // The caller's token also ends with temporary write access: checked last, just before the move is submitted.
         cancellationToken.ThrowIfCancellationRequested();
-        var response = await Sqs.StartMessageMoveTaskAsync(new StartMessageMoveTaskRequest { SourceArn = deadLetterQueue.Arn },
-            cancellationToken).ConfigureAwait(false);
+        // Once sent, the request is not cancelled: AWS may accept the move before an answer arrives, and a cancelled
+        // wait would leave that unknown. A cancellation therefore only ever happens before anything was sent. An
+        // answer that does not arrive (the network, the SDK's own timeout) leaves the outcome unknown, and says so; a
+        // refusal from SQS (AmazonSQSException) is a definite one and is reported as it is.
+        StartMessageMoveTaskResponse response;
+        try
+        {
+            response = await Sqs.StartMessageMoveTaskAsync(new StartMessageMoveTaskRequest { SourceArn = deadLetterQueue.Arn },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not AmazonSQSException &&
+                                          exception is OperationCanceledException or HttpRequestException or IOException
+                                              or Amazon.Runtime.AmazonClientException)
+        {
+            throw new InvalidOperationException(
+                $"The redrive request was sent, but no answer came back ({exception.Message}). AWS may be moving the messages " +
+                $"of '{deadLetterQueue.Name}' now. Check its move tasks in the AWS console (or ListMessageMoveTasks) before " +
+                "starting it again.", exception);
+        }
         return response.TaskHandle ?? string.Empty;
     }
 
