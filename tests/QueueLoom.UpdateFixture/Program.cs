@@ -235,7 +235,9 @@ if (args.Length > 0 && args[0] == "--hold-lock")
         var held = System.Diagnostics.Stopwatch.StartNew();
         while (!File.Exists(args[1] + ".release"))
         {
-            if (held.Elapsed > TimeSpan.FromSeconds(120)) return 72;
+            // QUEUELOOM_FIXTURE_WATCHDOG_MS shortens the watchdog for the test that checks it fires.
+            var watchdog = int.TryParse(Environment.GetEnvironmentVariable("QUEUELOOM_FIXTURE_WATCHDOG_MS"), out var ms) ? ms : 120_000;
+            if (held.Elapsed > TimeSpan.FromMilliseconds(watchdog)) return 72;
             await Task.Delay(10);
         }
     }

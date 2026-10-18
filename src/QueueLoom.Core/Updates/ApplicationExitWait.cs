@@ -37,16 +37,45 @@ public static class ApplicationExitWait
     /// </summary>
     internal delegate long? IdentityProbe(int processId);
 
-    /// <summary>Takes the application's identity; call it while the application is known to be alive.</summary>
-    public static Watch Identify(int processId, long startTicksUtc)
+    /// <summary>What one look at the PID found.</summary>
+    internal readonly record struct Reading(ReadingKind Kind, long Value = 0)
     {
-        var probe = DefaultProbe();
-        var identity = Inspect(probe, processId, known: null);
-        if (OperatingSystem.IsWindows() && identity is { } created && created != -1 && created != startTicksUtc)
+        public static readonly Reading Gone = new(ReadingKind.Gone);
+        public static readonly Reading Unreadable = new(ReadingKind.Unreadable);
+        public static Reading Of(long value) => new(ReadingKind.Known, value);
+    }
+
+    internal enum ReadingKind
+    {
+        /// <summary>No process holds the PID: established, not assumed.</summary>
+        Gone,
+
+        /// <summary>A process holds the PID, but its identity could not be read (it may be exiting right now).</summary>
+        Unreadable,
+
+        /// <summary>The identity of the process holding the PID.</summary>
+        Known
+    }
+
+    /// <summary>Takes the application's identity; call it while the application is known to be alive.</summary>
+    public static Watch Identify(int processId, long startTicksUtc) =>
+        Identify(processId, startTicksUtc, DefaultProbe(), OperatingSystem.IsWindows(), TimeProvider.System);
+
+    /// <param name="comparable">
+    /// Whether <paramref name="startTicksUtc"/> is directly comparable with the probe's identity (Windows' kernel
+    /// creation time). Elsewhere the application's own reading cannot be compared, and the first identity read is used.
+    /// </param>
+    internal static Watch Identify(int processId, long startTicksUtc, IdentityProbe probe, bool comparable, TimeProvider clock)
+    {
+        var reading = Inspect(probe, processId);
+        if (reading.Kind == ReadingKind.Gone ||
+            reading.Kind == ReadingKind.Known && comparable && reading.Value != startTicksUtc)
         {
-            identity = null; // Another process already holds the PID.
+            return new Watch(processId, probe, clock, exited: true, identity: null, reference: null);
         }
-        return new Watch(processId, identity, probe, TimeProvider.System);
+        return new Watch(processId, probe, clock, exited: false,
+            identity: reading.Kind == ReadingKind.Known ? reading.Value : null,
+            reference: comparable ? startTicksUtc : null);
     }
 
     internal static IdentityProbe DefaultProbe() =>
@@ -55,23 +84,18 @@ public static class ApplicationExitWait
         : ExistsOnly;
 
     /// <summary>
-    /// The identity, or null when the process is gone. A process that exists but cannot be inspected (it may be exiting
-    /// right now) keeps the identity already known: only an established exit counts as one.
+    /// Looks at the PID once. A failed identity read is an exit only when a lookup then finds no process with the PID;
+    /// a process that is present but unreadable is reported as such, never as gone.
     /// </summary>
-    internal static long? Inspect(IdentityProbe probe, int processId, long? known)
+    internal static Reading Inspect(IdentityProbe probe, int processId)
     {
         try
         {
-            return probe(processId);
+            return probe(processId) is { } identity ? Reading.Of(identity) : Reading.Gone;
         }
         catch (Exception error) when (error is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-            if (!Exists(processId))
-            {
-                return null;
-            }
-            // Alive but unreadable: when nothing is known yet, the PID itself stands in, so the wait goes on.
-            return known ?? -1;
+            return Exists(processId) ? Reading.Unreadable : Reading.Gone;
         }
     }
 
@@ -128,38 +152,67 @@ public static class ApplicationExitWait
 
     private static long? ExistsOnly(int processId) => Exists(processId) ? 0 : null;
 
-    /// <summary>A taken identity, waited on until it is gone.</summary>
+    /// <summary>
+    /// A taken identity, waited on until it is gone. An identity not readable at first ("alive, unknown") is learned from
+    /// the first successful read: regaining the ability to read it never counts as an exit. Only a confirmed absence, or
+    /// a known identity replaced by another one, ends the wait.
+    /// </summary>
     public sealed class Watch
     {
         private readonly int _processId;
-        private readonly long? _identity;
         private readonly IdentityProbe _probe;
         private readonly TimeProvider _clock;
+        private readonly bool _exited;
+        private readonly long? _reference;
+        private long? _identity;
 
-        internal Watch(int processId, long? identity, IdentityProbe probe, TimeProvider clock)
+        internal Watch(int processId, IdentityProbe probe, TimeProvider clock, bool exited, long? identity, long? reference)
         {
             _processId = processId;
-            _identity = identity;
             _probe = probe;
             _clock = clock;
+            _exited = exited;
+            _identity = identity;
+            _reference = reference;
         }
 
         public async Task<Result> WaitAsync(TimeSpan limit)
         {
-            if (_identity is not { } identity)
+            if (_exited)
             {
                 return Result.Exited;
             }
             var started = _clock.GetTimestamp();
-            while (Inspect(_probe, _processId, identity) == identity)
+            while (true)
             {
+                var reading = Inspect(_probe, _processId);
+                if (reading.Kind == ReadingKind.Gone)
+                {
+                    return Result.Exited;
+                }
+                if (reading.Kind == ReadingKind.Known)
+                {
+                    if (_identity is null)
+                    {
+                        // Learned only now. Where the application's own value is comparable, a different one is another
+                        // process; elsewhere the reading becomes the identity.
+                        if (_reference is { } reference && reading.Value != reference)
+                        {
+                            return Result.Exited;
+                        }
+                        _identity = reading.Value;
+                    }
+                    else if (reading.Value != _identity)
+                    {
+                        return Result.Exited; // Another process now holds the PID.
+                    }
+                }
                 if (_clock.GetElapsedTime(started) >= limit)
                 {
                     return Result.StillRunning;
                 }
                 await Task.Delay(PollInterval, _clock).ConfigureAwait(false);
             }
-            return Result.Exited;
         }
     }
 }
