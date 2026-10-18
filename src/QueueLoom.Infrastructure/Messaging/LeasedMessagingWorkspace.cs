@@ -322,7 +322,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             throw new NotSupportedException($"{Provider.DisplayName()} has no transfer dead-letter queues.");
         foreach (var target in targets)
             if (target.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
-        await ValidateDeletionAsync(targets.Select(target => (target.Target.Source, target.Target.SubQueue)).ToArray(), cancellationToken)
+        await ValidateDeletionAsync(targets.Select(target => new DeletionTarget(target.Target.Source, target.Target.SubQueue, target.Channel)).ToArray(), cancellationToken)
             .ConfigureAwait(false);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
@@ -366,16 +366,22 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         EnsureWriteAllowed();
         // Only the provider's own check against the service: no topology read and no channel, so a provider without
         // such a check (Kafka, whose topology read lists consumer groups) is not touched at all.
-        await ValidateDeletionAsync(sources.Distinct().ToArray(), cancellationToken).ConfigureAwait(false);
+        await ValidateDeletionAsync(sources.Distinct().Select(source => new DeletionTarget(source.Source, source.SubQueue, null)).ToArray(), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
     /// Checks with the service, not the cached topology, that dead letters of these sources may be deleted, before
     /// anything is backed up, deleted or published. Throws when one may not.
     /// </summary>
-    protected virtual Task ValidateDeletionAsync(
-        IReadOnlyCollection<(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue)> sources,
-        CancellationToken cancellationToken) => Task.CompletedTask;
+    protected virtual Task ValidateDeletionAsync(IReadOnlyList<DeletionTarget> targets, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
+    /// A source whose dead letters are about to be deleted, with the channel the deletion will read and settle through
+    /// (none for a move's check before publishing, which opens its channel later).
+    /// </summary>
+    protected readonly record struct DeletionTarget(ServiceBusEntityReference Source, ServiceBusSubQueue SubQueue, ILeasedMessageChannel? Channel);
 
     public async Task<DeleteDeadLetterMessagesResult> DeleteDeadLetterMessagesAsync(
         DeleteDeadLetterMessagesRequest request,
@@ -401,7 +407,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             .ToArray();
         foreach (var group in groups)
             if (group.Channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
-        await ValidateDeletionAsync(groups.Select(group => (group.Group.Key.Source, group.Group.Key.SubQueue)).ToArray(), cancellationToken)
+        await ValidateDeletionAsync(groups.Select(group => new DeletionTarget(group.Group.Key.Source, group.Group.Key.SubQueue, group.Channel)).ToArray(), cancellationToken)
             .ConfigureAwait(false);
         var backupSession = await _backupStore.CreateSessionAsync(profile, startedAt, cancellationToken)
             .ConfigureAwait(false);
