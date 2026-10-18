@@ -15,14 +15,16 @@ internal static class Program
             {
                 if (args.Length != 4 || !Guid.TryParseExact(args[3], "N", out _)) throw new InvalidDataException("Invalid restart handoff.");
                 installation.EnsureBootstrap();
+                // The application waits for readiness before it closes, so its identity is taken while it is alive.
+                var application = ApplicationExitWait.Identify(int.Parse(args[1], CultureInfo.InvariantCulture),
+                    long.Parse(args[2], CultureInfo.InvariantCulture));
                 // Readiness precedes waiting for the application, so its orderly close can begin.
                 var ready = Path.Combine(installation.Store, "restart-" + args[3] + ".ready");
                 installation.RejectOwnedPath(ready);
                 using (var file = new FileStream(ready, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { file.WriteByte(1); file.Flush(flushToDisk: true); }
                 // An orderly close can take minutes (a large backup); a PID reused by another process is not waited for.
-                var closed = await ApplicationExitWait.WaitAsync(int.Parse(args[1], CultureInfo.InvariantCulture),
-                    long.Parse(args[2], CultureInfo.InvariantCulture), ApplicationExitWait.DefaultLimit);
+                var closed = await application.WaitAsync(ApplicationExitWait.DefaultLimit);
                 if (closed == ApplicationExitWait.Result.StillRunning)
                     throw new TimeoutException(
                         $"the previous QueueLoom was still closing after {ApplicationExitWait.DefaultLimit.TotalMinutes:N0} minutes. Start QueueLoom again once it has closed.");
