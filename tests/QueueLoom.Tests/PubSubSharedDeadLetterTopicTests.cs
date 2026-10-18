@@ -68,11 +68,11 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Empty(subscriber.AcknowledgedIds);
     }
 
-    // One attached reader (a detached one is not listed by the topic and holds nothing): the purge proceeds.
+    // One attached reader plus a detached one (the topic does not list it, and it holds nothing): the purge proceeds.
     [Fact]
     public async Task ASingleAttachedReaderStillPurges()
     {
-        var (workspace, _, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        var (workspace, _, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]], detached: ["projects/p/subscriptions/aaa-old-reader"]);
 
         var result = await workspace.PurgeDeadLettersAsync(new DeadLetterPurgeRequest([Orders], [ServiceBusSubQueue.DeadLetter]));
 
@@ -148,10 +148,99 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         Assert.Equal("m1", Assert.Single(messages).Properties.MessageId);
     }
 
+    // A detached subscription is neither the reader nor a second reader, even when it sorts first.
+    [Fact]
+    public void ADetachedSubscriptionIsNotAReader()
+    {
+        var index = Build(["projects/p/subscriptions/dlq-reader"], detached: ["projects/p/subscriptions/aaa-old-reader"]);
+
+        Assert.Empty(index.SharedDeadLetterTopics);
+        Assert.Equal("dlq-reader", index.DeadLetterReaders[DeadLetterTopic].SubscriptionName.SubscriptionId);
+        var orders = index.Topology.Topics.Single(topic => topic.Name == "events").Subscriptions.Single(subscription => subscription.Name == "orders");
+        Assert.DoesNotContain("read-only", orders.Note, StringComparison.Ordinal);
+    }
+
+    // The application moves through MultiProviderWorkspace: the check must reach the provider through it, for ordinary
+    // and saved moves alike.
+    [Fact]
+    public async Task TheApplicationsWorkspaceForwardsTheCheck()
+    {
+        var (provider, publisher, subscriber) = Connect([["projects/p/subscriptions/dlq-reader", "projects/q/subscriptions/audit"]]);
+        await using var router = new MultiProviderWorkspace(_ => provider);
+        typeof(MultiProviderWorkspace).GetField("_current", Any)!.SetValue(router, provider);
+        var store = new BatchReplayStore(Path.Combine(_directory.Path, "replays"));
+        var plan = await store.CreateResendAsync(router.ConnectedProfileId!.Value, [Item(Orders, 2).WithNewMessageId()],
+            ResendMode.Move, 50, router.ConnectedNamespace, router.ConnectedConfigurationIdentity ?? string.Empty, "resend", default);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => DeadLetterResender.ResendAsync(router, [Item(Orders, 1)], ResendMode.Move));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RunItemsAsync(plan, [0], false, router, () => true, null, default));
+
+        Assert.Equal(0, publisher.Published);
+        Assert.Empty(subscriber.AcknowledgedIds);
+        Assert.Equal("Pending", Assert.Single(store.ReadHistory(plan).Items).State);
+    }
+
+    // Right after connecting nothing is listed yet: the check reads the subscription from the service and refuses
+    // rather than passing for want of a cached entry.
+    [Fact]
+    public async Task ACheckBeforeAnyListingRefuses()
+    {
+        var (workspace, publisher, _) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        Set(typeof(GooglePubSubWorkspace), workspace, "_subscriptions", new Dictionary<(string, string), Subscription>());
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]));
+
+        Assert.Contains("Refresh", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, publisher.Published);
+    }
+
+    // The cached topology says orders dead-letters to A (one reader); the service now says B. The move is refused
+    // before publishing, instead of checking A and failing at deletion on B.
+    [Fact]
+    public async Task AChangedDeadLetterPolicyIsRefusedBeforePublishing()
+    {
+        var (workspace, publisher, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        subscriber.Policies["orders"] = "projects/p/topics/shared-dlq";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => DeadLetterResender.ResendAsync(workspace, [Item(Orders, 1)], ResendMode.Move));
+
+        Assert.Contains("shared-dlq", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, publisher.Published);
+        Assert.DoesNotContain("projects/p/topics/shared-dlq", publisher.ListedTopics);
+    }
+
+    // Check A reads one reader and is held; check B, started later, finds two and refuses; A then finishes. A's older
+    // observation must not clear B's refusal, so an open channel still may not acknowledge.
+    [Fact]
+    public async Task AnOlderCheckDoesNotClearANewerRefusal()
+    {
+        var (workspace, publisher, subscriber) = Connect([["projects/p/subscriptions/dlq-reader"]]);
+        var channel = OpenChannel(workspace, Orders);
+        var leased = await channel.ReceiveAsync(10, CancellationToken.None);
+        var aListed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseA = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        publisher.BeforeLastPage = () =>
+        {
+            publisher.BeforeLastPage = null; // only check A is held
+            aListed.SetResult();
+            return releaseA.Task;
+        };
+
+        var checkA = workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]);
+        await aListed.Task;
+        publisher.Pages = [["projects/p/subscriptions/dlq-reader", "projects/q/subscriptions/audit"]];
+        await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.EnsureDeletableAsync([(Orders, ServiceBusSubQueue.DeadLetter)]));
+        releaseA.SetResult();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => checkA);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => channel.SettleAsync(leased, CancellationToken.None));
+        Assert.Empty(subscriber.AcknowledgedIds);
+    }
+
     [Fact]
     public void TheSourceSaysItsDeadLetterTopicIsShared()
     {
-        var index = Build("projects/p/subscriptions/dlq-reader", "projects/p/subscriptions/audit");
+        var index = Build(["projects/p/subscriptions/dlq-reader", "projects/p/subscriptions/audit"]);
 
         var orders = index.Topology.Topics.Single(topic => topic.Name == "events").Subscriptions.Single(subscription => subscription.Name == "orders");
 
@@ -168,19 +257,21 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
 
     private const string BillingTopic = "projects/p/topics/billing-dlq";
 
-    private static GooglePubSubTopology Build(params string[] readers) => GooglePubSubTopology.Build("p", ["events", "events-dlq", "billing-dlq"],
+    private static GooglePubSubTopology Build(string[] readers, string[]? detached = null) => GooglePubSubTopology.Build("p", ["events", "events-dlq", "billing-dlq"],
         [
             new Subscription { Name = "projects/p/subscriptions/orders", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = DeadLetterTopic, MaxDeliveryAttempts = 5 } },
             new Subscription { Name = "projects/p/subscriptions/billing", Topic = "projects/p/topics/events", DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = BillingTopic, MaxDeliveryAttempts = 5 } },
             new Subscription { Name = "projects/p/subscriptions/billing-dlq-reader", Topic = BillingTopic },
             .. readers.Where(reader => reader.StartsWith("projects/p/", StringComparison.Ordinal))
-                .Select(reader => new Subscription { Name = reader, Topic = DeadLetterTopic })
+                .Select(reader => new Subscription { Name = reader, Topic = DeadLetterTopic }),
+            .. (detached ?? []).Select(reader => new Subscription { Name = reader, Topic = DeadLetterTopic, Detached = true })
         ], DateTimeOffset.UtcNow);
 
-    private (GooglePubSubWorkspace Workspace, FakePublisher Publisher, FakeSubscriber Subscriber) Connect(string[][] pages, StatusCode? listFailure = null)
+    private (GooglePubSubWorkspace Workspace, FakePublisher Publisher, FakeSubscriber Subscriber) Connect(
+        string[][] pages, StatusCode? listFailure = null, string[]? detached = null)
     {
         // The cached topology knows this project's readers only.
-        var index = Build(pages.SelectMany(page => page).ToArray());
+        var index = Build(pages.SelectMany(page => page).ToArray(), detached);
         var publisher = new FakePublisher { Pages = pages, ListFailure = listFailure };
         var subscriber = new FakeSubscriber();
         var workspace = new GooglePubSubWorkspace(new DeepAuditCloudTests.EmptyVault(), backupStore: new DeadLetterJsonBackupStore(Paths));
@@ -209,13 +300,16 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         public List<string> ListedTopics { get; } = [];
         public int Published { get; private set; }
 
+        /// <summary>When set, awaited before a listing hands out its last page.</summary>
+        public Func<Task>? BeforeLastPage { get; set; }
+
         public override PagedAsyncEnumerable<ListTopicSubscriptionsResponse, string> ListTopicSubscriptionsAsync(
             ListTopicSubscriptionsRequest request, CallSettings? callSettings = null)
         {
             ListedTopics.Add(request.Topic);
             if (ListFailure is { } failure) throw new RpcException(new Status(failure, "listing refused"));
             var pages = request.Topic == DeadLetterTopic ? Pages : [["projects/p/subscriptions/billing-dlq-reader"]];
-            return new FakePaged(pages.Select(names => new ListTopicSubscriptionsResponse { Subscriptions = { names } }).ToArray());
+            return new FakePaged(pages.Select(names => new ListTopicSubscriptionsResponse { Subscriptions = { names } }).ToArray(), BeforeLastPage);
         }
 
         public override Task<PublishResponse> PublishAsync(PublishRequest request, CallSettings? callSettings = null)
@@ -225,7 +319,7 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         }
     }
 
-    private sealed class FakePaged(ListTopicSubscriptionsResponse[] pages) : PagedAsyncEnumerable<ListTopicSubscriptionsResponse, string>
+    private sealed class FakePaged(ListTopicSubscriptionsResponse[] pages, Func<Task>? beforeLastPage) : PagedAsyncEnumerable<ListTopicSubscriptionsResponse, string>
     {
         public override IAsyncEnumerable<ListTopicSubscriptionsResponse> AsRawResponses() => Raw();
 
@@ -240,7 +334,12 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
 
         private async IAsyncEnumerable<ListTopicSubscriptionsResponse> Raw()
         {
-            foreach (var page in pages) { await Task.Yield(); yield return page; }
+            for (var index = 0; index < pages.Length; index++)
+            {
+                await Task.Yield();
+                if (index == pages.Length - 1 && beforeLastPage is { } gate) await gate();
+                yield return pages[index];
+            }
         }
     }
 
@@ -250,6 +349,17 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
         public int Pulls { get; private set; }
         public List<string> AcknowledgedIds { get; } = [];
         public List<string> ReleasedIds { get; } = [];
+
+        /// <summary>The dead-letter topic the service reports for each subscription now.</summary>
+        public Dictionary<string, string> Policies { get; } = new() { ["orders"] = DeadLetterTopic, ["billing"] = BillingTopic };
+
+        public override Task<Subscription> GetSubscriptionAsync(GetSubscriptionRequest request, CallSettings? callSettings = null)
+        {
+            var id = request.SubscriptionAsSubscriptionName.SubscriptionId;
+            return Policies.TryGetValue(id, out var topic)
+                ? Task.FromResult(new Subscription { Name = request.Subscription, DeadLetterPolicy = new DeadLetterPolicy { DeadLetterTopic = topic, MaxDeliveryAttempts = 5 } })
+                : Task.FromException<Subscription>(new RpcException(new Status(StatusCode.NotFound, "no such subscription")));
+        }
 
         // One dead letter of "orders", attributed with both its subscription and project, then nothing.
         public override Task<PullResponse> PullAsync(PullRequest request, CallSettings? callSettings = null)
