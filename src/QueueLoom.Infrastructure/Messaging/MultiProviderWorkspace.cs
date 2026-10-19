@@ -12,7 +12,7 @@ namespace QueueLoom.Infrastructure.Messaging;
 /// provider (Azure Service Bus, Amazon SQS / SNS, Google Pub/Sub, RabbitMQ or Kafka), so pages and the MCP server stay
 /// provider-agnostic.
 /// </summary>
-public sealed class MultiProviderWorkspace : IServiceBusWorkspace, ICleanupWarningSource
+public sealed class MultiProviderWorkspace : IServiceBusWorkspace, ICleanupWarningSource, IWorkspaceNoticeSource
 {
     private readonly Func<MessagingProvider, IServiceBusWorkspace> _factory;
     private readonly Dictionary<MessagingProvider, IServiceBusWorkspace> _workspaces = [];
@@ -30,6 +30,9 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace, ICleanupWarni
 
     /// <inheritdoc />
     public event EventHandler<string>? CleanupWarning;
+
+    /// <inheritdoc />
+    public event EventHandler<WorkspaceNotice>? Notice;
 
     public WorkspaceConnectionState ConnectionState => _current?.ConnectionState ?? WorkspaceConnectionState.Disconnected;
 
@@ -53,6 +56,10 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace, ICleanupWarni
             if (target is ICleanupWarningSource source)
             {
                 source.CleanupWarning += (_, warning) => CleanupWarning?.Invoke(this, warning);
+            }
+            if (target is IWorkspaceNoticeSource notices)
+            {
+                notices.Notice += (_, notice) => Notice?.Invoke(this, notice);
             }
             _workspaces[profile.Provider] = target;
         }

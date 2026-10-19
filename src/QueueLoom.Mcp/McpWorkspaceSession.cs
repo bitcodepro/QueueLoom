@@ -19,6 +19,17 @@ public sealed class McpWorkspaceSession(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _connectedConfigurationIdentity;
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _cleanupWarnings = Subscribe(workspace);
+    private readonly System.Collections.Concurrent.ConcurrentQueue<WorkspaceNotice> _notices = SubscribeNotices(workspace);
+
+    private static System.Collections.Concurrent.ConcurrentQueue<WorkspaceNotice> SubscribeNotices(IServiceBusWorkspace workspace)
+    {
+        var queue = new System.Collections.Concurrent.ConcurrentQueue<WorkspaceNotice>();
+        if (workspace is IWorkspaceNoticeSource source)
+        {
+            source.Notice += (_, notice) => queue.Enqueue(notice);
+        }
+        return queue;
+    }
 
     private static System.Collections.Concurrent.ConcurrentQueue<string> Subscribe(IServiceBusWorkspace workspace)
     {
@@ -40,6 +51,12 @@ public sealed class McpWorkspaceSession(
         {
             into?.Add(warning);
             Record("Warning", "Messages not returned to their queue yet", warning, profile);
+        }
+        // Notices (for example a Schema Registry outage) travel the same way: into the reply and into Activity.
+        while (_notices.TryDequeue(out var notice))
+        {
+            into?.Add($"{notice.Title}: {notice.Details}");
+            Record("Warning", notice.Title, notice.Details, profile);
         }
     }
 

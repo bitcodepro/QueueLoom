@@ -23,6 +23,35 @@ internal sealed class SchemaRegistryClient : IDisposable
     private readonly ConcurrentDictionary<int, DateTimeOffset> _failedUntil = new();
     private readonly TimeProvider _time;
     private long _unreachableUntilTicks;
+    private readonly object _outageGate = new();
+    private bool _inOutage;
+    private string? _unreportedOutage;
+
+    /// <summary>
+    /// Why lookups failed, once per outage: the first failure after a success (or since the client was created)
+    /// leaves its reason here, which <see cref="TakeOutage"/> hands out once. A later success ends the outage.
+    /// </summary>
+    internal string? TakeOutage()
+    {
+        lock (_outageGate)
+        {
+            var reason = _unreportedOutage;
+            _unreportedOutage = null;
+            return reason;
+        }
+    }
+
+    private void Failed(string reason)
+    {
+        lock (_outageGate)
+        {
+            if (!_inOutage)
+            {
+                _inOutage = true;
+                _unreportedOutage = reason + $" Messages are shown without their schemas; QueueLoom asks again after {FailureBackoff.TotalSeconds:N0} seconds.";
+            }
+        }
+    }
 
     public SchemaRegistryClient(string url, string? userName, string? password, HttpMessageHandler? handler = null,
         TimeProvider? time = null)
@@ -72,6 +101,7 @@ internal sealed class SchemaRegistryClient : IDisposable
                 {
                     // Not a schema: asked again only after the backoff, like a temporary failure.
                     _failedUntil[id] = now + FailureBackoff;
+                    Failed($"The Schema Registry's answer for schema {id} was larger than a schema can be; check its address.");
                 }
                 else
                 {
@@ -87,12 +117,14 @@ internal sealed class SchemaRegistryClient : IDisposable
                 if (!definitive)
                 {
                     _failedUntil[id] = now + FailureBackoff;
+                    Failed($"The Schema Registry answered {(int)response.StatusCode} {response.ReasonPhrase}.");
                 }
             }
         }
         catch (JsonException)
         {
             _failedUntil[id] = now + FailureBackoff;
+            Failed($"The Schema Registry's answer for schema {id} was not a schema; check its address.");
         }
         // The body is read as a stream (see above), so its failures arrive unwrapped: a connection dropped mid-body is
         // an IOException, and the deadline expiring during the read an OperationCanceledException. Both are the
@@ -101,11 +133,16 @@ internal sealed class SchemaRegistryClient : IDisposable
                                               || exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
             Interlocked.Exchange(ref _unreachableUntilTicks, (now + FailureBackoff).UtcTicks);
+            Failed($"The Schema Registry could not be reached ({(exception is OperationCanceledException ? "no answer in time" : exception.Message)}).");
             // The body is then shown without its schema; the registry being down must not stop reading messages.
         }
 
         if (definitive)
         {
+            lock (_outageGate)
+            {
+                _inOutage = false;
+            }
             _failedUntil.TryRemove(id, out _);
             _schemas[id] = schema;
         }
