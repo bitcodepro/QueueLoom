@@ -452,11 +452,21 @@ public static class ProtoDecoder
                     writer.WritePropertyName(name);
                     if (repeated && values.Count > 0 && values.All(item => item is Node { IsMapEntry: true }))
                     {
-                        writer.WriteStartObject();
+                        // A key may repeat on the wire; the last value wins, as the Google runtime decodes it. Keys keep the
+                        // order they were first seen in, so the JSON holds each one once.
+                        var entries = new Dictionary<string, object?>(StringComparer.Ordinal);
+                        var order = new List<string>();
                         foreach (Node entry in values.Cast<Node>())
                         {
-                            writer.WritePropertyName(KeyText(entry.TryGetValue(1, out var key) ? key.Values.LastOrDefault() : entry.MapKeyDefault));
-                            Write(writer, entry.TryGetValue(2, out var item) ? item.Values.LastOrDefault() : entry.MapValueDefault);
+                            var key = KeyText(entry.TryGetValue(1, out var keyField) ? keyField.Values.LastOrDefault() : entry.MapKeyDefault);
+                            if (!entries.ContainsKey(key)) order.Add(key);
+                            entries[key] = entry.TryGetValue(2, out var item) ? item.Values.LastOrDefault() : entry.MapValueDefault;
+                        }
+                        writer.WriteStartObject();
+                        foreach (var key in order)
+                        {
+                            writer.WritePropertyName(key);
+                            Write(writer, entries[key]);
                         }
                         writer.WriteEndObject();
                     }
