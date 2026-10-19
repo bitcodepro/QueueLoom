@@ -683,6 +683,34 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     }
                     return messages.Where(message => refused.Contains(Position(message).Partition) || failed.Contains(message)).ToList();
                 }
+                catch (KafkaException exception) when (exception is not DeleteRecordsException)
+                {
+                    // The request failed as a whole (a timeout, a lost connection): the broker may still have cut some
+                    // partitions before the answer was lost. Each partition's low watermark tells: records before it
+                    // are gone. If even that cannot be read, the outcome is unknown and the original error stands.
+                    var lowWatermarks = new Dictionary<int, long>();
+                    try
+                    {
+                        var consumer = Open();
+                        foreach (var deletion in deletions)
+                        {
+                            lowWatermarks[deletion.Partition.Value] = consumer.QueryWatermarkOffsets(deletion.TopicPartition, RequestTimeout).Low.Value;
+                        }
+                    }
+                    catch (KafkaException)
+                    {
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception).Throw();
+                    }
+                    foreach (var (partition, low) in lowWatermarks)
+                    {
+                        if (low > _deletableFrom[partition])
+                        {
+                            _deletableFrom[partition] = low;
+                        }
+                    }
+                    return messages.Where(message => failed.Contains(message) ||
+                        lowWatermarks.TryGetValue(Position(message).Partition, out var low) && Position(message).Offset >= low).ToList();
+                }
             }
             return failed;
         }
