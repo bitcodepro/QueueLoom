@@ -154,6 +154,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             // Raised on the operation's thread; shown once the operation ends (see RunOperationAsync).
             cleanup.CleanupWarning += (_, warning) => _cleanupWarnings.Enqueue(warning);
         }
+        if (workspace is IWorkspaceNoticeSource notices)
+        {
+            // Raised on the operation's thread; shown once the operation ends, like cleanup warnings.
+            notices.Notice += (_, notice) => _notices.Enqueue(notice);
+        }
         _dialogs = dialogs;
         _backupRepository = backupRepository;
         _activityJournal = activityJournal;
@@ -725,6 +730,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     }
 
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _cleanupWarnings = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<WorkspaceNotice> _notices = new();
 
     /// <summary>Tells the operator that local data (settings, for example) could not be used as saved.</summary>
     public void ReportLocalDataProblem(string action, string details) => AddActivity("Warning", action, details);
@@ -738,6 +744,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         while (_cleanupWarnings.TryDequeue(out var warning))
         {
             AddActivity("Warning", "Messages not returned to their queue yet", warning);
+        }
+        while (_notices.TryDequeue(out var notice))
+        {
+            AddActivity("Warning", notice.Title, notice.Details);
         }
     }
 

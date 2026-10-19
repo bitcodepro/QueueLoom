@@ -942,7 +942,7 @@ public sealed partial class ViewModelStateTests
         }
     }
 
-    internal sealed class FakeWorkspace : IServiceBusWorkspace, ICleanupWarningSource
+    internal sealed class FakeWorkspace : IServiceBusWorkspace, ICleanupWarningSource, IWorkspaceNoticeSource
     {
         /// <summary>When set, the service offers a native redrive with this plan.</summary>
         public NativeRedrivePlan? RedrivePlan { get; set; }
@@ -983,6 +983,9 @@ public sealed partial class ViewModelStateTests
         public Action? OnSend { get; set; }
         public string? BrowseCleanupWarning { get; set; }
         public event EventHandler<string>? CleanupWarning;
+        /// <summary>Raised during a browse, as a workspace reports a notice (a Schema Registry outage, for example).</summary>
+        public WorkspaceNotice? BrowseNotice { get; set; }
+        public event EventHandler<WorkspaceNotice>? Notice;
         public Func<Task>? SendGate { get; set; }
         public Action? OnDelete { get; set; }
         public Func<CancellationToken, Task>? CleanupOperationGate { get; set; }
@@ -1094,6 +1097,7 @@ public sealed partial class ViewModelStateTests
         {
             BrowseRequests.Add(request);
             if (BrowseCleanupWarning is { } warning) CleanupWarning?.Invoke(this, warning);
+            if (BrowseNotice is { } notice) Notice?.Invoke(this, notice);
             if (CleanupOperationGate is not null) await CleanupOperationGate(cancellationToken);
             return BrowseMessages
                 .Where(m => m.SequenceNumber >= (request.FromSequenceNumber ?? 0))

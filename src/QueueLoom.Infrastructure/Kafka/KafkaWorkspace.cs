@@ -500,6 +500,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                     messages[index] = messages[index] with { Message = message with { Schema = schema } };
                 }
             }
+            if (registry.TakeOutage() is { } outage)
+            {
+                owner.ReportNotice("Schema Registry unavailable", outage);
+            }
             return messages;
         }
 

@@ -15,7 +15,7 @@ namespace QueueLoom.Infrastructure.Messaging;
 /// backing a held message up to disk first and only then settling it, the same guarantee QueueLoom gives
 /// for Azure Service Bus.
 /// </summary>
-public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupWarningSource
+public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupWarningSource, IWorkspaceNoticeSource
 {
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(1);
     internal const int EmptyReceiveConfirmations = 2;
@@ -955,6 +955,22 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         try
         {
             CleanupWarning?.Invoke(this, error);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A listener's failure must not turn the operation's result into an error.
+        }
+    }
+
+    /// <inheritdoc />
+    public event EventHandler<WorkspaceNotice>? Notice;
+
+    /// <summary>Announces a notice without allowing a listener to replace the operation's result.</summary>
+    protected void ReportNotice(string title, string details)
+    {
+        try
+        {
+            Notice?.Invoke(this, new WorkspaceNotice(title, details));
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
