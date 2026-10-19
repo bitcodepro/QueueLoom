@@ -286,9 +286,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     /// <summary>
     /// Appends, waiting out a brief sharing violation: QueueLoom's own writers are serialized by the lock, but another
-    /// program (an antivirus scan, a viewer opening the file exclusively) can hold the file for a moment. Only that is
-    /// retried, for at most <see cref="SharingRetryBudget"/>, and not once shutdown has given up; any other failure, or
-    /// a holder that stays, drops the line as before (counted and announced).
+    /// program (an antivirus scan, a viewer opening the file exclusively) can hold the file for a moment. An I/O failure
+    /// is retried on the background writer (never a caller's thread) for at most <see cref="SharingRetryBudget"/>, and
+    /// not once shutdown has given up; a failure that stays drops the line as before (counted and announced).
     /// </summary>
     private void AppendRetryingSharing(string path, string text)
     {
@@ -300,7 +300,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 File.AppendAllText(path, text, Encoding.UTF8);
                 return;
             }
-            catch (IOException exception) when ((exception.HResult & 0xFFFF) is 32 or 33 && !_abandoned && waited.Elapsed < SharingRetryBudget)
+            // Windows reports the holder as a sharing violation; Unix (where .NET emulates file sharing with advisory
+            // locks) as a plain IOException. A missing directory is not waited out: the item's own recovery handles it.
+            catch (IOException exception) when (exception is not DirectoryNotFoundException && !_abandoned && waited.Elapsed < SharingRetryBudget)
             {
                 Thread.Sleep(10);
             }
