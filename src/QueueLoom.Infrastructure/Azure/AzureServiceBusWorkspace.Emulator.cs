@@ -39,8 +39,8 @@ public sealed partial class AzureServiceBusWorkspace
         return count;
     }
 
-    // Active messages of a session-enabled entity can only be peeked session by session; the sample counts
-    // its dead letters, which never use sessions, and leaves the active count at zero.
+    // Active messages of a session-enabled entity can only be peeked session by session; the sample counts its dead
+    // letters, which never use sessions, and marks the active count unknown rather than zero.
     // An entity that auto-forwards holds nothing and cannot be peeked at all; one that forwards its dead letters has
     // an empty dead-letter queue.
     internal static async Task<ServiceBusEntityRuntime> SampleEmulatorRuntimeAsync(ServiceBusEntityReference source, bool requiresSession,
@@ -52,6 +52,7 @@ public sealed partial class AzureServiceBusWorkspace
         return new(new ServiceBusMessageCounts(active: active, deadLetter: deadLetter))
         {
             IsEmulatorSample = true,
+            ActiveCountUnavailable = requiresSession && forwardTo is null,
             // A capped sample is at least the cap, as the monitor's snapshot already says (EmulatorSampleQuality).
             DeadLetterCountIsLowerBound = EmulatorSampleQuality(deadLetter) == QueueLoom.Core.Monitoring.DeadLetterCountQuality.LowerBound
         };

@@ -25,6 +25,12 @@ public sealed record ServiceBusEntityRuntime
     /// <summary>The dead-letter count is a sample that reached its cap: at least this many, maybe more.</summary>
     public bool DeadLetterCountIsLowerBound { get; init; }
 
+    /// <summary>
+    /// Only the active count is unknown (the emulator cannot sample a session-enabled entity's active messages): it is
+    /// shown as unknown, never as zero. The other counts stand.
+    /// </summary>
+    public bool ActiveCountUnavailable { get; init; }
+
     /// <summary>The service does not report counts for this entity, so every counter is unknown rather than zero.</summary>
     public bool CountsUnavailable { get; init; }
 
