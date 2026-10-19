@@ -317,6 +317,10 @@ public sealed class PubSubKafkaStabilityTests
         public bool FailClose { get; init; }
         public byte[] Body { get; init; } = "body"u8.ToArray();
         public bool FailWatermarksOnce { get; set; }
+        /// <summary>The low watermark reported (records before it are gone); a test moves it to show records deleted.</summary>
+        public long Low { get; set; }
+        /// <summary>Fails every watermark query from now on.</summary>
+        public bool FailWatermarks { get; set; }
         /// <summary>Empty fetches before each record, as a slow cluster answers Consume(1 s) with null.</summary>
         public int SlowFetches { get; init; }
         /// <summary>Never delivers a record.</summary>
@@ -344,12 +348,12 @@ public sealed class PubSubKafkaStabilityTests
                     Disposed = true;
                     return null;
                 case "QueryWatermarkOffsets":
-                    if (FailWatermarksOnce)
+                    if (FailWatermarksOnce || FailWatermarks)
                     {
                         FailWatermarksOnce = false;
                         throw new KafkaException(ErrorCode.Local_TimedOut);
                     }
-                    return new WatermarkOffsets(0, 3);
+                    return new WatermarkOffsets(Low, 3);
                 case "Assign":
                     foreach (var assignment in (IEnumerable<TopicPartitionOffset>)args[0]!) _position = assignment.Offset.Value;
                     return null;
