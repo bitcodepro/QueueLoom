@@ -262,10 +262,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
             {
                 try
                 {
-                    File.AppendAllText(path,
+                    AppendRetryingSharing(path,
                         $"{timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture)} [WRN] QueueLoom: " +
-                        $"{dropped.ToString(CultureInfo.InvariantCulture)} {DroppedNotice}.{Environment.NewLine}",
-                        Encoding.UTF8);
+                        $"{dropped.ToString(CultureInfo.InvariantCulture)} {DroppedNotice}.{Environment.NewLine}");
                 }
                 catch
                 {
@@ -275,7 +274,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             }
             if (text is not null)
             {
-                File.AppendAllText(path, text, Encoding.UTF8);
+                AppendRetryingSharing(path, text);
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -284,6 +283,33 @@ public sealed class FileLoggerProvider : ILoggerProvider
             if (text is not null) Interlocked.Increment(ref _overflowCount);
         }
     }
+
+    /// <summary>
+    /// Appends, waiting out a brief sharing violation: QueueLoom's own writers are serialized by the lock, but another
+    /// program (an antivirus scan, a viewer opening the file exclusively) can hold the file for a moment. An I/O failure
+    /// is retried on the background writer (never a caller's thread) for at most <see cref="SharingRetryBudget"/>, and
+    /// not once shutdown has given up; a failure that stays drops the line as before (counted and announced).
+    /// </summary>
+    private void AppendRetryingSharing(string path, string text)
+    {
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                File.AppendAllText(path, text, Encoding.UTF8);
+                return;
+            }
+            // Windows reports the holder as a sharing violation; Unix (where .NET emulates file sharing with advisory
+            // locks) as a plain IOException. A missing directory is not waited out: the item's own recovery handles it.
+            catch (IOException exception) when (exception is not DirectoryNotFoundException && !_abandoned && waited.Elapsed < SharingRetryBudget)
+            {
+                Thread.Sleep(10);
+            }
+        }
+    }
+
+    private static readonly TimeSpan SharingRetryBudget = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// Waits for the cross-process lock on the background writer (never on a caller's thread). Gives up only when the
