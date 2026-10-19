@@ -98,7 +98,7 @@ public sealed class EntityItemViewModel
 
     public long Scheduled => Runtime.MessageCounts.Scheduled;
     // "—" means the service does not report this number, which is different from zero.
-    public string ActiveDisplay => Runtime.CountsUnavailable ? "—" : Active.ToString("N0", CultureInfo.CurrentCulture);
+    public string ActiveDisplay => Runtime.CountsUnavailable || Runtime.ActiveCountUnavailable ? "—" : Active.ToString("N0", CultureInfo.CurrentCulture);
     public string DeadLettersDisplay => Runtime.CountsUnavailable ? "—" : DeadLetters.ToString("N0", CultureInfo.CurrentCulture);
     public string ScheduledDisplay => Runtime.IsEmulatorSample || Runtime.CountsUnavailable
         ? "—"

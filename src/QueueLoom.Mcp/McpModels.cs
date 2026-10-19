@@ -28,6 +28,9 @@ public sealed record EntityInfo(
     long TransferDeadLetter,
     long Scheduled)
 {
+    /// <summary>True when the active count is not known (then <see cref="Active"/> is not a real count); left out otherwise.</summary>
+    public bool? ActiveCountUnknown { get; init; }
+
     /// <summary>
     /// How far the counts can be trusted: "exact"; "estimated" (SQS's approximate counts, Pub/Sub Cloud Monitoring); or
     /// "unknown" (the service reports none, so the zeros mean nothing).
@@ -254,7 +257,10 @@ internal static class McpMapping
         runtime.MessageCounts.DeadLetter,
         runtime.MessageCounts.TransferDeadLetter,
         runtime.MessageCounts.Scheduled)
-        { CountQuality = DeadLetterCountQualities.Name(DeadLetterCountQualities.OfReported(runtime)) };
+        {
+            CountQuality = DeadLetterCountQualities.Name(DeadLetterCountQualities.OfReported(runtime)),
+            ActiveCountUnknown = runtime.ActiveCountUnavailable || runtime.CountsUnavailable ? true : null
+        };
 
     /// <summary>"orders" for a queue or topic, "topic/subscription" for a subscription.</summary>
     public static string EntityName(ServiceBusEntityReference reference) =>
