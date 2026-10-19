@@ -146,7 +146,12 @@ public sealed partial class AzureServiceBusWorkspace
             var deferred = received.FirstOrDefault(item => item.SequenceNumber == message.SequenceNumber);
             if (deferred is null || !SameMessageId(deferred.MessageId, message))
             {
-                // Leaving the lock to expire returns a different message to its deferred state unchanged.
+                // Receiving it locked another message: release it now (it stays deferred) rather than keeping it from
+                // its own receiver until the lock expires.
+                if (received.Count > 0)
+                {
+                    await AbandonDeferredQuietlyAsync(receiver, received).ConfigureAwait(false);
+                }
                 return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.NotFound,
                     "The sequence number now belongs to another message.");
             }
@@ -157,12 +162,28 @@ public sealed partial class AzureServiceBusWorkspace
             }
             catch
             {
-                // Without a backup the message stays: release the lock so its receiver can still take it.
-                await receiver.AbandonMessageAsync(deferred, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                // Without a backup the message stays: release the lock so its receiver can still take it. The backup
+                // error is the one reported; a failure to release only means the lock expires on its own.
+                await AbandonDeferredQuietlyAsync(receiver, [deferred]).ConfigureAwait(false);
                 throw;
             }
             await receiver.CompleteMessageAsync(deferred, CancellationToken.None).ConfigureAwait(false);
             return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted);
+        }
+    }
+
+    private static async Task AbandonDeferredQuietlyAsync(ServiceBusReceiver receiver, IEnumerable<ServiceBusReceivedMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            try
+            {
+                await receiver.AbandonMessageAsync(message, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is ServiceBusException or InvalidOperationException or TimeoutException or OperationCanceledException)
+            {
+                // Its lock expires on its own; the message stays deferred.
+            }
         }
     }
 
