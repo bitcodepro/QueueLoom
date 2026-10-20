@@ -8,7 +8,6 @@
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,Auto,Auto,*">
     <Grid ColumnDefinitions="*,Auto">
       <StackPanel Spacing="4">
-        <TextBlock Text="Backups" Classes="pageTitle" />
         <TextBlock Text="Inspect local backups or replay copies after reviewing the destination."
                    Classes="muted" TextWrapping="Wrap" />
         <TextBlock Text="{Binding BackupRootDirectory}" Classes="muted" FontSize="11"

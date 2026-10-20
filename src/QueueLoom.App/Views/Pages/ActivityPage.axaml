@@ -7,7 +7,6 @@
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*,14,*">
     <StackPanel Spacing="14">
       <StackPanel Spacing="4">
-        <TextBlock Text="Activity" Classes="pageTitle" />
         <TextBlock Text="Local history of connections, scans, sends and purges. Right-click a row to copy." Classes="muted" />
         <StackPanel Orientation="Horizontal" Spacing="8">
           <Button Content="Clear Activity view…" Command="{Binding ClearActivityViewCommand}" />
