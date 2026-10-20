@@ -177,6 +177,7 @@ public static class MessageComparison
             ["Correlation ID"] = properties.CorrelationId,
             ["Content type"] = properties.ContentType,
             ["Subject"] = properties.Subject,
+            ["Native SNS subject"] = properties.NativeSubject,
             ["To"] = properties.To,
             ["Reply to"] = properties.ReplyTo,
             ["Session ID"] = properties.SessionId,
@@ -198,6 +199,8 @@ public static class MessageComparison
         foreach (var property in message.ApplicationProperties)
         {
             values["Application: " + property.Name] = $"[{property.Type}] {property.Value}";
+            // The editable type can match while the retained provider type differs (e.g. SNS String.Array).
+            values["Application wire type: " + property.Name] = property.WireType;
         }
         if (message.KafkaEnvelope is { } kafka)
         {
