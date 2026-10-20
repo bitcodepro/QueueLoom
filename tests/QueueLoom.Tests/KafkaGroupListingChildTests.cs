@@ -98,11 +98,43 @@ public sealed class KafkaGroupListingChildTests
     }
 
     /// <summary>The child started and ran its listing: the broker's reason, or the corruption ended it afterwards.</summary>
-    private static void AssertStartedAndListed(KafkaGroupListing.GroupListingException error)
+    private static void AssertStartedAndListed(KafkaGroupListing.GroupListingException error) =>
+        Assert.True(ShowsTheListingRan(error.Message), error.Message);
+
+    /// <summary>
+    /// The broker's own reason, or the child ended by the native heap corruption (SIGABRT, 134, on Linux and macOS;
+    /// STATUS_HEAP_CORRUPTION on Windows) with no managed error line. Anything else (no start, a clean or ordinary exit
+    /// without an answer, a managed exception) does not show that the listing ran.
+    /// </summary>
+    internal static bool ShowsTheListingRan(string reason)
     {
-        Assert.False(error.Message.Contains("could not start", StringComparison.Ordinal), error.Message);
-        Assert.False(error.Message.Contains("Exception", StringComparison.Ordinal), error.Message);
-        Assert.True(!error.Message.Contains("listing process", StringComparison.Ordinal)
-                    || error.Message.Contains("stopped with exit code", StringComparison.Ordinal), error.Message);
+        if (!reason.StartsWith("the listing process", StringComparison.Ordinal)) return true;
+        var abort = OperatingSystem.IsWindows() ? unchecked((int)0xC0000374) : 134;
+        return reason == $"the listing process stopped with exit code {abort}"
+               || reason.StartsWith($"the listing process stopped with exit code {abort}: free(", StringComparison.Ordinal)
+               || reason.StartsWith($"the listing process stopped with exit code {abort}: double free", StringComparison.Ordinal)
+               || reason.StartsWith($"the listing process stopped with exit code {abort}: malloc", StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Local: Timed out", true)]
+    [InlineData("the listing process stopped with exit code 0", false)]
+    [InlineData("the listing process stopped with exit code 1", false)]
+    [InlineData("the listing process could not start (The system cannot find the file specified.)", false)]
+    [InlineData("the listing process gave no answer", false)]
+    [InlineData("the listing process gave an answer that could not be read", false)]
+    [InlineData("the listing process did not answer in time", false)]
+    public void OnlyTheBrokersReasonOrANativeAbortShowsTheListingRan(string reason, bool ran) =>
+        Assert.Equal(ran, ShowsTheListingRan(reason));
+
+    [Fact]
+    public void ANativeAbortShowsTheListingRanButAManagedCrashDoesNot()
+    {
+        var abort = OperatingSystem.IsWindows() ? unchecked((int)0xC0000374) : 134;
+
+        Assert.True(ShowsTheListingRan($"the listing process stopped with exit code {abort}"));
+        Assert.True(ShowsTheListingRan($"the listing process stopped with exit code {abort}: free(): invalid pointer"));
+        Assert.False(ShowsTheListingRan($"the listing process stopped with exit code {abort}: Unhandled exception. System.Runtime.InteropServices.COMException (0x8007007A)"));
+        Assert.False(ShowsTheListingRan("the listing process stopped with exit code -532462766: Unhandled exception. System.IO.IOException"));
     }
 }
