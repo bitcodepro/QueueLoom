@@ -62,7 +62,9 @@ public sealed partial class MessageSearchQuery
         var properties = message.Properties;
         return Matches(
             [properties.CorrelationId, properties.MessageId, properties.Subject, properties.ContentType, properties.SessionId,
-                properties.To, properties.ReplyTo, message.DeadLetterReason, message.DeadLetterErrorDescription],
+                properties.To, properties.ReplyTo, properties.ReplyToSessionId, properties.PartitionKey,
+                properties.TransactionPartitionKey, properties.AmqpType, properties.AmqpAppId, properties.AmqpContentEncoding,
+                message.DeadLetterReason, message.DeadLetterErrorDescription],
             message.ApplicationProperties.Select(property => new KeyValuePair<string, string?>(property.Name, property.Value)),
             message.Body,
             properties.ContentType);
