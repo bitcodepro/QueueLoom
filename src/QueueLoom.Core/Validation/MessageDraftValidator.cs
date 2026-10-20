@@ -181,16 +181,28 @@ public static class MessageDraftValidator
                 nameof(properties.TimeToLive)));
         }
 
+        // Service Bus requires the two to match. SQS, Pub/Sub and Kafka use only one of them as their key, so the other
+        // would be silently ignored; RabbitMQ uses neither, so a draft carrying both (copied from another broker) is fine.
         if (!string.IsNullOrEmpty(properties.SessionId) &&
             !string.IsNullOrEmpty(properties.PartitionKey) &&
-            !string.Equals(properties.SessionId, properties.PartitionKey, StringComparison.Ordinal))
+            !string.Equals(properties.SessionId, properties.PartitionKey, StringComparison.Ordinal) &&
+            SessionPartitionMismatch(rules) is { } mismatch)
         {
-            errors.Add(new ValidationError(
-                "message.session_partition_mismatch",
-                "When both Session ID and Partition Key are set, they must be identical.",
-                nameof(properties.PartitionKey)));
+            errors.Add(new ValidationError("message.session_partition_mismatch", mismatch, nameof(properties.PartitionKey)));
         }
     }
+
+    private static string? SessionPartitionMismatch(MessagingProvider rules) => rules switch
+    {
+        MessagingProvider.AzureServiceBus => "When both Session ID and Partition Key are set, they must be identical.",
+        MessagingProvider.AmazonSqsSns =>
+            "Amazon SQS uses one message group ID: the Session ID, or else the Partition Key. Set only one, or the same value in both.",
+        MessagingProvider.GooglePubSub =>
+            "Google Pub/Sub uses one ordering key: the Session ID, or else the Partition Key. Set only one, or the same value in both.",
+        MessagingProvider.Kafka =>
+            "Kafka uses one record key: the Partition Key, or else the Session ID. Set only one, or the same value in both.",
+        _ => null
+    };
 
     private static void ValidateLength(
         string? value,
