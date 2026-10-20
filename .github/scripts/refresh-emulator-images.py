@@ -16,7 +16,7 @@ import urllib.request
 SOURCES = {
     'localstack': ('localstack/localstack:4.14', 'registry-1.docker.io', 'localstack/localstack', '4.14'),
     'rabbitmq': ('rabbitmq:4-management', 'registry-1.docker.io', 'library/rabbitmq', '4-management'),
-    'kafka': ('apache/kafka:3.9.2', 'registry-1.docker.io', 'apache/kafka', '3.9.2'),
+    'kafka': ('apache/kafka:4.3.1', 'registry-1.docker.io', 'apache/kafka', '4.3.1'),
     'pubsub': ('gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators', 'gcr.io', 'google.com/cloudsdktool/google-cloud-cli', 'emulators'),
     'sqlserver': ('mcr.microsoft.com/mssql/server:2022-latest', 'mcr.microsoft.com', 'mssql/server', '2022-latest'),
     'servicebus': ('mcr.microsoft.com/azure-messaging/servicebus-emulator:latest', 'mcr.microsoft.com', 'azure-messaging/servicebus-emulator', 'latest'),

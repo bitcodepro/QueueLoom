@@ -35,6 +35,57 @@ public sealed class KafkaGroupListingChildTests
     }
 
     [Fact]
+    public async Task AChildThatCannotStartCostsOnlyTheLag()
+    {
+        // Process.Start throws Win32Exception for a missing executable; that must become the lag note too, not a failed
+        // refresh that hides the topics.
+        var missing = Path.Combine(AppContext.BaseDirectory, "no-such-folder", OperatingSystem.IsWindows() ? "QueueLoom.exe" : "QueueLoom");
+
+        var error = await Assert.ThrowsAsync<KafkaGroupListing.GroupListingException>(() => KafkaGroupListing.ListAsync(null, Unreachable,
+            TimeSpan.FromSeconds(2), CancellationToken.None, () => new ProcessStartInfo(missing, [KafkaGroupListing.HelperArgument])));
+
+        Assert.StartsWith("the listing process could not start", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheAppStartsItsListingChildFromAWindowsPathBeyondMaxPath()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows extended-path process launch."); return; }
+        // The launcher supports installations whose app executable is at 260 characters or more; Process.Start cannot
+        // start an executable there. A junction at the end of a long folder chain points at the built app.
+        var root = Path.Combine(Path.GetTempPath(), "ql-long-" + Guid.NewGuid().ToString("N")[..8]);
+        var folder = root;
+        while (folder.Length < 240) folder = Path.Combine(folder, new string('d', 40));
+        Directory.CreateDirectory(folder);
+        var app = Path.Combine(folder, "app");
+        try
+        {
+            using (var link = Process.Start(new ProcessStartInfo("cmd.exe", ["/c", "mklink", "/J", Extended + app, AppContext.BaseDirectory.TrimEnd('\\')])
+                   { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!)
+            {
+                await link.WaitForExitAsync();
+                Assert.True(link.ExitCode == 0, "mklink failed");
+            }
+            var executable = Path.Combine(app, "QueueLoom.exe");
+            Assert.True(executable.Length >= 260);
+
+            var error = await Assert.ThrowsAsync<KafkaGroupListing.GroupListingException>(() => KafkaGroupListing.ListAsync(null, Unreachable,
+                TimeSpan.FromSeconds(2), CancellationToken.None, () => new ProcessStartInfo(executable, [KafkaGroupListing.HelperArgument])));
+
+            // It started and answered with the broker's reason.
+            Assert.False(error.Message.Contains("listing process", StringComparison.Ordinal), error.Message);
+        }
+        finally
+        {
+            // The junction first, so deleting the folders cannot reach the built app it points at.
+            if (Directory.Exists(Extended + app)) Directory.Delete(Extended + app);
+            Directory.Delete(Extended + root, recursive: true);
+        }
+    }
+
+    private const string Extended = @"\\?\";
+
+    [Fact]
     public async Task TheAppsListingModeAnswersWithTheBrokersReason()
     {
         // The real executable in its listing mode: the request goes in through standard input, the broker's refusal

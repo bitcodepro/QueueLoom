@@ -67,25 +67,27 @@
     },
     {
       "name": "kafka",
-      "source_tag": "apache/kafka:3.9.2",
-      "source_digest": "sha256:05b4616e0702ef2729327705d54ad6b50ea70b271c4b730fabd2320789fb7b02",
-      "image": "apache/kafka@sha256:f5f8605794dce59d1d566f63667682771c2fec9e96088b0d6a5ef0f8476dd4b2",
-      "config_id": "sha256:41abbd7d7f05d1ea7918ce2539d04a334c597943a53dbc1812a572af136c6df1",
+      "source_tag": "apache/kafka:4.3.1",
+      "source_digest": "sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+      "image": "apache/kafka@sha256:ccd1314e47ec76909e01f86308b4dcf2064f19f7c89759234322314b0e319e26",
+      "config_id": "sha256:47dccc76b32761bc57462b8753144cdbb73a16b123b1d13d3eedb92bb7952b11",
       "rootfs_diff_ids": [
-        "sha256:989e799e634906e94dc9a5ee2ee26fc92ad260522990f26e707861a5f52bf64e",
-        "sha256:9c3a5d3bc1d986297ccf3222aa60d30955e70ea5170e9b7a44b206a316dd18f0",
-        "sha256:fcf55ba1acd31da88b4f0e40192024dbac904cc053f591c7138a3dc35bd01521",
-        "sha256:967afb1d17e55b6045d16eb964e3bfed1bd9aec5d884810c9445692b65c65a84",
-        "sha256:941f874f7c102bce088fde230ea317a7b02be558a484956f414d5e721278f6b4",
-        "sha256:dc63e7ca979102425abf7b78ba4cc2513164d81c14096a7e2789a0a0fad53f98",
-        "sha256:57a91cfa8fcde270f6a79bd439e54ec87a625f15f91d3f3feda47215fd4fa150",
-        "sha256:72e8d68d0aaf4f2115fda3626a04ec8a7eaccccce8821c0dfda257e9adea4ac9",
-        "sha256:9aa7bea8b4a13dd4f5b9d0cece9062284745e5466efea96c9339b2ffbcae80cc",
-        "sha256:84608b33cca5717e3cd147286061459d614eb289e23a5f6429cb18ca5a1b001f"
+        "sha256:29df493baa13de438d6d2ece3a8333032e0b7b9b9d8cce4ee82194da255f61e1",
+        "sha256:f04f9db94d3ebe8257b2026d7bd35bbb0aa82570c4c55192e00ddabb6056f905",
+        "sha256:9ad256544b54a40720d513294fa906b787902a8753169c7e6366e9695fdc2b13",
+        "sha256:4d88768ec38efa2708edcc95676789e75d7efe13336e17c1130f1caee43dfef4",
+        "sha256:5265264d380dd31ac07bc189084c2c56ce60b90a5d346daa4fc8af681797f57c",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+        "sha256:85ed86239b446242d6c2080a8d47c916fbfdeee1a4cb73010782dc35362defe5",
+        "sha256:ad8d44a5d4240552927e65875d14a8e731ae2e6bb4f24193388a90518e03ba8c",
+        "sha256:777766edccc7e5951be781b18a5d48462e47140c1ef8d7a2e8d1210880998eec",
+        "sha256:96aeb72da3b35ba9b856829277d77763c2f3aae6ae59bd47d692d6f1f72c7628",
+        "sha256:486cf744c5374390170213d70f172396d6eb2d7b8820e335c4c8d1117d571a2f",
+        "sha256:a06d46942dc2593caadcbdbb7f17b41e773411fa0ca9774c85c0a4ca52890f1c"
       ],
       "version_labels": {},
       "version_environment": {},
-      "registry_layer_bytes": 217864518
+      "registry_layer_bytes": 238867857
     },
     {
       "name": "pubsub",

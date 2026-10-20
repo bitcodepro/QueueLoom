@@ -12,7 +12,7 @@ upgrade the moving tags.
 | --- | --- |
 | LocalStack | `localstack/localstack:4.14` |
 | RabbitMQ | `rabbitmq:4-management` |
-| Kafka | `apache/kafka:3.9.2` |
+| Kafka | `apache/kafka:4.3.1` |
 | Pub/Sub | `gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators` |
 | SQL Server | `mcr.microsoft.com/mssql/server:2022-latest` |
 | Service Bus | `mcr.microsoft.com/azure-messaging/servicebus-emulator:latest` |
