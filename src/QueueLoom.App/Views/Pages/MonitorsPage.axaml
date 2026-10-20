@@ -7,7 +7,6 @@
   <ScrollViewer HorizontalScrollBarVisibility="Disabled">
     <StackPanel Margin="{StaticResource PageMargin}" Spacing="18">
       <StackPanel Spacing="4">
-        <TextBlock Text="Monitors" Classes="pageTitle" />
         <TextBlock Text="Watches dead-letter counts and keeps their history. Services without counters (local emulators) are counted by reading and releasing messages." Classes="muted" />
       </StackPanel>
 
