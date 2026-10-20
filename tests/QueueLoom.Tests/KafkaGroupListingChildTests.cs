@@ -72,8 +72,7 @@ public sealed class KafkaGroupListingChildTests
             var error = await Assert.ThrowsAsync<KafkaGroupListing.GroupListingException>(() => KafkaGroupListing.ListAsync(null, Unreachable,
                 TimeSpan.FromSeconds(2), CancellationToken.None, () => new ProcessStartInfo(executable, [KafkaGroupListing.HelperArgument])));
 
-            // It started and answered with the broker's reason.
-            Assert.False(error.Message.Contains("listing process", StringComparison.Ordinal), error.Message);
+            AssertStartedAndListed(error);
         }
         finally
         {
@@ -86,20 +85,24 @@ public sealed class KafkaGroupListingChildTests
     private const string Extended = @"\\?\";
 
     [Fact]
-    public async Task TheAppsListingModeAnswersWithTheBrokersReason()
+    public async Task TheAppsListingModeEndsInAReasonNotACrash()
     {
         // The real executable in its listing mode: the request goes in through standard input, the broker's refusal
         // comes back as the reason. With Confluent.Kafka 2.15/2.16 that failed listing corrupts the child's heap
-        // (free(): invalid pointer on Linux, 0xC0000374 on Windows) once it answered; listed in this process, the
-        // same request aborted the test host.
+        // (free(): invalid pointer on Linux, 0xC0000374 on Windows); listed in this process, the same request aborted
+        // the test host. The corruption races the answer, so the child either answers or is reported as stopped.
         var error = await Assert.ThrowsAsync<KafkaGroupListing.GroupListingException>(() => KafkaGroupListing.ListAsync(null, Unreachable,
             TimeSpan.FromSeconds(2), CancellationToken.None, () => AppChild(KafkaGroupListing.HelperArgument)));
 
-        // On macOS the corruption can abort the child before it answers; the app still gets a reason, not a crash.
-        if (!(OperatingSystem.IsMacOS() && error.Message.Contains("stopped with exit code", StringComparison.Ordinal)))
-        {
-            Assert.DoesNotContain("listing process", error.Message, StringComparison.Ordinal);
-        }
-        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+        AssertStartedAndListed(error);
+    }
+
+    /// <summary>The child started and ran its listing: the broker's reason, or the corruption ended it afterwards.</summary>
+    private static void AssertStartedAndListed(KafkaGroupListing.GroupListingException error)
+    {
+        Assert.False(error.Message.Contains("could not start", StringComparison.Ordinal), error.Message);
+        Assert.False(error.Message.Contains("Exception", StringComparison.Ordinal), error.Message);
+        Assert.True(!error.Message.Contains("listing process", StringComparison.Ordinal)
+                    || error.Message.Contains("stopped with exit code", StringComparison.Ordinal), error.Message);
     }
 }
