@@ -7,7 +7,6 @@
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
     <Grid ColumnDefinitions="*,Auto">
       <StackPanel Spacing="4">
-        <TextBlock Text="Environments" Classes="pageTitle" />
         <TextBlock Text="Service Bus namespaces, AWS regions, Google Cloud projects, RabbitMQ brokers and Kafka clusters. Secrets are encrypted on this device." Classes="muted" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9" VerticalAlignment="Bottom">

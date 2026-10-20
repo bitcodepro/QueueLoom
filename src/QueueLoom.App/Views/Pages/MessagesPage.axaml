@@ -7,12 +7,10 @@
              x:Class="QueueLoom.App.Views.Pages.MessagesPage"
              x:DataType="vm:MainWindowViewModel">
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,12,Auto,14,*">
+    <!-- No page title: the navigation already names the page, and the list needs the height. The status line stays. -->
     <Grid ColumnDefinitions="*,Auto">
-      <StackPanel Spacing="4">
-        <TextBlock Text="Messages / DLQ" Classes="pageTitle" />
-        <TextBlock Text="{Binding MessageListTitle}" Classes="muted" TextWrapping="Wrap" />
-      </StackPanel>
-      <Button Grid.Column="1" Content="Scan current environment" Classes="quiet" VerticalAlignment="Bottom"
+      <TextBlock Text="{Binding MessageListTitle}" Classes="muted" TextWrapping="Wrap" VerticalAlignment="Center" />
+      <Button Grid.Column="1" Content="Scan current environment" Classes="quiet" VerticalAlignment="Center"
               Command="{Binding ScanCurrentEnvironmentCommand}"
               ToolTip.Tip="Count dead letters in every queue and subscription; messages are not settled" />
     </Grid>

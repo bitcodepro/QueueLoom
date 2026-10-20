@@ -6,7 +6,6 @@
              x:DataType="vm:MainWindowViewModel">
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,Auto,14,*">
     <StackPanel Spacing="4">
-      <TextBlock Text="Explorer" Classes="pageTitle" />
       <TextBlock Text="Queues, topics, subscriptions and live runtime counters. Click a column header to sort." Classes="muted" />
       <TextBlock Text="{Binding SelectedEntityDeliveryNote}" Classes="warning" FontSize="12" TextWrapping="Wrap"
                  IsVisible="{Binding HasSelectedEntityDeliveryNote}"

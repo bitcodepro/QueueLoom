@@ -8,7 +8,6 @@
   <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,14,*">
     <Grid ColumnDefinitions="*,Auto">
       <StackPanel Spacing="4">
-        <TextBlock Text="Composer" Classes="pageTitle" />
         <TextBlock Text="{Binding DraftOriginNotice}" Classes="muted" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0" IsVisible="{Binding SupportsComposerTemplates}">
           <ComboBox ItemsSource="{Binding ComposerTemplates}" SelectedItem="{Binding SelectedComposerTemplate}"
