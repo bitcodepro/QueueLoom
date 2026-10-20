@@ -481,6 +481,7 @@ public sealed partial class AzureServiceBusWorkspace
         var body = message.Body.ToMemory();
         return query.Matches(
             [message.CorrelationId, message.MessageId, message.Subject, message.SessionId, message.ContentType, message.To, message.ReplyTo,
+                message.ReplyToSessionId, message.PartitionKey, message.TransactionPartitionKey,
                 message.DeadLetterReason, message.DeadLetterErrorDescription],
             // The same text the message list shows (ISO dates, base64 bytes), not Convert.ToString's
             // "10/04/2026 08:15:00" or "System.Byte[]".
