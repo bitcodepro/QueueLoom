@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using QueueLoom.Core.Processes;
 using QueueLoom.Core.Updates;
 
 namespace QueueLoom.Launcher;

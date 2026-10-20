@@ -5,10 +5,13 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-namespace QueueLoom.Launcher;
+namespace QueueLoom.Core.Processes;
 
-/// <summary>Redirected payload lifetime, including Windows paths beyond CreateProcess's implicit module limit.</summary>
-internal sealed class PayloadProcess : IDisposable
+/// <summary>
+/// A child process with redirected standard streams, including Windows executables at paths beyond CreateProcess's
+/// implicit module limit. Used by the launcher for the app and by the app for its helper children.
+/// </summary>
+public sealed class PayloadProcess : IDisposable
 {
     private readonly Process? _managed;
     private readonly SafeProcessHandle? _native;

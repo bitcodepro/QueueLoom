@@ -173,11 +173,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     /// </summary>
     private async Task<KafkaTopologyIndex> WithConsumerLagAsync(KafkaTopologyIndex index, CancellationToken cancellationToken)
     {
-        List<ConsumerGroupListing> groups;
+        List<KafkaGroupListing.ListedGroup> groups;
         try
         {
-            groups = (await Admin.ListConsumerGroupsAsync(new ListConsumerGroupsOptions { RequestTimeout = RequestTimeout })
-                    .ConfigureAwait(false)).Valid
+            groups = (await KafkaGroupListing.ListAsync(Admin, _config, RequestTimeout, cancellationToken).ConfigureAwait(false))
                 .Where(group => !group.GroupId.StartsWith("queueloom-reader-", StringComparison.Ordinal))
                 .OrderBy(group => group.GroupId, StringComparer.Ordinal)
                 .Take(MaximumConsumerGroups)
@@ -187,6 +186,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             // The topics are still shown; the note says why no group or lag is (missing ACLs look like no groups otherwise).
             return index with { ConsumerGroupNote = ConsumerGroupsUnreadable(exception) };
+        }
+        catch (KafkaGroupListing.GroupListingException exception)
+        {
+            return index with { ConsumerGroupNote = ConsumerGroupsUnreadable(exception.Message) };
         }
 
         var unreadable = 0;
@@ -224,7 +227,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 {
                     lags[topic.Key] = list = [];
                 }
-                list.Add(new ConsumerGroupLag(group.GroupId, lag, group.State.ToString()));
+                list.Add(new ConsumerGroupLag(group.GroupId, lag, group.State));
             }
         }
 
@@ -235,8 +238,10 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         };
     }
 
-    internal static string ConsumerGroupsUnreadable(KafkaException exception) =>
-        $"Consumer groups could not be read ({OneLine(ReasonOf(exception))}), so their lag is not shown";
+    internal static string ConsumerGroupsUnreadable(KafkaException exception) => ConsumerGroupsUnreadable(ReasonOf(exception));
+
+    internal static string ConsumerGroupsUnreadable(string? reason) =>
+        $"Consumer groups could not be read ({OneLine(reason)}), so their lag is not shown";
 
     internal static string SomeConsumerGroupsUnreadable(int count, KafkaException first) =>
         $"The offsets of {count.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} consumer group(s) could not be read " +

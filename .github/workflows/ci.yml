@@ -206,7 +206,7 @@ jobs:
         run: >-
           dotnet test QueueLoom.slnx -c Release --no-build --logger trx --logger "console;verbosity=detailed"
           --results-directory TestResults --blame-crash --blame-crash-dump-type full
-          --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests|FullyQualifiedName~KafkaUiTests|FullyQualifiedName~NativeCrashSelfTest"
+          --filter "FullyQualifiedName~QueueLoom.IntegrationTests|FullyQualifiedName~RealCloudsUiTests|FullyQualifiedName~RabbitMqUiTests|FullyQualifiedName~KafkaUiTests|FullyQualifiedName~KafkaGroupListingChild|FullyQualifiedName~NativeCrashSelfTest"
 
       - name: Print test sequences and native backtraces of crashed test hosts
         if: failure()
