@@ -15,7 +15,9 @@ internal static class Program
             // A child listing Kafka consumer groups for the app: no window, no local storage.
             return KafkaGroupListing.RunHelper(Console.OpenStandardInput(), Console.OpenStandardOutput());
         }
-        KafkaGroupListing.UseThisExecutable(typeof(Program).Assembly.Location);
+        // Assembly.Location is empty in a single-file app (IL3000); the assembly's file is only needed when the app runs
+        // as "dotnet QueueLoom.dll", where it sits in the base directory.
+        KafkaGroupListing.UseThisExecutable(Path.Combine(AppContext.BaseDirectory, typeof(Program).Assembly.GetName().Name + ".dll"));
         _ = QueueLoom.Core.Updates.PayloadLaunch.Current; // Validate supplied installation context before any local storage.
         if (UpdateRestart.HandleArguments(args, out var exitCode)) return exitCode;
         return McpMode.IsRequested(args)
