@@ -102,18 +102,20 @@ public sealed class KafkaGroupListingChildTests
         Assert.True(ShowsTheListingRan(error.Message), error.Message);
 
     /// <summary>
-    /// The broker's own reason, or the child ended by the native heap corruption (SIGABRT, 134, on Linux and macOS;
-    /// STATUS_HEAP_CORRUPTION on Windows) with no managed error line. Anything else (no start, a clean or ordinary exit
-    /// without an answer, a managed exception) does not show that the listing ran.
+    /// The broker's own reason, or the child ended by the native heap corruption with no managed error line: SIGABRT
+    /// (134) from malloc refusing the free in rd_kafka_ListConsumerGroupsResult_free, or, once the heap is corrupted,
+    /// SIGSEGV (139) or SIGILL (132) wherever the runtime next touches it (macOS crash reports of a failed listing,
+    /// https://github.com/bitcodepro/QueueLoom/actions/runs/39461410282); STATUS_HEAP_CORRUPTION on Windows. Anything
+    /// else (no start, a clean or ordinary exit without an answer, a managed exception) does not show that the listing ran.
     /// </summary>
     internal static bool ShowsTheListingRan(string reason)
     {
         if (!reason.StartsWith("the listing process", StringComparison.Ordinal)) return true;
-        var abort = OperatingSystem.IsWindows() ? unchecked((int)0xC0000374) : 134;
-        return reason == $"the listing process stopped with exit code {abort}"
+        int[] aborts = OperatingSystem.IsWindows() ? [unchecked((int)0xC0000374)] : [134, 139, 132];
+        return aborts.Any(abort => reason == $"the listing process stopped with exit code {abort}"
                || reason.StartsWith($"the listing process stopped with exit code {abort}: free(", StringComparison.Ordinal)
                || reason.StartsWith($"the listing process stopped with exit code {abort}: double free", StringComparison.Ordinal)
-               || reason.StartsWith($"the listing process stopped with exit code {abort}: malloc", StringComparison.Ordinal);
+               || reason.StartsWith($"the listing process stopped with exit code {abort}: malloc", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -134,6 +136,12 @@ public sealed class KafkaGroupListingChildTests
 
         Assert.True(ShowsTheListingRan($"the listing process stopped with exit code {abort}"));
         Assert.True(ShowsTheListingRan($"the listing process stopped with exit code {abort}: free(): invalid pointer"));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.True(ShowsTheListingRan("the listing process stopped with exit code 139"));
+            Assert.True(ShowsTheListingRan("the listing process stopped with exit code 132"));
+            Assert.False(ShowsTheListingRan("the listing process stopped with exit code 137"));
+        }
         Assert.False(ShowsTheListingRan($"the listing process stopped with exit code {abort}: Unhandled exception. System.Runtime.InteropServices.COMException (0x8007007A)"));
         Assert.False(ShowsTheListingRan("the listing process stopped with exit code -532462766: Unhandled exception. System.IO.IOException"));
     }
