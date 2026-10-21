@@ -530,7 +530,12 @@ public sealed class QueueLoomChangeTools(McpWorkspaceSession session, IOperation
                 profile.Name,
                 profile.Environment == EnvironmentKind.Production,
                 $"Requested by: {client}\nEnvironment: {profile.Name} ({profile.EnvironmentDisplayName})\n" +
-                $"{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n\nReason given: {reason.Trim()}\n\n{details}"),
+                $"{profile.Provider.DisplayName()}: {profile.EndpointDisplay}\n" +
+                // The desktop app keeps a read-only environment locked until the operator unlocks it; here the approval is
+                // that unlock, so it says so.
+                (profile.CanWrite ? string.Empty
+                    : "This environment is saved as read-only in QueueLoom. Approving allows this one change only.\n") +
+                $"\nReason given: {reason.Trim()}\n\n{details}"),
             server,
             cancellationToken);
     }
