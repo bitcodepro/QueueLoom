@@ -111,8 +111,13 @@ internal static class SelectiveDeadLetterDeleter
                 {
                     if (!seen.Add(message.SequenceNumber))
                     {
-                        // A lock expired and the message came back; keep holding it.
-                        held.Add(message);
+                        // A lock expired and the message came back with a new lock; hold it by this delivery only. The
+                        // earlier copy's lock is gone, so releasing it would fail and overstate the locks left behind.
+                        lock (held)
+                        {
+                            held.RemoveAll(earlier => earlier.SequenceNumber == message.SequenceNumber);
+                            held.Add(message);
+                        }
                         continue;
                     }
 
