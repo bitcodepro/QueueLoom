@@ -43,11 +43,11 @@ public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput
                 await published;
             }
             var deadline = Stopwatch.StartNew();
-            while (!File.Exists(gate + ".helper.json") && !script.HasExited && deadline.Elapsed < TimeSpan.FromSeconds(30))
+            while (!File.Exists(gate + ".helper.json") && !script.HasExited && deadline.Elapsed < TimeSpan.FromSeconds(90))
                 await Task.Delay(10);
             Assert.True(File.Exists(gate + ".helper.json"), script.HasExited ? await output + await error : "Helper did not reach the exit gate.");
             // On the old script, receipt deletion triggers the GUI count and failure while the helper is gated.
-            var observed = await Task.WhenAny(waiting.Task, exited).WaitAsync(TimeSpan.FromSeconds(15));
+            var observed = await Task.WhenAny(waiting.Task, exited).WaitAsync(TimeSpan.FromSeconds(60));
             Assert.True(observed == waiting.Task, await CompletedOutput(script, output, error));
             Assert.False(script.HasExited);
             using var marker = JsonDocument.Parse(ReadPublishedSmokeFile(gate + ".helper.json"));
@@ -71,7 +71,7 @@ public sealed partial class WindowsUpdateSmokeTests(ITestOutputHelper testOutput
             }
             finally { foreach (var process in matching) process.Dispose(); }
             PublishRelease(gate + ".release", helperExit);
-            await exited.WaitAsync(TimeSpan.FromSeconds(30));
+            await exited.WaitAsync(TimeSpan.FromSeconds(90));
             await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             LogSmokeOutput($"Requested helper exit: {helperExit}; observed helper exit: {helper.ExitCode}; observer exit: {script.ExitCode}.");
             Assert.Equal(helperExit, helper.ExitCode);

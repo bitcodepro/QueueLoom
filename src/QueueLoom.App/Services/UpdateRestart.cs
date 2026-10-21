@@ -48,6 +48,14 @@ public static class UpdateRestart
         return receipt;
     }
 
+    /// <summary>
+    /// How long the old application waits for the restart helper to accept the handoff. The helper is the new version's
+    /// stable entry: on its first run it unpacks and verifies its payload, and the payload verifies itself again, before it
+    /// can accept. That took 5 to 9 s on a fast machine and over 10 s (the earlier limit) on a busy one, failing a healthy
+    /// update; a helper that never accepts is still killed, and the old application keeps running.
+    /// </summary>
+    public static readonly TimeSpan HandoffAcknowledgementTimeout = TimeSpan.FromSeconds(30);
+
     public static int Start(UpdateTarget target)
     {
         var path = ReceiptPath(target);
@@ -63,7 +71,7 @@ public static class UpdateRestart
         while (!HelperAcknowledged(path + ".helper", helper.Id))
         {
             if (helper.HasExited) throw new IOException("The update restart helper exited before accepting the handoff.");
-            if (started.Elapsed > TimeSpan.FromSeconds(10))
+            if (started.Elapsed > HandoffAcknowledgementTimeout)
             {
                 helper.Kill();
                 helper.WaitForExit();
