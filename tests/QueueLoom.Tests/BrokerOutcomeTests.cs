@@ -136,7 +136,7 @@ public sealed class AzurePurgeReleaseTests
             QueueLoom.Infrastructure.Persistence.QueueLoomPaths.ForRoot(directory.Path)).CreateSessionAsync(profile, DateTimeOffset.UtcNow, default);
         var purge = typeof(QueueLoom.Infrastructure.Azure.AzureServiceBusWorkspace).GetMethod("PurgeSubQueueAsync", Any)!;
         return await (Task<DeadLetterPurgeSourceResult>)purge.Invoke(workspace,
-            [ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 10, 10, session, 1, 1, null, token])!;
+            [ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 10, 10, session, 1, 1, null, new List<string>(), token])!;
     }
 
     private sealed class ScriptedClient(ScriptedReceiver receiver) : Azure.Messaging.ServiceBus.ServiceBusClient
