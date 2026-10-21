@@ -24,6 +24,7 @@ public sealed partial class AzureServiceBusWorkspace
         var perSessionLimit = request.LoadAll ? int.MaxValue : request.MaxMessages;
         var result = new List<BrowsedMessage>();
         var receivers = new List<ServiceBusSessionReceiver>();
+        var everySessionReadToTheEnd = true;
         Exception? browseError = null;
         try
         {
@@ -79,6 +80,10 @@ public sealed partial class AzureServiceBusWorkspace
                     }
                     cursor = last + 1;
                 }
+                if (remaining == 0)
+                {
+                    everySessionReadToTheEnd = false;
+                }
             }
         }
         catch (Exception error)
@@ -111,9 +116,45 @@ public sealed partial class AzureServiceBusWorkspace
             }
         }
 
+        if (everySessionReadToTheEnd && request.FromSequenceNumber is null)
+        {
+            await ReportHeldSessionsAsync(request.Source, result.Count(message => message.State != QueueLoom.Core.ServiceBus.ServiceBusMessageState.Scheduled),
+                cancellationToken).ConfigureAwait(false);
+        }
+
         return result
             .OrderBy(message => message.SequenceNumber)
             .Take(request.LoadAll ? int.MaxValue : request.MaxMessages)
             .ToArray();
+    }
+
+    /// <summary>
+    /// Service Bus hands out only sessions no consumer holds, so the messages of held sessions are missing from the
+    /// browse without a word. When the entity's active count says more messages are there than every readable session
+    /// held, says so. The count is best effort: without management rights, or on the emulator, nothing is said.
+    /// </summary>
+    private async Task ReportHeldSessionsAsync(ServiceBusEntityReference source, int read, CancellationToken cancellationToken)
+    {
+        if (_isEmulator) return;
+        long active;
+        try
+        {
+            var administration = GetAdministrationClient();
+            active = source.Kind == ServiceBusEntityKind.Queue
+                ? (await administration.GetQueueRuntimePropertiesAsync(source.Name, cancellationToken).ConfigureAwait(false)).Value.ActiveMessageCount
+                : (await administration.GetSubscriptionRuntimePropertiesAsync(source.TopicName!, source.Name, cancellationToken).ConfigureAwait(false))
+                    .Value.ActiveMessageCount;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        if (active > read)
+        {
+            ReportNotice("Some sessions could not be browsed",
+                $"{source.DisplayName} holds {active.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} active messages, " +
+                $"but only {read.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} could be read: Service Bus does not hand out " +
+                "sessions that a consumer holds at the moment, so their messages are not shown. Browse again once they are released.");
+        }
     }
 }
