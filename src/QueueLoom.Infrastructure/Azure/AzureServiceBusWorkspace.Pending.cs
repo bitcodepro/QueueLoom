@@ -167,7 +167,18 @@ public sealed partial class AzureServiceBusWorkspace
                 await AbandonDeferredQuietlyAsync(receiver, [deferred]).ConfigureAwait(false);
                 throw;
             }
-            await receiver.CompleteMessageAsync(deferred, CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await receiver.CompleteMessageAsync(deferred, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // A failed completion does not say whether the broker deleted it (an SDK timeout can come after it did).
+                // If it is still there, release it now instead of leaving it locked until the lock expires.
+                await AbandonDeferredQuietlyAsync(receiver, [deferred]).ConfigureAwait(false);
+                return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Failed,
+                    $"Deletion was attempted, but its broker outcome is unknown ({exception.Message}). The backup is kept; verify the message before retrying.");
+            }
             return new PendingMessageRemovalResult(message, DeadLetterMessageDeletionOutcome.Deleted);
         }
     }
