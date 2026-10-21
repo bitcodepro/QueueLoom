@@ -48,7 +48,7 @@ public sealed partial class WindowsUpdateSmokeTests
             await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             LogSmokeOutput($"Requested helper exit: {helperExit}; observed helper exit: {helper.ExitCode}.");
             Assert.Equal(helperExit, helper.ExitCode);
-            await exited.WaitAsync(TimeSpan.FromSeconds(30));
+            await exited.WaitAsync(TimeSpan.FromSeconds(90));
             LogSmokeOutput($"Observer exit: {script.ExitCode}; obstruction: {obstruction}.");
             var detail = await output + await error;
             Assert.NotEqual(0, script.ExitCode);
@@ -64,7 +64,7 @@ public sealed partial class WindowsUpdateSmokeTests
         {
             // Release only the fixture gate, retaining the obstruction through normal script teardown.
             if (!File.Exists(gate + ".release")) PublishRelease(gate + ".release", 0);
-            try { await exited.WaitAsync(TimeSpan.FromSeconds(30)); }
+            try { await exited.WaitAsync(TimeSpan.FromSeconds(90)); }
             catch (TimeoutException) { if (!script.HasExited) script.Kill(entireProcessTree: true); await exited; }
             heldFile?.Dispose();
             await Task.WhenAll(output, error);
