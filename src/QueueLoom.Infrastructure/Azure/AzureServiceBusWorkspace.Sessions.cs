@@ -129,9 +129,10 @@ public sealed partial class AzureServiceBusWorkspace
     }
 
     /// <summary>
-    /// Service Bus hands out only sessions no consumer holds, so the messages of held sessions are missing from the
-    /// browse without a word. When the entity's active count says more messages are there than every readable session
-    /// held, says so. The count is best effort: without management rights, or on the emulator, nothing is said.
+    /// Service Bus hands out only sessions no consumer holds, so the messages of held sessions were missing from the
+    /// browse without a word. When the entity's active count is higher than what every readable session held, the
+    /// browse says it may be incomplete. The count is best effort: without management rights, or on the emulator,
+    /// nothing is said.
     /// </summary>
     private async Task ReportHeldSessionsAsync(ServiceBusEntityReference source, int read, CancellationToken cancellationToken)
     {
@@ -151,10 +152,12 @@ public sealed partial class AzureServiceBusWorkspace
         }
         if (active > read)
         {
-            ReportNotice("Some sessions could not be browsed",
-                $"{source.DisplayName} holds {active.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} active messages, " +
-                $"but only {read.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} could be read: Service Bus does not hand out " +
-                "sessions that a consumer holds at the moment, so their messages are not shown. Browse again once they are released.");
+            // Only the discrepancy is known, not its cause: a consumer may hold sessions, or messages may have arrived in
+            // sessions this browse already read while it was still running.
+            ReportNotice("Session browse may be incomplete",
+                $"{source.DisplayName} reports {active.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} active messages, " +
+                $"but this browse read {read.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)}. Possible reasons: another " +
+                "consumer holds some sessions (Service Bus does not hand those out), or messages arrived while browsing. Browse again to see them.");
         }
     }
 }

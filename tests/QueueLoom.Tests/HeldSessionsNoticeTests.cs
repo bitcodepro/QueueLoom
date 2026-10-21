@@ -23,8 +23,28 @@ public sealed class HeldSessionsNoticeTests
 
         Assert.Equal(2, messages.Count);
         var notice = Assert.Single(notices);
-        Assert.Equal("Some sessions could not be browsed", notice.Title);
-        Assert.Contains("5 active messages, but only 2 could be read", notice.Details, StringComparison.Ordinal);
+        Assert.Equal("Session browse may be incomplete", notice.Title);
+        Assert.Contains("reports 5 active messages, but this browse read 2", notice.Details, StringComparison.Ordinal);
+        Assert.Contains("another consumer holds some sessions", notice.Details, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MessagesThatArriveDuringTheBrowseAreNamedAsAPossibleReasonNotDeniedAsHeldSessions()
+    {
+        // Nobody else holds a session: a producer added three messages to session 1 after it had been peeked, so the
+        // runtime count read afterwards is ahead of the browse. The notice reports the discrepancy and names arrivals
+        // as a reason; it does not claim that another consumer holds a session.
+        long active = 2;
+        await using var workspace = Workspace(() => active, sessions: [1, 2], afterPeek: sequence => { if (sequence == 1) active += 3; });
+        var notices = Collect(workspace);
+
+        var messages = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders"), maxMessages: 50));
+
+        Assert.Equal(2, messages.Count);
+        var notice = Assert.Single(notices);
+        Assert.Contains("reports 5 active messages, but this browse read 2", notice.Details, StringComparison.Ordinal);
+        Assert.Contains("messages arrived while browsing", notice.Details, StringComparison.Ordinal);
+        Assert.DoesNotContain("could not be browsed", notice.Title + notice.Details, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -71,10 +91,12 @@ public sealed class HeldSessionsNoticeTests
         return notices;
     }
 
-    private static AzureServiceBusWorkspace Workspace(long? active, long[] sessions)
+    private static AzureServiceBusWorkspace Workspace(long? active, long[] sessions) => Workspace(() => active, sessions);
+
+    private static AzureServiceBusWorkspace Workspace(Func<long?> active, long[] sessions, Action<long>? afterPeek = null)
     {
         var workspace = new AzureServiceBusWorkspace(new DeepAuditCloudTests.EmptyVault());
-        Set(workspace, "_client", new Client(sessions.Select(sequence => new Receiver(sequence)).ToArray()));
+        Set(workspace, "_client", new Client(sessions.Select(sequence => new Receiver(sequence, afterPeek)).ToArray()));
         Set(workspace, "_administration", new Administration(active));
         Set(workspace, "_cachedTopology", new ServiceBusTopology(DateTimeOffset.UtcNow,
             [new ServiceBusQueue("orders", ServiceBusEntityRuntime.Empty, RequiresSession: true)]));
@@ -85,10 +107,10 @@ public sealed class HeldSessionsNoticeTests
         .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(owner, value);
 
     /// <summary>The queue's runtime properties with the given active count; null refuses them, as without Manage rights.</summary>
-    private sealed class Administration(long? active) : ServiceBusAdministrationClient
+    private sealed class Administration(Func<long?> active) : ServiceBusAdministrationClient
     {
         public override Task<Response<QueueRuntimeProperties>> GetQueueRuntimePropertiesAsync(string name, CancellationToken cancellationToken = default) =>
-            active is { } count
+            active() is { } count
                 ? Task.FromResult(Response.FromValue(ServiceBusModelFactory.QueueRuntimeProperties(name, activeMessageCount: count), null!))
                 : Task.FromException<Response<QueueRuntimeProperties>>(new UnauthorizedAccessException("Manage claim required"));
     }
@@ -103,12 +125,16 @@ public sealed class HeldSessionsNoticeTests
             : Task.FromResult<ServiceBusSessionReceiver>(receivers[_next++]);
     }
 
-    private sealed class Receiver(long sequence) : ServiceBusSessionReceiver
+    private sealed class Receiver(long sequence, Action<long>? afterPeek) : ServiceBusSessionReceiver
     {
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(int maxMessages, long? fromSequenceNumber = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<ServiceBusReceivedMessage>>(fromSequenceNumber > sequence ? [] :
+            CancellationToken cancellationToken = default)
+        {
+            if (fromSequenceNumber > sequence) return Task.FromResult<IReadOnlyList<ServiceBusReceivedMessage>>([]);
+            afterPeek?.Invoke(sequence);
+            return Task.FromResult<IReadOnlyList<ServiceBusReceivedMessage>>(
                 [ServiceBusModelFactory.ServiceBusReceivedMessage(body: BinaryData.FromString("{}"), messageId: $"m-{sequence}", sequenceNumber: sequence)]);
+        }
         public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

@@ -135,13 +135,56 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
             {
                 Log("Sender stdout:\n" + await stdout + "\nSender stderr:\n" + await stderr);
             });
-            await Cleanup(() => { directory.Dispose(); return Task.CompletedTask; });
+            await Cleanup(() => DeleteWhenReleasedAsync(directory));
             if (!primaryFailure && cleanupFailures.Count > 0)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailures[0]).Throw();
         }
     }
 
     private void Log(string value) => output.WriteLine(SensitiveDataRedactor.Redact(value));
+
+    /// <summary>
+    /// Deletes the fixture folder once Windows lets go of its files. A process that has exited can keep its image and
+    /// DLLs mapped for a moment (and a scanner may open them), so a delete right after the last exit can be refused;
+    /// it is retried for a few seconds. Each refusal logs which processes still run from the folder, so a real leak
+    /// is named rather than hidden, and the last refusal still fails the test.
+    /// </summary>
+    private async Task DeleteWhenReleasedAsync(TemporaryDirectory directory)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                directory.Dispose();
+                return;
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or IOException && deadline.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                Log($"Fixture folder still in use after {deadline.Elapsed.TotalSeconds:N1} s ({exception.Message}); processes running from it: " +
+                    string.Join(", ", RunningFrom(directory.Path)));
+                await Task.Delay(250);
+            }
+        }
+    }
+
+    private static IEnumerable<string> RunningFrom(string folder)
+    {
+        var found = new List<string>();
+        foreach (var process in Process.GetProcesses())
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.MainModule?.FileName is { } module && module.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
+                        found.Add($"{process.ProcessName} ({process.Id})");
+                }
+                catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) { }
+            }
+        }
+        return found.Count == 0 ? ["none"] : found;
+    }
 
     /// <summary>
     /// The sender's recorded error as evidence, best effort: the live sender may be writing it right now (sharing
