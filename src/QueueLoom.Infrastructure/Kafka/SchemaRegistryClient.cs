@@ -107,7 +107,16 @@ internal sealed class SchemaRegistryClient : IDisposable
                 {
                     using var document = JsonDocument.Parse(body);
                     schema = Parse(id, document.RootElement);
-                    definitive = true;
+                    if (schema is null)
+                    {
+                        // JSON, but not a schema (a wrong address reaching another API): not a lasting answer for this id.
+                        _failedUntil[id] = now + FailureBackoff;
+                        Failed($"The Schema Registry's answer for schema {id} was not a schema; check its address.");
+                    }
+                    else
+                    {
+                        definitive = true;
+                    }
                 }
             }
             else
