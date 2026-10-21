@@ -62,7 +62,18 @@ public static partial class KafkaGroupListing
     {
         var request = JsonSerializer.Deserialize(input, ListingJson.Default.ListingRequest)
                       ?? throw new InvalidDataException("No listing request.");
-        using var admin = new AdminClientBuilder(new AdminClientConfig(request.Config)).Build();
+        IAdminClient admin;
+        try
+        {
+            admin = new AdminClientBuilder(new AdminClientConfig(request.Config)).Build();
+        }
+        catch (Exception exception) when (exception is ArgumentException or KafkaException or InvalidOperationException)
+        {
+            // A client that cannot be created (an invalid setting) is an answer, not a crash; nothing was sent.
+            Answer(output, new ListingResponse(null, exception.Message));
+            return;
+        }
+        using var owned = admin;
         ListingResponse response;
         try
         {
@@ -75,6 +86,11 @@ public static partial class KafkaGroupListing
             response = new ListingResponse(null, KafkaWorkspace.ReasonOf(exception));
         }
         // Answered before the client is disposed: a failed listing corrupts the heap when librdkafka cleans up.
+        Answer(output, response);
+    }
+
+    private static void Answer(Stream output, ListingResponse response)
+    {
         JsonSerializer.Serialize(output, response, ListingJson.Default.ListingResponse);
         output.Flush();
     }
