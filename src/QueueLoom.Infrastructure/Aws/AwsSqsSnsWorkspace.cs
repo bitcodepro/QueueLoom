@@ -433,7 +433,11 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
-            foreach (var chunk in messages.Chunk(MaximumBatch))
+            // Up to 20,000 receipts in batches of 10: renewed several batches at a time, so a whole renewal takes seconds,
+            // well within the hold it extends, rather than one call after another.
+            await Parallel.ForEachAsync(messages.Chunk(MaximumBatch),
+                new ParallelOptions { MaxDegreeOfParallelism = RenewalConcurrency, CancellationToken = cancellationToken },
+                async (chunk, token) =>
             {
                 try
                 {
@@ -449,15 +453,17 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                                     VisibilityTimeout = HoldSeconds
                                 }).ToList()
                             },
-                            cancellationToken)
+                            token)
                         .ConfigureAwait(false);
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                catch (Exception exception) when (exception is not OperationCanceledException || !token.IsCancellationRequested)
                 {
                     // Best effort: these come back when their current hold ends, as without the renewal.
                 }
-            }
+            }).ConfigureAwait(false);
         }
+
+        private const int RenewalConcurrency = 8;
 
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {

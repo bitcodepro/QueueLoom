@@ -73,8 +73,10 @@ public static class LeasedMessageIdentity
 }
 
 /// <summary>
-/// Renews the holds of a long-running loop before they end: at half the channel's hold duration, everything still held
-/// is renewed, so messages received early do not come back and get received (and, on Pub/Sub, counted) again.
+/// Renews the holds of a long-running loop before they end: every third of the channel's hold duration, everything still
+/// held is renewed, so messages received early do not come back and get received (and, on Pub/Sub, counted) again.
+/// The interval is measured from the start of the previous renewal (its first leases are the oldest), and a third leaves
+/// room for the renewal itself to take time.
 /// </summary>
 internal sealed class HoldRenewal(ILeasedMessageChannel channel, TimeProvider time)
 {
@@ -82,11 +84,12 @@ internal sealed class HoldRenewal(ILeasedMessageChannel channel, TimeProvider ti
 
     public async Task RenewIfDueAsync(IReadOnlyCollection<LeasedMessage> held, CancellationToken cancellationToken)
     {
-        if (channel.HoldDuration is not { } hold || held.Count == 0 || time.GetElapsedTime(_since) < hold / 2)
+        if (channel.HoldDuration is not { } hold || held.Count == 0 || time.GetElapsedTime(_since) < hold / 3)
         {
             return;
         }
+        var started = time.GetTimestamp();
         await channel.RenewAsync([.. held], cancellationToken).ConfigureAwait(false);
-        _since = time.GetTimestamp();
+        _since = started;
     }
 }

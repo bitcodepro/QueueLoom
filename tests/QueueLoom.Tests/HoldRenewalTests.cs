@@ -26,10 +26,27 @@ public sealed class HoldRenewalTests
         var messages = await LeasedMessagingWorkspace.ReceiveUpToAsync(channel, 1_000, held, CancellationToken.None, time);
 
         Assert.Equal(10, messages.Count);
-        // 30 s per receive: renewed after 3 receives (90 s = half the hold), and again 90 s later.
-        Assert.Equal([3, 6, 9], channel.Renewals.Select(renewal => renewal.Count));
+        // 30 s per receive: renewed every 60 s (a third of the hold), so after receives 2, 4, 6, 8 and 10.
+        Assert.Equal([2, 4, 6, 8, 10], channel.Renewals.Select(renewal => renewal.Count));
         // No message had been held for as long as the hold when it was renewed.
         Assert.All(channel.Renewals, renewal => Assert.True(renewal.Max() < TimeSpan.FromSeconds(180)));
+    }
+
+    [Fact]
+    public async Task ARenewalThatTakesLongStillKeepsEveryHoldAlive()
+    {
+        // A renewal of many receipts takes time itself (here 100 s, as 10,000 SQS receipts one call after another
+        // would). Counting the interval from its start, the oldest lease is renewed before its hold ends.
+        var time = new ManualTime();
+        var channel = new SlowChannel(time, TimeSpan.FromSeconds(180), receives: 20, perReceive: TimeSpan.FromSeconds(30))
+        {
+            RenewalTakes = TimeSpan.FromSeconds(100)
+        };
+
+        await LeasedMessagingWorkspace.ReceiveUpToAsync(channel, 1_000, [], CancellationToken.None, time);
+
+        Assert.True(channel.Renewals.Count >= 3);
+        Assert.All(channel.Renewals, renewal => Assert.True(renewal.Max() < TimeSpan.FromSeconds(180), $"held {renewal.Max()} before renewal"));
     }
 
     [Fact]
@@ -57,7 +74,8 @@ public sealed class HoldRenewalTests
         await channel.RenewAsync(Enumerable.Range(0, 12).Select(index => Leased($"m-{index}")).ToArray(), CancellationToken.None);
 
         Assert.Equal(TimeSpan.FromSeconds(AwsSqsSnsWorkspace.HoldSeconds), channel.HoldDuration);
-        Assert.Equal([10, 2], client.Batches.Select(batch => batch.Count));
+        // Batches are renewed several at a time, so their order varies.
+        Assert.Equal([2, 10], client.Batches.Select(batch => batch.Count).Order());
         Assert.All(client.Batches.SelectMany(batch => batch), entry => Assert.Equal(AwsSqsSnsWorkspace.HoldSeconds, entry.VisibilityTimeout));
     }
 
@@ -74,6 +92,7 @@ public sealed class HoldRenewalTests
         public string PhysicalName => "q";
         public int MaximumBatchSize => 10;
         public TimeSpan? HoldDuration => hold;
+        public TimeSpan RenewalTakes { get; init; }
 
         public Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {
@@ -86,8 +105,12 @@ public sealed class HoldRenewalTests
 
         public Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
-            Renewals.Add(messages.Select(message => time.Now - _heldSince[message.LeaseHandle]).ToList());
-            foreach (var message in messages) _heldSince[message.LeaseHandle] = time.Now;
+            // Ages are taken when the renewal starts; the renewed holds count from then too (the first batches are
+            // renewed first), however long the whole renewal takes.
+            var started = time.Now;
+            Renewals.Add(messages.Select(message => started - _heldSince[message.LeaseHandle]).ToList());
+            foreach (var message in messages) _heldSince[message.LeaseHandle] = started;
+            time.Advance(RenewalTakes);
             return Task.CompletedTask;
         }
 
@@ -105,7 +128,7 @@ public sealed class HoldRenewalTests
         public override Task<ChangeMessageVisibilityBatchResponse> ChangeMessageVisibilityBatchAsync(
             ChangeMessageVisibilityBatchRequest request, CancellationToken cancellationToken = default)
         {
-            Batches.Add([.. request.Entries]);
+            lock (Batches) Batches.Add([.. request.Entries]);
             // The first entry's handle is no longer valid; that does not stop the renewal of the others.
             return Task.FromResult(new ChangeMessageVisibilityBatchResponse
             {
