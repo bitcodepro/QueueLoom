@@ -113,6 +113,12 @@ public static partial class KafkaGroupListing
         start.RedirectStandardError = true;
         start.UseShellExecute = false;
         start.CreateNoWindow = true;
+        foreach (var variable in DumpVariables)
+        {
+            // The child's crash is expected and contained: a dump of it on every refresh is never useful, and
+            // createdump writes its progress to the child's standard output, after the answer.
+            start.Environment.Remove(variable);
+        }
         if (string.IsNullOrEmpty(start.WorkingDirectory))
         {
             // The app's own folder can be beyond MAX_PATH, which CreateProcess refuses as a current directory.
@@ -160,7 +166,7 @@ public static partial class KafkaGroupListing
             ListingResponse? response;
             try
             {
-                response = JsonSerializer.Deserialize(text, ListingJson.Default.ListingResponse);
+                response = FirstValue(text);
             }
             catch (JsonException) when (child.ExitCode != 0)
             {
@@ -196,6 +202,23 @@ public static partial class KafkaGroupListing
         return last is null
             ? $"the listing process stopped with exit code {exitCode}"
             : $"the listing process stopped with exit code {exitCode}: {(last.Length > 200 ? last[..200] + "…" : last)}";
+    }
+
+    private static readonly string[] DumpVariables =
+    [
+        "DOTNET_DbgEnableMiniDump", "COMPlus_DbgEnableMiniDump", "DOTNET_DbgMiniDumpType", "COMPlus_DbgMiniDumpType",
+        "DOTNET_DbgMiniDumpName", "COMPlus_DbgMiniDumpName", "DOTNET_CreateDumpDiagnostics", "COMPlus_CreateDumpDiagnostics",
+        "DOTNET_EnableCrashReport", "COMPlus_EnableCrashReport"
+    ];
+
+    /// <summary>
+    /// The answer is the first JSON value the child wrote; anything after it (a runtime's crash diagnostics, written
+    /// when the corruption ends the child after it answered) is not part of it.
+    /// </summary>
+    internal static ListingResponse? FirstValue(string text)
+    {
+        var reader = new Utf8JsonReader(System.Text.Encoding.UTF8.GetBytes(text), new JsonReaderOptions { AllowMultipleValues = true });
+        return JsonSerializer.Deserialize(ref reader, ListingJson.Default.ListingResponse);
     }
 
     internal sealed record ListedGroup(string GroupId, string State, string Type, bool IsSimple);

@@ -15,6 +15,12 @@ if (args.Length == 2 && args[0] == "--listing-fixture")
             Write("""{"Groups":null,"Error":"Local: Timed out"}""");
             Environment.FailFast("listing fixture: native abort after answering");
             return 0;
+        case "answer-then-noise":
+            // What createdump prints to the child's standard output when it dumps a crash after the answer.
+            Write("""{"Groups":null,"Error":"Local: Timed out"}""" +
+                  "[createdump] Gathering state for process 127 QueueLoom\n[createdump] Crashing thread 007f signal 6 (0006)\n");
+            Environment.Exit(134);
+            return 0;
         case "abort":
             Environment.FailFast("listing fixture: native abort before answering");
             return 0;

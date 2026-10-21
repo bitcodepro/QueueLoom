@@ -63,6 +63,30 @@ public sealed class KafkaGroupListingChildTests
     }
 
     [Fact]
+    public async Task RuntimeDiagnosticsAfterTheAnswerDoNotHideIt()
+    {
+        // With crash dumps enabled (as under dotnet test --blame-crash), createdump appends its progress to the child's
+        // standard output, after the answer.
+        var error = await Fails(Unreachable, () => FixtureChild("answer-then-noise"));
+
+        Assert.Equal("Local: Timed out", error.Message);
+    }
+
+    [Fact]
+    public async Task TheChildIsStartedWithoutCrashDumps()
+    {
+        // The parent's own diagnostics stay; only the child, whose crash is expected, does not dump.
+        var start = FixtureChild("abort");
+        start.Environment["DOTNET_DbgEnableMiniDump"] = "1";
+        start.Environment["DOTNET_DbgMiniDumpType"] = "4";
+
+        await Fails(Unreachable, () => start);
+
+        Assert.False(start.Environment.ContainsKey("DOTNET_DbgEnableMiniDump"));
+        Assert.False(start.Environment.ContainsKey("DOTNET_DbgMiniDumpType"));
+    }
+
+    [Fact]
     public async Task AChildThatAbortsBeforeAnsweringIsReportedAsStopped()
     {
         var error = await Fails(Unreachable, () => FixtureChild("abort"));
