@@ -1,6 +1,40 @@
 using QueueLoom.App.Services;
 using QueueLoom.Core.Updates;
 
+if (args.Length == 2 && args[0] == "--listing-fixture")
+{
+    // A Kafka group-listing child with a chosen outcome, so the parent's handling is tested without the real librdkafka
+    // fault: answer then die natively, die before answering, hang, or answer something that is not an answer.
+    using var request = Console.OpenStandardInput();
+    request.CopyTo(Stream.Null);
+    using var answer = Console.OpenStandardOutput();
+    void Write(string text) { var bytes = System.Text.Encoding.UTF8.GetBytes(text); answer.Write(bytes); answer.Flush(); }
+    switch (args[1])
+    {
+        case "answer-then-abort":
+            Write("""{"Groups":null,"Error":"Local: Timed out"}""");
+            Environment.FailFast("listing fixture: native abort after answering");
+            return 0;
+        case "answer-then-noise":
+            // What createdump prints to the child's standard output when it dumps a crash after the answer.
+            Write("""{"Groups":null,"Error":"Local: Timed out"}""" +
+                  "[createdump] Gathering state for process 127 QueueLoom\n[createdump] Crashing thread 007f signal 6 (0006)\n");
+            Environment.Exit(134);
+            return 0;
+        case "abort":
+            Environment.FailFast("listing fixture: native abort before answering");
+            return 0;
+        case "hang":
+            Thread.Sleep(TimeSpan.FromMinutes(2));
+            return 0;
+        case "garbage":
+            Write("not an answer");
+            return 0;
+        default:
+            return 64;
+    }
+}
+
 if (args.Length == 4 && args[0] == "--test-event-process")
 {
     if (!OperatingSystem.IsWindows()) return 72;
