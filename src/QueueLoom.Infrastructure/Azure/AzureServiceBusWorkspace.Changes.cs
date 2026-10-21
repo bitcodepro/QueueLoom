@@ -371,12 +371,15 @@ public sealed partial class AzureServiceBusWorkspace
                 var settlementError = settlements.FirstOrDefault(exception => exception is not null);
                 if (settlementError is not null)
                 {
-                    // The ones not deleted are backed up and stay in the dead-letter queue; release them right away.
-                    var kept = messages.Where((_, index) => settlements[index] is not null).ToArray();
-                    warnings.Add($"{kept.Length:N0} message(s) of {source.DisplayName} were backed up but not deleted, so they stay in the " +
-                        $"dead-letter queue (sequence numbers {string.Join(", ", kept.Take(20).Select(message => message.SequenceNumber))}" +
-                        $"{(kept.Length > 20 ? ", …" : string.Empty)}); their backup files are copies, not deletions.");
-                    WarnUnreleased(warnings, source, await AbandonQuietlyAsync(receiver, kept).ConfigureAwait(false));
+                    // A failed completion does not say whether the broker deleted the message (an SDK timeout can come after
+                    // it did), so their deletion is unconfirmed and their backups may be the only copies. Those still in
+                    // the dead-letter queue are released right away.
+                    var unconfirmed = messages.Where((_, index) => settlements[index] is not null).ToArray();
+                    warnings.Add($"The deletion of {unconfirmed.Length:N0} backed-up message(s) of {source.DisplayName} was not confirmed " +
+                        $"(sequence numbers {string.Join(", ", unconfirmed.Take(20).Select(message => message.SequenceNumber))}" +
+                        $"{(unconfirmed.Length > 20 ? ", …" : string.Empty)}): they may still be in the dead-letter queue, or may have " +
+                        "been deleted. Keep their backups; for a deleted one, the backup is the only copy.");
+                    WarnUnreleased(warnings, source, await AbandonQuietlyAsync(receiver, unconfirmed).ConfigureAwait(false));
                     return new DeadLetterPurgeSourceResult(source, subQueue, deleted, settlementError.Message);
                 }
             }
@@ -417,14 +420,15 @@ public sealed partial class AzureServiceBusWorkspace
     {
         if (unreleased > 0)
         {
-            warnings.Add($"Release of {unreleased:N0} message lock(s) of {source.DisplayName} was not confirmed; those messages stay " +
-                "hidden from other receivers until their locks expire.");
+            warnings.Add($"Release of {unreleased:N0} message lock(s) of {source.DisplayName} was not confirmed; those messages may " +
+                "remain hidden from other receivers until their locks expire.");
         }
     }
 
     /// <summary>
-    /// Releases messages back to their queue and returns how many releases were not confirmed (failed, or not tried
-    /// within the budget); those messages come back when their locks expire.
+    /// Releases messages back to their queue and returns how many may still be locked: the releases that failed for a
+    /// reason other than a lost lock, or were not tried within the budget. A lost lock (expired, or the message is
+    /// gone) holds nothing back, so it is not counted.
     /// </summary>
     /// <remarks>
     /// The whole batch shares one short budget: against an unreachable namespace each call would otherwise spend the
@@ -444,6 +448,10 @@ public sealed partial class AzureServiceBusWorkspace
             try
             {
                 await receiver.AbandonMessageAsync(messages[index], propertiesToModify: null, budget.Token).WaitAsync(budget.Token).ConfigureAwait(false);
+            }
+            catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.MessageLockLost)
+            {
+                // Nothing is held: the lock already expired, or the message was settled.
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
