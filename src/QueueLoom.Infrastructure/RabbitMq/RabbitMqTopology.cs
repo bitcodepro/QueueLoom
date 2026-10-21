@@ -157,7 +157,12 @@ internal sealed class RabbitMqTopologyIndex
             var runtime = new ServiceBusEntityRuntime(new ServiceBusMessageCounts(
                 active: queue.Ready,
                 deadLetter: deadLetter?.Ready ?? 0))
-            { HasTransferDeadLetterCount = false };
+            {
+                HasTransferDeadLetterCount = false,
+                // This is the whole physical queue's count, shared by every source routed to it.
+                // Keep its exact name so aliases deduplicate and a changed destination is not compared.
+                DeadLetterCountSource = deadLetter?.Name
+            };
             return new ServiceBusQueue(queue.Name, runtime,
                 queue.State is "running" or "idle" or "live" ? ServiceBusEntityStatus.Active : ServiceBusEntityStatus.Unknown)
             {
