@@ -24,6 +24,7 @@ public sealed partial class AzureServiceBusWorkspace
         var perSessionLimit = request.LoadAll ? int.MaxValue : request.MaxMessages;
         var result = new List<BrowsedMessage>();
         var receivers = new List<ServiceBusSessionReceiver>();
+        var everySessionReadToTheEnd = true;
         Exception? browseError = null;
         try
         {
@@ -79,6 +80,10 @@ public sealed partial class AzureServiceBusWorkspace
                     }
                     cursor = last + 1;
                 }
+                if (remaining == 0)
+                {
+                    everySessionReadToTheEnd = false;
+                }
             }
         }
         catch (Exception error)
@@ -111,9 +116,48 @@ public sealed partial class AzureServiceBusWorkspace
             }
         }
 
+        if (everySessionReadToTheEnd && request.FromSequenceNumber is null)
+        {
+            await ReportHeldSessionsAsync(request.Source, result.Count(message => message.State != QueueLoom.Core.ServiceBus.ServiceBusMessageState.Scheduled),
+                cancellationToken).ConfigureAwait(false);
+        }
+
         return result
             .OrderBy(message => message.SequenceNumber)
             .Take(request.LoadAll ? int.MaxValue : request.MaxMessages)
             .ToArray();
+    }
+
+    /// <summary>
+    /// Service Bus hands out only sessions no consumer holds, so the messages of held sessions were missing from the
+    /// browse without a word. When the entity's active count is higher than what every readable session held, the
+    /// browse says it may be incomplete. The count is best effort: without management rights, or on the emulator,
+    /// nothing is said.
+    /// </summary>
+    private async Task ReportHeldSessionsAsync(ServiceBusEntityReference source, int read, CancellationToken cancellationToken)
+    {
+        if (_isEmulator) return;
+        long active;
+        try
+        {
+            var administration = GetAdministrationClient();
+            active = source.Kind == ServiceBusEntityKind.Queue
+                ? (await administration.GetQueueRuntimePropertiesAsync(source.Name, cancellationToken).ConfigureAwait(false)).Value.ActiveMessageCount
+                : (await administration.GetSubscriptionRuntimePropertiesAsync(source.TopicName!, source.Name, cancellationToken).ConfigureAwait(false))
+                    .Value.ActiveMessageCount;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        if (active > read)
+        {
+            // Only the discrepancy is known, not its cause: a consumer may hold sessions, or messages may have arrived in
+            // sessions this browse already read while it was still running.
+            ReportNotice("Session browse may be incomplete",
+                $"{source.DisplayName} reports {active.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} active messages, " +
+                $"but this browse read {read.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)}. Possible reasons: another " +
+                "consumer holds some sessions (Service Bus does not hand those out), or messages arrived while browsing. Browse again to see them.");
+        }
     }
 }
