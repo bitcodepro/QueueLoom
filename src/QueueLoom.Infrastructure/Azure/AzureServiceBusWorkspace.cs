@@ -15,8 +15,24 @@ using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Azure;
 
-public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace
+public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace, IWorkspaceNoticeSource
 {
+    /// <inheritdoc />
+    public event EventHandler<WorkspaceNotice>? Notice;
+
+    /// <summary>Announces a notice without allowing a listener to replace the operation's result.</summary>
+    private void ReportNotice(string title, string details)
+    {
+        try
+        {
+            Notice?.Invoke(this, new WorkspaceNotice(title, details));
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A listener's failure must not turn the operation's result into an error.
+        }
+    }
+
     private static readonly TimeSpan TopologyCacheDuration = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan InteractiveTryTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan InteractiveRetryDelay = TimeSpan.FromMilliseconds(500);
