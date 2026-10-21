@@ -64,6 +64,32 @@ public sealed partial class ViewModelStateTests
         Assert.Empty(client.Completed);
     }
 
+    // A failed completion does not say whether the broker deleted the message (an SDK timeout can come after it did):
+    // it was reported as a plain failure with the SDK's text, and the message, if still there, stayed locked.
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("busy")]
+    public async Task DeferredRemoval_AnUnconfirmedCompletionKeepsTheBackupAndReleasesTheMessage(string failure)
+    {
+        using var directory = new TemporaryDirectory();
+        var client = new DeferredClient(receivedMessageId: "m-7")
+        {
+            CompleteFailure = failure == "timeout"
+                ? new TaskCanceledException("The operation did not complete within the allocated time.")
+                : new ServiceBusException("The server is busy.", ServiceBusFailureReason.ServiceBusy)
+        };
+        await using var azure = DeferredWorkspace(client, QueueLoomPaths.ForRoot(directory.Path));
+
+        var result = await azure.RemovePendingMessagesAsync([Deferred(7)], CancellationToken.None);
+
+        var removal = Assert.Single(result.Messages);
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Failed, removal.Outcome);
+        Assert.Contains("outcome is unknown", removal.Detail, StringComparison.Ordinal);
+        Assert.Contains("The backup is kept", removal.Detail, StringComparison.Ordinal);
+        Assert.Equal([7L], client.Abandoned);
+        Assert.Equal([7L], client.Completed);
+    }
+
     private static BrowsedMessage Deferred(long number) => new(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.Active, number,
         "pending"u8.ToArray(), new EditableMessageProperties(MessageId: $"m-{number}"), state: ServiceBusMessageState.Deferred);
 
@@ -83,6 +109,7 @@ public sealed partial class ViewModelStateTests
         public List<long> Abandoned { get; } = [];
         public List<long> Completed { get; } = [];
         public bool AbandonFails { get; init; }
+        public Exception? CompleteFailure { get; init; }
         public Action? OnReceive { get; init; }
         public string ReceivedMessageId => receivedMessageId;
         public override ServiceBusReceiver CreateReceiver(string queueName, ServiceBusReceiverOptions options) => new DeferredReceiver(this);
@@ -110,7 +137,7 @@ public sealed partial class ViewModelStateTests
         public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default)
         {
             client.Completed.Add(message.SequenceNumber);
-            return Task.CompletedTask;
+            return client.CompleteFailure is { } failure ? Task.FromException(failure) : Task.CompletedTask;
         }
 
         public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
