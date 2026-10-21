@@ -429,6 +429,36 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         public bool ReadsOneBatchPerMessageGroup => queue.IsFifo;
 
+        public TimeSpan? HoldDuration => TimeSpan.FromSeconds(HoldSeconds);
+
+        public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
+        {
+            foreach (var chunk in messages.Chunk(MaximumBatch))
+            {
+                try
+                {
+                    // Per-entry failures (a handle no longer valid, a message no longer in flight) need nothing more.
+                    await owner.Sqs.ChangeMessageVisibilityBatchAsync(
+                            new ChangeMessageVisibilityBatchRequest
+                            {
+                                QueueUrl = queue.Url,
+                                Entries = chunk.Select((message, index) => new ChangeMessageVisibilityBatchRequestEntry
+                                {
+                                    Id = index.ToString(CultureInfo.InvariantCulture),
+                                    ReceiptHandle = message.LeaseHandle,
+                                    VisibilityTimeout = HoldSeconds
+                                }).ToList()
+                            },
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    // Best effort: these come back when their current hold ends, as without the renewal.
+                }
+            }
+        }
+
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {
             // Every receive counts, also one released at once: ApproximateReceiveCount is "the number of times a message
