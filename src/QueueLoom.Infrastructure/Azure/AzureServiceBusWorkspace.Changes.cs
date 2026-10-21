@@ -100,6 +100,7 @@ public sealed partial class AzureServiceBusWorkspace
                     index + 1,
                     request.Targets.Count,
                     progress,
+                    warnings,
                     cancellationToken)
                 .ConfigureAwait(false));
             await WriteResultReportAsync(backupSession.RootDirectory, "purge-result.report",
@@ -257,6 +258,7 @@ public sealed partial class AzureServiceBusWorkspace
         int targetNumber,
         int targetCount,
         IProgress<DeadLetterPurgeProgress>? progress,
+        List<string> warnings,
         CancellationToken cancellationToken)
     {
         var options = new ServiceBusReceiverOptions
@@ -341,7 +343,7 @@ public sealed partial class AzureServiceBusWorkspace
                 {
                     // Nothing of this batch is deleted without a backup. Its messages are released now, instead of
                     // staying locked (unseen by everyone) until their lock expires.
-                    await AbandonQuietlyAsync(receiver, messages).ConfigureAwait(false);
+                    WarnUnreleased(warnings, source, await AbandonQuietlyAsync(receiver, messages).ConfigureAwait(false));
                     throw;
                 }
                 backedUp = checked(backedUp + messages.Count);
@@ -370,8 +372,11 @@ public sealed partial class AzureServiceBusWorkspace
                 if (settlementError is not null)
                 {
                     // The ones not deleted are backed up and stay in the dead-letter queue; release them right away.
-                    await AbandonQuietlyAsync(receiver,
-                        messages.Where((_, index) => settlements[index] is not null).ToArray()).ConfigureAwait(false);
+                    var kept = messages.Where((_, index) => settlements[index] is not null).ToArray();
+                    warnings.Add($"{kept.Length:N0} message(s) of {source.DisplayName} were backed up but not deleted, so they stay in the " +
+                        $"dead-letter queue (sequence numbers {string.Join(", ", kept.Take(20).Select(message => message.SequenceNumber))}" +
+                        $"{(kept.Length > 20 ? ", …" : string.Empty)}); their backup files are copies, not deletions.");
+                    WarnUnreleased(warnings, source, await AbandonQuietlyAsync(receiver, kept).ConfigureAwait(false));
                     return new DeadLetterPurgeSourceResult(source, subQueue, deleted, settlementError.Message);
                 }
             }
@@ -408,30 +413,45 @@ public sealed partial class AzureServiceBusWorkspace
         }
     }
 
-    /// <summary>Releases messages back to their queue; a lock already lost needs nothing, so failures are ignored.</summary>
+    private static void WarnUnreleased(List<string> warnings, ServiceBusEntityReference source, int unreleased)
+    {
+        if (unreleased > 0)
+        {
+            warnings.Add($"Release of {unreleased:N0} message lock(s) of {source.DisplayName} was not confirmed; those messages stay " +
+                "hidden from other receivers until their locks expire.");
+        }
+    }
+
+    /// <summary>
+    /// Releases messages back to their queue and returns how many releases were not confirmed (failed, or not tried
+    /// within the budget); those messages come back when their locks expire.
+    /// </summary>
     /// <remarks>
     /// The whole batch shares one short budget: against an unreachable namespace each call would otherwise spend the
     /// full retry policy, holding the cancelled purge open for minutes. What is not released in time is released by
     /// its lock expiring.
     /// </remarks>
-    private static async Task AbandonQuietlyAsync(ServiceBusReceiver receiver, IReadOnlyList<ServiceBusReceivedMessage> messages)
+    private static async Task<int> AbandonQuietlyAsync(ServiceBusReceiver receiver, IReadOnlyList<ServiceBusReceivedMessage> messages)
     {
         using var budget = new CancellationTokenSource(AbandonBudgetOverride.Value ?? AbandonBudget);
-        foreach (var message in messages)
+        var unreleased = 0;
+        for (var index = 0; index < messages.Count; index++)
         {
             if (budget.IsCancellationRequested)
             {
-                return;
+                return unreleased + messages.Count - index;
             }
             try
             {
-                await receiver.AbandonMessageAsync(message, propertiesToModify: null, budget.Token).WaitAsync(budget.Token).ConfigureAwait(false);
+                await receiver.AbandonMessageAsync(messages[index], propertiesToModify: null, budget.Token).WaitAsync(budget.Token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 // The lock expires by itself; the message is not lost.
+                unreleased++;
             }
         }
+        return unreleased;
     }
 
     internal static readonly TimeSpan AbandonBudget = TimeSpan.FromSeconds(10);
