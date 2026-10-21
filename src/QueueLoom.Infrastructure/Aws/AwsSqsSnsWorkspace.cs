@@ -433,8 +433,9 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
-            // Up to 20,000 receipts in batches of 10: renewed several batches at a time, so a whole renewal takes seconds,
-            // well within the hold it extends, rather than one call after another.
+            // Tens of thousands of receipts in batches of 10 (a selective delete can hold up to 100,000): renewed several
+            // batches at a time, so a renewal of 10,000 takes seconds rather than minutes. Best effort: a sweep so large or
+            // slow that it outlasts the hold still lets its first leases expire, as without the renewal.
             await Parallel.ForEachAsync(messages.Chunk(MaximumBatch),
                 new ParallelOptions { MaxDegreeOfParallelism = RenewalConcurrency, CancellationToken = cancellationToken },
                 async (chunk, token) =>
