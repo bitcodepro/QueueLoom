@@ -884,6 +884,21 @@ public sealed partial class McpServerTests
         Assert.Empty(server.Workspace.SentMessages);
     }
 
+    // An environment saved as read-only stays locked in the desktop app until the operator unlocks it; an MCP approval
+    // of a change is that unlock, and the approval prompt now says so.
+    [Theory]
+    [InlineData(ProfileAccessMode.ReadOnly, true)]
+    [InlineData(ProfileAccessMode.ReadWrite, false)]
+    public async Task TheApprovalSaysWhenTheEnvironmentIsSavedReadOnly(ProfileAccessMode mode, bool said)
+    {
+        await using var server = await McpTestServer.StartAsync(approve: false, accessMode: mode);
+
+        await server.CallAsync("send_message", new() { ["destination"] = "orders", ["body"] = "hello", ["reason"] = "Retry order 42" });
+
+        var request = Assert.Single(server.Approver.Requests);
+        Assert.Equal(said, request.Details.Contains("saved as read-only in QueueLoom. Approving allows this one change only.", StringComparison.Ordinal));
+    }
+
     private sealed class RecordingApprover(bool approve) : IOperationApprover
     {
         public List<ApprovalRequest> Requests { get; } = [];
@@ -956,9 +971,10 @@ public sealed partial class McpServerTests
             EnvironmentKind environment = EnvironmentKind.Development,
             Func<ElicitRequestParams, ElicitResult>? elicit = null,
             MessagingProvider provider = MessagingProvider.AzureServiceBus,
-            string? clientName = null)
+            string? clientName = null,
+            ProfileAccessMode accessMode = ProfileAccessMode.ReadOnly)
         {
-            var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment) with
+            var profile = CreateProfile(environment == EnvironmentKind.Production ? "Orders" : "Development", environment, accessMode) with
             {
                 Provider = provider
             };
