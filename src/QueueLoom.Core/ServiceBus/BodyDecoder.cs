@@ -202,7 +202,7 @@ public static class BodyDecoder
                 return Protobuf.TryToJson(span[position..], requireMessage: false, out var protobuf)
                     ? new DecodedBody(["Schema Registry", "Protobuf"], protobuf, true,
                         $"Schema id {schemaId}{(message is null ? string.Empty : $", message {message}")}. Fields are shown by number, as in the .proto file." +
-                        (schema.References.Count > 0 ? $" It imports schemas from other subjects ({string.Join(", ", schema.References.Take(5))}), which QueueLoom does not fetch yet." : string.Empty))
+                        (schema.Unresolved.Count > 0 ? $" It imports schemas from other subjects that the Schema Registry did not hand out ({string.Join(", ", schema.Unresolved.Take(5))})." : string.Empty))
                     : null;
             default:
                 try

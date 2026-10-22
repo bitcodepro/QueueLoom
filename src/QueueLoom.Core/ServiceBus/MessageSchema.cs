@@ -26,8 +26,14 @@ public sealed record MessageSchema(int Id, MessageSchemaType Type, string Text)
     /// </summary>
     public IReadOnlyList<ReferencedSchema> Resolved { get; init; } = [];
 
-    /// <summary>The references the registry did not hand out.</summary>
-    internal IReadOnlyList<string> Unresolved => References.Where(name => Resolved.All(item => item.Name != name)).ToArray();
+    /// <summary>
+    /// The references, at any depth, the registry did not hand out (or that were beyond the resolution bounds). Set by
+    /// the registry client; without it, the direct references that were not resolved.
+    /// </summary>
+    public IReadOnlyList<string>? Missing { get; init; }
+
+    /// <summary>The references that could not be resolved.</summary>
+    internal IReadOnlyList<string> Unresolved => Missing ?? References.Where(name => Resolved.All(item => item.Name != name)).ToArray();
 
     /// <summary>The note for a body this schema could not decode, when some references could not be fetched.</summary>
     internal string? UnresolvedReferencesNote => Unresolved is { Count: > 0 } missing
