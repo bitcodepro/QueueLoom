@@ -54,7 +54,11 @@ internal static class RabbitMqMessageMapper
             // Published again with the message: a gzip body without its encoding reaches consumers as plain bytes, and a
             // message on a priority queue without its priority loses its place.
             AmqpContentEncoding: properties.IsContentEncodingPresent() ? properties.ContentEncoding : null,
-            AmqpPriority: properties.IsPriorityPresent() ? properties.Priority : null);
+            AmqpPriority: properties.IsPriorityPresent() ? properties.Priority : null)
+        {
+            AmqpTimestamp = properties.IsTimestampPresent() ? BrokerClock.FromUnixSeconds(properties.Timestamp.UnixTime) : null,
+            AmqpPersistent = properties.IsDeliveryModePresent() ? properties.DeliveryMode == DeliveryModes.Persistent : null
+        };
 
         var deliveryCount = headers.TryGetValue("x-delivery-count", out var count) && ToLong(count) is { } deliveries
             ? (int)Math.Min(deliveries, int.MaxValue)
@@ -93,8 +97,10 @@ internal static class RabbitMqMessageMapper
             ReplyTo = draft.ReplyTo,
             Type = draft.AmqpType,
             AppId = draft.AmqpAppId,
-            Persistent = true,
-            Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
+            // The publisher's own delivery mode and timestamp travel with a resent or moved message; a new one is
+            // persistent and stamped now.
+            Persistent = draft.AmqpPersistent ?? true,
+            Timestamp = new AmqpTimestamp((draft.AmqpTimestamp ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds()),
             Headers = new Dictionary<string, object?>(StringComparer.Ordinal)
         };
         if (draft.AmqpContentEncoding is not null)
