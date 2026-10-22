@@ -154,7 +154,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         var held = new List<LeasedMessage>();
         try
         {
-            var messages = await ReceiveUpToAsync(channel, limit, held, cancellationToken).ConfigureAwait(false);
+            var messages = await ReceiveUpToAsync(channel, limit, held, cancellationToken, TimeProvider).ConfigureAwait(false);
             return Array.AsReadOnly(messages.Select(message => message.Message).ToArray());
         }
         finally
@@ -200,7 +200,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             try
             {
                 channel = OpenChannel(topology, target.Source, target.SubQueue);
-                var received = await ReceivePageAsync(channel, request.MaximumMessagesPerTarget, held, cancellationToken)
+                var received = await ReceivePageAsync(channel, request.MaximumMessagesPerTarget, held, cancellationToken, TimeProvider)
                     .ConfigureAwait(false);
                 var scanned = received.Messages;
                 var matches = new List<BrowsedMessage>();
@@ -611,7 +611,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         var held = new List<LeasedMessage>();
         try
         {
-            var messages = await ReceiveUpToAsync(channel, SampleLimit, held, cancellationToken).ConfigureAwait(false);
+            var messages = await ReceiveUpToAsync(channel, SampleLimit, held, cancellationToken, TimeProvider).ConfigureAwait(false);
             return messages.Count;
         }
         finally
@@ -677,8 +677,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         ILeasedMessageChannel channel,
         int limit,
         List<LeasedMessage> held,
-        CancellationToken cancellationToken) =>
-        (await ReceivePageAsync(channel, limit, held, cancellationToken).ConfigureAwait(false)).Messages;
+        CancellationToken cancellationToken,
+        TimeProvider? time = null) =>
+        (await ReceivePageAsync(channel, limit, held, cancellationToken, time).ConfigureAwait(false)).Messages;
 
     // Source messages and total held receipts have separate caps. Only confirmed empty receives establish exhaustion:
     // a source that held exactly `limit` messages and then ran dry is still reported as limit-reached (incomplete),
@@ -687,8 +688,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         ILeasedMessageChannel channel,
         int limit,
         List<LeasedMessage> held,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeProvider? time = null)
     {
+        var renewal = new HoldRenewal(channel, time ?? TimeProvider.System);
         if (channel.SourceAttributionError is { } error) throw new InvalidOperationException(error);
         var result = new List<LeasedMessage>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -698,6 +701,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         while (result.Count < limit && emptyReceives < EmptyReceiveConfirmations && held.Count < heldLimit)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            await renewal.RenewIfDueAsync(held, cancellationToken).ConfigureAwait(false);
             var batch = await channel.ReceiveAsync(
                     Math.Min(channel.MaximumBatchSize, limit - result.Count),
                     cancellationToken)
@@ -743,6 +747,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         long deleted = 0;
         var emptyReceives = 0;
         var outstanding = new List<LeasedMessage>();
+        var renewal = new HoldRenewal(channel, TimeProvider);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         progress?.Report(new DeadLetterPurgeProgress(target.Source, target.SubQueue, targetNumber, targetCount, 0, 0,
             DeadLetterPurgeStage.Starting));
@@ -752,6 +757,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var wanted = (int)Math.Min(Math.Min(batchSize, channel.MaximumBatchSize), maximumMessages - deleted);
+                await renewal.RenewIfDueAsync(outstanding, cancellationToken).ConfigureAwait(false);
                 var batch = await channel.ReceiveAsync(wanted, cancellationToken).ConfigureAwait(false);
                 outstanding.AddRange(batch);
                 if (batch.Count == 0)
@@ -847,6 +853,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         var attempted = new HashSet<DeadLetterMessageKey>();
         var settlementAttempted = new HashSet<DeadLetterMessageKey>();
         var held = new List<LeasedMessage>();
+        var renewal = new HoldRenewal(channel, TimeProvider);
         var scanned = 0;
         var deleted = 0;
         var emptyReceives = 0;
@@ -855,6 +862,7 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             while (pending.Any(key => !attempted.Contains(key)) && scanned < maximumScanned && emptyReceives < EmptyReceiveConfirmations)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                await renewal.RenewIfDueAsync(held, cancellationToken).ConfigureAwait(false);
                 var batch = await channel.ReceiveAsync(channel.MaximumBatchSize, cancellationToken).ConfigureAwait(false);
                 if (batch.Count == 0)
                 {
