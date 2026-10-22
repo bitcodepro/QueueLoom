@@ -17,6 +17,35 @@ public sealed partial class BodyDecoderTests
     public void AvroDecimalsReadAsNumbers(string schemaJson, byte[] body, string expected) =>
         Assert.Equal(expected, DecodeAvro(schemaJson, body));
 
+    // An invalid decimal annotation is ignored and the underlying value shown (Avro specification, logical types):
+    // missing or non-positive precision, a scale above the precision, a negative or non-numeric scale.
+    [Theory]
+    [InlineData("""{"type":"bytes","logicalType":"decimal","scale":2}""")]
+    [InlineData("""{"type":"bytes","logicalType":"decimal","precision":0,"scale":0}""")]
+    [InlineData("""{"type":"bytes","logicalType":"decimal","precision":"10","scale":2}""")]
+    [InlineData("""{"type":"bytes","logicalType":"decimal","precision":2,"scale":3}""")]
+    [InlineData("""{"type":"bytes","logicalType":"decimal","precision":10,"scale":-1}""")]
+    [InlineData("""{"type":"bytes","logicalType":"decimal","precision":10,"scale":"2"}""")]
+    public void AnInvalidDecimalAnnotationShowsTheUnderlyingBytes(string schemaJson) =>
+        Assert.Equal("\"MDk=\"", DecodeAvro(schemaJson, [0x04, 0x30, 0x39]));
+
+    [Fact]
+    public void ADecimalWithoutScaleIsAWholeNumber() =>
+        Assert.Equal("\"12345\"", DecodeAvro("""{"type":"bytes","logicalType":"decimal","precision":10}""", [0x04, 0x30, 0x39]));
+
+    // A time of day outside [0, one day) shows the underlying number, including values whose conversion to ticks
+    // would overflow (long.MaxValue, and 1844674407370955162, which wrapped to 4 ticks and showed a wrong time).
+    [Theory]
+    [InlineData("""{"type":"long","logicalType":"time-micros"}""", 86_399_999_999L, "\"23:59:59.999999\"")]
+    [InlineData("""{"type":"long","logicalType":"time-micros"}""", 86_400_000_000L, "86400000000")]
+    [InlineData("""{"type":"long","logicalType":"time-micros"}""", -1L, "-1")]
+    [InlineData("""{"type":"long","logicalType":"time-micros"}""", long.MaxValue, "9223372036854775807")]
+    [InlineData("""{"type":"long","logicalType":"time-micros"}""", 1_844_674_407_370_955_162L, "1844674407370955162")]
+    [InlineData("""{"type":"int","logicalType":"time-millis"}""", 86_399_999L, "\"23:59:59.999\"")]
+    [InlineData("""{"type":"int","logicalType":"time-millis"}""", 86_400_000L, "86400000")]
+    public void ATimeOfDayOutsideOneDayShowsTheNumber(string schemaJson, long value, string expected) =>
+        Assert.Equal(expected, DecodeAvro(schemaJson, Long(value)));
+
     [Theory]
     [InlineData("""{"type":"long","logicalType":"timestamp-millis"}""", 1_700_000_000_123L, "\"2023-11-14T22:13:20.123Z\"")]
     [InlineData("""{"type":"long","logicalType":"timestamp-micros"}""", 1_700_000_000_000_001L, "\"2023-11-14T22:13:20.000001Z\"")]

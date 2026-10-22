@@ -894,8 +894,17 @@ public static class BodyDecoder
             {
                 case ("decimal", "bytes" or "fixed"):
                     var raw = type == "bytes" ? reader.ReadBytes() : reader.ReadFixed(schema.GetProperty("size").GetInt32());
-                    var scale = schema.TryGetProperty("scale", out var scaleValue) && scaleValue.TryGetInt32(out var s) ? s : 0;
-                    if (raw.Length is 0 or > 64 || scale is < 0 or > 1_000)
+                    // An invalid annotation (no positive integer precision, a non-integer or negative scale, or a scale
+                    // above the precision) is ignored, as the specification asks: the underlying bytes are shown.
+                    var precision = 0;
+                    var valid = schema.TryGetProperty("precision", out var precisionValue) &&
+                                precisionValue.ValueKind == JsonValueKind.Number && precisionValue.TryGetInt32(out precision) && precision > 0;
+                    var scale = 0;
+                    if (valid && schema.TryGetProperty("scale", out var scaleValue))
+                    {
+                        valid = scaleValue.ValueKind == JsonValueKind.Number && scaleValue.TryGetInt32(out scale) && scale >= 0 && scale <= precision;
+                    }
+                    if (!valid || raw.Length is 0 or > 64)
                     {
                         writer.WriteStringValue(EncodeBoundedText(writer, type == "bytes" ? Convert.ToBase64String(raw) : Convert.ToHexString(raw)));
                         return true;
@@ -915,9 +924,11 @@ public static class BodyDecoder
                 case ("time-millis", "int"):
                 case ("time-micros", "long"):
                     var time = reader.ReadLong();
-                    var ticks = logical == "time-millis" ? time * TimeSpan.TicksPerMillisecond : time * TimeSpan.TicksPerMicrosecond;
-                    if (time >= 0 && ticks < TimeSpan.TicksPerDay)
-                        writer.WriteStringValue(new TimeOnly(ticks).ToString("HH:mm:ss.FFFFFFF", System.Globalization.CultureInfo.InvariantCulture));
+                    var perDay = logical == "time-millis" ? 86_400_000L : 86_400_000_000L;
+                    // The range is checked on the value itself, before any multiplication can overflow.
+                    if (time >= 0 && time < perDay)
+                        writer.WriteStringValue(new TimeOnly(time * (logical == "time-millis" ? TimeSpan.TicksPerMillisecond : TimeSpan.TicksPerMicrosecond))
+                            .ToString("HH:mm:ss.FFFFFFF", System.Globalization.CultureInfo.InvariantCulture));
                     else writer.WriteNumberValue(time);
                     return true;
                 default:
