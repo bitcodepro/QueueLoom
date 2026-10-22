@@ -290,6 +290,8 @@ public sealed partial class MainWindowViewModel
     {
         _lastDlqMeasurements.Clear();
         var isComplete = true;
+        // Environments read in full this check: only their notifications can be resolved by a source's absence.
+        var fullyRead = new List<ProfileItemViewModel>();
         var activeScope = _activeMonitorScope ?? MonitorScope;
         var profilesToCheck = activeScope switch
         {
@@ -330,6 +332,7 @@ public sealed partial class MainWindowViewModel
                         await RecordDeadLetterHistoryAsync(profile, snapshot, cancellationToken).ConfigureAwait(true);
                     }
                     isComplete &= !snapshot.HasFailures;
+                    if (!snapshot.HasFailures) fullyRead.Add(profile);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -384,14 +387,15 @@ public sealed partial class MainWindowViewModel
         var countedOnce = CountedOnce(_lastDlqMeasurements).ToArray();
         var total = countedOnce.Sum(measurement => measurement.Value.Count);
         var totalQuality = DeadLetterCountQualities.Combine(countedOnce.Select(measurement => measurement.Value.Quality));
+        // A failing environment (or one source of it failing) does not keep a deleted source of another, fully read
+        // one listed for good: those are resolved now, while the failing ones keep theirs.
+        ReconcileMonitorNotifications(fullyRead, activeScope);
         if (!isComplete)
         {
             MonitorAlert = $"DLQ check was incomplete at {DateTimeOffset.Now:HH:mm:ss}; known counts were not used as a new baseline.";
             AddActivity("Error", "Partial monitor check", MonitorAlert);
             return false;
         }
-
-        ReconcileMonitorNotifications(profilesToCheck, activeScope);
 
         var increases = _hasMonitorBaseline
             ? countedOnce
