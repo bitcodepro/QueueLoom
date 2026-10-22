@@ -429,6 +429,43 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         public bool ReadsOneBatchPerMessageGroup => queue.IsFifo;
 
+        public TimeSpan? HoldDuration => TimeSpan.FromSeconds(HoldSeconds);
+
+        public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
+        {
+            // Tens of thousands of receipts in batches of 10 (a selective delete can hold up to 100,000): renewed several
+            // batches at a time, so a renewal of 10,000 takes seconds rather than minutes. Best effort: a sweep so large or
+            // slow that it outlasts the hold still lets its first leases expire, as without the renewal.
+            await Parallel.ForEachAsync(messages.Chunk(MaximumBatch),
+                new ParallelOptions { MaxDegreeOfParallelism = RenewalConcurrency, CancellationToken = cancellationToken },
+                async (chunk, token) =>
+            {
+                try
+                {
+                    // Per-entry failures (a handle no longer valid, a message no longer in flight) need nothing more.
+                    await owner.Sqs.ChangeMessageVisibilityBatchAsync(
+                            new ChangeMessageVisibilityBatchRequest
+                            {
+                                QueueUrl = queue.Url,
+                                Entries = chunk.Select((message, index) => new ChangeMessageVisibilityBatchRequestEntry
+                                {
+                                    Id = index.ToString(CultureInfo.InvariantCulture),
+                                    ReceiptHandle = message.LeaseHandle,
+                                    VisibilityTimeout = HoldSeconds
+                                }).ToList()
+                            },
+                            token)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException || !token.IsCancellationRequested)
+                {
+                    // Best effort: these come back when their current hold ends, as without the renewal.
+                }
+            }).ConfigureAwait(false);
+        }
+
+        private const int RenewalConcurrency = 8;
+
         public async Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken)
         {
             // Every receive counts, also one released at once: ApproximateReceiveCount is "the number of times a message

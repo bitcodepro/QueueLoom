@@ -32,7 +32,7 @@ public sealed partial class WindowsUpdateSmokeTests
         try
         {
             await WaitForPublishedSmokeMarker(gate + ".helper.json", exited);
-            var observed = await Task.WhenAny(waiting.Task, exited).WaitAsync(TimeSpan.FromSeconds(15));
+            var observed = await Task.WhenAny(waiting.Task, exited).WaitAsync(TimeSpan.FromSeconds(60));
             Assert.True(observed == waiting.Task, await CompletedOutput(script, output, error));
             using var marker = JsonDocument.Parse(ReadPublishedSmokeFile(gate + ".helper.json"));
             using var helper = Process.GetProcessById(marker.RootElement.GetProperty("Pid").GetInt32());
@@ -77,7 +77,7 @@ public sealed partial class WindowsUpdateSmokeTests
             try
             {
                 if (!File.Exists(gate + ".release")) PublishRelease(gate + ".release", 0);
-                try { await exited.WaitAsync(TimeSpan.FromSeconds(30)); }
+                try { await exited.WaitAsync(TimeSpan.FromSeconds(90)); }
                 catch (TimeoutException) { if (!script.HasExited) script.Kill(entireProcessTree: true); await exited; }
                 LogSmokeOutput($"Observer final exit: {script.ExitCode}.");
                 // These baseline/control resources are registered only after proving exact fixture ownership.

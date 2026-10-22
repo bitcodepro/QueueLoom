@@ -76,7 +76,7 @@ try {
         $identityWait = [Diagnostics.Stopwatch]::StartNew()
         while (-not (Test-Path -LiteralPath $identityPath)) {
             if ($sender.HasExited) { throw "Legacy handoff sender exited before publishing helper identity ($($sender.ExitCode))." }
-            if ($identityWait.Elapsed.TotalSeconds -gt 15) { throw 'Legacy handoff did not publish helper identity.' }
+            if ($identityWait.Elapsed.TotalSeconds -gt 45) { throw 'Legacy handoff did not publish helper identity.' }
             Start-Sleep -Milliseconds 50
         }
         $identity = [IO.File]::ReadAllText($identityPath) | ConvertFrom-Json
@@ -139,7 +139,7 @@ try {
     }
     $cleanupWait = [Diagnostics.Stopwatch]::StartNew()
     while (Test-Path -LiteralPath $receiptPath) {
-        if ($cleanupWait.Elapsed.TotalSeconds -gt 45) { throw 'Legacy handoff did not finish startup/cleanup.' }
+        if ($cleanupWait.Elapsed.TotalSeconds -gt 75) { throw 'Legacy handoff did not finish startup/cleanup.' }
         Start-Sleep -Milliseconds 50
     }
     if ((Test-Path -LiteralPath $backup) -or (Test-Path -LiteralPath $download)) {

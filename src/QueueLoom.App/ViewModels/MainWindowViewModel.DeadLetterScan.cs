@@ -51,6 +51,10 @@ public sealed partial class MainWindowViewModel
         var messagesBeforeScan = Messages.ToArray();
         var selectedMessageBeforeScan = SelectedMessage;
         var destinationBeforeScan = SelectedDestination?.Reference;
+        // Each environment connected on the way selects an entity of its own topology and drops the replay destination;
+        // the operator's are put back too, or entity actions would act on another queue than the restored messages'.
+        var entityBeforeScan = SelectedEntity?.Reference;
+        var replayDestinationBeforeScan = ReplayDestination?.Reference;
         var resultsGenerationBeforeScan = _messageResultsGeneration;
         _lastDlqMeasurements.Clear();
         DeadLetterSources.Clear();
@@ -150,6 +154,15 @@ public sealed partial class MainWindowViewModel
                             if (destinationBeforeScan is not null && SelectedDestination is null)
                             {
                                 SelectedDestination = Destinations.FirstOrDefault(item => item.Reference == destinationBeforeScan);
+                            }
+                            if (entityBeforeScan is not null &&
+                                Entities.FirstOrDefault(item => item.Reference == entityBeforeScan) is { } entity)
+                            {
+                                SelectedEntity = entity;
+                            }
+                            if (replayDestinationBeforeScan is not null && ReplayDestination is null)
+                            {
+                                ReplayDestination = Destinations.FirstOrDefault(item => item.Reference == replayDestinationBeforeScan);
                             }
                         }
                     }
