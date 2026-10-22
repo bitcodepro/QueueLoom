@@ -36,7 +36,7 @@ public sealed class SchemaReferencesNoteTests
         var decoded = BodyDecoder.Decode(new byte[] { 0, 0, 0, 0, 7, 0x02, (byte)'x' }, schema: schema)!;
 
         Assert.DoesNotContain("does not match", decoded.Note, StringComparison.Ordinal);
-        Assert.Contains("refers to types from other subjects (com.acme.Address)", decoded.Note, StringComparison.Ordinal);
+        Assert.Contains("refers to types from other subjects (com.acme.Address) that the Schema Registry did not hand out", decoded.Note, StringComparison.Ordinal);
     }
 
     [Fact]

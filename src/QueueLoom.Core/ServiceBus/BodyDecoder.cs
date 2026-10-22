@@ -208,7 +208,10 @@ public static class BodyDecoder
                 try
                 {
                     using var document = JsonDocument.Parse(schema.Text);
-                    var avro = new AvroSchema(document.RootElement);
+                    // Types the schema references live in other subjects' schemas; their names are registered first.
+                    var referenced = schema.Resolved.Select(item => JsonDocument.Parse(item.Text)).ToList();
+                    using var referencedDocuments = new DisposableList(referenced);
+                    var avro = new AvroSchema(document.RootElement, referenced.Select(item => item.RootElement).ToArray());
                     if (span.Length > MaximumDecodedBytes) throw new DecodeLimitException();
                     var reader = new AvroReader(span.ToArray(), 0);
                     using var stream = new AvroContainer.BoundedAvroOutput();
@@ -247,16 +250,20 @@ public static class BodyDecoder
     /// </summary>
     private static (ProtoMessageType Type, ProtoSchemaSet Schemas)? RegistryProtoType(MessageSchema schema, IReadOnlyList<int> indexes)
     {
-        if (RegistryProtos.Count >= MaximumRegistryProtos && !RegistryProtos.ContainsKey(schema.Text))
+        // Imports are the referenced schemas, by the path the .proto imports them with.
+        var key = schema.Resolved.Count == 0
+            ? schema.Text
+            : schema.Text + "\0" + string.Join("\0", schema.Resolved.Select(item => item.Name + "\0" + item.Text));
+        if (RegistryProtos.Count >= MaximumRegistryProtos && !RegistryProtos.ContainsKey(key))
         {
             // Without a bound every distinct registry schema text stayed for the life of the process.
             RegistryProtos.Clear();
         }
-        var schemas = RegistryProtos.GetOrAdd(schema.Text, text =>
+        var schemas = RegistryProtos.GetOrAdd(key, _ =>
         {
             try
             {
-                return ProtoSchemaSet.FromProtoFiles([("registry.proto", text)]);
+                return ProtoSchemaSet.FromProtoFiles([("registry.proto", schema.Text), .. schema.Resolved.Select(item => (item.Name, item.Text))]);
             }
             catch (ProtoSchemaException)
             {
@@ -773,9 +780,17 @@ public static class BodyDecoder
     {
         private readonly Dictionary<string, (JsonElement Schema, string? Namespace)> _named = new(StringComparer.Ordinal);
 
-        public AvroSchema(JsonElement root)
+        public AvroSchema(JsonElement root) : this(root, [])
+        {
+        }
+
+        public AvroSchema(JsonElement root, IReadOnlyList<JsonElement> referenced)
         {
             Root = root;
+            foreach (var item in referenced)
+            {
+                Register(item, null);
+            }
             Register(root, null);
         }
 
@@ -1036,6 +1051,14 @@ public static class BodyDecoder
             // A dotted name supplies its namespace and ignores the separate namespace attribute.
             return separator >= 0 ? fullName[..separator]
                 : schema.TryGetProperty("namespace", out var ns) ? ns.GetString() : enclosingNamespace;
+        }
+    }
+
+    private sealed class DisposableList(IEnumerable<IDisposable> items) : IDisposable
+    {
+        public void Dispose()
+        {
+            foreach (var item in items) item.Dispose();
         }
     }
 }

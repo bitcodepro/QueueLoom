@@ -107,6 +107,10 @@ internal sealed class SchemaRegistryClient : IDisposable
                 {
                     using var document = JsonDocument.Parse(body);
                     schema = Parse(id, document.RootElement);
+                    if (schema is not null && ReferencesOf(document.RootElement) is { Count: > 0 } references)
+                    {
+                        schema = await WithReferencesAsync(schema, references, deadline.Token).ConfigureAwait(false);
+                    }
                     if (schema is null)
                     {
                         // JSON, but not a schema (a wrong address reaching another API): not a lasting answer for this id.
@@ -156,6 +160,75 @@ internal sealed class SchemaRegistryClient : IDisposable
             _schemas[id] = schema;
         }
         return schema;
+    }
+
+    internal sealed record SchemaReference(string Name, string Subject, int Version);
+
+    private const int MaximumReferences = 32;
+    private const int MaximumReferenceDepth = 8;
+    private readonly ConcurrentDictionary<(string Subject, int Version), (string Text, IReadOnlyList<SchemaReference> References)> _versions = new();
+
+    internal static IReadOnlyList<SchemaReference> ReferencesOf(JsonElement root) =>
+        root.ValueKind == JsonValueKind.Object && root.TryGetProperty("references", out var listed) && listed.ValueKind == JsonValueKind.Array
+            ? listed.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.Object)
+                .Select(item => item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String &&
+                                item.TryGetProperty("subject", out var subject) && subject.ValueKind == JsonValueKind.String &&
+                                item.TryGetProperty("version", out var version) && version.TryGetInt32(out var number)
+                    ? new SchemaReference(name.GetString()!, subject.GetString()!, number)
+                    : null)
+                .OfType<SchemaReference>()
+                .ToArray()
+            : [];
+
+    /// <summary>
+    /// Fetches the schemas this one references (GET /subjects/{subject}/versions/{version}), and the ones they reference
+    /// in turn, bounded in count and depth. A reference that cannot be fetched is left out; the decoder then says which.
+    /// A subject version never changes, so each is fetched once.
+    /// </summary>
+    private async Task<MessageSchema> WithReferencesAsync(MessageSchema schema, IReadOnlyList<SchemaReference> references,
+        CancellationToken cancellationToken)
+    {
+        var resolved = new List<ReferencedSchema>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new Queue<(SchemaReference Reference, int Depth)>(references.Select(reference => (reference, 1)));
+        while (pending.TryDequeue(out var item) && resolved.Count < MaximumReferences)
+        {
+            if (item.Depth > MaximumReferenceDepth || !seen.Add(item.Reference.Name)) continue;
+            if (await VersionAsync(item.Reference.Subject, item.Reference.Version, cancellationToken).ConfigureAwait(false) is not { } found)
+                continue;
+            resolved.Add(new ReferencedSchema(item.Reference.Name, found.Text));
+            foreach (var next in found.References) pending.Enqueue((next, item.Depth + 1));
+        }
+        return schema with { Resolved = resolved };
+    }
+
+    private async Task<(string Text, IReadOnlyList<SchemaReference> References)?> VersionAsync(string subject, int version,
+        CancellationToken cancellationToken)
+    {
+        if (_versions.TryGetValue((subject, version), out var cached)) return cached;
+        try
+        {
+            using var response = await _http.GetAsync(
+                    $"subjects/{Uri.EscapeDataString(subject)}/versions/{version.ToString(CultureInfo.InvariantCulture)}",
+                    HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            if (await ReadBoundedAsync(stream, cancellationToken).ConfigureAwait(false) is not { } body) return null;
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("schema", out var text) ||
+                text.ValueKind != JsonValueKind.String)
+                return null;
+            var found = (text.GetString()!, ReferencesOf(document.RootElement));
+            _versions[(subject, version)] = found;
+            return found;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException
+                                              || exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     /// <summary>A schema is a few kilobytes; a registry answer larger than this is not one.</summary>
