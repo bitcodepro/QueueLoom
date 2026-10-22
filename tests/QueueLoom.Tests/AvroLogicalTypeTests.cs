@@ -29,6 +29,19 @@ public sealed partial class BodyDecoderTests
     public void AnInvalidDecimalAnnotationShowsTheUnderlyingBytes(string schemaJson) =>
         Assert.Equal("\"MDk=\"", DecodeAvro(schemaJson, [0x04, 0x30, 0x39]));
 
+    // A valid but enormous precision and scale from an untrusted schema must not make the decoder pad a string of that
+    // length (multi-gigabyte, past the 16 MiB output budget): such a decimal shows its bytes.
+    [Fact]
+    public void AnEnormousDecimalScaleShowsTheBytesWithoutAllocatingIt()
+    {
+        var before = GC.GetAllocatedBytesForCurrentThread();
+
+        var decoded = DecodeAvro("""{"type":"bytes","logicalType":"decimal","precision":2147483647,"scale":2147483646}""", [0x02, 0x01]);
+
+        Assert.Equal("\"AQ==\"", decoded);
+        Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 1_000_000, "The decoder allocated in proportion to the schema's scale.");
+    }
+
     [Fact]
     public void ADecimalWithoutScaleIsAWholeNumber() =>
         Assert.Equal("\"12345\"", DecodeAvro("""{"type":"bytes","logicalType":"decimal","precision":10}""", [0x04, 0x30, 0x39]));

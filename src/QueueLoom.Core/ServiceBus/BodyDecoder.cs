@@ -904,7 +904,10 @@ public static class BodyDecoder
                     {
                         valid = scaleValue.ValueKind == JsonValueKind.Number && scaleValue.TryGetInt32(out scale) && scale >= 0 && scale <= precision;
                     }
-                    if (!valid || raw.Length is 0 or > 64)
+                    // The text is at most max(digits, scale + 1) + 2 characters; the scale comes from an untrusted schema,
+                    // so a decimal that would not fit the output budget (or a scale beyond any real decimal) shows its bytes
+                    // instead of padding a huge string.
+                    if (!valid || raw.Length is 0 or > 64 || scale > MaximumDecimalScale || (long)scale + 3 > RemainingJsonBytes(writer))
                     {
                         writer.WriteStringValue(EncodeBoundedText(writer, type == "bytes" ? Convert.ToBase64String(raw) : Convert.ToHexString(raw)));
                         return true;
@@ -935,6 +938,8 @@ public static class BodyDecoder
                     return false;
             }
         }
+
+        private const int MaximumDecimalScale = 1_000;
 
         private static bool WriteTime(Utf8JsonWriter writer, long value, long ticksPerUnit, bool local)
         {
