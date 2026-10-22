@@ -498,6 +498,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         {
             var perQueue = Math.Clamp(maxMessagesPerQueue, 1, BrowseMessagesRequest.MaximumMaxMessages);
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
+            var unread = 0;
             var cleanup = new List<string>();
             var (sources, messages) = await session.ReadAsync(profile, async (workspace, token) =>
             {
@@ -524,9 +525,21 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 var read = new List<BrowsedMessage>();
                 foreach (var (reference, count, note, quality) in queues)
                 {
+                    // One reply reads at most this many in total: the session lock blocks every other tool meanwhile, and
+                    // on SQS, Pub/Sub and RabbitMQ every read is a delivery.
+                    var remaining = MaximumExplainedMessages - read.Count;
+                    if (remaining <= 0)
+                    {
+                        unread++;
+                        summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, 0, note,
+                            $"Not read: this reply's total of {MaximumExplainedMessages:N0} messages was reached.")
+                            { CountQuality = DeadLetterCountQualities.Name(quality) });
+                        continue;
+                    }
                     try
                     {
-                        var browsed = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(reference, ServiceBusSubQueue.DeadLetter, perQueue), token)
+                        var browsed = await workspace.BrowseMessagesAsync(
+                                new BrowseMessagesRequest(reference, ServiceBusSubQueue.DeadLetter, Math.Min(perQueue, remaining)), token)
                             .ConfigureAwait(false);
                         read.AddRange(browsed);
                         summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, browsed.Count, note, null)
@@ -574,9 +587,17 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                   $"{messages.GroupBy(DeadLetterCauses.KeyOf).Count():N0} cause(s); the largest is {causes[0].Reason}" +
                   (causes[0].Pattern is null ? string.Empty : $": {causes[0].Pattern}") + $" ({causes[0].Share}%)." +
                   (sources.Any(source => source.DeadLetterCount > source.Read) ? " Some queues hold more than was read; raise maxMessagesPerQueue to read more." : string.Empty);
+            if (unread > 0)
+            {
+                summary += $" Stopped after reading {MaximumExplainedMessages:N0} messages in total; {unread:N0} queue(s) were not read. " +
+                           "Name one in 'entity' to read it.";
+            }
             summary += McpMapping.CleanupNote(cleanup);
             return new DeadLetterExplanationInfo(profile.Name, summary, total, sources, causes);
         });
+
+    /// <summary>The most dead letters one explain_dead_letters reply reads, over all queues.</summary>
+    internal const int MaximumExplainedMessages = 5_000;
 
     [McpServerTool(Name = "trace_forwarding", Title = "Where forwarded messages go", ReadOnly = true, Idempotent = true)]
     [Description("Azure Service Bus auto-forwarding: follows a queue, topic or subscription through every forward (topics copy to their " +

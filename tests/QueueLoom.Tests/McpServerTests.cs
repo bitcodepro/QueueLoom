@@ -147,6 +147,29 @@ public sealed partial class McpServerTests
         Assert.Contains("is not 'e'", rows[1].GetProperty("explanation").GetString(), StringComparison.Ordinal);
     }
 
+    // The per-queue limit applied to every dead-letter queue of the environment, with no total: 500 non-empty queues at
+    // 1,000 each meant 500,000 messages read into one list while the session lock blocked every other tool (and on SQS,
+    // Pub/Sub and RabbitMQ every read is a delivery). The tool now stops at a total and says which queues it left.
+    [Fact]
+    public async Task ExplainDeadLetters_StopsAtATotalAndSaysSo()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        var queues = Enumerable.Range(1, 8)
+            .Select(index => new ServiceBusQueue($"q{index}", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 1_000))))
+            .ToArray();
+        server.Workspace.Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, queues);
+        server.Workspace.BrowseMessages = Enumerable.Range(1, 1_000).Select(number => new BrowsedMessage(
+            queues[0].Reference, ServiceBusSubQueue.DeadLetter, number, "{}"u8.ToArray(), new EditableMessageProperties(MessageId: $"m-{number}"),
+            deadLetterReason: "MaxDeliveryCountExceeded")).ToArray();
+
+        var explained = await server.CallAsync("explain_dead_letters", new() { ["maxMessagesPerQueue"] = 1_000 });
+
+        Assert.Equal(5_000, explained.GetProperty("readMessages").GetInt32());
+        Assert.Equal(5_000, server.Workspace.BrowseRequests.Sum(request => request.MaxMessages));
+        Assert.Contains($"Stopped after reading {5_000:N0} messages in total; 3 queue(s) were not read", explained.GetProperty("summary").GetString(),
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("en-US", "66.7")]
     [InlineData("uk-UA", "66,7")]
