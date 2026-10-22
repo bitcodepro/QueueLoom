@@ -91,7 +91,7 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
                 Assert.Contains(mode == "helper-exit" ? "exited before accepting the handoff" : "did not accept the handoff",
                     error.GetProperty("Message").GetString(), StringComparison.Ordinal);
                 Assert.Equal("0x80131620", error.GetProperty("HResult").GetString());
-                if (mode != "helper-exit") Assert.True(elapsed.Elapsed >= TimeSpan.FromSeconds(10), "The original handoff deadline must remain in force.");
+                if (mode != "helper-exit") Assert.True(elapsed.Elapsed >= QueueLoom.App.Services.UpdateRestart.HandoffAcknowledgementTimeout, "The handoff deadline must remain in force.");
                 Assert.True(File.Exists(receipt));
             }
             Log($"Actual sender exit {sender.ExitCode}; receipt {File.Exists(receipt)}; acknowledgement {File.Exists(receipt + ".helper")}; accepted identity {File.Exists(handoff + ".helper.json")}.");
@@ -241,7 +241,7 @@ public sealed class UpdateRestartHandoffTests(ITestOutputHelper output)
     {
         try
         {
-            await sender.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            await sender.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90)); // beyond the 30 s handoff deadline
         }
         catch (TimeoutException)
         {

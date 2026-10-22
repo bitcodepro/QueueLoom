@@ -757,6 +757,29 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         private static bool IsTransient(StatusCode code) =>
             code is StatusCode.Unavailable or StatusCode.DeadlineExceeded or StatusCode.Internal or StatusCode.Aborted;
 
+        public TimeSpan? HoldDuration => TimeSpan.FromSeconds(HoldSeconds);
+
+        /// <summary>
+        /// Extends the acknowledgement deadline of messages still held. A modifyAckDeadline is not a delivery attempt, so
+        /// unlike letting them come back and pulling them again, it does not move a message toward the dead-letter topic.
+        /// </summary>
+        public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
+        {
+            foreach (var chunk in messages.Chunk(1_000))
+            {
+                try
+                {
+                    await owner.Subscriber.ModifyAckDeadlineAsync(subscription, chunk.Select(message => message.LeaseHandle), HoldSeconds,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (RpcException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // Best effort: these come back when their current deadline ends, as without the renewal.
+                }
+            }
+        }
+
         public async Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
             // A 0 deadline is a NACK; with a dead-letter policy each one is a delivery attempt (see MaxDeliveryAttempts).

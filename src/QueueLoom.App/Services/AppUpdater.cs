@@ -443,7 +443,8 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         while (!File.Exists(ready))
         {
             if (launcher.HasExited) throw new IOException("The stable restart launcher exited before accepting the handoff.");
-            if (waiting.Elapsed > TimeSpan.FromSeconds(15))
+            // The stable launcher bootstraps its installation before it accepts; see UpdateRestart.HandoffAcknowledgementTimeout.
+            if (waiting.Elapsed > UpdateRestart.HandoffAcknowledgementTimeout)
             {
                 launcher.Kill(entireProcessTree: true);
                 launcher.WaitForExit();

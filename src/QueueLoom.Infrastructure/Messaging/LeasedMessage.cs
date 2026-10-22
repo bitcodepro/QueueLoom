@@ -39,6 +39,18 @@ public interface ILeasedMessageChannel
     /// <summary>Receives and holds up to <paramref name="maxMessages"/> messages. An empty result means none arrived in a short wait.</summary>
     Task<IReadOnlyList<LeasedMessage>> ReceiveAsync(int maxMessages, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// How long a received message stays held unless the hold is renewed; null when holds do not expire. Long scans
+    /// renew what they still hold before this ends, or early messages would come back and be received again.
+    /// </summary>
+    TimeSpan? HoldDuration => null;
+
+    /// <summary>
+    /// Extends the hold of messages still held, best effort: a message whose renewal fails comes back when its current
+    /// hold ends, as it would have without the renewal.
+    /// </summary>
+    Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken) => Task.CompletedTask;
+
     /// <summary>Makes held messages visible again right away, without changing them.</summary>
     Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken);
 
@@ -57,5 +69,27 @@ public static class LeasedMessageIdentity
         ArgumentException.ThrowIfNullOrEmpty(messageId);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(messageId));
         return BitConverter.ToInt64(hash, 0) & long.MaxValue;
+    }
+}
+
+/// <summary>
+/// Renews the holds of a long-running loop before they end: every third of the channel's hold duration, everything still
+/// held is renewed, so messages received early do not come back and get received (and, on Pub/Sub, counted) again.
+/// The interval is measured from the start of the previous renewal (its first leases are the oldest), and a third leaves
+/// room for the renewal itself to take time.
+/// </summary>
+internal sealed class HoldRenewal(ILeasedMessageChannel channel, TimeProvider time)
+{
+    private long _since = time.GetTimestamp();
+
+    public async Task RenewIfDueAsync(IReadOnlyCollection<LeasedMessage> held, CancellationToken cancellationToken)
+    {
+        if (channel.HoldDuration is not { } hold || held.Count == 0 || time.GetElapsedTime(_since) < hold / 3)
+        {
+            return;
+        }
+        var started = time.GetTimestamp();
+        await channel.RenewAsync([.. held], cancellationToken).ConfigureAwait(false);
+        _since = started;
     }
 }
