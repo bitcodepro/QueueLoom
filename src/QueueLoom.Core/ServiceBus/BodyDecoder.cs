@@ -837,6 +837,11 @@ public static class BodyDecoder
                 Write(writer, type, reader, space);
                 return;
             }
+            if (schema.TryGetProperty("logicalType", out var logical) && logical.ValueKind == JsonValueKind.String &&
+                TryWriteLogical(writer, schema, type.GetString()!, logical.GetString()!, reader))
+            {
+                return;
+            }
 
             switch (type.GetString())
             {
@@ -875,6 +880,92 @@ public static class BodyDecoder
                     WriteNamedOrPrimitive(writer, type.GetString()!, reader, space);
                     return;
             }
+        }
+
+        /// <summary>
+        /// Avro logical types shown as what they mean: a decimal as its number (bytes or fixed, big-endian two's
+        /// complement scaled by "scale"), timestamps as ISO 8601, a date as yyyy-MM-dd and a time of day as HH:mm:ss.
+        /// Anything else (uuid is already a string), a logical type on another underlying type, or a value out of range is
+        /// shown as the underlying value, as the Avro specification asks readers to do.
+        /// </summary>
+        private static bool TryWriteLogical(Utf8JsonWriter writer, JsonElement schema, string type, string logical, AvroReader reader)
+        {
+            switch (logical, type)
+            {
+                case ("decimal", "bytes" or "fixed"):
+                    var raw = type == "bytes" ? reader.ReadBytes() : reader.ReadFixed(schema.GetProperty("size").GetInt32());
+                    // An invalid annotation (no positive integer precision, a non-integer or negative scale, or a scale
+                    // above the precision) is ignored, as the specification asks: the underlying bytes are shown.
+                    var precision = 0;
+                    var valid = schema.TryGetProperty("precision", out var precisionValue) &&
+                                precisionValue.ValueKind == JsonValueKind.Number && precisionValue.TryGetInt32(out precision) && precision > 0;
+                    var scale = 0;
+                    if (valid && schema.TryGetProperty("scale", out var scaleValue))
+                    {
+                        valid = scaleValue.ValueKind == JsonValueKind.Number && scaleValue.TryGetInt32(out scale) && scale >= 0 && scale <= precision;
+                    }
+                    // The text is at most max(digits, scale + 1) + 2 characters; the scale comes from an untrusted schema,
+                    // so a decimal that would not fit the output budget (or a scale beyond any real decimal) shows its bytes
+                    // instead of padding a huge string.
+                    if (!valid || raw.Length is 0 or > 64 || scale > MaximumDecimalScale || (long)scale + 3 > RemainingJsonBytes(writer))
+                    {
+                        writer.WriteStringValue(EncodeBoundedText(writer, type == "bytes" ? Convert.ToBase64String(raw) : Convert.ToHexString(raw)));
+                        return true;
+                    }
+                    writer.WriteStringValue(Decimal(new System.Numerics.BigInteger(raw, isUnsigned: false, isBigEndian: true), scale));
+                    return true;
+                case ("timestamp-millis" or "local-timestamp-millis", "long"):
+                    return WriteTime(writer, reader.ReadLong(), TimeSpan.TicksPerMillisecond, logical.StartsWith("local", StringComparison.Ordinal));
+                case ("timestamp-micros" or "local-timestamp-micros", "long"):
+                    return WriteTime(writer, reader.ReadLong(), TimeSpan.TicksPerMicrosecond, logical.StartsWith("local", StringComparison.Ordinal));
+                case ("date", "int"):
+                    var days = reader.ReadLong();
+                    if (days is >= -719_162 and <= 2_932_896)
+                        writer.WriteStringValue(DateOnly.FromDayNumber(checked((int)(days + 719_162))).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+                    else writer.WriteNumberValue(days);
+                    return true;
+                case ("time-millis", "int"):
+                case ("time-micros", "long"):
+                    var time = reader.ReadLong();
+                    var perDay = logical == "time-millis" ? 86_400_000L : 86_400_000_000L;
+                    // The range is checked on the value itself, before any multiplication can overflow.
+                    if (time >= 0 && time < perDay)
+                        writer.WriteStringValue(new TimeOnly(time * (logical == "time-millis" ? TimeSpan.TicksPerMillisecond : TimeSpan.TicksPerMicrosecond))
+                            .ToString("HH:mm:ss.FFFFFFF", System.Globalization.CultureInfo.InvariantCulture));
+                    else writer.WriteNumberValue(time);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private const int MaximumDecimalScale = 1_000;
+
+        private static bool WriteTime(Utf8JsonWriter writer, long value, long ticksPerUnit, bool local)
+        {
+            var maximum = (DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks) / ticksPerUnit;
+            var minimum = (DateTime.MinValue.Ticks - DateTime.UnixEpoch.Ticks) / ticksPerUnit;
+            if (value < minimum || value > maximum)
+            {
+                writer.WriteNumberValue(value);
+                return true;
+            }
+            var moment = DateTime.UnixEpoch.AddTicks(value * ticksPerUnit);
+            // A local timestamp has no time zone; a timestamp is UTC.
+            writer.WriteStringValue(moment.ToString(local ? "yyyy-MM-ddTHH:mm:ss.FFFFFFF" : "yyyy-MM-ddTHH:mm:ss.FFFFFFFZ",
+                System.Globalization.CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        private static string Decimal(System.Numerics.BigInteger unscaled, int scale)
+        {
+            var digits = System.Numerics.BigInteger.Abs(unscaled).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (scale > 0)
+            {
+                digits = digits.PadLeft(scale + 1, '0');
+                digits = digits[..^scale] + "." + digits[^scale..];
+            }
+            return unscaled.Sign < 0 ? "-" + digits : digits;
         }
 
         private void WriteNamedOrPrimitive(Utf8JsonWriter writer, string type, AvroReader reader, string? enclosingNamespace)
