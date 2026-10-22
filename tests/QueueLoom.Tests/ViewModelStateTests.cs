@@ -994,6 +994,8 @@ public sealed partial class ViewModelStateTests
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
 
         public ServiceBusTopology Topology { get; set; } = new(DateTimeOffset.UtcNow);
+        /// <summary>A topology of its own for an environment; the others get <see cref="Topology"/>.</summary>
+        public Dictionary<Guid, ServiceBusTopology> TopologyByProfile { get; } = [];
 
         public bool FailNextConnection { get; set; }
 
@@ -1088,7 +1090,7 @@ public sealed partial class ViewModelStateTests
             CancellationToken cancellationToken = default)
         {
             TopologyCalls++;
-            return Task.FromResult(Topology);
+            return Task.FromResult(ConnectedProfileId is { } id && TopologyByProfile.TryGetValue(id, out var own) ? own : Topology);
         }
 
         public async Task<IReadOnlyList<BrowsedMessage>> BrowseMessagesAsync(

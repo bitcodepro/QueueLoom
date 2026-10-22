@@ -215,6 +215,42 @@ public sealed partial class ViewModelStateTests
         Assert.StartsWith("Test · orders", alert.Details, StringComparison.Ordinal);
     }
 
+    // Each environment the sweep connects selects an entity of its own topology (its first, when the operator's is not
+    // there), and the replay destination was dropped. Back in the operator's environment, the explorer then had another
+    // queue selected than the one whose messages were restored, so peek, redrive or edit acted on the wrong entity, and
+    // replay was disabled until a destination was chosen again.
+    [Fact]
+    public async Task GlobalScanKeepsTheSelectedEntityAndTheReplayDestination()
+    {
+        var development = CreateProfile("Development", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var test = CreateProfile("Test", EnvironmentKind.Test);
+        var audit = new ServiceBusQueue("audit", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 1)));
+        var orders = new ServiceBusQueue("orders", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 2)));
+        var replayTarget = new ServiceBusQueue("replay", ServiceBusEntityRuntime.Empty);
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [audit, orders, replayTarget]),
+            Snapshots =
+            {
+                [development.Id] = Snapshot(development.Id, new DeadLetterEntitySnapshot(orders.Reference, 2)),
+                [test.Id] = Snapshot(test.Id, new DeadLetterEntitySnapshot(audit.Reference, 1))
+            }
+        };
+        workspace.TopologyByProfile[test.Id] = new ServiceBusTopology(DateTimeOffset.UtcNow, [audit]);
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([development, test], development.Id), workspace);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.SelectedEntity = viewModel.Entities.Single(entity => entity.Reference == orders.Reference);
+        viewModel.ReplayDestination = viewModel.Destinations.Single(item => item.Reference == replayTarget.Reference);
+
+        await viewModel.ScanAllEnvironmentsCommand.ExecuteAsync();
+
+        Assert.False(viewModel.HasError, viewModel.ErrorText);
+        Assert.Equal(development.Id, workspace.ConnectedProfileId);
+        Assert.Equal(orders.Reference, viewModel.SelectedEntity?.Reference);
+        Assert.Equal(replayTarget.Reference, viewModel.ReplayDestination?.Reference);
+    }
+
     [Fact]
     public async Task GlobalScanKeepsThePeekedMessagesTicksAndDraftDestinationOfTheEnvironmentItReturnsTo()
     {

@@ -386,6 +386,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 await ConfirmLiveQueueReadAsync(server, profile, entity!, McpMapping.ParseSubQueue(subQueue), count, cancellationToken)
                     .ConfigureAwait(false);
             }
+            var cleanup = new List<string>();
             var (label, messages, complete) = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: hasQuery, token).ConfigureAwait(false);
@@ -407,7 +408,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                         new DeadLetterSearchRequest(query!.Trim(), targets, maximumResults: count), token)
                     .ConfigureAwait(false);
                 return ("search", result.Matches, result.IsComplete);
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, cleanup).ConfigureAwait(false);
 
             // The name is reserved (an empty file created exclusively) before writing, so two exports choosing the same
             // name at the same moment get two files; the export then replaces only its own reservation.
@@ -430,7 +431,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 extension.TrimStart('.'),
                 $"{messages.Count} message(s) saved to {path}" +
                 (messages.Any(message => message.IsBodyTruncated) ? "; some bodies were too large and are truncated" : string.Empty) +
-                (complete ? "." : "; the search stopped at a limit or hit errors, so the file may be incomplete."));
+                (complete ? "." : "; the search stopped at a limit or hit errors, so the file may be incomplete.") +
+                McpMapping.CleanupNote(cleanup));
         });
 
     private string ExportPath(string environment, string label, string? fileName, string extension)
@@ -497,6 +499,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             var perQueue = Math.Clamp(maxMessagesPerQueue, 1, BrowseMessagesRequest.MaximumMaxMessages);
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
             var unread = 0;
+            var cleanup = new List<string>();
             var (sources, messages) = await session.ReadAsync(profile, async (workspace, token) =>
             {
                 var topology = await workspace.GetTopologyAsync(forceRefresh: true, token).ConfigureAwait(false);
@@ -550,7 +553,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     }
                 }
                 return (summaries, read);
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, cleanup).ConfigureAwait(false);
 
             var total = messages.Count;
             var causes = messages
@@ -589,6 +592,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 summary += $" Stopped after reading {MaximumExplainedMessages:N0} messages in total; {unread:N0} queue(s) were not read. " +
                            "Name one in 'entity' to read it.";
             }
+            summary += McpMapping.CleanupNote(cleanup);
             return new DeadLetterExplanationInfo(profile.Name, summary, total, sources, causes);
         });
 
