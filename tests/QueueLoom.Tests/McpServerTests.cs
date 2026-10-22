@@ -927,6 +927,8 @@ public sealed partial class McpServerTests
     [InlineData("peek")]
     [InlineData("search")]
     [InlineData("delete")]
+    [InlineData("export")]
+    [InlineData("explain")]
     public async Task CleanupWarningsReachTheReplyAndActivity(string tool)
     {
         await using var server = await McpTestServer.StartAsync(approve: true);
@@ -937,6 +939,8 @@ public sealed partial class McpServerTests
         {
             "peek" => await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "dlq" }),
             "search" => await server.CallAsync("search_dead_letters", new() { ["query"] = "correlation" }),
+            "export" => await server.CallAsync("export_messages", new() { ["entity"] = "orders", ["subQueue"] = "dlq" }),
+            "explain" => await server.CallAsync("explain_dead_letters"),
             _ => await server.CallAsync("delete_dead_letter_messages", new()
             {
                 ["messages"] = new[] { new { entity = "orders", subQueue = "dlq", sequenceNumber = 2L, messageId = (string?)null } },
