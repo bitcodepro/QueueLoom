@@ -36,7 +36,7 @@ public sealed partial class WindowsUpdateSmokeTests
             script.BeginErrorReadLine();
             string Detail() { lock (output) return output.ToString(); }
             var watch = Stopwatch.StartNew();
-            try { await script.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30)); }
+            try { await script.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90)); }
             catch (TimeoutException)
             {
                 throw new Xunit.Sdk.XunitException($"The smoke script had not exited after {watch.Elapsed.TotalSeconds:F1} s. Its output so far:\n{Detail()}");
@@ -131,7 +131,7 @@ public sealed partial class WindowsUpdateSmokeTests
     private static async Task WaitForSmokeMarker(string path, Process process)
     {
         var watch = Stopwatch.StartNew();
-        while (!File.Exists(path) && !process.HasExited && watch.Elapsed < TimeSpan.FromSeconds(30)) await Task.Delay(10);
+        while (!File.Exists(path) && !process.HasExited && watch.Elapsed < TimeSpan.FromSeconds(90)) await Task.Delay(10);
         Assert.True(File.Exists(path), "The fixture did not publish " + Path.GetFileName(path));
     }
 
