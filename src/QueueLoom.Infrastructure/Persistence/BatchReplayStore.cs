@@ -153,7 +153,9 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
                 await WriteStateAsync(stateFile, "Sent", CancellationToken.None);
                 sent++;
                 progress?.Report(new ReplayProgress(plan.Id, sent, plan.Count, "Sending copies; originals retained"));
-                await Task.Delay(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token);
+                // The rate spaces sends; there is nothing to wait for after the last one, and a cancellation then
+                // would report a finished batch as stopped.
+                if (sent < plan.Count) await DelayAsync(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token);
             }
             return new ReplayProgress(plan.Id, sent, plan.Count, "Completed");
         }
