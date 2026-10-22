@@ -192,7 +192,15 @@ internal sealed class SchemaRegistryClient : IDisposable
                 _ => MessageSchemaType.Avro
             }
             : MessageSchemaType.Avro;
-        return new MessageSchema(id, type, text.GetString()!);
+        // Referenced schemas live under other subjects; they are named so a failed decode can say why.
+        var references = root.TryGetProperty("references", out var listed) && listed.ValueKind == JsonValueKind.Array
+            ? listed.EnumerateArray()
+                .Select(reference => reference.ValueKind == JsonValueKind.Object && reference.TryGetProperty("name", out var name) &&
+                                     name.ValueKind == JsonValueKind.String ? name.GetString() : null)
+                .OfType<string>()
+                .ToArray()
+            : [];
+        return new MessageSchema(id, type, text.GetString()!) { References = references };
     }
 
     public void Dispose() => _http.Dispose();

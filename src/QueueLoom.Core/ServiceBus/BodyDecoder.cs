@@ -201,7 +201,8 @@ public static class BodyDecoder
                 var message = ProtobufMessageName(schema.Text);
                 return Protobuf.TryToJson(span[position..], requireMessage: false, out var protobuf)
                     ? new DecodedBody(["Schema Registry", "Protobuf"], protobuf, true,
-                        $"Schema id {schemaId}{(message is null ? string.Empty : $", message {message}")}. Fields are shown by number, as in the .proto file.")
+                        $"Schema id {schemaId}{(message is null ? string.Empty : $", message {message}")}. Fields are shown by number, as in the .proto file." +
+                        (schema.References.Count > 0 ? $" It imports schemas from other subjects ({string.Join(", ", schema.References.Take(5))}), which QueueLoom does not fetch yet." : string.Empty))
                     : null;
             default:
                 try
@@ -227,8 +228,10 @@ public static class BodyDecoder
                                                       or ArgumentException or OverflowException or IndexOutOfRangeException
                                                       or InvalidOperationException or KeyNotFoundException)
                 {
+                    // A schema that references types registered elsewhere cannot describe the body on its own: that, not
+                    // the body, is why it failed.
                     return new DecodedBody(["Schema Registry", "Avro"], HexDump(span), false,
-                        $"Schema id {schemaId}: the body does not match the schema ({exception.Message}).")
+                        schema.UnresolvedReferencesNote ?? $"Schema id {schemaId}: the body does not match the schema ({exception.Message}).")
                     { IsComplete = exception is not DecodeLimitException };
                 }
         }
