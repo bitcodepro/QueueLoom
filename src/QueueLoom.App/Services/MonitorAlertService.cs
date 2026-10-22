@@ -202,9 +202,14 @@ public sealed class MonitorAlertService(
         var text = $"{alert.Title} — {alert.Text}";
         if (IsSlack(webhookUrl))
         {
-            // Slack parses <!channel>, <@user> and <url|label> in text; broker names must stay literal.
-            return new JsonObject { ["text"] = text.Replace("&", "&amp;", StringComparison.Ordinal)
-                .Replace("<", "&lt;", StringComparison.Ordinal).Replace(">", "&gt;", StringComparison.Ordinal) };
+            // Slack parses <!channel>, <@user> and <url|label> in text; broker names must stay literal. Its mrkdwn would
+            // also turn *orders*_v2_ into bold and italics, so formatting is switched off for this message.
+            return new JsonObject
+            {
+                ["text"] = text.Replace("&", "&amp;", StringComparison.Ordinal)
+                    .Replace("<", "&lt;", StringComparison.Ordinal).Replace(">", "&gt;", StringComparison.Ordinal),
+                ["mrkdwn"] = false
+            };
         }
 
         return new JsonObject

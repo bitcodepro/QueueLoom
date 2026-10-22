@@ -62,6 +62,17 @@ public sealed class SlackWebhookEscapingTests
         Assert.Contains("&lt;!channel&gt; &lt;https://evil.example|reset password&gt;", text, StringComparison.Ordinal);
     }
 
+    // Slack's mrkdwn turned a queue named *orders*_v2_ into bold and italics; formatting is now off for the alert.
+    [Fact]
+    public void SlackShowsBrokerNamesWithoutFormatting()
+    {
+        var payload = MonitorAlertService.BuildWebhookPayload("https://hooks.slack.com/services/T/B/X",
+            new MonitorAlert("Production", "*orders*_v2_ ~old~ `x` (DLQ)", 3, null));
+
+        Assert.False(payload["mrkdwn"]!.GetValue<bool>());
+        Assert.Contains("*orders*_v2_ ~old~ `x`", payload["text"]!.GetValue<string>(), StringComparison.Ordinal);
+    }
+
     // The Teams/other payload put broker names raw into its top-level "text", which Markdown-reading receivers render:
     // a queue named "[click](https://evil)" became a link there. The card body was already literal.
     [Fact]
