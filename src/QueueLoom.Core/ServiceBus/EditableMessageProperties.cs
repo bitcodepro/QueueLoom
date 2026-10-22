@@ -27,4 +27,19 @@ public sealed record EditableMessageProperties(
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? NativeSubject { get; init; }
+
+    /// <summary>
+    /// The AMQP timestamp the publisher set (RabbitMQ). It is the producer's data, which consumers may use for ordering
+    /// or staleness checks, so a resent or moved message keeps it; a new message gets the current time. Null for every
+    /// other source, and for a RabbitMQ message published without one.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? AmqpTimestamp { get; init; }
+
+    /// <summary>
+    /// The AMQP delivery mode of a RabbitMQ message: true for persistent (2), false for transient (1). A resent or moved
+    /// message keeps it; a new message, or one that did not say, is persistent.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AmqpPersistent { get; init; }
 }
