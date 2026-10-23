@@ -170,6 +170,32 @@ public sealed partial class McpServerTests
             StringComparison.Ordinal);
     }
 
+    // A broker SDK failure for one queue (for example a subscription deleted after the topology was read, or no Listen
+    // right on it) escaped the per-queue loop, which caught only three exception types, and failed the whole tool.
+    [Fact]
+    public async Task ExplainDeadLetters_ReportsAFailedQueueAndExplainsTheRest()
+    {
+        await using var server = await McpTestServer.StartAsync();
+        var broken = new ServiceBusQueue("broken", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 1)));
+        var good = new ServiceBusQueue("good", new ServiceBusEntityRuntime(new ServiceBusMessageCounts(deadLetter: 1)));
+        server.Workspace.Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [broken, good]);
+        server.Workspace.BrowseFailure = request => request.Source == broken.Reference
+            ? new UnauthorizedAccessException("Listen claim is required for this operation.")
+            : null;
+        server.Workspace.BrowseMessages =
+        [
+            new BrowsedMessage(good.Reference, ServiceBusSubQueue.DeadLetter, 1, "{}"u8.ToArray(), new EditableMessageProperties(MessageId: "m-1"),
+                deadLetterReason: "MaxDeliveryCountExceeded")
+        ];
+
+        var explained = await server.CallAsync("explain_dead_letters");
+
+        Assert.Equal(1, explained.GetProperty("readMessages").GetInt32());
+        var sources = explained.GetProperty("sources").EnumerateArray().ToDictionary(source => source.GetProperty("entity").GetString()!);
+        Assert.Contains("Listen claim", sources["broken"].GetProperty("error").GetString(), StringComparison.Ordinal);
+        Assert.Equal(1, sources["good"].GetProperty("read").GetInt32());
+    }
+
     [Theory]
     [InlineData("en-US", "66.7")]
     [InlineData("uk-UA", "66,7")]
