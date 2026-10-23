@@ -19,9 +19,13 @@ internal static class KafkaMessageMapper
     {
         var message = result.Message;
         var headers = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        // Names whose last value is null, which read as a Null property rather than empty text.
+        var nulls = new HashSet<string>(StringComparer.Ordinal);
         foreach (var header in message.Headers ?? [])
         {
             headers[header.Key] = header.GetValueBytes() ?? [];
+            if (header.GetValueBytes() is null) nulls.Add(header.Key);
+            else nulls.Remove(header.Key);
         }
 
         var texts = headers
@@ -35,7 +39,8 @@ internal static class KafkaMessageMapper
             // A header that is not UTF-8 text is binary (its text is base64), so it stays bytes when the message
             // moves to another service.
             .Select(pair => new MessageApplicationProperty(pair.Key,
-                IsText(headers[pair.Key]) ? ApplicationPropertyType.String : ApplicationPropertyType.Binary, pair.Value))
+                nulls.Contains(pair.Key) ? ApplicationPropertyType.Null
+                    : IsText(headers[pair.Key]) ? ApplicationPropertyType.String : ApplicationPropertyType.Binary, pair.Value))
             .Concat(headers
                 .Where(header => DeadLetterHeaderPrefixes.Any(prefix => header.Key.StartsWith(prefix, StringComparison.Ordinal)))
                 .OrderBy(header => header.Key, StringComparer.Ordinal)
