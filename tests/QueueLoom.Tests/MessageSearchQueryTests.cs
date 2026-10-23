@@ -41,6 +41,19 @@ public sealed class MessageSearchQueryTests
     public void Json_conditions_look_at_fields_of_the_body(string query, bool expected) =>
         Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(Message(Order)));
 
+    // Timestamps with an offset compare as instants, whatever their precision or offset; other text stays ordinal.
+    [Theory]
+    [InlineData("2026-01-01T00:00:00.5Z", "$.at > '2026-01-01T00:00:00Z'", true)]
+    [InlineData("2026-01-01T00:00:00.5Z", "$.at < '2026-01-01T00:00:00Z'", false)]
+    [InlineData("2026-01-01T01:00:00+02:00", "$.at > '2026-01-01T00:00:00Z'", false)]
+    [InlineData("2026-01-01T01:00:00+02:00", "$.at < '2026-01-01T00:00:00Z'", true)]
+    [InlineData("2026-01-01T02:00:00+02:00", "$.at >= '2026-01-01T00:00:00Z'", true)]
+    [InlineData("2026-01-01T02:00:00+02:00", "$.at <= '2026-01-01T00:00:00.000Z'", true)]
+    [InlineData("2026-09-30", "$.at >= '2026-09-30'", true)]
+    [InlineData("b", "$.at > 'a'", true)]
+    public void Json_timestamps_compare_as_instants(string at, string query, bool expected) =>
+        Assert.Equal(expected, MessageSearchQuery.Parse(query).Matches(Message($$"""{"at":"{{at}}"}""")));
+
     [Fact]
     public void Json_conditions_look_inside_packed_bodies_and_skip_other_bodies()
     {
