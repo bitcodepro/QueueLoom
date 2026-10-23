@@ -14,7 +14,7 @@ public sealed class JsonMonitorIncidentStore(string path, TimeProvider? clock = 
     /// <summary>More are not kept: an alert repeated after a restart is better than an unbounded file.</summary>
     public const int MaximumIncidents = 5_000;
 
-    /// <summary>A larger file is not read.</summary>
+    /// <summary>A larger file is not read, so none larger is written.</summary>
     public const int MaximumFileBytes = 16 * 1024 * 1024;
 
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
@@ -60,12 +60,39 @@ public sealed class JsonMonitorIncidentStore(string path, TimeProvider? clock = 
     public async Task SaveAsync(IReadOnlyCollection<MonitorIncident> incidents, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(incidents);
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(
-            new IncidentFile(_clock.GetUtcNow(), incidents.Take(MaximumIncidents).ToArray()), Options);
+        var bytes = Serialize(_clock.GetUtcNow(), incidents);
         // Every window of this data folder shares the lock: two saving at once replace the file one after the other.
         await using var ownership = await CrossProcessFileLock.AcquireAsync(path + ".lock", cancellationToken).ConfigureAwait(false);
         await AtomicFile.WriteBytesAsync(path, bytes, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// The file for these incidents, no larger than <see cref="MaximumFileBytes"/>: the most recently detected or measured
+    /// come first (then by key), and whole incidents are kept until the next would not fit; the rest alert again.
+    /// </summary>
+    private static byte[] Serialize(DateTimeOffset savedAt, IReadOnlyCollection<MonitorIncident> incidents)
+    {
+        var ordered = incidents
+            .OrderByDescending(incident => Max(incident.LastDetectedAt, incident.LastMeasuredAt))
+            .ThenBy(incident => incident.Key, StringComparer.Ordinal)
+            .Take(MaximumIncidents)
+            .ToArray();
+        var budget = (long)MaximumFileBytes - JsonSerializer.SerializeToUtf8Bytes(new IncidentFile(savedAt, []), Options).Length;
+        var count = 0;
+        for (; count < ordered.Length; count++)
+        {
+            // Each element costs its own JSON and one separating comma.
+            budget -= JsonSerializer.SerializeToUtf8Bytes(ordered[count], Options).Length + 1;
+            if (budget < 0)
+            {
+                break;
+            }
+        }
+        return JsonSerializer.SerializeToUtf8Bytes(new IncidentFile(savedAt, ordered[..count]), Options);
+    }
+
+    private static DateTimeOffset Max(DateTimeOffset detected, DateTimeOffset? measured) =>
+        measured > detected ? measured.Value : detected;
 
     private sealed record IncidentFile(DateTimeOffset SavedAt, MonitorIncident[]? Incidents);
 }

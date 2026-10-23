@@ -135,6 +135,33 @@ public sealed partial class ViewModelStateTests
         Assert.Empty(await store.LoadAsync());
     }
 
+    [Fact]
+    public async Task IncidentStore_KeepsTheMostRecentWholeIncidentsThatFitTheFileItReads()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "monitor-incidents.json");
+        var now = DateTimeOffset.Parse("2026-10-20T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
+        var store = new JsonMonitorIncidentStore(path, new MutableTimeProvider(now));
+        // About 1 MiB each: 20 of them pass the limit, 15 do not.
+        var markers = Enumerable.Range(0, 1_000).Select(i => $"{i}:{new string('m', 1_000)}").ToArray();
+        MonitorIncident Incident(int i) =>
+            new($"{Guid.NewGuid():N}|q{i}", ServiceBusEntityReference.Queue($"q{i}"), "DLQ", 3, DeadLetterCountQuality.Exact,
+                now.AddMinutes(-100), now.AddMinutes(-i)) { ContentMarkers = markers };
+
+        var many = Enumerable.Range(0, 20).Select(Incident).ToArray();
+        await store.SaveAsync(many.Reverse().ToArray());
+        Assert.True(new FileInfo(path).Length <= JsonMonitorIncidentStore.MaximumFileBytes);
+        var kept = await store.LoadAsync();
+        Assert.InRange(kept.Count, 1, 19);
+        // The most recently detected first, each with all of its markers.
+        Assert.Equal(many.Take(kept.Count).Select(incident => incident.Key), kept.Select(incident => incident.Key));
+        Assert.All(kept, incident => Assert.Equal(markers.Length, incident.ContentMarkers!.Count));
+
+        var fewer = many.Take(15).ToArray();
+        await store.SaveAsync(fewer);
+        Assert.Equal(15, (await store.LoadAsync()).Count);
+    }
+
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = now;
