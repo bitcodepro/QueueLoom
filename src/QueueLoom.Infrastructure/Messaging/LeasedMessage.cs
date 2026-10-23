@@ -47,9 +47,10 @@ public interface ILeasedMessageChannel
 
     /// <summary>
     /// Extends the hold of messages still held, best effort: a message whose renewal fails comes back when its current
-    /// hold ends, as it would have without the renewal.
+    /// hold ends, as it would have without the renewal. Returns the messages whose hold may not have been extended.
     /// </summary>
-    Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken) => Task.CompletedTask;
+    Task<IReadOnlyCollection<LeasedMessage>> RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyCollection<LeasedMessage>>([]);
 
     /// <summary>Makes held messages visible again right away, without changing them.</summary>
     Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken);
@@ -77,10 +78,34 @@ public static class LeasedMessageIdentity
 /// held is renewed, so messages received early do not come back and get received (and, on Pub/Sub, counted) again.
 /// The interval is measured from the start of the previous renewal (its first leases are the oldest), and a third leaves
 /// room for the renewal itself to take time.
+/// It also knows, per message, until when its hold is certain: from the receive request, extended only by a renewal that
+/// succeeded for it. A message past that may have been delivered again, and settling it then proves nothing: Pub/Sub
+/// without exactly-once delivery acknowledges an expired ack ID with success, although the message was not removed.
 /// </summary>
 internal sealed class HoldRenewal(ILeasedMessageChannel channel, TimeProvider time)
 {
+    /// <summary>A hold this close to its end is treated as ended: the settle request itself takes time to arrive.</summary>
+    internal static readonly TimeSpan SafetyMargin = TimeSpan.FromSeconds(15);
+
+    private readonly Dictionary<LeasedMessage, long> _heldFrom = new(ReferenceEqualityComparer.Instance);
     private long _since = time.GetTimestamp();
+
+    /// <summary>Taken just before a receive request: the broker starts the hold somewhere during it.</summary>
+    public long Now() => time.GetTimestamp();
+
+    public void Received(IEnumerable<LeasedMessage> batch, long requestedAt)
+    {
+        foreach (var message in batch) _heldFrom[message] = requestedAt;
+    }
+
+    public void Forget(IEnumerable<LeasedMessage> settled)
+    {
+        foreach (var message in settled) _heldFrom.Remove(message);
+    }
+
+    /// <summary>True when the message's hold may have ended, so it may already be another consumer's.</summary>
+    public bool HasLapsed(LeasedMessage message) =>
+        channel.HoldDuration is { } hold && _heldFrom.TryGetValue(message, out var from) && time.GetElapsedTime(from) >= hold - SafetyMargin;
 
     public async Task RenewIfDueAsync(IReadOnlyCollection<LeasedMessage> held, CancellationToken cancellationToken)
     {
@@ -89,7 +114,13 @@ internal sealed class HoldRenewal(ILeasedMessageChannel channel, TimeProvider ti
             return;
         }
         var started = time.GetTimestamp();
-        await channel.RenewAsync([.. held], cancellationToken).ConfigureAwait(false);
+        var failed = await channel.RenewAsync([.. held], cancellationToken).ConfigureAwait(false);
+        var notRenewed = new HashSet<LeasedMessage>(failed, ReferenceEqualityComparer.Instance);
+        foreach (var message in held)
+        {
+            // A message whose renewal failed keeps the hold it had; only a confirmed renewal counts from its start.
+            if (!notRenewed.Contains(message) && _heldFrom.ContainsKey(message)) _heldFrom[message] = started;
+        }
         _since = started;
     }
 }
