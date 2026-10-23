@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using Amazon;
@@ -431,19 +432,20 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
 
         public TimeSpan? HoldDuration => TimeSpan.FromSeconds(HoldSeconds);
 
-        public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
+        public async Task<IReadOnlyCollection<LeasedMessage>> RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
             // Tens of thousands of receipts in batches of 10 (a selective delete can hold up to 100,000): renewed several
             // batches at a time, so a renewal of 10,000 takes seconds rather than minutes. Best effort: a sweep so large or
             // slow that it outlasts the hold still lets its first leases expire, as without the renewal.
+            var failed = new ConcurrentBag<LeasedMessage>();
             await Parallel.ForEachAsync(messages.Chunk(MaximumBatch),
                 new ParallelOptions { MaxDegreeOfParallelism = RenewalConcurrency, CancellationToken = cancellationToken },
                 async (chunk, token) =>
             {
                 try
                 {
-                    // Per-entry failures (a handle no longer valid, a message no longer in flight) need nothing more.
-                    await owner.Sqs.ChangeMessageVisibilityBatchAsync(
+                    // Per-entry failures (a handle no longer valid, a message no longer in flight) keep their old hold.
+                    var response = await owner.Sqs.ChangeMessageVisibilityBatchAsync(
                             new ChangeMessageVisibilityBatchRequest
                             {
                                 QueueUrl = queue.Url,
@@ -456,12 +458,15 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
                             },
                             token)
                         .ConfigureAwait(false);
+                    foreach (var entry in response.Failed ?? []) failed.Add(chunk[int.Parse(entry.Id, CultureInfo.InvariantCulture)]);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException || !token.IsCancellationRequested)
                 {
                     // Best effort: these come back when their current hold ends, as without the renewal.
+                    foreach (var message in chunk) failed.Add(message);
                 }
             }).ConfigureAwait(false);
+            return [.. failed];
         }
 
         private const int RenewalConcurrency = 8;

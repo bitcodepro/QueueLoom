@@ -71,12 +71,14 @@ public sealed class HoldRenewalTests
         var channel = (ILeasedMessageChannel)Activator.CreateInstance(type, Any, null,
             [owner, ServiceBusEntityReference.Queue("q"), ServiceBusSubQueue.DeadLetter, queue, null, false], null)!;
 
-        await channel.RenewAsync(Enumerable.Range(0, 12).Select(index => Leased($"m-{index}")).ToArray(), CancellationToken.None);
+        var notRenewed = await channel.RenewAsync(Enumerable.Range(0, 12).Select(index => Leased($"m-{index}")).ToArray(), CancellationToken.None);
 
         Assert.Equal(TimeSpan.FromSeconds(AwsSqsSnsWorkspace.HoldSeconds), channel.HoldDuration);
         // Batches are renewed several at a time, so their order varies.
         Assert.Equal([2, 10], client.Batches.Select(batch => batch.Count).Order());
         Assert.All(client.Batches.SelectMany(batch => batch), entry => Assert.Equal(AwsSqsSnsWorkspace.HoldSeconds, entry.VisibilityTimeout));
+        // The first entry of each batch failed: those two keep their old hold and are reported so.
+        Assert.Equal(["m-0", "m-10"], notRenewed.Select(message => message.LeaseHandle).Order());
     }
 
     private static LeasedMessage Leased(string id) => new(new BrowsedMessage(ServiceBusEntityReference.Queue("q"), ServiceBusSubQueue.DeadLetter,
@@ -103,7 +105,7 @@ public sealed class HoldRenewalTests
             return Task.FromResult<IReadOnlyList<LeasedMessage>>([message]);
         }
 
-        public Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
+        public Task<IReadOnlyCollection<LeasedMessage>> RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
             // Ages are taken when the renewal starts; the renewed holds count from then too (the first batches are
             // renewed first), however long the whole renewal takes.
@@ -111,7 +113,7 @@ public sealed class HoldRenewalTests
             Renewals.Add(messages.Select(message => started - _heldSince[message.LeaseHandle]).ToList());
             foreach (var message in messages) _heldSince[message.LeaseHandle] = started;
             time.Advance(RenewalTakes);
-            return Task.CompletedTask;
+            return Task.FromResult<IReadOnlyCollection<LeasedMessage>>([]);
         }
 
         public Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken) => Task.CompletedTask;

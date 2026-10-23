@@ -758,8 +758,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                 cancellationToken.ThrowIfCancellationRequested();
                 var wanted = (int)Math.Min(Math.Min(batchSize, channel.MaximumBatchSize), maximumMessages - deleted);
                 await renewal.RenewIfDueAsync(outstanding, cancellationToken).ConfigureAwait(false);
+                var requestedAt = renewal.Now();
                 var batch = await channel.ReceiveAsync(wanted, cancellationToken).ConfigureAwait(false);
                 outstanding.AddRange(batch);
+                renewal.Received(batch, requestedAt);
                 if (batch.Count == 0)
                 {
                     emptyReceives++;
@@ -783,13 +785,26 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
 
                 progress?.Report(new DeadLetterPurgeProgress(target.Source, target.SubQueue, targetNumber, targetCount,
                     backedUp, deleted, DeadLetterPurgeStage.Deleting));
+                // A message whose hold may have ended (a slow backup, a renewal that failed) is not settled: the broker may
+                // have handed it to another consumer, and Pub/Sub acknowledges an expired ack ID with success although the
+                // message stays. Counted as deleted, its backup would later be restored as a duplicate.
+                var lapsed = toSettle.Where(renewal.HasLapsed).ToList();
+                toSettle.RemoveAll(lapsed.Contains);
                 var failed = await channel.SettleAsync(toSettle, CancellationToken.None).ConfigureAwait(false);
-                foreach (var settled in toSettle.Except(failed)) outstanding.Remove(settled);
+                var settledNow = toSettle.Except(failed).ToList();
+                foreach (var settled in settledNow) outstanding.Remove(settled);
+                renewal.Forget(settledNow);
                 deleted += toSettle.Count - failed.Count;
-                if (failed.Count > 0)
+                if (failed.Count > 0 || lapsed.Count > 0)
                 {
+                    var errors = new List<string>(2);
+                    if (failed.Count > 0)
+                        errors.Add($"{failed.Count} message(s) could not be deleted from {channel.PhysicalName}.");
+                    if (lapsed.Count > 0)
+                        errors.Add($"{lapsed.Count} message(s) were held in {channel.PhysicalName} longer than their hold lasts, so they " +
+                                   "were not deleted: they may have been delivered again.");
                     result = new DeadLetterPurgeSourceResult(target.Source, target.SubQueue, deleted,
-                        $"{failed.Count} message(s) could not be deleted from {channel.PhysicalName}. Their backups are kept.");
+                        string.Join(" ", errors) + " Their backups are kept.");
                     break;
                 }
                 if (outstanding.Count >= MaximumHeldDuringPurge)
@@ -863,7 +878,9 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 await renewal.RenewIfDueAsync(held, cancellationToken).ConfigureAwait(false);
+                var requestedAt = renewal.Now();
                 var batch = await channel.ReceiveAsync(channel.MaximumBatchSize, cancellationToken).ConfigureAwait(false);
+                renewal.Received(batch, requestedAt);
                 if (batch.Count == 0)
                 {
                     emptyReceives++;
@@ -893,12 +910,22 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
                         continue;
                     }
 
+                    if (renewal.HasLapsed(message))
+                    {
+                        // Its hold may have ended: settling it could report a deletion that did not happen (see the purge).
+                        outcomes[key] = (DeadLetterMessageDeletionOutcome.Failed,
+                            "The message was backed up but held longer than its hold lasts, so it was not deleted: it may have been " +
+                            "delivered again. Inspect the source and backup before retrying.");
+                        continue;
+                    }
+
                     settlementAttempted.Add(key);
                     var failed = await channel.SettleAsync([message], CancellationToken.None).ConfigureAwait(false);
                     if (failed.Count == 0)
                     {
                         deleted++;
                         held.Remove(message);
+                        renewal.Forget([message]);
                         pending.Remove(key);
                         outcomes[key] = (DeadLetterMessageDeletionOutcome.Deleted, null);
                     }
