@@ -334,8 +334,11 @@ public sealed class ResendDialogViewModel : ObservableObject
 
     /// <summary>
     /// Parses a date and time. With Z or an offset it is that instant; without one it is the wall time in
-    /// <paramref name="timeZone"/>, resolved like a clock time: a spring-forward gap moves to the first valid local
-    /// time after it, and a fall-back fold takes the earlier occurrence. The composer reads its schedule the same way.
+    /// <paramref name="timeZone"/>, resolved like a clock time: a time inside a spring-forward gap becomes the first
+    /// valid instant after the gap, at the whole minute the clock jumps to (02:59:59.5 on the US spring-forward morning
+    /// is 03:00:00.000 on the new offset; seconds and fractions inside the gap are dropped), and a fall-back fold takes
+    /// the earlier occurrence. A wall time with no UTC instant in that zone (for example 9999-12-31T23:59:59 at a
+    /// negative offset) returns false; this never throws. The composer reads its schedule the same way.
     /// </summary>
     public static bool TryParseInstant(string? text, IFormatProvider culture, TimeZoneInfo timeZone, out DateTimeOffset instant)
     {
@@ -400,7 +403,7 @@ public sealed class ResendDialogViewModel : ObservableObject
     {
         var localNow = TimeZoneInfo.ConvertTime(now, zone);
         var date = DateOnly.FromDateTime(localNow.DateTime);
-        for (var day = 0; day < 3; day++)
+        for (var day = 0; day < 3 && date.DayNumber + day <= DateOnly.MaxValue.DayNumber; day++)
         {
             foreach (var candidate in LocalClockInstants(zone, date.AddDays(day), clock))
             {
@@ -415,7 +418,9 @@ public sealed class ResendDialogViewModel : ObservableObject
 
     /// <summary>
     /// Instants when the clock shows <paramref name="clock"/> on <paramref name="date"/>, earlier first.
-    /// A fall-back fold yields both occurrences. A spring-forward gap yields the first valid local time after the gap.
+    /// A fall-back fold yields both occurrences. A time inside a spring-forward gap yields the first valid instant after
+    /// the gap: the whole minute the clock jumps to, without the seconds the time had. A wall time with no UTC instant
+    /// (at the very start or end of the calendar) yields nothing.
     /// </summary>
     private static IEnumerable<DateTimeOffset> LocalClockInstants(TimeZoneInfo zone, DateOnly date, TimeOnly clock)
     {
@@ -424,8 +429,10 @@ public sealed class ResendDialogViewModel : ObservableObject
         {
             // Scan forward up to 24 hours so a gap that spans midnight (for example
             // America/Nuuk spring-forward) still resolves to the first valid local time.
-            var probe = wall;
-            for (var minute = 0; minute < 24 * 60; minute++)
+            // Start from the whole minute: transitions fall on minute boundaries, so the first valid probe is the
+            // instant the clock jumps to (03:00:00), not that minute plus the seconds of 02:59:59.5.
+            var probe = new DateTime(wall.Ticks - wall.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Unspecified);
+            for (var minute = 0; minute < 24 * 60 && probe < DateTime.MaxValue.AddMinutes(-1); minute++)
             {
                 probe = probe.AddMinutes(1);
                 if (!zone.IsInvalidTime(probe))
@@ -454,12 +461,31 @@ public sealed class ResendDialogViewModel : ObservableObject
         {
             foreach (var offset in zone.GetAmbiguousTimeOffsets(wall).OrderByDescending(offset => offset))
             {
-                yield return new DateTimeOffset(wall, offset);
+                if (TryAtOffset(wall, offset, out var folded))
+                {
+                    yield return folded;
+                }
             }
             yield break;
         }
 
-        yield return new DateTimeOffset(wall, zone.GetUtcOffset(wall));
+        if (TryAtOffset(wall, zone.GetUtcOffset(wall), out var instant))
+        {
+            yield return instant;
+        }
+    }
+
+    /// <summary>False when the wall time minus the offset falls outside 0001-01-01..9999-12-31 UTC.</summary>
+    private static bool TryAtOffset(DateTime wall, TimeSpan offset, out DateTimeOffset instant)
+    {
+        var utcTicks = wall.Ticks - offset.Ticks;
+        if (utcTicks < DateTime.MinValue.Ticks || utcTicks > DateTime.MaxValue.Ticks)
+        {
+            instant = default;
+            return false;
+        }
+        instant = new DateTimeOffset(wall, offset);
+        return true;
     }
 
     private static string Until(TimeSpan span) => span.TotalMinutes < 60
