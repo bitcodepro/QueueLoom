@@ -547,7 +547,10 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                         summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, browsed.Count, note, null)
                             { CountQuality = DeadLetterCountQualities.Name(quality) });
                     }
-                    catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or TimeoutException)
+                    // Broker SDKs throw their own types (ServiceBusException, AmazonSQSException, RpcException, ...), for example
+                    // for a subscription deleted since the topology was read: that queue is reported, the others are still read.
+                    // Only the caller's cancellation ends the whole reply.
+                    catch (Exception exception) when (exception is not OperationCanceledException || !token.IsCancellationRequested)
                     {
                         summaries.Add(new DeadLetterSourceSummaryInfo(McpMapping.EntityName(reference), count, 0, note,
                             QueueLoom.Core.Diagnostics.SensitiveDataRedactor.SummarizeException(exception))
