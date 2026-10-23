@@ -47,14 +47,26 @@ public sealed class MacMigrationCacheTests
         {
             large.SetLength(1024L * 1024 * 1024);
         }
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        using var cancellation = new CancellationTokenSource();
+        var watch = new Stopwatch();
+        // Cancel from a dedicated thread (a pool timer can be delayed by thread-pool starvation) once the migration
+        // is under way, and measure only from the moment of cancellation: this checks how promptly the migration
+        // reacts, not how busy the machine is.
+        var canceller = new Thread(() =>
+        {
+            Thread.Sleep(50);
+            watch.Start();
+            cancellation.Cancel();
+        }) { IsBackground = true };
 
-        var watch = Stopwatch.StartNew();
+        canceller.Start();
         Assert.ThrowsAny<OperationCanceledException>(() =>
             MacBackupMigration.CopyLegacyDirectory(source, destination, bundle, cancellation.Token, new MacBackupMigration.CopyCache([])));
         watch.Stop();
+        canceller.Join();
 
-        Assert.True(watch.Elapsed < TimeSpan.FromMilliseconds(800), $"Stopping took {watch.Elapsed}.");
+        Assert.True(watch.Elapsed < TimeSpan.FromMilliseconds(500), $"Stopping took {watch.Elapsed} after cancellation.");
         Assert.False(File.Exists(Path.Combine(destination, "large.json")));
+        Assert.Empty(Directory.Exists(destination) ? Directory.GetFiles(destination, "*.tmp") : []);
     }
 }

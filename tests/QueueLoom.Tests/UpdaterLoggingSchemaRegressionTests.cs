@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
@@ -121,8 +122,10 @@ public sealed class UpdaterLoggingSchemaRegressionTests
         using var directory = new TemporaryDirectory();
         var now = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
         // Separate providers have separate queues and writers, exactly like the app and an MCP server process.
-        using var desktop = new FileLoggerProvider(directory.Path, clock: () => now);
-        using var mcp = new FileLoggerProvider(directory.Path, clock: () => now);
+        // A generous shutdown budget: under machine load Flush() must not give up with lines still queued, which
+        // would make the file look short although nothing was lost.
+        using var desktop = new FileLoggerProvider(directory.Path, clock: () => now, shutdownBudget: TimeSpan.FromMinutes(2));
+        using var mcp = new FileLoggerProvider(directory.Path, clock: () => now, shutdownBudget: TimeSpan.FromMinutes(2));
         const int lines = 1500;
         using var start = new ManualResetEventSlim();
         Task Write(FileLoggerProvider provider, string name) => Task.Factory.StartNew(() =>
@@ -134,21 +137,29 @@ public sealed class UpdaterLoggingSchemaRegressionTests
         var writers = new[] { Write(desktop, "desktop"), Write(mcp, "mcp") };
         start.Set();
         await Task.WhenAll(writers);
-        desktop.Flush();
-        mcp.Flush();
-
-        var text = File.ReadAllLines(desktop.CurrentFilePath);
-        var desktopWritten = text.Count(line => line.Contains("] desktop: line ", StringComparison.Ordinal));
-        var mcpWritten = text.Count(line => line.Contains("] mcp: line ", StringComparison.Ordinal));
-        var dropped = text
-            .Where(line => line.Contains("log lines dropped because the log queue was full", StringComparison.Ordinal))
-            .Sum(line =>
-            {
-                var startOfCount = line.IndexOf("] QueueLoom: ", StringComparison.Ordinal);
-                if (startOfCount < 0) return 0;
-                var number = line[(startOfCount + "] QueueLoom: ".Length)..].Split(' ')[0];
-                return int.TryParse(number, out var count) ? count : 0;
-            });
+        string[] text;
+        int desktopWritten, mcpWritten, dropped;
+        var waited = Stopwatch.StartNew();
+        while (true)
+        {
+            desktop.Flush();
+            mcp.Flush();
+            text = File.ReadAllLines(desktop.CurrentFilePath);
+            desktopWritten = text.Count(line => line.Contains("] desktop: line ", StringComparison.Ordinal));
+            mcpWritten = text.Count(line => line.Contains("] mcp: line ", StringComparison.Ordinal));
+            dropped = text
+                .Where(line => line.Contains("log lines dropped because the log queue was full", StringComparison.Ordinal))
+                .Sum(line =>
+                {
+                    var startOfCount = line.IndexOf("] QueueLoom: ", StringComparison.Ordinal);
+                    if (startOfCount < 0) return 0;
+                    var number = line[(startOfCount + "] QueueLoom: ".Length)..].Split(' ')[0];
+                    return int.TryParse(number, out var count) ? count : 0;
+                });
+            // On a loaded machine the writers may still be draining: read again, but never past a generous deadline.
+            if (desktopWritten + mcpWritten + dropped >= lines * 2 || waited.Elapsed > TimeSpan.FromMinutes(2)) break;
+            Thread.Sleep(100);
+        }
         Assert.Equal(lines * 2, desktopWritten + mcpWritten + dropped);
         // With the default queue capacity, a 1,500-line burst from each side should not overflow.
         Assert.Equal(0, dropped);

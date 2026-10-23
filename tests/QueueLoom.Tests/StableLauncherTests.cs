@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using QueueLoom.App.Services;
 using QueueLoom.Core.Updates;
@@ -563,8 +565,15 @@ public sealed class StableLauncherTests
     private static Action<string> At(string boundary) => point => { if (point == boundary) throw new Interrupted(); };
     private static async Task WaitFor(string path, Process process)
     {
-        for (var i = 0; i < 1000 && !File.Exists(path) && !process.HasExited; i++) await Task.Delay(10);
-        Assert.True(File.Exists(path), "The isolated process did not reach its interruption barrier.");
+        // Deadline-based: the child does fsync-heavy work, which can be slow on a loaded machine.
+        var watch = Stopwatch.StartNew();
+        while (!File.Exists(path) && !process.HasExited && watch.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(10);
+        if (File.Exists(path)) return;
+        var exited = process.HasExited;
+        if (exited) process.WaitForExit(); // Lets the asynchronous output readers finish.
+        Assert.Fail($"The isolated process did not reach its interruption barrier after {watch.Elapsed}. "
+            + $"Exited: {exited}{(exited ? $" (exit code {process.ExitCode})" : "")}.{Environment.NewLine}"
+            + InstallationFixture.CapturedOutput(process));
     }
 
     internal sealed class InstallationFixture : IDisposable
@@ -630,9 +639,30 @@ public sealed class StableLauncherTests
         {
             var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "UpdateFixture",
                 OperatingSystem.IsWindows() ? "QueueLoom.UpdateFixture.exe" : "QueueLoom.UpdateFixture"))
-            { WorkingDirectory = Root, UseShellExecute = false, CreateNoWindow = true };
+            { WorkingDirectory = Root, UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true };
             foreach (var arg in args) start.ArgumentList.Add(arg);
-            return Process.Start(start)!;
+            var process = Process.Start(start)!;
+            // Capture the child's output so a failure can tell a crash from slowness.
+            var output = Outputs.GetValue(process, _ => new StringBuilder());
+            void Append(string stream, string? line)
+            {
+                if (line is null) return;
+                lock (output) output.Append(stream).Append(": ").AppendLine(line);
+            }
+            process.OutputDataReceived += (_, e) => Append("stdout", e.Data);
+            process.ErrorDataReceived += (_, e) => Append("stderr", e.Data);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            return process;
+        }
+
+        private static readonly ConditionalWeakTable<Process, StringBuilder> Outputs = new();
+
+        public static string CapturedOutput(Process process)
+        {
+            if (!Outputs.TryGetValue(process, out var output)) return "(no output captured)";
+            lock (output) return output.Length == 0 ? "(no output)" : output.ToString();
         }
 
         public async Task<(int Exit, string Output, string Error)> RunLauncher(params string[] args)
