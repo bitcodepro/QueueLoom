@@ -319,7 +319,9 @@ internal static class AwsMessageMapper
         // Only a type name counts; Enum.TryParse would also read another producer's "Number.1" as a QueueLoom type.
         if (label is { Length: > 0 } && char.IsAsciiLetter(label[0]) &&
             Enum.TryParse<ApplicationPropertyType>(label, ignoreCase: false, out var labelled) &&
-            Enum.IsDefined(labelled) && labelled != ApplicationPropertyType.Binary)
+            Enum.IsDefined(labelled) && labelled != ApplicationPropertyType.Binary &&
+            // QueueLoom writes a null property as an empty String.Null; with text it is another producer's String label.
+            (labelled != ApplicationPropertyType.Null || value.Length == 0))
         {
             var typed = new MessageApplicationProperty(name, labelled, value);
             // A familiar suffix alone is not our convention: String.Int32 is still the producer's String,

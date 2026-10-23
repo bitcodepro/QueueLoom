@@ -115,8 +115,10 @@ internal static class KafkaMessageMapper
         // An explicit edit replaces that name's raw occurrences with the edited representation.
         var baseline = ToKafka(new MessageDraft(draft.Body, envelope.OriginalProperties, envelope.OriginalApplicationProperties));
         var names = baseline.Headers.Select(header => header.Key).Concat(headers.Select(header => header.Key)).Distinct(StringComparer.Ordinal);
-        var changed = names.Where(name => !baseline.Headers.Where(header => header.Key == name).Select(header => Convert.ToBase64String(header.GetValueBytes() ?? []))
-            .SequenceEqual(headers.Where(header => header.Key == name).Select(header => Convert.ToBase64String(header.GetValueBytes() ?? []))))
+        // A null header and an empty one are different values, so null is compared as null, not as no bytes.
+        static string? Text(IHeader header) => header.GetValueBytes() is { } bytes ? Convert.ToBase64String(bytes) : null;
+        var changed = names.Where(name => !baseline.Headers.Where(header => header.Key == name).Select(Text)
+            .SequenceEqual(headers.Where(header => header.Key == name).Select(Text)))
             .ToHashSet(StringComparer.Ordinal);
         var raw = new Headers();
         foreach (var header in envelope.Headers)

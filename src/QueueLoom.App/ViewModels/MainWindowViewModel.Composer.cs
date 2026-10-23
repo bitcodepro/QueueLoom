@@ -300,7 +300,7 @@ public sealed partial class MainWindowViewModel
             {
                 _draftSourceMessage.Source, _draftSourceMessage.SubQueue,
                 _draftSourceMessage.SequenceNumber, _draftSourceMessage.Properties.MessageId
-            }, Draft = draft
+            }, Draft = draft with { AzureMessageAnnotations = null }, Annotations = AnnotationFingerprint(draft.AzureMessageAnnotations)
         })))) : string.Empty;
         var attemptKey = (profile.Id, draft.Properties.MessageId!);
         if ((profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns) && isMove &&
@@ -517,6 +517,26 @@ public sealed partial class MainWindowViewModel
                 AzureMessageAnnotations = _draftSourceMessage?.AzureMessageAnnotations,
                 LegacyAmqpBrokerHeaders = _draftSourceMessage?.LegacyAmqpBrokerHeaders ?? false };
     }
+
+    // Raw AMQP annotation values include NaN/Infinity, bytes and other types JSON cannot write as-is,
+    // so the fingerprint uses a type-tagged invariant text for each value, in key order.
+    private static string[]? AnnotationFingerprint(IReadOnlyDictionary<string, object?>? annotations) =>
+        annotations?.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}={AnnotationText(pair.Value)}").ToArray();
+
+    private static string AnnotationText(object? value) => value switch
+    {
+        null => "null",
+        byte[] bytes => $"System.Byte[]:{Convert.ToBase64String(bytes)}",
+        string text => $"System.String:{text}",
+        DateTime time => $"System.DateTime:{time.ToUniversalTime():O}",
+        double number => $"System.Double:{number.ToString("R", CultureInfo.InvariantCulture)}",
+        float number => $"System.Single:{number.ToString("R", CultureInfo.InvariantCulture)}",
+        IFormattable formattable => $"{value.GetType().FullName}:{formattable.ToString(null, CultureInfo.InvariantCulture)}",
+        System.Collections.IDictionary map => $"{value.GetType().FullName}:{{{string.Join(",", map.Keys.Cast<object>()
+            .Select(key => $"{AnnotationText(key)}={AnnotationText(map[key])}").Order(StringComparer.Ordinal))}}}",
+        System.Collections.IEnumerable items => $"{value.GetType().FullName}:[{string.Join(",", items.Cast<object?>().Select(AnnotationText))}]",
+        _ => $"{value.GetType().FullName}:{value}"
+    };
 
     private string? NormalizeDraftProperty(string? value, string? original)
     {
