@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
@@ -43,11 +44,13 @@ public sealed class ResendDialogViewModel : ObservableObject
         bool requiresTypedConfirmation,
         bool canRemoveOriginals = true,
         Func<DateTimeOffset>? now = null,
-        bool requiresNewIdsForMove = false)
+        bool requiresNewIdsForMove = false,
+        MessagingProvider? destinationProvider = null)
     {
         _now = now ?? (() => DateTimeOffset.Now);
         CanRemoveOriginals = canRemoveOriginals;
         RequiresNewIdsForMove = requiresNewIdsForMove;
+        DestinationProvider = destinationProvider;
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
         {
@@ -70,6 +73,8 @@ public sealed class ResendDialogViewModel : ObservableObject
 
     public string EnvironmentName { get; }
     public bool RequiresNewIdsForMove { get; }
+    /// <summary>The service the copies go to (the connected one); null when the caller does not say.</summary>
+    public MessagingProvider? DestinationProvider { get; }
     public bool PreserveMessageIds
     {
         get => _preserveMessageIds;
@@ -291,7 +296,11 @@ public sealed class ResendDialogViewModel : ObservableObject
             var ids = PreserveMessageIds
                 ? "\n\nMessage IDs are preserved. Duplicate detection may accept the send but suppress delivery. Azure and SQS/SNS FIFO moves require new IDs; use copy to preserve IDs."
                 : "\n\nEvery copy receives a distinct new Message ID, assigned before sending and retained for retries and scheduled sends.";
-            return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{ids}{fanOut}{rewrite}";
+            var binary = DestinationProvider is { } provider &&
+                         ApplicationPropertyValues.AzureBinaryNotice(provider, Messages.SelectMany(message => message.ApplicationProperties)) is { } notice
+                ? $"\n\n{notice}"
+                : string.Empty;
+            return $"Environment: {EnvironmentName}\n{string.Join("\n", sources)}\n\n{mode}{ids}{fanOut}{binary}{rewrite}";
         }
     }
 

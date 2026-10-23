@@ -50,8 +50,23 @@ internal static class AzureMessageMapper
             message.LockedUntil == default ? null : message.LockedUntil,
             message.DeadLetterReason,
             message.DeadLetterErrorDescription,
-            body.Length);
+            body.Length)
+        { AzureMessageAnnotations = SenderAnnotations(message.GetRawAmqpMessage().MessageAnnotations) };
     }
+
+    /// <summary>
+    /// Message annotations the sender set. Service Bus owns every "x-opt-" annotation (sequence number, enqueued
+    /// time, locked-until, partition, dead-letter source and so on) and sets them again on the copy.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, object?>? SenderAnnotations(IEnumerable<KeyValuePair<string, object?>> annotations)
+    {
+        var kept = annotations
+            .Where(annotation => !annotation.Key.StartsWith(BrokerAnnotationPrefix, StringComparison.Ordinal))
+            .ToDictionary(annotation => annotation.Key, annotation => annotation.Value, StringComparer.Ordinal);
+        return kept.Count == 0 ? null : kept;
+    }
+
+    private const string BrokerAnnotationPrefix = "x-opt-";
 
     public static ServiceBusMessage ToAzure(MessageDraft draft)
     {
@@ -89,7 +104,15 @@ internal static class AzureMessageMapper
 
         foreach (var property in draft.ApplicationProperties)
         {
-            message.ApplicationProperties.Add(property.Name, ParseApplicationProperty(property));
+            // Service Bus accepts a null application property.
+            message.ApplicationProperties.Add(property.Name, ParseApplicationProperty(property)!);
+        }
+        if (draft.AzureMessageAnnotations is { } annotations && SenderAnnotations(annotations) is { } sent)
+        {
+            foreach (var (name, value) in sent)
+            {
+                message.GetRawAmqpMessage().MessageAnnotations[name] = value;
+            }
         }
 
         return message;
@@ -103,7 +126,7 @@ internal static class AzureMessageMapper
     /// Base64 text: the service rejects byte[] application properties with MessageSizeExceeded, and the SDK documents
     /// Base64 text as the workaround. The bytes are kept exactly, only their representation changes.
     /// </summary>
-    private static object ParseApplicationProperty(MessageApplicationProperty property) =>
+    private static object? ParseApplicationProperty(MessageApplicationProperty property) =>
         property.Type == ApplicationPropertyType.Binary
             ? Convert.ToBase64String(Convert.FromBase64String(property.Value))
             : ApplicationPropertyValues.ToObject(property);

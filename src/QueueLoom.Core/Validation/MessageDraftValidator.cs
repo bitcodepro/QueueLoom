@@ -522,6 +522,7 @@ public static class MessageDraftValidator
         ApplicationPropertyType.TimeSpan => TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out _),
         ApplicationPropertyType.Uri => System.Uri.TryCreate(value, UriKind.RelativeOrAbsolute, out _),
         ApplicationPropertyType.Binary => IsBase64(value),
+        ApplicationPropertyType.Null => value.Length == 0,
         _ => false
     };
 

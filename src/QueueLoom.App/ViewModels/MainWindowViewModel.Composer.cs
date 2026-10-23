@@ -286,6 +286,10 @@ public sealed partial class MainWindowViewModel
         {
             warning += "\n\nThe original MessageId is currently preserved. With duplicate detection enabled, Azure and SQS/SNS FIFO may accept the send but suppress the duplicate; change MessageId when a distinct delivery is required.";
         }
+        if (ApplicationPropertyValues.AzureBinaryNotice(profile.Provider, draft.ApplicationProperties) is { } binaryNotice)
+        {
+            warning += $"\n\n{binaryNotice}";
+        }
         var isMove = _draftSourceMessage is { IsDeadLetter: true } && DraftMovesOriginal && !_draftSourceIsLocalBackup;
         // Keep the same identity for an unchanged retry, including an accepted send whose response was lost.
         // A copy or an edited move is a different operation and must not reuse its attempted duplicate detection ID.
@@ -296,7 +300,7 @@ public sealed partial class MainWindowViewModel
             {
                 _draftSourceMessage.Source, _draftSourceMessage.SubQueue,
                 _draftSourceMessage.SequenceNumber, _draftSourceMessage.Properties.MessageId
-            }, Draft = draft
+            }, Draft = draft with { AzureMessageAnnotations = null }, Annotations = AnnotationFingerprint(draft.AzureMessageAnnotations)
         })))) : string.Empty;
         var attemptKey = (profile.Id, draft.Properties.MessageId!);
         if ((profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns) && isMove &&
@@ -500,8 +504,29 @@ public sealed partial class MainWindowViewModel
             new EditableMessageBody(DraftBody ?? string.Empty, DraftBodyFormat),
             properties,
             applicationProperties) { KafkaEnvelope = _draftSourceMessage?.KafkaEnvelope,
+                AzureMessageAnnotations = _draftSourceMessage?.AzureMessageAnnotations,
                 LegacyAmqpBrokerHeaders = _draftSourceMessage?.LegacyAmqpBrokerHeaders ?? false };
     }
+
+    // Raw AMQP annotation values include NaN/Infinity, bytes and other types JSON cannot write as-is,
+    // so the fingerprint uses a type-tagged invariant text for each value, in key order.
+    private static string[]? AnnotationFingerprint(IReadOnlyDictionary<string, object?>? annotations) =>
+        annotations?.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}={AnnotationText(pair.Value)}").ToArray();
+
+    private static string AnnotationText(object? value) => value switch
+    {
+        null => "null",
+        byte[] bytes => $"System.Byte[]:{Convert.ToBase64String(bytes)}",
+        string text => $"System.String:{text}",
+        DateTime time => $"System.DateTime:{time.ToUniversalTime():O}",
+        double number => $"System.Double:{number.ToString("R", CultureInfo.InvariantCulture)}",
+        float number => $"System.Single:{number.ToString("R", CultureInfo.InvariantCulture)}",
+        IFormattable formattable => $"{value.GetType().FullName}:{formattable.ToString(null, CultureInfo.InvariantCulture)}",
+        System.Collections.IDictionary map => $"{value.GetType().FullName}:{{{string.Join(",", map.Keys.Cast<object>()
+            .Select(key => $"{AnnotationText(key)}={AnnotationText(map[key])}").Order(StringComparer.Ordinal))}}}",
+        System.Collections.IEnumerable items => $"{value.GetType().FullName}:[{string.Join(",", items.Cast<object?>().Select(AnnotationText))}]",
+        _ => $"{value.GetType().FullName}:{value}"
+    };
 
     private string? NormalizeDraftProperty(string? value, string? original)
     {
