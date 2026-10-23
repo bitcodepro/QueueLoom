@@ -763,8 +763,9 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         /// Extends the acknowledgement deadline of messages still held. A modifyAckDeadline is not a delivery attempt, so
         /// unlike letting them come back and pulling them again, it does not move a message toward the dead-letter topic.
         /// </summary>
-        public async Task RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
+        public async Task<IReadOnlyCollection<LeasedMessage>> RenewAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
         {
+            var failed = new List<LeasedMessage>();
             foreach (var chunk in messages.Chunk(1_000))
             {
                 try
@@ -776,8 +777,10 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                 catch (RpcException) when (!cancellationToken.IsCancellationRequested)
                 {
                     // Best effort: these come back when their current deadline ends, as without the renewal.
+                    failed.AddRange(chunk);
                 }
             }
+            return failed;
         }
 
         public async Task ReleaseAsync(IReadOnlyCollection<LeasedMessage> messages, CancellationToken cancellationToken)
