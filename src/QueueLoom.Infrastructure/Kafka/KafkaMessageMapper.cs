@@ -93,9 +93,13 @@ internal static class KafkaMessageMapper
             {
                 continue;
             }
-            headers.Add(property.Name, property.Type == ApplicationPropertyType.Binary
-                ? Convert.FromBase64String(property.Value)
-                : Encoding.UTF8.GetBytes(property.Value));
+            // A Kafka header value may be null.
+            headers.Add(property.Name, property.Type switch
+            {
+                ApplicationPropertyType.Binary => Convert.FromBase64String(property.Value),
+                ApplicationPropertyType.Null => null,
+                _ => Encoding.UTF8.GetBytes(property.Value)
+            });
         }
 
         var key = draft.Properties.PartitionKey ?? draft.Properties.SessionId;

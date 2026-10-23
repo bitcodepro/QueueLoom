@@ -62,7 +62,7 @@ public sealed record MessageRewrite(string Find, string Replacement, bool InBody
             }
         }
 
-        return changed ? new MessageDraft(body, properties, applicationProperties) { KafkaEnvelope = draft.KafkaEnvelope,
+        return changed ? new MessageDraft(body, properties, applicationProperties) { KafkaEnvelope = draft.KafkaEnvelope, AzureMessageAnnotations = draft.AzureMessageAnnotations,
             LegacyAmqpMetadata = draft.LegacyAmqpMetadata, LegacyAmqpBrokerHeaders = draft.LegacyAmqpBrokerHeaders } : draft;
     }
 

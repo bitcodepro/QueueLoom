@@ -21,5 +21,8 @@ public enum ApplicationPropertyType
     DateTimeOffset,
     TimeSpan,
     Uri,
-    Binary
+    Binary,
+
+    /// <summary>A property whose value is null (Service Bus and AMQP carry it); its text is always empty.</summary>
+    Null
 }

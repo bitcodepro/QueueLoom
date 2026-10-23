@@ -286,6 +286,10 @@ public sealed partial class MainWindowViewModel
         {
             warning += "\n\nThe original MessageId is currently preserved. With duplicate detection enabled, Azure and SQS/SNS FIFO may accept the send but suppress the duplicate; change MessageId when a distinct delivery is required.";
         }
+        if (ApplicationPropertyValues.AzureBinaryNotice(profile.Provider, draft.ApplicationProperties) is { } binaryNotice)
+        {
+            warning += $"\n\n{binaryNotice}";
+        }
         var isMove = _draftSourceMessage is { IsDeadLetter: true } && DraftMovesOriginal && !_draftSourceIsLocalBackup;
         // Keep the same identity for an unchanged retry, including an accepted send whose response was lost.
         // A copy or an edited move is a different operation and must not reuse its attempted duplicate detection ID.
@@ -510,6 +514,7 @@ public sealed partial class MainWindowViewModel
             new EditableMessageBody(DraftBody ?? string.Empty, DraftBodyFormat),
             properties,
             applicationProperties) { KafkaEnvelope = _draftSourceMessage?.KafkaEnvelope,
+                AzureMessageAnnotations = _draftSourceMessage?.AzureMessageAnnotations,
                 LegacyAmqpBrokerHeaders = _draftSourceMessage?.LegacyAmqpBrokerHeaders ?? false };
     }
 

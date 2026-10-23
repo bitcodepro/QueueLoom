@@ -12,6 +12,8 @@ public static class ApplicationPropertyValues
     {
         var (type, text) = value switch
         {
+            // Service Bus and AMQP carry a null value; it stays null instead of becoming empty text.
+            null => (ApplicationPropertyType.Null, string.Empty),
             string typed => (ApplicationPropertyType.String, typed),
             bool typed => (ApplicationPropertyType.Boolean, typed.ToString(CultureInfo.InvariantCulture)),
             byte typed => (ApplicationPropertyType.Byte, typed.ToString(CultureInfo.InvariantCulture)),
@@ -38,11 +40,24 @@ public static class ApplicationPropertyValues
         return new MessageApplicationProperty(name, type, text);
     }
 
+    /// <summary>
+    /// What a send confirmation says when Binary properties go to Azure Service Bus: the service rejects byte[]
+    /// application properties, so they arrive as their Base64 text. Null for any other destination or draft.
+    /// </summary>
+    public static string? AzureBinaryNotice(QueueLoom.Core.Profiles.MessagingProvider provider, IEnumerable<MessageApplicationProperty> properties)
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+        return provider == QueueLoom.Core.Profiles.MessagingProvider.AzureServiceBus &&
+               properties.Any(property => property.Type == ApplicationPropertyType.Binary)
+            ? "Binary application properties arrive as Base64 text: Azure Service Bus does not accept byte values."
+            : null;
+    }
+
     /// <summary>The typed value; throws <see cref="FormatException"/> when the text does not fit the type.</summary>
     /// <summary>The Decimal spellings QueueLoom accepts wherever it reads one, such as "1,000", "100-" and "1e3".</summary>
     public const NumberStyles DecimalStyle = NumberStyles.Number | NumberStyles.AllowExponent;
 
-    public static object ToObject(MessageApplicationProperty property)
+    public static object? ToObject(MessageApplicationProperty property)
     {
         ArgumentNullException.ThrowIfNull(property);
         try
@@ -56,7 +71,7 @@ public static class ApplicationPropertyValues
         }
     }
 
-    private static object Parse(MessageApplicationProperty property)
+    private static object? Parse(MessageApplicationProperty property)
     {
         var value = property.Value;
         return property.Type switch
@@ -82,6 +97,7 @@ public static class ApplicationPropertyValues
             ApplicationPropertyType.TimeSpan => TimeSpan.Parse(value, CultureInfo.InvariantCulture),
             ApplicationPropertyType.Uri => new Uri(value, UriKind.RelativeOrAbsolute),
             ApplicationPropertyType.Binary => Convert.FromBase64String(value),
+            ApplicationPropertyType.Null => value.Length == 0 ? null : throw new FormatException("A null property has no value."),
             _ => throw new FormatException($"Unsupported application property type {property.Type}.")
         };
     }

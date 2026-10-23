@@ -107,6 +107,11 @@ public sealed record BrowsedMessage
     /// <summary>Partition and offset of a message in a log (Kafka); null elsewhere.</summary>
     public LogPosition? Position { get; init; }
     public KafkaEnvelope? KafkaEnvelope { get; init; }
+    /// <summary>
+    /// Sender-set AMQP message annotations of an Azure Service Bus message (broker-owned "x-opt-" ones left out), so an
+    /// Azure-to-Azure resend keeps them; null elsewhere. Kept in memory only, like the raw AMQP values they are.
+    /// </summary>
+    public IReadOnlyDictionary<string, object?>? AzureMessageAnnotations { get; init; }
 
     /// <summary>The registry schema of a body in the Confluent wire format, when one was found.</summary>
     public MessageSchema? Schema { get; init; }
@@ -125,6 +130,6 @@ public sealed record BrowsedMessage
         // and backup, but leave it out of every outgoing draft (including editor, replay and scheduled copies).
         return new MessageDraft(EditableMessageBody.FromBytes(_body), Properties,
             ApplicationProperties.Where(property => !BrokerOwnedHeaders.Contains(property.Name)))
-            { KafkaEnvelope = KafkaEnvelope, LegacyAmqpBrokerHeaders = LegacyAmqpBrokerHeaders };
+            { KafkaEnvelope = KafkaEnvelope, AzureMessageAnnotations = AzureMessageAnnotations, LegacyAmqpBrokerHeaders = LegacyAmqpBrokerHeaders };
     }
 }
