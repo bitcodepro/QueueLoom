@@ -144,8 +144,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         IScheduledResendStore? scheduledResends = null,
         DiagnosticsJournal? diagnostics = null,
         LegacyBackupMigration? backupMigration = null,
-        IComposerTemplateStore? templates = null)
+        IComposerTemplateStore? templates = null,
+        IMonitorIncidentStore? monitorIncidents = null)
     {
+        _monitorIncidentStore = monitorIncidents;
         _profileRepository = profileRepository;
         _secretVault = secretVault;
         _workspace = workspace;
@@ -452,6 +454,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             // Environments first: a damaged or unreadable activity journal must not leave the app without them.
             await ReloadProfilesAsync(token).ConfigureAwait(true);
             await LoadComposerTemplatesAsync(token).ConfigureAwait(true);
+            await RestoreMonitorIncidentsAsync(token).ConfigureAwait(true);
             try
             {
                 await LoadActivityHistoryAsync().ConfigureAwait(true);
@@ -810,6 +813,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         }
         // The Monitors history read is linked to the shutdown cancellation, cancelled above.
         pending.Add(HistoryRefresh);
+        pending.Add(_monitorIncidentSave);
         var drained = Task.WhenAll(pending);
         // A broker call that ignores cancellation must not keep the window from closing forever.
         var finished = await Task.WhenAny(drained, Task.Delay(ShutdownDrainTimeout, Clock)).ConfigureAwait(true);

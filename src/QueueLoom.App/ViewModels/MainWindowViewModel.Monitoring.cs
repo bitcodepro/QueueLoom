@@ -721,5 +721,6 @@ public sealed partial class MainWindowViewModel
         OnPropertyChanged(nameof(MonitorNotificationCount));
         Navigation.First(item => item.Key == nameof(NavigationPage.Monitors)).AlertCount = MonitorNotifications.Count;
         ClearMonitorNotificationsCommand.NotifyCanExecuteChanged();
+        SaveMonitorIncidents();
     }
 }
