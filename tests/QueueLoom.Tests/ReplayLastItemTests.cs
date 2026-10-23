@@ -29,6 +29,45 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(plan.Count - 1, delays);
     }
 
+    // A resumed plan whose last item was already sent (through operation history) finishes with item 0: a
+    // cancellation on that last acknowledgement must not stop it at the already-sent item that follows.
+    [Fact]
+    public async Task AResumedReplayCancelledAfterItsLastPendingSendIsCompleted()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new BatchReplayStore(directory.Path);
+        var plan = await PrepareReplayRegression(store, profile);
+        var workspace = new FakeWorkspace();
+        await workspace.ConnectAsync(profile);
+        await store.RunItemsAsync(plan, [1], false, workspace, () => true, null, default);
+        using var cancellation = new CancellationTokenSource();
+        var progress = new Immediate(report => { if (report.Sent == report.Total) cancellation.Cancel(); });
+
+        var result = await store.RunAsync(plan, workspace, () => true, progress, cancellation.Token);
+
+        Assert.Equal("Completed", result.Status);
+        Assert.Equal(2, workspace.SentMessages.Count);
+    }
+
+    // Cancelling while work remains still stops the replay.
+    [Fact]
+    public async Task AReplayCancelledWithItemsLeftStops()
+    {
+        using var directory = new TemporaryDirectory();
+        var profile = CreateProfile("Test", EnvironmentKind.Test, ProfileAccessMode.ReadWrite);
+        var store = new BatchReplayStore(directory.Path);
+        var plan = await PrepareReplayRegression(store, profile);
+        var workspace = new FakeWorkspace();
+        await workspace.ConnectAsync(profile);
+        using var cancellation = new CancellationTokenSource();
+        var progress = new Immediate(report => { if (report.Sent == 1) cancellation.Cancel(); });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.RunAsync(plan, workspace, () => true, progress, cancellation.Token));
+
+        Assert.Single(workspace.SentMessages);
+    }
+
     private sealed class Immediate(Action<ReplayProgress> report) : IProgress<ReplayProgress>
     {
         public void Report(ReplayProgress value) => report(value);

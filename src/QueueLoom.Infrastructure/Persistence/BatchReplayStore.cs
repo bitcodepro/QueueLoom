@@ -128,10 +128,12 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         }
         try
         {
-            for (var i = 0; i < plan.Count; i++)
+            // Stops once every item is sent: already-sent items after the last pending one are not work a
+            // cancellation could stop.
+            for (var i = 0; i < plan.Count && sent < plan.Count; i++)
             {
-                token.ThrowIfCancellationRequested();
                 if (ReadState(folder, i) == "Sent") continue;
+                token.ThrowIfCancellationRequested();
                 ValidateConnection(plan, workspace, canWrite);
                 var item = await ReadPayload(folder, i, token);
                 var stateFile = Path.Combine(folder, $"{i:D6}.state");
