@@ -202,8 +202,11 @@ public sealed partial class ViewModelStateTests
             "Edge-12" => TimeZoneInfo.CreateCustomTimeZone("Edge-12", TimeSpan.FromHours(-12), "Edge-12", "Edge-12"),
             _ => TimeZoneInfo.FindSystemTimeZoneById(zoneId)
         };
-        var offset = zone.BaseUtcOffset;
-        var representable = text.StartsWith("9999", StringComparison.Ordinal) ? offset >= TimeSpan.Zero : offset <= TimeSpan.Zero;
+        // The zone's offset at that date: on Linux the IANA data gives local mean time near year 1 (New York -04:56:02),
+        // which is not a whole minute and so has no DateTimeOffset either.
+        var offset = zone.GetUtcOffset(DateTime.Parse(text, System.Globalization.CultureInfo.InvariantCulture));
+        var representable = (text.StartsWith("9999", StringComparison.Ordinal) ? offset >= TimeSpan.Zero : offset <= TimeSpan.Zero) &&
+                            offset.Ticks % TimeSpan.TicksPerMinute == 0;
 
         var parsed = ResendDialogViewModel.TryParseInstant(text, System.Globalization.CultureInfo.InvariantCulture, zone, out var instant);
 

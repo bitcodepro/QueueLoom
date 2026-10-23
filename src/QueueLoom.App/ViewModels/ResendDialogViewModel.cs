@@ -475,11 +475,16 @@ public sealed class ResendDialogViewModel : ObservableObject
         }
     }
 
-    /// <summary>False when the wall time minus the offset falls outside 0001-01-01..9999-12-31 UTC.</summary>
+    /// <summary>
+    /// False when the wall time minus the offset falls outside 0001-01-01..9999-12-31 UTC, or when the offset is not a
+    /// whole number of minutes (local mean time in the IANA data, such as New York's -04:56:02 before 1883), which a
+    /// DateTimeOffset cannot carry.
+    /// </summary>
     private static bool TryAtOffset(DateTime wall, TimeSpan offset, out DateTimeOffset instant)
     {
         var utcTicks = wall.Ticks - offset.Ticks;
-        if (utcTicks < DateTime.MinValue.Ticks || utcTicks > DateTime.MaxValue.Ticks)
+        if (utcTicks < DateTime.MinValue.Ticks || utcTicks > DateTime.MaxValue.Ticks ||
+            offset.Ticks % TimeSpan.TicksPerMinute != 0)
         {
             instant = default;
             return false;
