@@ -310,37 +310,81 @@ public sealed partial class ViewModelStateTests
     }
 
     // A scheduled time typed without an offset was read as UTC, while the resend dialog reads the same text as local time:
-    // "2026-08-11 14:30" scheduled the message two hours late for an operator at UTC+2. A time without an offset is now
-    // refused, and one with an offset (or Z) is sent as that instant.
+    // "2026-08-11 14:30" scheduled the message hours late or early. Both now read it as the operator's local time, in the
+    // same zone and with the same daylight-saving rules; a time with an offset (or Z) is sent as that instant.
     [Theory]
-    [InlineData("2026-08-11 14:30", null)]
-    [InlineData("2026-08-11T14:30:00", null)]
+    [InlineData("2026-08-11 14:30", "2026-08-11T14:30:00-04:00")]
+    [InlineData("2026-08-11T14:30:00", "2026-08-11T14:30:00-04:00")]
+    [InlineData("2026-01-11T14:30:00", "2026-01-11T14:30:00-05:00")]
     [InlineData("2026-08-11T14:30:00Z", "2026-08-11T14:30:00+00:00")]
     [InlineData("2026-08-11T14:30:00+02:00", "2026-08-11T14:30:00+02:00")]
-    public async Task Composer_AScheduledTimeWithoutAnOffsetIsRefused(string text, string? expected)
+    // Spring-forward gap: 02:30 does not exist, the first valid local time after the gap is used.
+    [InlineData("2026-03-08T02:30:00", "2026-03-08T03:00:00-04:00")]
+    // Seconds and fractions in the gap still give the first valid instant, 03:00:00, not 03:00 plus those seconds.
+    [InlineData("2026-03-08T02:59:59.5", "2026-03-08T03:00:00-04:00")]
+    [InlineData("2026-03-08T02:30:15", "2026-03-08T03:00:00-04:00")]
+    // Fall-back fold: 01:30 happens twice, the earlier one is used.
+    [InlineData("2026-11-01T01:30:00", "2026-11-01T01:30:00-04:00")]
+    public async Task Composer_AScheduledTimeWithoutAnOffsetIsLocalTime(string text, string expected)
+    {
+        var viewModel = await ComposerWithScheduleAsync(text);
+        await using var _ = viewModel.ViewModel;
+
+        await viewModel.ViewModel.SendDraftCommand.ExecuteAsync();
+
+        var sent = Assert.Single(viewModel.Workspace.SentMessages).Message.Properties.ScheduledEnqueueTime;
+        Assert.Equal(DateTimeOffset.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), sent);
+        Assert.Equal(DateTimeOffset.Parse(expected, System.Globalization.CultureInfo.InvariantCulture).Offset, sent!.Value.Offset);
+    }
+
+    [Fact]
+    public async Task Composer_AScheduledTimeThatIsNotATimestampIsRefused()
+    {
+        var viewModel = await ComposerWithScheduleAsync("tomorrow-ish");
+        await using var _ = viewModel.ViewModel;
+
+        await viewModel.ViewModel.SendDraftCommand.ExecuteAsync();
+
+        Assert.Empty(viewModel.Workspace.SentMessages);
+        Assert.Contains("local time", viewModel.ViewModel.ErrorText, StringComparison.Ordinal);
+    }
+
+    // A local time at the very edge of the calendar has no UTC instant in a zone whose offset pushes it past
+    // 0001-01-01 or 9999-12-31. It is the usual schedule error, not an ArgumentOutOfRangeException out of the send.
+    [Theory]
+    [InlineData("9999-12-31T23:59:59", "America/New_York")]
+    [InlineData("0001-01-01T00:00:00", "Asia/Tokyo")]
+    public async Task Composer_AScheduledLocalTimeWithNoUtcInstantIsRefused(string text, string zoneId)
+    {
+        var viewModel = await ComposerWithScheduleAsync(text, zoneId);
+        await using var _ = viewModel.ViewModel;
+
+        await viewModel.ViewModel.SendDraftCommand.ExecuteAsync();
+
+        Assert.Empty(viewModel.Workspace.SentMessages);
+        Assert.Contains("local time", viewModel.ViewModel.ErrorText, StringComparison.Ordinal);
+    }
+
+    private async Task<(MainWindowViewModel ViewModel, FakeWorkspace Workspace)> ComposerWithScheduleAsync(
+        string text, string zoneId = "America/New_York")
     {
         var profile = CreateProfile("Orders", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
         var workspace = new FakeWorkspace();
         var dialogs = new FakeDialogService { ConfirmResult = true };
-        await using var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
+        var viewModel = CreateViewModel(new FakeProfileRepository([profile], profile.Id), workspace, dialogs);
+        viewModel.Clock = new ZonedClock(TimeZoneInfo.FindSystemTimeZoneById(zoneId));
         await viewModel.InitializeAsync();
         await viewModel.ConnectCommand.ExecuteAsync();
         viewModel.Destinations.Add(new DestinationItemViewModel(ServiceBusEntityReference.Queue("orders")));
         viewModel.NewMessageCommand.Execute(null);
         viewModel.SelectedDestination = viewModel.Destinations.Last();
         viewModel.DraftScheduledEnqueueTime = text;
+        return (viewModel, workspace);
+    }
 
-        await viewModel.SendDraftCommand.ExecuteAsync();
-
-        if (expected is null)
-        {
-            Assert.Empty(workspace.SentMessages);
-            Assert.Contains("offset", viewModel.ErrorText, StringComparison.OrdinalIgnoreCase);
-        }
-        else
-        {
-            var sent = Assert.Single(workspace.SentMessages).Message.Properties.ScheduledEnqueueTime;
-            Assert.Equal(DateTimeOffset.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), sent);
-        }
+    /// <summary>The system clock seen from a fixed zone, so the tests do not depend on the machine's zone.</summary>
+    private sealed class ZonedClock(TimeZoneInfo zone) : TimeProvider
+    {
+        public override TimeZoneInfo LocalTimeZone => zone;
     }
 }
