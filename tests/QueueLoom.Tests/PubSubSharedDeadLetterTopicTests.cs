@@ -923,7 +923,9 @@ public sealed class PubSubSharedDeadLetterTopicTests : IDisposable
 
     private static ResendItem Item(ServiceBusEntityReference source, long sequence)
     {
-        var original = new BrowsedMessage(source, ServiceBusSubQueue.DeadLetter, sequence, "x"u8.ToArray(), new EditableMessageProperties(MessageId: $"m{sequence}"));
+        // As browsed: Pub/Sub's sequence number is derived from its message ID (the fake hands out "m1", "m2", …).
+        var original = new BrowsedMessage(source, ServiceBusSubQueue.DeadLetter, LeasedMessageIdentity.SequenceNumberFor($"m{sequence}"),
+            "x"u8.ToArray(), new EditableMessageProperties(MessageId: $"m{sequence}"));
         return new ResendItem(original, ServiceBusEntityReference.Topic("events"), original.CreateDraft());
     }
 

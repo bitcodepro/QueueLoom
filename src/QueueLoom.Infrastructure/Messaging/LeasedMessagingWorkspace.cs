@@ -948,10 +948,11 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
 
         return keys.Select(key => new DeadLetterMessageDeletionResult(key, outcomes[key].Outcome, outcomes[key].Detail)).ToArray();
 
+        // The sequence number is the broker's own; the message ID is the producer's and need not be unique (copies resent
+        // with their IDs share it), so it is checked as well, never instead.
         static bool Matches(DeadLetterMessageKey key, BrowsedMessage message) =>
-            key.MessageId is { Length: > 0 } messageId
-                ? string.Equals(messageId, message.Properties.MessageId, StringComparison.Ordinal)
-                : key.SequenceNumber == message.SequenceNumber;
+            key.SequenceNumber == message.SequenceNumber &&
+            (key.MessageId is not { Length: > 0 } messageId || string.Equals(messageId, message.Properties.MessageId, StringComparison.Ordinal));
     }
 
     /// <inheritdoc />

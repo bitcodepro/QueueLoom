@@ -128,10 +128,12 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
         }
         try
         {
-            for (var i = 0; i < plan.Count; i++)
+            // Stops once every item is sent: already-sent items after the last pending one are not work a
+            // cancellation could stop.
+            for (var i = 0; i < plan.Count && sent < plan.Count; i++)
             {
-                token.ThrowIfCancellationRequested();
                 if (ReadState(folder, i) == "Sent") continue;
+                token.ThrowIfCancellationRequested();
                 ValidateConnection(plan, workspace, canWrite);
                 var item = await ReadPayload(folder, i, token);
                 var stateFile = Path.Combine(folder, $"{i:D6}.state");
@@ -153,7 +155,9 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
                 await WriteStateAsync(stateFile, "Sent", CancellationToken.None);
                 sent++;
                 progress?.Report(new ReplayProgress(plan.Id, sent, plan.Count, "Sending copies; originals retained"));
-                await Task.Delay(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token);
+                // The rate spaces sends; there is nothing to wait for after the last one, and a cancellation then
+                // would report a finished batch as stopped.
+                if (sent < plan.Count) await DelayAsync(TimeSpan.FromSeconds(1d / plan.MessagesPerSecond), token);
             }
             return new ReplayProgress(plan.Id, sent, plan.Count, "Completed");
         }
