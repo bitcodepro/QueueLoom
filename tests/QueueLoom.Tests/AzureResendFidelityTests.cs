@@ -145,7 +145,7 @@ public sealed class AzureResendFidelityTests
     [Fact]
     public void KafkaUntouchedNullHeaderStaysNull()
     {
-        var draft = EditKafka(null, new MessageApplicationProperty("p", ApplicationPropertyType.String, string.Empty));
+        var draft = EditKafka(null, new MessageApplicationProperty("p", ApplicationPropertyType.Null, string.Empty));
         Assert.Null(Assert.Single(KafkaMessageMapper.ToKafka(draft).Headers, header => header.Key == "p").GetValueBytes());
     }
 

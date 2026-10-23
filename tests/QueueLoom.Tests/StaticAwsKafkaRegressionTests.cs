@@ -58,6 +58,8 @@ public sealed class StaticAwsKafkaRegressionTests
         Assert.Equal(new LogPosition(3, 42), browsed.Position);
         var vm = new MessageItemViewModel(browsed);
         using var inspector = JsonDocument.Parse(vm.ApplicationPropertiesJson);
+        // The last kafka.partition header is null, so the inspector shows it as a Null property.
+        Assert.Equal("Null", inspector.RootElement.GetProperty("kafka.partition").GetProperty("type").GetString());
         using var runtime = JsonDocument.Parse(vm.PropertiesJson);
         Assert.Equal(3, runtime.RootElement.GetProperty("runtime").GetProperty("position").GetProperty("Partition").GetInt32());
         Assert.Equal(42, runtime.RootElement.GetProperty("runtime").GetProperty("position").GetProperty("Offset").GetInt64());
@@ -82,7 +84,7 @@ public sealed class StaticAwsKafkaRegressionTests
             replay.Headers.Select(h => (h.Key, h.GetValueBytes() is null ? null : Convert.ToBase64String(h.GetValueBytes()))));
         // An explicit composer edit replaces both raw occurrences, including a null header.
         var edited = new MessageDraft(draft.Body, draft.Properties,
-            composer.Select(p => p.Name == "kafka.partition" ? p with { Value = "edited" } : p)) { KafkaEnvelope = draft.KafkaEnvelope };
+            composer.Select(p => p.Name == "kafka.partition" ? p with { Type = ApplicationPropertyType.String, Value = "edited" } : p)) { KafkaEnvelope = draft.KafkaEnvelope };
         Assert.Equal("edited", System.Text.Encoding.UTF8.GetString(KafkaMessageMapper.ToKafka(edited).Headers.Single(h => h.Key == "kafka.partition").GetValueBytes()));
     }
 

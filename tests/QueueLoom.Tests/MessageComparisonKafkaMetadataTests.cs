@@ -32,7 +32,8 @@ public sealed class MessageComparisonKafkaMetadataTests
     {
         var left = Browse(null);
         var right = Browse([]);
-        Assert.Equal(left.ApplicationProperties, right.ApplicationProperties);
+        // The null header reads as a Null property, the empty one as empty text.
+        Assert.NotEqual(left.ApplicationProperties, right.ApplicationProperties);
 
         Assert.False(MessageComparison.Compare(left, right).AreEqual);
     }
