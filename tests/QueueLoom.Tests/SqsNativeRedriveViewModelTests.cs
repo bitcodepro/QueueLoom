@@ -1,3 +1,4 @@
+using System.Reflection;
 using QueueLoom.App.ViewModels;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Profiles;
@@ -106,7 +107,11 @@ public sealed partial class ViewModelStateTests
         vm.SelectedEntity = vm.Entities.Single(entity => entity.IsQueue);
         workspace.AfterRedriveSubmitted = () => clock.Advance(TimeSpan.FromMinutes(11));
 
+        // The expired unlock relocks writes in the background (off any UI thread here) and records it in Activity:
+        // await that task before reading Activity, which it would otherwise change while the assertions enumerate it.
+        var relock = (Task)typeof(MainWindowViewModel).GetField("_writeUnlockTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
         await vm.RedriveSelectedDeadLettersCommand.ExecuteAsync();
+        await relock.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Single(workspace.RedriveStarts);
         Assert.Contains(vm.Activity, item => item.Action == "DLQ redrive accepted by AWS");
