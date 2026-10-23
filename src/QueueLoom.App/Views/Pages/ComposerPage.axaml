@@ -164,9 +164,9 @@
                   <TextBox AutomationProperties.Name="Transaction partition key" Text="{Binding DraftTransactionPartitionKey}" />
                 </StackPanel>
                 <StackPanel Spacing="7">
-                  <TextBlock Text="SCHEDULED ENQUEUE · ISO 8601" Classes="eyebrow" />
+                  <TextBlock Text="SCHEDULED ENQUEUE · ISO 8601, LOCAL TIME UNLESS Z OR OFFSET" Classes="eyebrow" />
                   <TextBox AutomationProperties.Name="Scheduled enqueue time" Text="{Binding DraftScheduledEnqueueTime}"
-                           PlaceholderText="2026-08-11T14:30:00Z" />
+                           PlaceholderText="2026-08-11T14:30 (local) or 2026-08-11T14:30:00Z" />
                 </StackPanel>
                 <TextBlock Text="If Session ID and Partition Key are both set, Azure requires identical values."
                            Classes="muted" FontSize="11" TextWrapping="Wrap" />

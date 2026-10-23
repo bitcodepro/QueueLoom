@@ -324,12 +324,39 @@ public sealed class ResendDialogViewModel : ObservableObject
         {
             return NextLocalClock(clock, now, timeZone);
         }
-        if (DateTimeOffset.TryParse(value, CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out var at) ||
-            DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out at))
+        if (TryParseInstant(value, CultureInfo.CurrentCulture, timeZone, out var at) ||
+            TryParseInstant(value, CultureInfo.InvariantCulture, timeZone, out at))
         {
             return at > now && at - now <= TimeSpan.FromDays(30) ? at : null;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Parses a date and time. With Z or an offset it is that instant; without one it is the wall time in
+    /// <paramref name="timeZone"/>, resolved like a clock time: a spring-forward gap moves to the first valid local
+    /// time after it, and a fall-back fold takes the earlier occurrence. The composer reads its schedule the same way.
+    /// </summary>
+    public static bool TryParseInstant(string? text, IFormatProvider culture, TimeZoneInfo timeZone, out DateTimeOffset instant)
+    {
+        ArgumentNullException.ThrowIfNull(timeZone);
+        instant = default;
+        if (!DateTime.TryParse(text, culture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out var named) ||
+            !DateTimeOffset.TryParse(text, culture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal, out var parsed))
+        {
+            return false;
+        }
+        if (named.Kind != DateTimeKind.Unspecified)
+        {
+            instant = parsed;
+            return true;
+        }
+        foreach (var candidate in LocalClockInstants(timeZone, DateOnly.FromDateTime(named), TimeOnly.FromDateTime(named)))
+        {
+            instant = candidate;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>False when the amount does not fit, is not positive, or is longer than 30 days. Never throws.</summary>

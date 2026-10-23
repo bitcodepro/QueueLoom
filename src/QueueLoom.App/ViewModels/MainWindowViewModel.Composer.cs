@@ -431,24 +431,14 @@ public sealed partial class MainWindowViewModel
         DateTimeOffset? scheduledEnqueueTime = null;
         if (!string.IsNullOrWhiteSpace(DraftScheduledEnqueueTime))
         {
-            if (!DateTimeOffset.TryParse(
-                    DraftScheduledEnqueueTime,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
-                    out var scheduledAt))
+            // Without an offset the text is local time, as in the resend dialog; Z or an offset such as +02:00 names the
+            // instant itself. Reading it as UTC here scheduled the message hours early or late.
+            if (!ResendDialogViewModel.TryParseInstant(
+                    DraftScheduledEnqueueTime, CultureInfo.InvariantCulture, Clock.LocalTimeZone, out var scheduledAt))
             {
                 throw new InvalidOperationException(
-                    "Scheduled enqueue time must be an ISO 8601 timestamp, for example 2026-08-11T14:30:00Z.");
-            }
-            // Without an offset the text names no instant: read as UTC here, but as local time in the resend dialog, it
-            // was scheduled hours early or late. The operator says which: Z, or an offset such as +02:00.
-            if (DateTime.TryParse(DraftScheduledEnqueueTime, CultureInfo.InvariantCulture,
-                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out var named) &&
-                named.Kind == DateTimeKind.Unspecified)
-            {
-                throw new InvalidOperationException(
-                    "Scheduled enqueue time needs a time zone offset: add Z for UTC or an offset such as +02:00, " +
-                    "for example 2026-08-11T14:30:00Z.");
+                    "Scheduled enqueue time must be an ISO 8601 timestamp in local time, for example 2026-08-11T14:30, " +
+                    "or with Z or an offset such as +02:00.");
             }
             scheduledEnqueueTime = scheduledAt;
         }
