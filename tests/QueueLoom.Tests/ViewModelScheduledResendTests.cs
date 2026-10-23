@@ -183,6 +183,83 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(now.AddHours(2), dialog.SendAt);
     }
 
+    // A wall time near 0001-01-01 or 9999-12-31 can have no UTC instant once the zone's offset is applied. That is
+    // an invalid time (false or null), never an ArgumentOutOfRangeException, at both ends and for both offset signs.
+    [Theory]
+    [InlineData("9999-12-31T23:59:59", "America/New_York")]
+    [InlineData("9999-12-31T23:59:59", "Asia/Tokyo")]
+    [InlineData("0001-01-01T00:00:00", "America/New_York")]
+    [InlineData("0001-01-01T00:00:00", "Asia/Tokyo")]
+    [InlineData("9999-12-31T23:59:59", "Edge+14")]
+    [InlineData("0001-01-01T00:00:00", "Edge+14")]
+    [InlineData("9999-12-31T23:59:59", "Edge-12")]
+    [InlineData("0001-01-01T00:00:00", "Edge-12")]
+    public void ResendDialog_ALocalTimeWithNoUtcInstantIsInvalidInsteadOfThrowing(string text, string zoneId)
+    {
+        var zone = zoneId switch
+        {
+            "Edge+14" => TimeZoneInfo.CreateCustomTimeZone("Edge+14", TimeSpan.FromHours(14), "Edge+14", "Edge+14"),
+            "Edge-12" => TimeZoneInfo.CreateCustomTimeZone("Edge-12", TimeSpan.FromHours(-12), "Edge-12", "Edge-12"),
+            _ => TimeZoneInfo.FindSystemTimeZoneById(zoneId)
+        };
+        // The zone's offset at that date: on Linux the IANA data gives local mean time near year 1 (New York -04:56:02),
+        // which is not a whole minute and so has no DateTimeOffset either.
+        var offset = zone.GetUtcOffset(DateTime.Parse(text, System.Globalization.CultureInfo.InvariantCulture));
+        var representable = (text.StartsWith("9999", StringComparison.Ordinal) ? offset >= TimeSpan.Zero : offset <= TimeSpan.Zero) &&
+                            offset.Ticks % TimeSpan.TicksPerMinute == 0;
+
+        var parsed = ResendDialogViewModel.TryParseInstant(text, System.Globalization.CultureInfo.InvariantCulture, zone, out var instant);
+
+        Assert.Equal(representable, parsed);
+        if (parsed)
+        {
+            Assert.Equal(offset, instant.Offset);
+        }
+        Assert.Null(ResendDialogViewModel.ParseWhen(text, new DateTimeOffset(2026, 10, 3, 12, 0, 0, TimeSpan.Zero), zone));
+        // A clock time on the last local day has no next day to roll into.
+        var lastDay = new DateTimeOffset(9999, 12, 31, 23, 0, 0, TimeSpan.Zero);
+        Assert.Null(ResendDialogViewModel.ParseWhen("22:00", lastDay, zone));
+    }
+
+    [Fact]
+    public void ResendDialog_ALocalTimeWithNoUtcInstantIsNotConfirmable()
+    {
+        var now = new DateTimeOffset(2026, 10, 3, 12, 0, 0, TimeSpan.Zero);
+        var message = new BrowsedMessage(
+            ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1,
+            "body"u8.ToArray(), new EditableMessageProperties(MessageId: "m-1"));
+        var dialog = new ResendDialogViewModel([message], [], "Staging", requiresTypedConfirmation: false, now: () => now)
+        {
+            SendLater = true
+        };
+        // The dialog reads the machine's zone; one of the two edges has no UTC instant unless that zone is UTC.
+        foreach (var text in new[] { "9999-12-31T23:59:59", "0001-01-01T00:00:00" })
+        {
+            dialog.SendAtText = text;
+            Assert.Null(dialog.SendAt);
+            Assert.False(dialog.CanConfirm);
+        }
+    }
+
+    // A full timestamp inside a spring-forward gap moves to the first valid instant after the gap, 03:00:00.000,
+    // not 03:00 plus the seconds it had.
+    [Theory]
+    [InlineData("2026-03-08T02:59:59.5")]
+    [InlineData("2026-03-08T02:30:15")]
+    [InlineData("2026-03-08T02:00:00.001")]
+    public void ResendDialog_ATimestampInASpringForwardGapIsTheFirstInstantAfterIt(string text)
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
+        Assert.True(ResendDialogViewModel.TryParseInstant(text, System.Globalization.CultureInfo.InvariantCulture, zone, out var instant));
+
+        Assert.Equal(new DateTimeOffset(2026, 3, 8, 3, 0, 0, TimeSpan.FromHours(-4)), instant);
+        Assert.Equal(TimeSpan.FromHours(-4), instant.Offset);
+        // Outside a gap the seconds are kept.
+        Assert.True(ResendDialogViewModel.TryParseInstant("2026-03-08T03:00:15.5", System.Globalization.CultureInfo.InvariantCulture, zone, out instant));
+        Assert.Equal(new DateTimeOffset(2026, 3, 8, 3, 0, 15, 500, TimeSpan.FromHours(-4)), instant);
+    }
+
     [Fact]
     public void ScheduledResendStore_KeepsJobsAcrossRestarts()
     {
