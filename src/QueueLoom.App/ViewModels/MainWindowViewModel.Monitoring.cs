@@ -628,6 +628,11 @@ public sealed partial class MainWindowViewModel
                 }
                 existing.ContentMarkers = entity.ContentMarkers;
                 existing.Offsets = entity.Offsets;
+                if ((grew || arrived > 0) && !MonitorNotifications.Contains(existing))
+                {
+                    // Dismissed with Clear, but alerting again: it is shown again.
+                    MonitorNotifications.Insert(0, existing);
+                }
                 continue;
             }
 
@@ -699,9 +704,12 @@ public sealed partial class MainWindowViewModel
             (changes.Count > listed ? $"; and {changes.Count - listed:N0} more" : string.Empty));
     }
 
+    /// <summary>
+    /// Dismisses what is shown. The incidents behind it stay: they are what the next check compares with, so a queue
+    /// still holding the same dead letters is not alerted again, and it is shown again only when it alerts again.
+    /// </summary>
     private void ClearMonitorNotifications()
     {
-        _monitorNotifications.Clear();
         MonitorNotifications.Clear();
         MonitorAlert = string.Empty;
         NotifyMonitorNotificationsChanged();
