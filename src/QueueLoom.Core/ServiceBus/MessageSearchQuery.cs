@@ -279,7 +279,7 @@ public sealed partial class MessageSearchQuery
     private sealed record AnyItem : PathStep;
 
     /// <summary>A path and what its value must be; any one value the path reaches (through [*]) is enough.</summary>
-    private sealed record JsonCondition(IReadOnlyList<PathStep> Path, Operator Op, JsonElement? Value, Regex? Pattern)
+    private sealed partial record JsonCondition(IReadOnlyList<PathStep> Path, Operator Op, JsonElement? Value, Regex? Pattern)
     {
         public bool IsTrue(JsonElement root)
         {
@@ -366,7 +366,10 @@ public sealed partial class MessageSearchQuery
             return x.CompareTo(y);
         }
 
-        /// <summary>Numbers by value, text in ordinal order (so ISO dates compare as dates); null when they cannot be ordered.</summary>
+        /// <summary>
+        /// Numbers by value; timestamps with an offset as instants (12:00:00.5Z is after 12:00:00Z, 01:00+02:00 before
+        /// 00:00Z); other text in ordinal order (so plain ISO dates compare as dates); null when they cannot be ordered.
+        /// </summary>
         private static int? Compare(JsonElement value, JsonElement bound)
         {
             if (bound.ValueKind == JsonValueKind.Number)
@@ -378,10 +381,25 @@ public sealed partial class MessageSearchQuery
                     _ => null
                 };
             }
-            return value.ValueKind == JsonValueKind.String && bound.ValueKind == JsonValueKind.String
-                ? Math.Sign(string.CompareOrdinal(value.GetString(), bound.GetString()))
-                : null;
+            if (value.ValueKind != JsonValueKind.String || bound.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+            var (left, right) = (value.GetString()!, bound.GetString()!);
+            return Instant(left) is { } x && Instant(right) is { } y
+                ? x.CompareTo(y)
+                : Math.Sign(string.CompareOrdinal(left, right));
         }
+
+        /// <summary>An ISO 8601 date and time with Z or a ±hh:mm offset; null for anything else (dates, local times).</summary>
+        private static DateTimeOffset? Instant(string text) =>
+            OffsetTimestamp().IsMatch(text) &&
+            DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var instant)
+                ? instant
+                : null;
+
+        [GeneratedRegex(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,7})?)?(Z|[+-]\d{2}:\d{2})$", RegexOptions.CultureInvariant)]
+        private static partial Regex OffsetTimestamp();
     }
 
     /// <summary>Reads "$.a.b[0] == 'x' and $.c > 5 or $.d" into OR-groups of AND-ed conditions.</summary>
