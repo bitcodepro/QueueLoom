@@ -232,6 +232,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                     new MessageApplicationProperty(pair.Key, ApplicationPropertyType.Int64, integer.ToString(CultureInfo.InvariantCulture)),
                 System.Text.Json.JsonValueKind.Number =>
                     new MessageApplicationProperty(pair.Key, ApplicationPropertyType.Double, pair.Value.GetDouble().ToString(CultureInfo.InvariantCulture)),
+                System.Text.Json.JsonValueKind.Null =>
+                    new MessageApplicationProperty(pair.Key, ApplicationPropertyType.Null, string.Empty),
                 _ => new MessageApplicationProperty(pair.Key, ApplicationPropertyType.String, pair.Value.ToString())
             }).ToArray();
             var hasMessage = subject is not null || correlationId is not null || messageId is not null || contentType is not null ||

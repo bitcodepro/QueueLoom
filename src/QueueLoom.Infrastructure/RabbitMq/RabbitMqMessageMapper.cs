@@ -137,7 +137,7 @@ internal static class RabbitMqMessageMapper
         return properties;
     }
 
-    private static object ToHeaderValue(MessageApplicationProperty property) => property.Type switch
+    private static object? ToHeaderValue(MessageApplicationProperty property) => property.Type switch
     {
         ApplicationPropertyType.Boolean => bool.Parse(property.Value),
         ApplicationPropertyType.Byte or ApplicationPropertyType.SByte or ApplicationPropertyType.Int16 or ApplicationPropertyType.UInt16
@@ -148,6 +148,8 @@ internal static class RabbitMqMessageMapper
         ApplicationPropertyType.DateTime or ApplicationPropertyType.DateTimeOffset =>
             new AmqpTimestamp(DateTimeOffset.Parse(property.Value, CultureInfo.InvariantCulture).ToUnixTimeSeconds()),
         ApplicationPropertyType.Binary => Convert.FromBase64String(property.Value),
+        // AMQP 0-9-1 field tables have a void value.
+        ApplicationPropertyType.Null => null,
         _ => Encoding.UTF8.GetBytes(property.Value)
     };
 

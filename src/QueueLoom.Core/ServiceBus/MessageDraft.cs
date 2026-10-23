@@ -20,6 +20,8 @@ public sealed record MessageDraft
 
     public IReadOnlyList<MessageApplicationProperty> ApplicationProperties { get; }
     public KafkaEnvelope? KafkaEnvelope { get; init; }
+    /// <summary>Sender-set AMQP message annotations sent again to Azure Service Bus (see <see cref="BrowsedMessage"/>).</summary>
+    public IReadOnlyDictionary<string, object?>? AzureMessageAnnotations { get; init; }
     /// <summary>Only older persisted drafts used application-property names for AMQP basic metadata.</summary>
     public bool LegacyAmqpMetadata { get; init; }
     /// <summary>Older persisted drafts used the historical exact x-delivery-count removal policy.</summary>

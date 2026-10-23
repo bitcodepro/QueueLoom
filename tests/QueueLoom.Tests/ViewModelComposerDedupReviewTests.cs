@@ -80,6 +80,40 @@ public sealed partial class ViewModelStateTests
         Assert.Contains("already attempted", vm.ErrorText, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ComposerSendsReceivedAzureAnnotationsThatJsonCannotWrite(bool move)
+    {
+        var profile = CreateProfile("Azure fake", EnvironmentKind.Development, ProfileAccessMode.ReadWrite);
+        var broker = new FakeWorkspace();
+        var dialogs = new FakeDialogService { ConfirmResult = true };
+        var vm = CreateViewModel(new FakeProfileRepository([profile], profile.Id), broker, dialogs);
+        await using var owner = vm;
+        await vm.InitializeAsync();
+        await vm.ConnectCommand.ExecuteAsync();
+        var source = ServiceBusEntityReference.Queue("orders");
+        vm.Destinations.Add(new DestinationItemViewModel(source));
+        var annotations = new Dictionary<string, object?>
+        {
+            ["nan"] = double.NaN, ["up"] = double.PositiveInfinity, ["down"] = float.NegativeInfinity,
+            ["bytes"] = new byte[] { 1, 2 }, ["at"] = new DateTime(2026, 10, 23, 0, 0, 0, DateTimeKind.Utc),
+            ["id"] = Guid.Parse("6f9619ff-8b86-d011-b42d-00c04fc964ff"), ["big"] = ulong.MaxValue
+        };
+        vm.SelectedMessage = new MessageItemViewModel(new BrowsedMessage(source, ServiceBusSubQueue.DeadLetter, 1,
+            "original body"u8.ToArray(), new EditableMessageProperties(MessageId: "original-A")) { AzureMessageAnnotations = annotations },
+            profile.Id, profile.Name);
+        vm.OpenMessageAsDraftCommand.Execute(null);
+        vm.DraftMessageId = "copy-B";
+        vm.DraftMovesOriginal = move;
+
+        await vm.SendDraftCommand.ExecuteAsync();
+
+        Assert.True(string.IsNullOrEmpty(vm.ErrorText), vm.ErrorText);
+        Assert.Equal(annotations, Assert.Single(broker.SentMessages).Message.AzureMessageAnnotations);
+        Assert.Equal(move ? 1 : 0, broker.DeleteRequests.Count);
+    }
+
     private static async Task<(MainWindowViewModel Vm, FakeWorkspace Broker, FakeDialogService Dialogs)> CreateAzureComposerAsync(MessagingProvider provider)
     {
         var profile = CreateProfile("Azure fake", EnvironmentKind.Development, ProfileAccessMode.ReadWrite) with { Provider = provider };

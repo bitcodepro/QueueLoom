@@ -73,7 +73,8 @@ public sealed partial class MainWindowViewModel
             requiresTypedConfirmation: profile.Environment == EnvironmentKind.Production,
             canRemoveOriginals: CanDeleteSelectedMessages,
             now: () => Clock.GetLocalNow(),
-            requiresNewIdsForMove: profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns);
+            requiresNewIdsForMove: profile.Provider is MessagingProvider.AzureServiceBus or MessagingProvider.AmazonSqsSns,
+            destinationProvider: profile.Provider);
         var options = await _dialogs.ChooseResendOptionsAsync(dialog, cancellationToken).ConfigureAwait(true);
         if (options is null)
         {
