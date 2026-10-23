@@ -989,6 +989,7 @@ public sealed partial class ViewModelStateTests
         public Func<Task>? SendGate { get; set; }
         public Action? OnDelete { get; set; }
         public Func<CancellationToken, Task>? CleanupOperationGate { get; set; }
+        public Func<BrowseMessagesRequest, Exception?>? BrowseFailure { get; set; }
         public int DisposeCalls { get; private set; }
 
         public Dictionary<Guid, IReadOnlyList<BrowsedMessage>> SearchMatches { get; } = [];
@@ -1101,6 +1102,7 @@ public sealed partial class ViewModelStateTests
             if (BrowseCleanupWarning is { } warning) CleanupWarning?.Invoke(this, warning);
             if (BrowseNotice is { } notice) Notice?.Invoke(this, notice);
             if (CleanupOperationGate is not null) await CleanupOperationGate(cancellationToken);
+            if (BrowseFailure?.Invoke(request) is { } failure) throw failure;
             return BrowseMessages
                 .Where(m => m.SequenceNumber >= (request.FromSequenceNumber ?? 0))
                 .Take(request.MaxMessages).ToArray();
