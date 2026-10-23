@@ -60,10 +60,18 @@ public sealed class MacMigrationCacheTests
         }) { IsBackground = true };
 
         canceller.Start();
-        Assert.ThrowsAny<OperationCanceledException>(() =>
-            MacBackupMigration.CopyLegacyDirectory(source, destination, bundle, cancellation.Token, new MacBackupMigration.CopyCache([])));
-        watch.Stop();
-        canceller.Join();
+        try
+        {
+            Assert.ThrowsAny<OperationCanceledException>(() =>
+                MacBackupMigration.CopyLegacyDirectory(source, destination, bundle, cancellation.Token, new MacBackupMigration.CopyCache([])));
+        }
+        finally
+        {
+            // Whatever the outcome, the thread has cancelled before the token source is disposed: a Cancel() after
+            // disposal would throw on that raw thread and end the test host instead of reporting this test's failure.
+            watch.Stop();
+            canceller.Join();
+        }
 
         Assert.True(watch.Elapsed < TimeSpan.FromMilliseconds(500), $"Stopping took {watch.Elapsed} after cancellation.");
         Assert.False(File.Exists(Path.Combine(destination, "large.json")));
