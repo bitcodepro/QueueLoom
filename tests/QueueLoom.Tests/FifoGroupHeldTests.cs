@@ -65,6 +65,24 @@ public sealed class FifoGroupHeldTests
         Assert.True(source.IsSuccessful);
     }
 
+    // A message ID is the producer's and need not be unique (copies resent with their IDs share it); the sequence number
+    // is the broker's own. Deleting the second of two messages sharing an ID used to delete the first.
+    [Fact]
+    public async Task DeletingASelectedMessageDoesNotDeleteAnotherWithTheSameMessageId()
+    {
+        using var directory = new TemporaryDirectory();
+        BrowsedMessage Copy(int id) =>
+            new(Orders, ServiceBusSubQueue.DeadLetter, id, new byte[] { 1 }, new EditableMessageProperties(MessageId: "order-1", SessionId: "G"));
+        await using var workspace = new FifoWorkspace(QueueLoomPaths.ForRoot(directory.Path), [Copy(1), Copy(2)]);
+        await workspace.ConnectAsync(Profile());
+
+        var result = await workspace.DeleteDeadLetterMessagesAsync(
+            new DeleteDeadLetterMessagesRequest([new DeadLetterMessageKey(Orders, ServiceBusSubQueue.DeadLetter, 2, "order-1")]));
+
+        Assert.Equal(DeadLetterMessageDeletionOutcome.Deleted, Assert.Single(result.Messages).Outcome);
+        Assert.Equal(2, Assert.Single(workspace.Settled).SequenceNumber);
+    }
+
     private static BrowsedMessage Message(int id) =>
         new(Orders, ServiceBusSubQueue.DeadLetter, id, new byte[] { 1 }, new EditableMessageProperties(MessageId: $"m-{id}", SessionId: "G"));
 
