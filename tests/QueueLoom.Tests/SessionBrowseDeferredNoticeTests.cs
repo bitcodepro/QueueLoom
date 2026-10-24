@@ -1,40 +1,45 @@
+using QueueLoom.Core.ServiceBus;
 using QueueLoom.Infrastructure.Azure;
 
 namespace QueueLoom.Tests;
 
-// Service Bus hands out only sessions that have an active message. A session whose messages were all deferred is never
-// accepted by a browse, so its deferred messages were missing without a word, and the read deferred messages of other
-// sessions were counted against the active count, which can hide held sessions. Now active and deferred are compared
-// separately with the entity's counts.
+// Service Bus counts deferred messages as active and has no deferred count of its own, and it hands out only sessions
+// that have an active message, so a session whose messages are all deferred is never browsed. The browse compares the
+// active count with every non-scheduled message it read and reports one cautious gap, without guessing a cause.
 public sealed class SessionBrowseDeferredNoticeTests
 {
-    [Fact]
-    public void DeferredMessagesOfIdleSessionsAreReportedWithTheirCount()
-    {
-        var notice = Assert.Single(AzureServiceBusWorkspace.UnreadSessionMessageNotices("orders", active: 1, deferred: 3, readActive: 1, readDeferred: 1));
+    private static readonly ServiceBusMessageState[] OneReadyTwoDeferred =
+        [ServiceBusMessageState.Active, ServiceBusMessageState.Deferred, ServiceBusMessageState.Deferred];
 
-        Assert.Equal("Deferred session messages not listed", notice.Title);
-        Assert.Contains("reports 3 deferred messages, but this browse read 1", notice.Details);
-        Assert.Contains("the 2 deferred message(s)", notice.Details);
+    [Fact]
+    public void ReadDeferredMessagesCountAgainstTheActiveCount() =>
+        // 1 ready + 2 deferred: Active=3, and the browse read all three.
+        Assert.Null(AzureServiceBusWorkspace.UnreadSessionMessageNotice("orders", active: 3, OneReadyTwoDeferred));
+
+    [Fact]
+    public void AnUnreadDeferredOnlySessionIsReportedAsAnUnclassifiedGap()
+    {
+        var notice = AzureServiceBusWorkspace.UnreadSessionMessageNotice("orders", active: 3, [ServiceBusMessageState.Active]);
+
+        Assert.NotNull(notice);
+        Assert.Equal("Session browse may be incomplete", notice.Value.Title);
+        Assert.Contains("so 2 message(s) the counters report were not listed", notice.Value.Details);
+        Assert.Contains("all deferred", notice.Value.Details);
+        Assert.DoesNotContain("deferred messages, but", notice.Value.Details);
     }
 
     [Fact]
-    public void ReadDeferredMessagesDoNotHideMissingActiveOnes()
+    public void ScheduledMessagesDoNotCount()
     {
-        var notice = Assert.Single(AzureServiceBusWorkspace.UnreadSessionMessageNotices("orders", active: 3, deferred: 2, readActive: 1, readDeferred: 2));
+        var notice = AzureServiceBusWorkspace.UnreadSessionMessageNotice("orders", active: 2,
+            [ServiceBusMessageState.Active, ServiceBusMessageState.Scheduled, ServiceBusMessageState.Scheduled]);
 
-        Assert.Equal("Session browse may be incomplete", notice.Title);
+        Assert.NotNull(notice);
+        Assert.Contains("this browse read 1, so 1 message(s)", notice.Value.Details);
     }
 
     [Fact]
     public void ACompleteBrowseSaysNothing() =>
-        Assert.Empty(AzureServiceBusWorkspace.UnreadSessionMessageNotices("orders", active: 2, deferred: 1, readActive: 2, readDeferred: 1));
-
-    [Theory]
-    [InlineData(10, 2, 1, 3, 0, 0, 4)]
-    [InlineData(6, 3, 1, 1, 0, 1, 0)]
-    [InlineData(5, 6, 0, 0, 0, 0, 0)]
-    public void TheDeferredCountIsWhatTheTotalHoldsBeyondTheOtherCounts(
-        long total, long active, long scheduled, long deadLetter, long transfer, long transferDeadLetter, long deferred) =>
-        Assert.Equal(deferred, AzureServiceBusWorkspace.DeferredCount(total, active, scheduled, deadLetter, transfer, transferDeadLetter));
+        Assert.Null(AzureServiceBusWorkspace.UnreadSessionMessageNotice("orders", active: 3,
+            [ServiceBusMessageState.Active, ServiceBusMessageState.Unknown, ServiceBusMessageState.Deferred, ServiceBusMessageState.Scheduled]));
 }
