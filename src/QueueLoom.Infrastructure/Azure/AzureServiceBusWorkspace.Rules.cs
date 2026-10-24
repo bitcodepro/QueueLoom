@@ -242,6 +242,11 @@ public sealed partial class AzureServiceBusWorkspace
         };
         foreach (var (name, value) in fields.Properties)
         {
+            // The SDK's property dictionary ignores case, so a case-variant name would silently replace an earlier one.
+            if (filter.ApplicationProperties.ContainsKey(name))
+            {
+                throw new InvalidOperationException($"Property '{name}' is duplicated. List each property once.");
+            }
             filter.ApplicationProperties[name] = value;
         }
         return filter;

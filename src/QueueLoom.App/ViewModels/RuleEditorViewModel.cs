@@ -402,10 +402,16 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                 Error = SqlCheck;
                 return null;
             }
-            return new SubscriptionRule(name, RuleFilterKind.Sql, SqlExpression.Trim(), Action: action);
+            // A True/False filter shown as 1=1 / 1=0 and left as it was stays that filter type; only an edited expression is SQL.
+            var kind = _existing?.Kind is RuleFilterKind.True or RuleFilterKind.False &&
+                       SqlExpression.Trim() == _existing.SqlExpression
+                ? _existing.Kind
+                : RuleFilterKind.Sql;
+            return new SubscriptionRule(name, kind, SqlExpression.Trim(), Action: action);
         }
 
         var properties = new Dictionary<string, object>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in CorrelationProperties.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var separator = line.IndexOf('=');
@@ -415,6 +421,12 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                 return null;
             }
             var property = line[..separator].Trim();
+            // Service Bus keeps correlation properties in a case-insensitive dictionary, so tenant and Tenant would keep only one.
+            if (!seen.Add(property))
+            {
+                Error = $"Property '{property}' is duplicated. List each property once.";
+                return null;
+            }
             // A line left as it was keeps the exact value Service Bus returned, whatever its type.
             try
             {
