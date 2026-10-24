@@ -38,6 +38,22 @@ public sealed class ServiceBusModelTests
     }
 
     [Fact]
+    public void BrowseRequest_SessionId_NamesOneSessionOfTheActiveQueue()
+    {
+        var source = ServiceBusEntityReference.Queue("orders");
+
+        Assert.Null(new BrowseMessagesRequest(source).SessionId);
+        // A session id is opaque: a padded id names a different session and is kept exactly.
+        Assert.Equal("  customer-7 ", new BrowseMessagesRequest(source) { SessionId = "  customer-7 " }.SessionId);
+        Assert.Equal(128, new BrowseMessagesRequest(source) { SessionId = new string('s', 128) }.SessionId!.Length);
+        Assert.Throws<ArgumentException>(() => new BrowseMessagesRequest(source) { SessionId = "" });
+        Assert.Throws<ArgumentException>(() => new BrowseMessagesRequest(source) { SessionId = " \t" });
+        Assert.Throws<ArgumentException>(() => new BrowseMessagesRequest(source) { SessionId = new string('s', 129) });
+        // Dead-letter queues never use sessions.
+        Assert.Throws<ArgumentException>(() => new BrowseMessagesRequest(source, ServiceBusSubQueue.DeadLetter) { SessionId = "customer-7" });
+    }
+
+    [Fact]
     public void BinaryBody_RoundTripsThroughDraftCreation()
     {
         byte[] bytes = [0xff, 0x00, 0x80];

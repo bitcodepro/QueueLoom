@@ -58,6 +58,16 @@ public sealed partial class AzureServiceBusWorkspace
 
         ThrowIfForwarded(request.Source, request.SubQueue);
 
+        if (request.SessionId is { } sessionId)
+        {
+            if (!await RequiresSessionAsync(request.Source, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(
+                    $"{request.Source.DisplayName} does not use sessions, so it has no session '{sessionId}'. View its active messages instead.");
+            }
+            return await BrowseOneSessionAsync(request, sessionId, cancellationToken).ConfigureAwait(false);
+        }
+
         // Dead-letter queues never use sessions, even when their queue or subscription does. Only active
         // messages of a session-enabled entity have to be read session by session.
         if (request.SubQueue == ServiceBusSubQueue.Active &&

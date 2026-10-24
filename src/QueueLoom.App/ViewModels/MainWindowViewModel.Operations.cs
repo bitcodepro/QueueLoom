@@ -21,6 +21,7 @@ public sealed partial class MainWindowViewModel
     private long _messageResultsGeneration;
     private ProfileItemViewModel? _browseProfile;
     private ServiceBusEntityReference? _browseSource;
+    private string? _browseSessionId;
     private ServiceBusSubQueue _browseSubQueue;
     private long? _browseCursor;
     private bool _browseExhausted;
@@ -147,7 +148,7 @@ public sealed partial class MainWindowViewModel
 
     private void ResetBrowsePaging()
     {
-        _browseProfile = null; _browseSource = null; _browseCursor = null; _browseExhausted = false; _browseDisplayLimit = false; _browseRequestLimit = false;
+        _browseProfile = null; _browseSource = null; _browseSessionId = null; _browseCursor = null; _browseExhausted = false; _browseDisplayLimit = false; _browseRequestLimit = false;
         _browseHeldGroups = false;
         NotifyBrowseFeatures();
     }
@@ -167,7 +168,8 @@ public sealed partial class MainWindowViewModel
         var page = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(source, _browseSubQueue,
             maxMessages: requested, fromSequenceNumber: positional && !log ? _browseCursor : null)
         {
-            Start = log ? NextLogStart() : BrowseStart.Oldest
+            Start = log ? NextLogStart() : BrowseStart.Oldest,
+            SessionId = _browseSessionId
         }, token).ConfigureAwait(true);
         // A provider may finish after cancellation; do not publish its page or advance the cursor.
         token.ThrowIfCancellationRequested();

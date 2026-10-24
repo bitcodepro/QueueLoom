@@ -190,6 +190,54 @@ public sealed class AzureServiceBusSessionTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// A session whose messages are all deferred is not handed out to a browse, but opening it by id peeks every message
+    /// in it as Deferred, leaves them in place and releases the session for its consumers.
+    /// </summary>
+    [EmulatorFact(Emulators.ServiceBus)]
+    public async Task A_session_holding_only_deferred_messages_is_listed_when_opened_by_id()
+    {
+        var idle = "opened-by-id-" + Guid.NewGuid().ToString("N")[..8];
+        await using (var sender = _client.CreateSender(SessionQueue))
+        {
+            await sender.SendMessagesAsync([new AzureMessage("deferred 1") { SessionId = idle }, new AzureMessage("deferred 2") { SessionId = idle }]);
+        }
+        var deferred = new List<long>();
+        await using (var receiver = await _client.AcceptSessionAsync(SessionQueue, idle))
+        {
+            foreach (var message in await receiver.ReceiveMessagesAsync(2, TimeSpan.FromSeconds(10)))
+            {
+                await receiver.DeferMessageAsync(message);
+                deferred.Add(message.SequenceNumber);
+            }
+        }
+        Assert.Equal(2, deferred.Count);
+        try
+        {
+            var browsed = await _workspace.BrowseMessagesAsync(
+                new BrowseMessagesRequest(ServiceBusEntityReference.Queue(SessionQueue)) { SessionId = idle });
+
+            Assert.Equal(deferred.Order(), browsed.Select(message => message.SequenceNumber));
+            Assert.All(browsed, message =>
+            {
+                Assert.Equal(QueueLoom.Core.ServiceBus.ServiceBusMessageState.Deferred, message.State);
+                Assert.Equal(idle, message.Properties.SessionId);
+            });
+            Assert.Equal(["deferred 1", "deferred 2"], browsed.Select(message => System.Text.Encoding.UTF8.GetString(message.Body.Span)));
+        }
+        finally
+        {
+            // The browse released the session at once, and both messages are still there to be received.
+            await using var receiver = await _client.AcceptSessionAsync(SessionQueue, idle);
+            var received = await receiver.ReceiveDeferredMessagesAsync(deferred);
+            Assert.Equal(2, received.Count);
+            foreach (var message in received)
+            {
+                await receiver.CompleteMessageAsync(message);
+            }
+        }
+    }
+
     private async Task DeadLetterAsync(string entity, string? subscription, string session, string body)
     {
         await using (var sender = _client.CreateSender(entity))

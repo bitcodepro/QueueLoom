@@ -202,7 +202,8 @@ public sealed partial class MainWindowViewModel
         ProfileItemViewModel profile,
         ServiceBusEntityReference source,
         ServiceBusSubQueue subQueue,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sessionId = null)
     {
         var resultsGeneration = _messageResultsGeneration;
         if (_workspace.ConnectedProfileId != profile.Id)
@@ -221,6 +222,7 @@ public sealed partial class MainWindowViewModel
         _browseProfile = profile;
         _browseSource = source;
         _browseSubQueue = subQueue;
+        _browseSessionId = sessionId;
         Messages.Clear();
         SelectedMessage = null;
         await LoadBrowsePageAsync(cancellationToken).ConfigureAwait(true);
@@ -228,7 +230,8 @@ public sealed partial class MainWindowViewModel
         {
             return;
         }
-        MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}";
+        MessageListTitle = $"{profile.Name} · {source.DisplayName} · {FormatSubQueue(subQueue)}" +
+                           (sessionId is null ? string.Empty : $" · session {sessionId}");
         NavigateTo(NavigationPage.DeadLetters);
         StatusText = profile.Provider == MessagingProvider.AzureServiceBus
             ? $"Peeked {Messages.Count:N0} messages without acquiring locks"
@@ -236,7 +239,7 @@ public sealed partial class MainWindowViewModel
         AddActivity(
             "Info",
             "Peek",
-            $"{source.DisplayName} · {FormatSubQueue(subQueue)} · {Messages.Count:N0} messages",
+            $"{source.DisplayName} · {FormatSubQueue(subQueue)}{(sessionId is null ? string.Empty : $" · session {sessionId}")} · {Messages.Count:N0} messages",
             source);
     }
 }

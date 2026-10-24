@@ -45,4 +45,43 @@ public sealed record BrowseMessagesRequest
     public bool LoadAll { get; }
 
     public BrowseStart Start { get; init; } = BrowseStart.Oldest;
+
+    /// <summary>The longest session id Service Bus accepts.</summary>
+    public const int MaximumSessionIdLength = 128;
+
+    /// <summary>
+    /// One session of a session-enabled queue or subscription to peek, active, deferred and scheduled messages alike;
+    /// null browses the sessions Service Bus hands out. Only Azure Service Bus active queues have sessions.
+    /// </summary>
+    public string? SessionId
+    {
+        get;
+        init
+        {
+            if (value is null)
+            {
+                field = null;
+                return;
+            }
+
+            if (!IsValidSessionId(value))
+            {
+                throw new ArgumentException($"A session id has 1 to {MaximumSessionIdLength} characters and is not blank.", nameof(SessionId));
+            }
+
+            if (SubQueue != ServiceBusSubQueue.Active)
+            {
+                throw new ArgumentException("Dead-letter queues do not use sessions; open a session of the active queue.", nameof(SessionId));
+            }
+
+            field = value;
+        }
+    }
+
+    /// <summary>
+    /// A session id is an opaque exact identifier: it is never trimmed, since ' customer-7 ' and 'customer-7' are
+    /// different sessions. It must not be blank and has at most <see cref="MaximumSessionIdLength"/> characters.
+    /// </summary>
+    public static bool IsValidSessionId(string? sessionId) =>
+        !string.IsNullOrWhiteSpace(sessionId) && sessionId.Length <= MaximumSessionIdLength;
 }
