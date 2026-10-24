@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using QueueLoom.Core.ServiceBus;
 
@@ -163,7 +164,9 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         resend.Items.Select(item => new ItemDocument(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId, item.Destination,
             item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToList())
             { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata,
-                HasClassifiedAmqpHeaders = !item.Message.LegacyAmqpBrokerHeaders }).ToList())
+                HasClassifiedAmqpHeaders = !item.Message.LegacyAmqpBrokerHeaders,
+                AzureMessageAnnotations = AzureAnnotationJson.Encode(item.Message.AzureMessageAnnotations, out var skipped),
+                SkippedAzureMessageAnnotations = skipped.Count == 0 ? null : skipped.ToList() }).ToList())
         { ConfigurationIdentity = resend.ConfigurationIdentity };
 
     private static ScheduledResend ToModel(ResendDocument? document)
@@ -183,7 +186,8 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         document.Items.Select(item => new ScheduledResendItem(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId,
             item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties?.Where(property => property is not null))
             { KafkaEnvelope = item.KafkaEnvelope, LegacyAmqpMetadata = !item.HasSeparatedAmqpMetadata,
-                LegacyAmqpBrokerHeaders = !item.HasClassifiedAmqpHeaders })).ToArray())
+                LegacyAmqpBrokerHeaders = !item.HasClassifiedAmqpHeaders,
+                AzureMessageAnnotations = AzureAnnotationJson.Decode(item.AzureMessageAnnotations) })).ToArray())
         { ConfigurationIdentity = document.ConfigurationIdentity };
 
     private sealed record ResendDocument(
@@ -213,5 +217,9 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         public KafkaEnvelope? KafkaEnvelope { get; init; }
         public bool HasSeparatedAmqpMetadata { get; init; }
         public bool HasClassifiedAmqpHeaders { get; init; }
+        // Sender-set Azure AMQP annotations, typed (AzureAnnotationJson); absent in older files and for other services.
+        public JsonObject? AzureMessageAnnotations { get; init; }
+        // Annotations whose values had no lossless form, named so the loss is on record beside the job.
+        public List<string>? SkippedAzureMessageAnnotations { get; init; }
     }
 }
