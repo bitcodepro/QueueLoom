@@ -19,6 +19,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
     private const long MaximumFileBytes = 10 * 1024 * 1024;
     internal const string WriteLockName = ".queueloom-log.lock";
     private const int DefaultMaxQueuedLines = 8192;
+    // One lock hold appends at most this much, so a busy process never keeps the other one out for long.
+    internal const int MaxBatchLines = 512;
+    private const int MaxBatchChars = 256 * 1024;
     private static readonly TimeSpan DefaultShutdownBudget = TimeSpan.FromSeconds(15);
     private const string DroppedNotice = "log lines dropped because the log queue was full";
 
@@ -110,7 +113,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
         if (!_writer.Join(_shutdownBudget))
         {
             _abandoned = true;
-            // The writer checks the flag between lines and while waiting for the lock, so it ends promptly.
+            // The writer checks the flag between batches and while waiting for the lock, so it ends promptly.
             _writer.Join(TimeSpan.FromSeconds(1));
         }
     }
@@ -151,12 +154,78 @@ public sealed class FileLoggerProvider : ILoggerProvider
     private void WriteQueuedLines()
     {
         var reader = _queue.Reader;
+        var batch = new List<LineItem>();
         while (WaitForWork(reader))
         {
-            while (reader.TryRead(out var item))
+            DrainQueued(reader, batch);
+        }
+    }
+
+    /// <summary>
+    /// Takes everything queued now and appends consecutive lines together, one lock hold per bounded batch. A flush
+    /// request ends the batch before it, so it completes only after every earlier line was written or counted.
+    /// </summary>
+    private void DrainQueued(ChannelReader<WorkItem> reader, List<LineItem> batch)
+    {
+        var chars = 0;
+        while (reader.TryRead(out var item))
+        {
+            if (item is LineItem line)
             {
-                ProcessSafely(item);
+                batch.Add(line);
+                chars += line.Text.Length;
+                if (batch.Count < MaxBatchLines && chars < MaxBatchChars)
+                {
+                    continue;
+                }
             }
+            WriteBatch(batch);
+            chars = 0;
+            if (item is FlushItem flush)
+            {
+                CompleteFlush(flush);
+            }
+        }
+        WriteBatch(batch);
+    }
+
+    /// <summary>Appends the batch split at day boundaries, so each line goes to the file of its own day; then clears it.</summary>
+    private void WriteBatch(List<LineItem> batch)
+    {
+        var start = 0;
+        while (start < batch.Count)
+        {
+            var end = start + 1;
+            while (end < batch.Count && batch[end].Timestamp.Date == batch[start].Timestamp.Date)
+            {
+                end++;
+            }
+            AppendLinesSafely(batch, start, end - start);
+            start = end;
+        }
+        batch.Clear();
+    }
+
+    /// <summary>One failure (any exception) costs those lines only, counted as dropped; the writer goes on.</summary>
+    private void AppendLinesSafely(List<LineItem> batch, int start, int count)
+    {
+        try
+        {
+            if (_abandoned)
+            {
+                Interlocked.Add(ref _overflowCount, count);
+                return;
+            }
+            var text = new StringBuilder();
+            for (var i = start; i < start + count; i++)
+            {
+                text.Append(batch[i].Text);
+            }
+            Append(batch[start].Timestamp, text.ToString(), count);
+        }
+        catch (Exception)
+        {
+            Interlocked.Add(ref _overflowCount, count);
         }
     }
 
@@ -172,53 +241,29 @@ public sealed class FileLoggerProvider : ILoggerProvider
         }
     }
 
-    /// <summary>One failure (any exception) costs that item only; the writer goes on with the next one.</summary>
-    private void ProcessSafely(WorkItem item)
+    /// <summary>Writes a pending dropped-lines notice, then completes the flush even if that failed.</summary>
+    private void CompleteFlush(FlushItem flush)
     {
         try
         {
-            Process(item);
+            if (!_abandoned && Volatile.Read(ref _overflowCount) > 0)
+            {
+                Append(_clock(), null, 0);
+            }
         }
         catch (Exception)
         {
-            Abandon(item);
+            // The notice stays pending and goes out with the next append.
         }
+        flush.Completion.TrySetResult();
     }
 
-    private void Abandon(WorkItem item)
-    {
-        if (item is LineItem)
-        {
-            Interlocked.Increment(ref _overflowCount);
-        }
-        else if (item is FlushItem flush)
-        {
-            flush.Completion.TrySetResult();
-        }
-    }
-
-    private void Process(WorkItem item)
-    {
-        switch (item)
-        {
-            case LineItem when _abandoned:
-                Interlocked.Increment(ref _overflowCount);
-                return;
-            case LineItem line:
-                Append(line.Timestamp, line.Text);
-                return;
-            case FlushItem flush:
-                if (!_abandoned && Volatile.Read(ref _overflowCount) > 0)
-                {
-                    Append(_clock(), null);
-                }
-                flush.Completion.TrySetResult();
-                return;
-        }
-    }
-
-    /// <summary>Appends one line (or, with null, only a pending dropped-lines notice) to the file of its own day.</summary>
-    private void Append(DateTimeOffset timestamp, string? text)
+    /// <summary>
+    /// Appends the lines of one day (or, with null, only a pending dropped-lines notice) to the file of that day, with
+    /// one hold of the cross-process lock and one open of the file. If that fails the <paramref name="lineCount"/>
+    /// lines count as dropped.
+    /// </summary>
+    private void Append(DateTimeOffset timestamp, string? text, int lineCount)
     {
         try
         {
@@ -237,7 +282,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             // must not start an append after Dispose returned.
             if (writeLock is null || _abandoned)
             {
-                if (text is not null) Interlocked.Increment(ref _overflowCount);
+                Interlocked.Add(ref _overflowCount, lineCount);
                 return;
             }
             if (File.Exists(path) && new FileInfo(path).Length > MaximumFileBytes)
@@ -256,31 +301,30 @@ public sealed class FileLoggerProvider : ILoggerProvider
                 return;
             }
 
-            // The drop count is taken only to write it, and given back if that write fails, so it is never lost.
+            // The drop count is taken only to write it, and given back if that write fails, so it is never lost. The
+            // notice goes ahead of the lines in the same append.
             var dropped = Interlocked.Exchange(ref _overflowCount, 0);
-            if (dropped > 0)
+            var notice = dropped > 0
+                ? $"{timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture)} [WRN] QueueLoom: " +
+                  $"{dropped.ToString(CultureInfo.InvariantCulture)} {DroppedNotice}.{Environment.NewLine}"
+                : string.Empty;
+            try
             {
-                try
+                if (notice.Length > 0 || text is not null)
                 {
-                    AppendRetryingSharing(path,
-                        $"{timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture)} [WRN] QueueLoom: " +
-                        $"{dropped.ToString(CultureInfo.InvariantCulture)} {DroppedNotice}.{Environment.NewLine}");
-                }
-                catch
-                {
-                    Interlocked.Add(ref _overflowCount, dropped);
-                    throw;
+                    AppendRetryingSharing(path, notice + text);
                 }
             }
-            if (text is not null)
+            catch
             {
-                AppendRetryingSharing(path, text);
+                Interlocked.Add(ref _overflowCount, dropped);
+                throw;
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // A locked or read-only log directory must not break the application; the line counts as dropped.
-            if (text is not null) Interlocked.Increment(ref _overflowCount);
+            // A locked or read-only log directory must not break the application; the lines count as dropped.
+            Interlocked.Add(ref _overflowCount, lineCount);
         }
     }
 
