@@ -182,6 +182,21 @@ public static class MessageExport
                 writer.WriteEndArray();
                 writer.WriteEndObject();
             }
+            // Sender-set Azure AMQP annotations, typed, so an import sends them back; one with no lossless form is named.
+            if (AzureAnnotationJson.Encode(message.AzureMessageAnnotations, out var skipped) is { } annotations)
+            {
+                writer.WritePropertyName("azureMessageAnnotations");
+                annotations.WriteTo(writer);
+            }
+            if (skipped.Count > 0)
+            {
+                writer.WriteStartArray("skippedAzureMessageAnnotations");
+                foreach (var warning in skipped)
+                {
+                    writer.WriteStringValue(warning);
+                }
+                writer.WriteEndArray();
+            }
             writer.WriteString("bodyEncoding", encoding);
             writer.WriteString("body", body);
             if (message.IsBodyTruncated)

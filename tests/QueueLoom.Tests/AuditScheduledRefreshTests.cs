@@ -68,6 +68,7 @@ public sealed partial class ViewModelStateTests
             var snapshot = inner.Load();
             if (Contend && !bothRead.SignalAndWait(TimeSpan.FromSeconds(10)))
                 throw new TimeoutException("Both windows must read the pending job before either claims it.");
+            Contend = false; // Only the first reads meet; the losing window reads the list again after its failed claim.
             return snapshot;
         }
         public void Save(IReadOnlyList<ScheduledResend> jobs) => inner.Save(jobs);

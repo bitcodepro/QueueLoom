@@ -413,6 +413,8 @@ public sealed class JsonDeadLetterBackupRepository : IDeadLetterBackupRepository
                 : ReadProvider(root) is null or MessagingProvider.AzureServiceBus,
             Position = ReadOptionalPosition(root),
             KafkaEnvelope = root.TryGetProperty("kafkaEnvelope", out var envelope) ? envelope.Deserialize<KafkaEnvelope>() : null,
+            // Absent in backups written before annotations were kept, and for other services.
+            AzureMessageAnnotations = root.TryGetProperty("azureMessageAnnotations", out var annotations) ? AzureAnnotationJson.Decode(annotations) : null,
             // Preserve the historical send policy without claiming unknown counters are broker-owned.
             LegacyAmqpBrokerHeaders = ReadOptionalString(root, "provider") == "RabbitMq" &&
                 (!root.TryGetProperty("brokerOwnedHeaders", out _) ||

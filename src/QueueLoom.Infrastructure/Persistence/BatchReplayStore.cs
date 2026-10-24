@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using QueueLoom.Core.Abstractions;
 using QueueLoom.Core.Diagnostics;
 using QueueLoom.Core.ServiceBus;
@@ -15,6 +16,16 @@ public sealed record ReplayPayload(EditableMessageBody Body, EditableMessageProp
     public bool HasClassifiedAmqpHeaders { get; init; }
     public ServiceBusEntityReference? Destination { get; init; }
     public DeadLetterMessageKey? Original { get; init; }
+    // Sender-set Azure AMQP annotations, typed (AzureAnnotationJson); absent in older payloads and for other services.
+    public JsonObject? AzureMessageAnnotations { get; init; }
+    // Annotations whose values had no lossless form, named so the loss is on record beside the payload.
+    public string[]? SkippedAzureMessageAnnotations { get; init; }
+
+    internal ReplayPayload WithAnnotations(IReadOnlyDictionary<string, object?>? annotations) => this with
+    {
+        AzureMessageAnnotations = AzureAnnotationJson.Encode(annotations, out var skipped),
+        SkippedAzureMessageAnnotations = skipped.Count == 0 ? null : skipped.ToArray()
+    };
 }
 
 /// <summary>Durable replay and resend history. Unknown and confirmed sends are never retried. Finished operations are
@@ -55,13 +66,14 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
                     ScheduledEnqueueTime = null
                 };
                 var prepared = new MessageDraft(draft.Body, properties, draft.ApplicationProperties) { KafkaEnvelope = draft.KafkaEnvelope,
-                    LegacyAmqpMetadata = draft.LegacyAmqpMetadata, LegacyAmqpBrokerHeaders = draft.LegacyAmqpBrokerHeaders };
+                    LegacyAmqpMetadata = draft.LegacyAmqpMetadata, LegacyAmqpBrokerHeaders = draft.LegacyAmqpBrokerHeaders,
+                    AzureMessageAnnotations = draft.AzureMessageAnnotations };
                 // The destination service's limits: a Pub/Sub ordering key or RabbitMQ message ID is not held to Azure's.
                 var validation = MessageDraftValidator.Validate(prepared, provider);
                 if (!validation.IsValid) throw new InvalidOperationException(string.Join(" ", validation.Errors.Select(e => e.Message)));
                 var payload = new ReplayPayload(prepared.Body, properties, prepared.ApplicationProperties.ToArray(), origin)
                     { KafkaEnvelope = prepared.KafkaEnvelope, HasSeparatedAmqpMetadata = !draft.LegacyAmqpMetadata,
-                        HasClassifiedAmqpHeaders = !draft.LegacyAmqpBrokerHeaders };
+                        HasClassifiedAmqpHeaders = !draft.LegacyAmqpBrokerHeaders }.WithAnnotations(prepared.AzureMessageAnnotations);
                 await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{count - 1:D6}.message.json"), JsonSerializer.Serialize(payload), token);
                 await WriteItemMetadata(folder, count - 1, payload, destination, token);
             }
@@ -187,5 +199,6 @@ public sealed partial class BatchReplayStore(string root) : IBatchReplayStore
 
     private static MessageDraft ToDraft(ReplayPayload payload) => new(payload.Body, payload.Properties, payload.ApplicationProperties)
         { KafkaEnvelope = payload.KafkaEnvelope, LegacyAmqpMetadata = !payload.HasSeparatedAmqpMetadata,
-            LegacyAmqpBrokerHeaders = !payload.HasClassifiedAmqpHeaders };
+            LegacyAmqpBrokerHeaders = !payload.HasClassifiedAmqpHeaders,
+            AzureMessageAnnotations = AzureAnnotationJson.Decode(payload.AzureMessageAnnotations) };
 }
