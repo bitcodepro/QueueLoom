@@ -45,4 +45,37 @@ public sealed record BrowseMessagesRequest
     public bool LoadAll { get; }
 
     public BrowseStart Start { get; init; } = BrowseStart.Oldest;
+
+    /// <summary>The longest session id Service Bus accepts.</summary>
+    public const int MaximumSessionIdLength = 128;
+
+    /// <summary>
+    /// One session of a session-enabled queue or subscription to peek, active, deferred and scheduled messages alike;
+    /// null browses the sessions Service Bus hands out. Only Azure Service Bus active queues have sessions.
+    /// </summary>
+    public string? SessionId
+    {
+        get;
+        init
+        {
+            if (value is null)
+            {
+                field = null;
+                return;
+            }
+
+            var trimmed = value.Trim();
+            if (trimmed.Length == 0 || trimmed.Length > MaximumSessionIdLength)
+            {
+                throw new ArgumentException($"A session id has 1 to {MaximumSessionIdLength} characters.", nameof(SessionId));
+            }
+
+            if (SubQueue != ServiceBusSubQueue.Active)
+            {
+                throw new ArgumentException("Dead-letter queues do not use sessions; open a session of the active queue.", nameof(SessionId));
+            }
+
+            field = trimmed;
+        }
+    }
 }

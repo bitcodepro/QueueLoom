@@ -520,6 +520,49 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
+    public async Task OpenSession_PeeksTheNamedSessionOfASessionQueueOnly()
+    {
+        var dev = CreateProfile("Development", EnvironmentKind.Development);
+        var sessions = new ServiceBusQueue("orders", ServiceBusEntityRuntime.Empty, RequiresSession: true);
+        var plain = new ServiceBusQueue("jobs", ServiceBusEntityRuntime.Empty);
+        var repository = new FakeProfileRepository([dev], dev.Id);
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [sessions, plain]),
+            BrowseMessages = [SearchMessage(sessions.Reference, 4, "2026-08-12T10:00:00Z")]
+        };
+        await using var viewModel = CreateViewModel(repository, workspace);
+
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+        viewModel.SelectedEntity = viewModel.Entities.Single(item => item.Reference == plain.Reference);
+        viewModel.SessionIdToOpen = "customer-7";
+        Assert.False(viewModel.CanOpenSessionById);
+        Assert.False(viewModel.OpenSessionCommand.CanExecute(null));
+
+        viewModel.SelectedEntity = viewModel.Entities.Single(item => item.Reference == sessions.Reference);
+        Assert.True(viewModel.CanOpenSessionById);
+        viewModel.SessionIdToOpen = " ";
+        Assert.False(viewModel.OpenSessionCommand.CanExecute(null));
+        viewModel.SessionIdToOpen = " customer-7 ";
+        Assert.True(viewModel.OpenSessionCommand.CanExecute(null));
+        await viewModel.OpenSessionCommand.ExecuteAsync();
+
+        var request = Assert.Single(workspace.BrowseRequests);
+        Assert.Equal(sessions.Reference, request.Source);
+        Assert.Equal(ServiceBusSubQueue.Active, request.SubQueue);
+        Assert.Equal("customer-7", request.SessionId);
+        Assert.Equal([4L], viewModel.Messages.Select(message => message.SequenceNumber));
+        Assert.Contains("session customer-7", viewModel.MessageListTitle, StringComparison.Ordinal);
+
+        // Loading more stays in the session; a plain browse of the queue no longer names it.
+        await viewModel.LoadMoreMessagesCommand.ExecuteAsync();
+        Assert.All(workspace.BrowseRequests, item => Assert.Equal("customer-7", item.SessionId));
+        await viewModel.BrowseSelectedActiveCommand.ExecuteAsync();
+        Assert.Null(workspace.BrowseRequests[^1].SessionId);
+    }
+
+    [Fact]
     public async Task PurgeCommands_ResolveEnvironmentTopicAndSelectedEntityScopes()
     {
         var dev = CreateProfile(

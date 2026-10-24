@@ -1,3 +1,4 @@
+using QueueLoom.Core.Profiles;
 using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
@@ -33,6 +34,25 @@ public sealed partial class MainWindowViewModel
             }
         }
     }
+
+    /// <summary>
+    /// The session id to open in the selected session-enabled queue or subscription. Service Bus never hands a session
+    /// whose messages are all deferred to a browse, so its messages are seen only by opening it by id.
+    /// </summary>
+    public string SessionIdToOpen
+    {
+        get => _sessionIdToOpen;
+        set
+        {
+            if (SetProperty(ref _sessionIdToOpen, value ?? string.Empty))
+            {
+                OpenSessionCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool CanOpenSessionById => IsConnected && SelectedEntity is { CanBrowse: true, RequiresSession: true } &&
+                                      _connectedProfile?.Provider == MessagingProvider.AzureServiceBus;
 
     public string LastUpdatedText => _lastUpdated.HasValue
         ? $"Updated {_lastUpdated.Value.ToLocalTime():HH:mm:ss}"
@@ -152,6 +172,14 @@ public sealed partial class MainWindowViewModel
         var entity = SelectedEntity ?? throw new InvalidOperationException("Select a queue or subscription first.");
         var profile = GetConnectedProfileItem();
         return BrowseAsync(profile, entity.Reference, subQueue, cancellationToken);
+    }
+
+    private Task OpenSessionByIdAsync(CancellationToken cancellationToken)
+    {
+        var entity = SelectedEntity ?? throw new InvalidOperationException("Select a queue or subscription first.");
+        if (!CanOpenSessionById) throw new InvalidOperationException("Only Azure Service Bus queues and subscriptions with sessions can be opened by session id.");
+        var profile = GetConnectedProfileItem();
+        return BrowseAsync(profile, entity.Reference, ServiceBusSubQueue.Active, cancellationToken, SessionIdToOpen.Trim());
     }
 
     private void NotifyStatistics()

@@ -129,6 +129,67 @@ public sealed partial class AzureServiceBusWorkspace
     }
 
     /// <summary>
+    /// Accepts the one named session and peeks its messages, whatever their state. Service Bus never hands a session whose
+    /// messages are all deferred to <see cref="BrowseSessionsAsync"/>, but it accepts it by id. The session is locked only
+    /// while it is peeked and released at the end; messages are never locked or changed.
+    /// </summary>
+    private async Task<IReadOnlyList<BrowsedMessage>> BrowseOneSessionAsync(
+        BrowseMessagesRequest request,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var client = GetMessagingClient();
+        var options = new ServiceBusSessionReceiverOptions
+        {
+            ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            PrefetchCount = 0
+        };
+        ServiceBusSessionReceiver receiver;
+        try
+        {
+            receiver = request.Source.Kind == ServiceBusEntityKind.Queue
+                ? await client.AcceptSessionAsync(request.Source.Name, sessionId, options, cancellationToken).ConfigureAwait(false)
+                : await client.AcceptSessionAsync(request.Source.TopicName!, request.Source.Name, sessionId, options, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.SessionCannotBeLocked)
+        {
+            throw new InvalidOperationException(
+                $"Session '{sessionId}' of {request.Source.DisplayName} is held by another consumer, so it cannot be opened now. Try again once it is released.",
+                exception);
+        }
+
+        await using (receiver.ConfigureAwait(false))
+        {
+            var result = new List<BrowsedMessage>();
+            var remaining = request.LoadAll ? int.MaxValue : request.MaxMessages;
+            var cursor = request.FromSequenceNumber;
+            while (remaining > 0)
+            {
+                var page = await receiver.PeekMessagesAsync(Math.Min(BrowseBatchSize, remaining), cursor, cancellationToken)
+                    .ConfigureAwait(false);
+                if (page.Count == 0)
+                {
+                    break;
+                }
+
+                foreach (var message in page.Take(remaining))
+                {
+                    result.Add(AzureMessageMapper.FromAzure(message, request.Source, ServiceBusSubQueue.Active));
+                }
+                remaining -= Math.Min(page.Count, remaining);
+                var last = page[^1].SequenceNumber;
+                if (last == long.MaxValue || cursor.HasValue && last < cursor.Value)
+                {
+                    break;
+                }
+                cursor = last + 1;
+            }
+            return result.OrderBy(message => message.SequenceNumber).ToArray();
+        }
+    }
+
+    /// <summary>
     /// Service Bus hands out only sessions that no consumer holds and that have an active message, so the browse missed
     /// the messages of held sessions, and of sessions whose messages are all deferred, without a word. The entity's active
     /// count (which includes deferred messages) is compared with what the readable sessions held and any gap is reported.
@@ -173,6 +234,7 @@ public sealed partial class AzureServiceBusWorkspace
             $"{displayName} reports {active.ToString("N0", culture)} active messages, but this browse read " +
             $"{readNonScheduled.ToString("N0", culture)}, so {(active - readNonScheduled).ToString("N0", culture)} message(s) the counters " +
             "report were not listed. Possible causes: sessions held by another consumer, sessions whose messages are all deferred " +
-            "(Service Bus does not hand those out to a browse), or messages changing during the browse. Browse again to check.");
+            "(Service Bus does not hand those out to a browse; open such a session by its id to see its messages), or messages " +
+            "changing during the browse. Browse again to check.");
     }
 }

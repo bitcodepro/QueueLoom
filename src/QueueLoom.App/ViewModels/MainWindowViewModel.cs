@@ -72,6 +72,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private string _statusText = "Ready";
     private string _errorText = string.Empty;
     private string _searchText = string.Empty;
+    private string _sessionIdToOpen = string.Empty;
     private string _deadLetterSearchQuery = string.Empty;
     private string _deadLetterSearchStatus = "Search Correlation ID, Message ID, body, or application properties.";
     private string _messageListTitle = "Peeked messages";
@@ -247,6 +248,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         BrowseSelectedTransferDeadLettersCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Peeking transfer DLQ", ct => BrowseSelectedEntityAsync(ServiceBusSubQueue.TransferDeadLetter, ct), token),
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && SupportsTransferDeadLetter);
+        OpenSessionCommand = _commands.Create(
+            token => RunWorkspaceOperationAsync("Opening session", OpenSessionByIdAsync, token),
+            () => !IsBusy && CanOpenSessionById && !string.IsNullOrWhiteSpace(SessionIdToOpen));
         BrowseDlqSourceCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { CanBrowse: true });
@@ -361,6 +365,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     public AsyncRelayCommand BrowseSelectedActiveCommand { get; }
     public AsyncRelayCommand BrowseSelectedDeadLettersCommand { get; }
     public AsyncRelayCommand BrowseSelectedTransferDeadLettersCommand { get; }
+    public AsyncRelayCommand OpenSessionCommand { get; }
     public AsyncRelayCommand BrowseDlqSourceCommand { get; }
     public AsyncRelayCommand PurgeEnvironmentDeadLettersCommand { get; }
     public AsyncRelayCommand PurgeTopicDeadLettersCommand { get; }
@@ -694,6 +699,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         BrowseSelectedDeadLettersCommand.NotifyCanExecuteChanged();
         BrowseSelectedTransferDeadLettersCommand.NotifyCanExecuteChanged();
         BrowseDlqSourceCommand.NotifyCanExecuteChanged();
+        OpenSessionCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanOpenSessionById));
         PurgeEnvironmentDeadLettersCommand.NotifyCanExecuteChanged();
         PurgeTopicDeadLettersCommand.NotifyCanExecuteChanged();
         PurgeSelectedDeadLettersCommand.NotifyCanExecuteChanged();
