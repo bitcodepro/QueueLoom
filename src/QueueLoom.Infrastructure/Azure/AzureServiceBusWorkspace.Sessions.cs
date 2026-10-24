@@ -93,27 +93,7 @@ public sealed partial class AzureServiceBusWorkspace
         }
         finally
         {
-            var cleanupErrors = new List<Exception>();
-            foreach (var receiver in receivers)
-            {
-                try { await receiver.DisposeAsync().ConfigureAwait(false); }
-                catch (Exception error) { cleanupErrors.Add(error); }
-            }
-            if (cleanupErrors.Count > 0)
-            {
-                const string warning = "Could not close all browsed sessions. Some session locks may remain until they expire.";
-                var cleanupError = new AggregateException(warning, cleanupErrors);
-                // Cleanup must attempt every accepted session, even after cancellation. Keep
-                // the primary failure (and its cancellation token) intact for the caller.
-                if (browseError is not null) browseError.Data["SessionCleanupErrors"] = cleanupError;
-                else
-                {
-                    // A single-inner aggregate is unwrapped by general exception summaries.
-                    // Keep the operator warning separate from potentially sensitive SDK details.
-                    cleanupError.Data["SessionCleanupWarning"] = warning;
-                    throw cleanupError;
-                }
-            }
+            await CloseBrowsedSessionsAsync(receivers, browseError).ConfigureAwait(false);
         }
 
         if (everySessionReadToTheEnd && request.FromSequenceNumber is null)
@@ -159,7 +139,8 @@ public sealed partial class AzureServiceBusWorkspace
                 exception);
         }
 
-        await using (receiver.ConfigureAwait(false))
+        Exception? browseError = null;
+        try
         {
             var result = new List<BrowsedMessage>();
             var remaining = request.LoadAll ? int.MaxValue : request.MaxMessages;
@@ -186,6 +167,43 @@ public sealed partial class AzureServiceBusWorkspace
                 cursor = last + 1;
             }
             return result.OrderBy(message => message.SequenceNumber).ToArray();
+        }
+        catch (Exception error)
+        {
+            browseError = error;
+            throw;
+        }
+        finally
+        {
+            await CloseBrowsedSessionsAsync([receiver], browseError).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Closes every accepted session, even after a failure or cancellation. A close failure is attached to
+    /// <paramref name="browseError"/> as SessionCleanupErrors so the primary failure (and its cancellation token) reaches
+    /// the caller intact; with no primary failure it is thrown, marked with the operator SessionCleanupWarning.
+    /// </summary>
+    private static async Task CloseBrowsedSessionsAsync(IEnumerable<ServiceBusSessionReceiver> receivers, Exception? browseError)
+    {
+        var cleanupErrors = new List<Exception>();
+        foreach (var receiver in receivers)
+        {
+            try { await receiver.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception error) { cleanupErrors.Add(error); }
+        }
+        if (cleanupErrors.Count > 0)
+        {
+            const string warning = "Could not close all browsed sessions. Some session locks may remain until they expire.";
+            var cleanupError = new AggregateException(warning, cleanupErrors);
+            if (browseError is not null) browseError.Data["SessionCleanupErrors"] = cleanupError;
+            else
+            {
+                // A single-inner aggregate is unwrapped by general exception summaries.
+                // Keep the operator warning separate from potentially sensitive SDK details.
+                cleanupError.Data["SessionCleanupWarning"] = warning;
+                throw cleanupError;
+            }
         }
     }
 

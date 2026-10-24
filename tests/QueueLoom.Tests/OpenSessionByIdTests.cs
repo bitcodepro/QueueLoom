@@ -28,6 +28,22 @@ public sealed class OpenSessionByIdTests
     }
 
     [Fact]
+    public async Task APaddedSessionIdIsOpenedExactlyAndNotConfusedWithTheUnpaddedOne()
+    {
+        var padded = new Receiver([(7, AzureMessageState.Deferred)]);
+        var plain = new Receiver([(1, AzureMessageState.Active)]);
+        var client = new Client(null, new Dictionary<string, Receiver> { [" customer-7 "] = padded, ["customer-7"] = plain });
+        await using var workspace = Workspace(client, requiresSession: true);
+
+        var messages = await workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue("orders")) { SessionId = " customer-7 " });
+
+        Assert.Equal([" customer-7 "], client.AcceptedSessions);
+        Assert.Equal(7L, Assert.Single(messages).SequenceNumber);
+        Assert.True(padded.Disposed);
+        Assert.False(plain.Disposed);
+    }
+
+    [Fact]
     public async Task ASessionHeldByAnotherConsumerIsReportedPlainly()
     {
         var client = new Client(null);
@@ -65,8 +81,11 @@ public sealed class OpenSessionByIdTests
     private static void Set(object owner, string name, object value) => owner.GetType()
         .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(owner, value);
 
-    /// <summary>Hands out <paramref name="receiver"/> for any session id; null refuses it as a session locked elsewhere.</summary>
-    private sealed class Client(Receiver? receiver) : ServiceBusClient
+    /// <summary>
+    /// Hands out <paramref name="receiver"/> for any session id, or the receiver keyed by the exact id; null refuses it as a
+    /// session locked elsewhere.
+    /// </summary>
+    private sealed class Client(Receiver? receiver, IReadOnlyDictionary<string, Receiver>? bySessionId = null) : ServiceBusClient
     {
         public List<string> AcceptedSessions { get; } = [];
         public int AcceptNextCalls { get; private set; }
@@ -75,9 +94,10 @@ public sealed class OpenSessionByIdTests
             ServiceBusSessionReceiverOptions? options = null, CancellationToken cancellationToken = default)
         {
             AcceptedSessions.Add(sessionId);
-            return receiver is null
+            var match = bySessionId is null ? receiver : bySessionId.GetValueOrDefault(sessionId);
+            return match is null
                 ? throw new ServiceBusException("The session lock was not acquired", ServiceBusFailureReason.SessionCannotBeLocked)
-                : Task.FromResult<ServiceBusSessionReceiver>(receiver);
+                : Task.FromResult<ServiceBusSessionReceiver>(match);
         }
         public override Task<ServiceBusSessionReceiver> AcceptNextSessionAsync(string queueName, ServiceBusSessionReceiverOptions? options = null,
             CancellationToken cancellationToken = default)

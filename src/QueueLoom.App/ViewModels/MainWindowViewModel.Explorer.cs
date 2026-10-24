@@ -179,7 +179,7 @@ public sealed partial class MainWindowViewModel
         var entity = SelectedEntity ?? throw new InvalidOperationException("Select a queue or subscription first.");
         if (!CanOpenSessionById) throw new InvalidOperationException("Only Azure Service Bus queues and subscriptions with sessions can be opened by session id.");
         var profile = GetConnectedProfileItem();
-        return BrowseAsync(profile, entity.Reference, ServiceBusSubQueue.Active, cancellationToken, SessionIdToOpen.Trim());
+        return BrowseAsync(profile, entity.Reference, ServiceBusSubQueue.Active, cancellationToken, SessionIdToOpen);
     }
 
     private void NotifyStatistics()

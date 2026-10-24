@@ -332,6 +332,14 @@ public sealed partial class McpServerTests
         await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active", ["sessionId"] = "customer-7" });
 
         Assert.Equal("customer-7", server.Workspace.BrowseRequests[^1].SessionId);
+        // The id is passed exactly; a blank one is refused before anything is read.
+        await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active", ["sessionId"] = " customer-7 " });
+        Assert.Equal(" customer-7 ", server.Workspace.BrowseRequests[^1].SessionId);
+        var reads = server.Workspace.BrowseRequests.Count;
+        Assert.Contains("session id",
+            await server.CallForErrorAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active", ["sessionId"] = "  " }),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(reads, server.Workspace.BrowseRequests.Count);
         Assert.Contains("do not use sessions",
             await server.CallForErrorAsync("peek_messages", new() { ["entity"] = "orders", ["sessionId"] = "customer-7" }), StringComparison.Ordinal);
     }

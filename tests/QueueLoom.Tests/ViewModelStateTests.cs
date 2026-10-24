@@ -529,7 +529,8 @@ public sealed partial class ViewModelStateTests
         var workspace = new FakeWorkspace
         {
             Topology = new ServiceBusTopology(DateTimeOffset.UtcNow, [sessions, plain]),
-            BrowseMessages = [SearchMessage(sessions.Reference, 4, "2026-08-12T10:00:00Z")]
+            // More than a page, so "Load more" really asks for page two.
+            BrowseMessages = Enumerable.Range(4, 150).Select(sequence => SearchMessage(sessions.Reference, sequence, "2026-08-12T10:00:00Z")).ToArray()
         };
         await using var viewModel = CreateViewModel(repository, workspace);
 
@@ -544,6 +545,9 @@ public sealed partial class ViewModelStateTests
         Assert.True(viewModel.CanOpenSessionById);
         viewModel.SessionIdToOpen = " ";
         Assert.False(viewModel.OpenSessionCommand.CanExecute(null));
+        viewModel.SessionIdToOpen = new string('s', 129);
+        Assert.False(viewModel.OpenSessionCommand.CanExecute(null));
+        // A session id is an opaque exact identifier: the padding is part of it.
         viewModel.SessionIdToOpen = " customer-7 ";
         Assert.True(viewModel.OpenSessionCommand.CanExecute(null));
         await viewModel.OpenSessionCommand.ExecuteAsync();
@@ -551,13 +555,16 @@ public sealed partial class ViewModelStateTests
         var request = Assert.Single(workspace.BrowseRequests);
         Assert.Equal(sessions.Reference, request.Source);
         Assert.Equal(ServiceBusSubQueue.Active, request.SubQueue);
-        Assert.Equal("customer-7", request.SessionId);
-        Assert.Equal([4L], viewModel.Messages.Select(message => message.SequenceNumber));
-        Assert.Contains("session customer-7", viewModel.MessageListTitle, StringComparison.Ordinal);
+        Assert.Equal(" customer-7 ", request.SessionId);
+        Assert.Equal(100, viewModel.Messages.Count);
+        Assert.Contains("customer-7", viewModel.MessageListTitle, StringComparison.Ordinal);
 
-        // Loading more stays in the session; a plain browse of the queue no longer names it.
+        // Loading more asks for page two of the same session; a plain browse of the queue no longer names it.
+        Assert.True(viewModel.LoadMoreMessagesCommand.CanExecute(null));
         await viewModel.LoadMoreMessagesCommand.ExecuteAsync();
-        Assert.All(workspace.BrowseRequests, item => Assert.Equal("customer-7", item.SessionId));
+        Assert.Equal(2, workspace.BrowseRequests.Count);
+        Assert.Equal(" customer-7 ", workspace.BrowseRequests[1].SessionId);
+        Assert.Equal(150, viewModel.Messages.Count);
         await viewModel.BrowseSelectedActiveCommand.ExecuteAsync();
         Assert.Null(workspace.BrowseRequests[^1].SessionId);
     }

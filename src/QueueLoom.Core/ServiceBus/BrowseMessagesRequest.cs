@@ -64,10 +64,9 @@ public sealed record BrowseMessagesRequest
                 return;
             }
 
-            var trimmed = value.Trim();
-            if (trimmed.Length == 0 || trimmed.Length > MaximumSessionIdLength)
+            if (!IsValidSessionId(value))
             {
-                throw new ArgumentException($"A session id has 1 to {MaximumSessionIdLength} characters.", nameof(SessionId));
+                throw new ArgumentException($"A session id has 1 to {MaximumSessionIdLength} characters and is not blank.", nameof(SessionId));
             }
 
             if (SubQueue != ServiceBusSubQueue.Active)
@@ -75,7 +74,14 @@ public sealed record BrowseMessagesRequest
                 throw new ArgumentException("Dead-letter queues do not use sessions; open a session of the active queue.", nameof(SessionId));
             }
 
-            field = trimmed;
+            field = value;
         }
     }
+
+    /// <summary>
+    /// A session id is an opaque exact identifier: it is never trimmed, since ' customer-7 ' and 'customer-7' are
+    /// different sessions. It must not be blank and has at most <see cref="MaximumSessionIdLength"/> characters.
+    /// </summary>
+    public static bool IsValidSessionId(string? sessionId) =>
+        !string.IsNullOrWhiteSpace(sessionId) && sessionId.Length <= MaximumSessionIdLength;
 }

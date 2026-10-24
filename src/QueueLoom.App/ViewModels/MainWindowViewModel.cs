@@ -250,7 +250,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             () => !IsBusy && SelectedEntity?.CanBrowse == true && IsConnected && SupportsTransferDeadLetter);
         OpenSessionCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening session", OpenSessionByIdAsync, token),
-            () => !IsBusy && CanOpenSessionById && !string.IsNullOrWhiteSpace(SessionIdToOpen));
+            () => !IsBusy && CanOpenSessionById && BrowseMessagesRequest.IsValidSessionId(SessionIdToOpen));
         BrowseDlqSourceCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { CanBrowse: true });

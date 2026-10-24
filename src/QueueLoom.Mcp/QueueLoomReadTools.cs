@@ -292,6 +292,11 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
             {
                 throw new McpException("Dead-letter queues do not use sessions; pass subQueue 'active' with a sessionId.");
             }
+            // The id is opaque and passed exactly as given; only a blank or overlong one is refused.
+            if (sessionId is not null && !BrowseMessagesRequest.IsValidSessionId(sessionId))
+            {
+                throw new McpException($"A session id has 1 to {BrowseMessagesRequest.MaximumSessionIdLength} characters and is not blank.");
+            }
             var count = Math.Clamp(maxMessages, 1, 100);
             await ConfirmLiveQueueReadAsync(server, profile, entity, queue, count, cancellationToken).ConfigureAwait(false);
             var cleanup = new List<string>();
