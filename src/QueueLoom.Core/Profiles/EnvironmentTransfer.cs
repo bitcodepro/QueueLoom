@@ -31,15 +31,23 @@ public static class EnvironmentTransfer
     public static string Export(IEnumerable<ServiceBusProfile> profiles)
     {
         ArgumentNullException.ThrowIfNull(profiles);
-        var environments = new JsonArray();
-        foreach (var profile in profiles)
-        {
-            if (profile.Kafka?.SchemaRegistryUrl is { } registry &&
+        var list = profiles as IReadOnlyCollection<ServiceBusProfile> ?? profiles.ToList();
+        // Name the environments at fault (never the URL, which may hold the credentials), so the user knows which to edit.
+        var unsafeRegistry = list.Where(profile => profile.Kafka?.SchemaRegistryUrl is { } registry &&
                 (!Uri.TryCreate(registry, UriKind.Absolute, out var uri) ||
                  !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)))
-            {
-                throw new InvalidOperationException("Remove credentials, query and fragment from the Schema Registry URL before exporting environments.");
-            }
+            .Select(profile => $"\"{profile.Name}\"").ToList();
+        if (unsafeRegistry.Count > 0)
+        {
+            const int shown = 5;
+            var names = string.Join(", ", unsafeRegistry.Take(shown)) +
+                (unsafeRegistry.Count > shown ? $" and {unsafeRegistry.Count - shown} more" : "");
+            throw new InvalidOperationException(
+                $"Remove credentials, query and fragment from the Schema Registry URL of {names} before exporting environments.");
+        }
+        var environments = new JsonArray();
+        foreach (var profile in list)
+        {
             var node = JsonSerializer.SerializeToNode(profile, Options)!.AsObject();
             // The id belongs to this computer (and its vault entries); write access and permission to delete
             // queues are local decisions.

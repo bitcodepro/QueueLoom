@@ -23,6 +23,43 @@ public sealed class EnvironmentTransferTests
     }
 
     [Fact]
+    public void Export_RefusalNamesTheEnvironmentWithCredentialsInItsRegistryUrl()
+    {
+        ServiceBusProfile Kafka(string name, string registry) =>
+            ServiceBusProfile.CreateNew(name, EnvironmentKind.Test, new AuthenticationSettings(AuthenticationKind.KafkaSaslPassword)) with
+            {
+                Provider = MessagingProvider.Kafka,
+                Kafka = new KafkaSettings("broker:9092", true, KafkaSaslMechanism.ScramSha512, "svc", SchemaRegistryUrl: registry)
+            };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            EnvironmentTransfer.Export([Kafka("Dev Kafka", "https://registry"), Kafka("Staging Kafka", "https://u:p@reg")]));
+
+        Assert.Contains("Staging Kafka", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Dev Kafka", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("u:p", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("reg/", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("https://", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Export_RefusalListsAtMostFiveEnvironments()
+    {
+        var profiles = Enumerable.Range(1, 7).Select(i =>
+            ServiceBusProfile.CreateNew($"Kafka {i}", EnvironmentKind.Test, new AuthenticationSettings(AuthenticationKind.KafkaSaslPassword)) with
+            {
+                Provider = MessagingProvider.Kafka,
+                Kafka = new KafkaSettings("broker:9092", true, KafkaSaslMechanism.ScramSha512, "svc", SchemaRegistryUrl: "https://reg?key=x")
+            }).ToList();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => EnvironmentTransfer.Export(profiles));
+
+        Assert.Contains("Kafka 5", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Kafka 6", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("and 2 more", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Import_GivesNewIdsReadOnlyAccessAndUniqueNames()
     {
         var rabbit = ServiceBusProfile.CreateNew("Rabbit", EnvironmentKind.Test,
