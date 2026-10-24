@@ -153,6 +153,9 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     public static Uri PackageUri(string tag, string version, string rid) =>
         new($"{ReleasesDownload}/{Uri.EscapeDataString(tag)}/{PackageName(version, rid)}");
 
+    /// <summary>Runs the <see cref="CanInstall"/> write probe off the caller (UI) thread.</summary>
+    public static Task<bool> CanInstallAsync(UpdateTarget target) => Task.Run(() => CanInstall(target));
+
     /// <summary>Whether the update destination is writable: the version store for stable installations.</summary>
     public static bool CanInstall(UpdateTarget target)
     {
@@ -453,6 +456,10 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             Thread.Sleep(20);
         }
     }
+
+    /// <summary>Runs <see cref="CleanUpPreviousUpdate"/> off the caller: it may wait up to 30 s for another process's
+    /// installation lock and deletes whole folders, which must not freeze a window that is opening.</summary>
+    public Task CleanUpPreviousUpdateAsync(UpdateTarget? target) => Task.Run(() => CleanUpPreviousUpdate(target));
 
     /// <summary>Removes what the previous update left behind (the ".old" files and the download).</summary>
     public void CleanUpPreviousUpdate(UpdateTarget? target)

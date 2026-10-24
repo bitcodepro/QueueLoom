@@ -231,7 +231,8 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            _updater?.CleanUpPreviousUpdate(AppUpdater.CurrentTarget());
+            if (_updater is { } cleaner) await cleaner.CleanUpPreviousUpdateAsync(AppUpdater.CurrentTarget());
+            if (_shutdownInProgress) return;
             var update = await _updateChecker.CheckAsync();
             if (update is null || _shutdownInProgress)
             {
@@ -241,9 +242,10 @@ public sealed partial class MainWindow : Window
             var target = AppUpdater.CurrentTarget();
             var reason = target is null
                 ? "This is a development build, which is not updated in place."
-                : AppUpdater.CanInstall(target)
+                : await AppUpdater.CanInstallAsync(target)
                     ? null
                     : $"QueueLoom cannot write to its folder ({target.InstallDirectory}).";
+            if (_shutdownInProgress) return;
             var updater = _updater;
             Func<IProgress<UpdateProgress>, CancellationToken, Task>? install = updater is not null && target is not null && reason is null
                 ? async (progress, token) =>
