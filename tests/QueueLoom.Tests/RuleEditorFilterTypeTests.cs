@@ -23,7 +23,7 @@ public sealed class RuleEditorFilterTypeTests
     }
 
     [Fact]
-    public void Properties_differing_only_in_case_are_distinct_as_in_Service_Bus()
+    public void Properties_differing_only_in_case_are_refused_because_Service_Bus_would_keep_only_one()
     {
         var editor = new RuleEditorViewModel("t", "s")
         {
@@ -32,7 +32,38 @@ public sealed class RuleEditorFilterTypeTests
             CorrelationProperties = "tenant = 'acme'\nTenant = 'globex'"
         };
 
-        Assert.Equal(2, editor.TryBuild()!.Correlation!.Properties.Count);
+        Assert.Null(editor.TryBuild());
+        Assert.Equal("Property 'Tenant' is duplicated. List each property once.", editor.Error);
+    }
+
+    [Fact]
+    public void Distinct_correlation_properties_survive_the_round_trip_through_Service_Bus()
+    {
+        var editor = new RuleEditorViewModel("t", "s")
+        {
+            Name = "tenants",
+            Kind = RuleEditorViewModel.Kinds[1],
+            CorrelationProperties = "tenant = 'acme'\nregion = 'eu'\namount = 250"
+        };
+        var built = editor.TryBuild()!;
+
+        var filter = (CorrelationRuleFilter)AzureServiceBusWorkspace.ToFilter(built);
+        var read = AzureServiceBusWorkspace.ToRule(ServiceBusModelFactory.RuleProperties("tenants", filter, null));
+
+        Assert.Equal(3, filter.ApplicationProperties.Count);
+        Assert.Equal(built.Correlation!.Properties.OrderBy(p => p.Key), read.Correlation!.Properties.OrderBy(p => p.Key));
+    }
+
+    [Fact]
+    public void Converting_properties_that_differ_only_in_case_is_refused_instead_of_dropping_one()
+    {
+        var rule = new SubscriptionRule("tenants", RuleFilterKind.Correlation, Correlation: new CorrelationFilterFields
+        {
+            Properties = new Dictionary<string, object>(StringComparer.Ordinal) { ["tenant"] = "acme", ["Tenant"] = "globex" }
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() => AzureServiceBusWorkspace.ToFilter(rule));
+        Assert.Contains("Tenant", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     public static TheoryData<RuleFilter> CatchAllFilters => new() { new TrueRuleFilter(), new FalseRuleFilter() };

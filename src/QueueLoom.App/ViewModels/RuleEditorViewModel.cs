@@ -411,6 +411,7 @@ public sealed partial class RuleEditorViewModel : ObservableObject
         }
 
         var properties = new Dictionary<string, object>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in CorrelationProperties.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var separator = line.IndexOf('=');
@@ -420,8 +421,8 @@ public sealed partial class RuleEditorViewModel : ObservableObject
                 return null;
             }
             var property = line[..separator].Trim();
-            // Service Bus property names are case-sensitive, so only an exact repeat would silently drop a line.
-            if (properties.ContainsKey(property))
+            // Service Bus keeps correlation properties in a case-insensitive dictionary, so tenant and Tenant would keep only one.
+            if (!seen.Add(property))
             {
                 Error = $"Property '{property}' is duplicated. List each property once.";
                 return null;
