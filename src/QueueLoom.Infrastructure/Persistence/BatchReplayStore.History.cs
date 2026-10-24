@@ -116,7 +116,7 @@ public sealed partial class BatchReplayStore
                     $"{item.Original.Source.Path} / {item.Original.SubQueue} / {item.Original.SequenceNumber} / {item.Original.Properties.MessageId}")
                 { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata,
                     HasClassifiedAmqpHeaders = !item.Message.LegacyAmqpBrokerHeaders, Destination = item.Destination,
-                    Original = item.Key };
+                    Original = item.Key }.WithAnnotations(item.Message.AzureMessageAnnotations);
                 await AtomicFile.WriteTextAsync(Path.Combine(folder, $"{index:D6}.message.json"), JsonSerializer.Serialize(payload), token);
                 await WriteItemMetadata(folder, index, payload, item.Destination, token);
                 if (deferActivation) await WriteStateAsync(Path.Combine(folder, $"{index:D6}.state"), "AwaitingScheduleClaim", token);

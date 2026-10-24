@@ -92,7 +92,7 @@ public static class MessageImport
                     messages.Add(message);
                 }
                 catch (Exception exception) when (exception is FormatException or InvalidOperationException or KeyNotFoundException
-                                                      or OverflowException or ArgumentException)
+                                                      or OverflowException or ArgumentException or InvalidDataException)
                 {
                     throw new InvalidOperationException($"Message {index:N0} of the export cannot be read: {exception.Message}", exception);
                 }
@@ -199,7 +199,13 @@ public static class MessageImport
 
         var origin = $"{Text(element, "environment") ?? "export"} / {Text(element, "source") ?? "?"} / {properties.MessageId ?? "no Message ID"}";
         return new ImportedMessage(
-            new MessageDraft(EditableMessageBody.FromBytes(body), properties, applicationProperties) { KafkaEnvelope = kafka },
+            new MessageDraft(EditableMessageBody.FromBytes(body), properties, applicationProperties)
+            {
+                KafkaEnvelope = kafka,
+                AzureMessageAnnotations = element.TryGetProperty("azureMessageAnnotations", out var annotations)
+                    ? AzureAnnotationJson.Decode(annotations)
+                    : null
+            },
             origin);
     }
 

@@ -291,11 +291,13 @@ public sealed partial class MainWindowViewModel
         }
         if (!claimed || environmentGone)
         {
-            ScheduledResends.Remove(item);
+            var stillPending = !claimed && await ShowPersistedScheduledAsync(item).ConfigureAwait(true);
             RefreshOperationHistory();
             StatusText = environmentGone
                 ? $"{resend.EnvironmentName} was removed or changed in another window; the scheduled resend was cancelled and nothing was sent."
-                : "The scheduled resend was cancelled, started or changed in another window; nothing was sent.";
+                : stillPending
+                    ? "The scheduled resend changed in another window; nothing was sent. Its current version is listed on Activity."
+                    : "The scheduled resend was cancelled, started or changed in another window; nothing was sent.";
             if (claimed)
             {
                 AddActivity("Warning", "Scheduled resend cancelled", $"{resend.EnvironmentName} · {item.Title} · its environment was removed or changed; nothing was sent");
@@ -347,8 +349,9 @@ public sealed partial class MainWindowViewModel
         {
             if (_scheduledStore is not null && !await RemoveScheduledAsync(item.Resend).ConfigureAwait(true))
             {
-                ScheduledResends.Remove(item);
-                StatusText = "The scheduled resend is no longer pending or changed in another window.";
+                StatusText = await ShowPersistedScheduledAsync(item).ConfigureAwait(true)
+                    ? "The scheduled resend changed in another window and was not cancelled. Its current version is listed on Activity."
+                    : "The scheduled resend is no longer pending or changed in another window.";
                 return;
             }
         }
@@ -359,6 +362,34 @@ public sealed partial class MainWindowViewModel
         ScheduledResends.Remove(item);
         StatusText = "Scheduled resend cancelled; nothing was sent";
         AddActivity("Info", "Scheduled resend cancelled", $"{item.Resend.EnvironmentName} · {item.Title}");
+    }
+
+    /// <summary>
+    /// After a job could not be claimed, lists what the shared list holds for it: the row is replaced by the saved
+    /// version, or removed only once no job with its id remains, so a job that can still run is never hidden.
+    /// Returns whether the job is still pending.
+    /// </summary>
+    private async Task<bool> ShowPersistedScheduledAsync(ScheduledResendItemViewModel item)
+    {
+        ScheduledResend? persisted;
+        try
+        {
+            persisted = (await _scheduledStore!.LoadAsync().ConfigureAwait(true)).FirstOrDefault(resend => resend.Id == item.Resend.Id);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return true; // Unknown: kept listed, and the next check reconciles it.
+        }
+        var index = ScheduledResends.IndexOf(item);
+        if (persisted is null)
+        {
+            if (index >= 0) ScheduledResends.RemoveAt(index);
+            return false;
+        }
+        if (index >= 0) ScheduledResends[index] = CreateScheduledItem(persisted);
+        else if (ScheduledResends.All(row => row.Resend.Id != persisted.Id)) ScheduledResends.Add(CreateScheduledItem(persisted));
+        UpdateScheduledStatuses();
+        return true;
     }
 
     private void UpdateScheduledStatuses()

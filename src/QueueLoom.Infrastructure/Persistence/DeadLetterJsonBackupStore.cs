@@ -183,6 +183,7 @@ public sealed class DeadLetterJsonBackupSession(
             WriteString(writer, "deadLetterErrorDescription", message.DeadLetterErrorDescription);
             WriteApplicationProperties(writer, message.ApplicationProperties.Select(AzureMessageMapper.ToDomainProperty));
             WriteBody(writer, message.Body.ToMemory());
+            WriteAnnotations(writer, AzureMessageMapper.SenderAnnotations(message.GetRawAmqpMessage().MessageAnnotations));
         }, cancellationToken);
     }
 
@@ -250,7 +251,27 @@ public sealed class DeadLetterJsonBackupSession(
                 writer.WritePropertyName("kafkaEnvelope");
                 JsonSerializer.Serialize(writer, message.KafkaEnvelope);
             }
+            WriteAnnotations(writer, message.AzureMessageAnnotations);
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sender-set Azure AMQP annotations in their typed form, so a restored copy carries them; an annotation whose value
+    /// has no lossless form is named under "skippedAzureMessageAnnotations" instead of failing the backup.
+    /// </summary>
+    private static void WriteAnnotations(Utf8JsonWriter writer, IReadOnlyDictionary<string, object?>? annotations)
+    {
+        if (AzureAnnotationJson.Encode(annotations, out var skipped) is { } encoded)
+        {
+            writer.WritePropertyName("azureMessageAnnotations");
+            encoded.WriteTo(writer);
+        }
+        if (skipped.Count > 0)
+        {
+            writer.WriteStartArray("skippedAzureMessageAnnotations");
+            foreach (var warning in skipped) writer.WriteStringValue(warning);
+            writer.WriteEndArray();
+        }
     }
 
     private async Task<string> WriteBackupAsync(

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using QueueLoom.Core.ServiceBus;
 
@@ -61,7 +62,9 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         finally { _gate.Release(); }
     }, cancellationToken);
 
-    private IReadOnlyList<ScheduledResend> LoadCore()
+    private IReadOnlyList<ScheduledResend> LoadCore() => LoadDocumentsCore().Select(ToModelCore).ToArray();
+
+    private IReadOnlyList<ResendDocument> LoadDocumentsCore()
     {
         // Move once, so older versions cannot execute schedules whose configuration or raw envelope
         // they do not understand. Legacy jobs have no configuration identity and remain blocked.
@@ -70,7 +73,7 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         try
         {
             return File.Exists(FilePath)
-                ? (JsonSerializer.Deserialize<List<ResendDocument?>>(File.ReadAllText(FilePath), Options) ?? []).Select(ToModel).ToArray()
+                ? (JsonSerializer.Deserialize<List<ResendDocument?>>(File.ReadAllText(FilePath), Options) ?? []).Select(Validated).ToArray()
                 : [];
         }
         catch (Exception exception) when (exception is JsonException or InvalidDataException or ArgumentException)
@@ -114,10 +117,11 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
 
     private void AddCore(ScheduledResend resend)
     {
-        var current = LoadCore();
+        // The stored documents are rewritten as read, so a job's record of skipped annotations is kept.
+        var current = LoadDocumentsCore();
         if (current.Count >= ScheduledResend.MaximumPending || current.Any(item => item.Id == resend.Id))
             throw new InvalidOperationException("The scheduled list is full or this job already exists. Refresh the pending jobs.");
-        SaveCore(current.Append(resend).ToArray());
+        SaveCore(current.Append(ToDocument(resend)).ToArray());
     }
 
     public bool TryRemove(ScheduledResend expected)
@@ -134,9 +138,9 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
 
     private bool TryRemoveCore(ScheduledResend expected)
     {
-        var current = LoadCore();
+        var current = LoadDocumentsCore();
         var job = current.FirstOrDefault(item => item.Id == expected.Id);
-        if (job is null || JsonSerializer.Serialize(ToDocument(job), Options) != JsonSerializer.Serialize(ToDocument(expected), Options))
+        if (job is null || Canonical(ToModelCore(job)) != Canonical(expected))
             return false;
         SaveCore(current.Where(item => item.Id != expected.Id).ToArray());
         return true;
@@ -145,15 +149,28 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
     private CrossProcessFileLock OwnFile() =>
         CrossProcessFileLock.AcquireAsync(FilePath + ".lock", CancellationToken.None).GetAwaiter().GetResult();
 
-    private void SaveCore(IReadOnlyList<ScheduledResend> resends)
+    // Compared as the stored form would read back: annotations without a lossless form are dropped on save, and
+    // the record of their names is evidence beside the job, not part of what is sent.
+    private static string Canonical(ScheduledResend resend)
+    {
+        var document = ToDocument(resend);
+        return JsonSerializer.Serialize(document with
+        {
+            Items = document.Items.Select(item => item with { SkippedAzureMessageAnnotations = null }).ToList()
+        }, Options);
+    }
+
+    private void SaveCore(IReadOnlyList<ScheduledResend> resends) => SaveCore(resends.Select(ToDocument).ToArray());
+
+    private void SaveCore(IReadOnlyList<ResendDocument> documents)
     {
         paths.EnsureCreated();
-        if (resends.Count == 0)
+        if (documents.Count == 0)
         {
             File.Delete(FilePath);
             return;
         }
-        var document = JsonSerializer.Serialize(resends.Select(ToDocument).ToList(), Options);
+        var document = JsonSerializer.Serialize(documents, Options);
         AtomicFile.WriteTextAsync(FilePath, document, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -163,10 +180,12 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         resend.Items.Select(item => new ItemDocument(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId, item.Destination,
             item.Message.Body, item.Message.Properties, item.Message.ApplicationProperties.ToList())
             { KafkaEnvelope = item.Message.KafkaEnvelope, HasSeparatedAmqpMetadata = !item.Message.LegacyAmqpMetadata,
-                HasClassifiedAmqpHeaders = !item.Message.LegacyAmqpBrokerHeaders }).ToList())
+                HasClassifiedAmqpHeaders = !item.Message.LegacyAmqpBrokerHeaders,
+                AzureMessageAnnotations = AzureAnnotationJson.Encode(item.Message.AzureMessageAnnotations, out var skipped),
+                SkippedAzureMessageAnnotations = skipped.Count == 0 ? null : skipped.ToList() }).ToList())
         { ConfigurationIdentity = resend.ConfigurationIdentity };
 
-    private static ScheduledResend ToModel(ResendDocument? document)
+    private static ResendDocument Validated(ResendDocument? document)
     {
         // Valid JSON can still miss parts a job needs, for example after a hand edit or a partial write.
         if (document is null || document.EnvironmentName is null || document.DestinationDisplay is null || document.Items is null ||
@@ -174,7 +193,8 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         {
             throw new InvalidDataException("A scheduled resend is incomplete.");
         }
-        return ToModelCore(document);
+        _ = ToModelCore(document); // A value the model refuses counts as damage too.
+        return document;
     }
 
     private static ScheduledResend ToModelCore(ResendDocument document) => new(
@@ -183,7 +203,8 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         document.Items.Select(item => new ScheduledResendItem(item.Source, item.SubQueue, item.SequenceNumber, item.MessageId,
             item.Destination, new MessageDraft(item.Body, item.Properties, item.ApplicationProperties?.Where(property => property is not null))
             { KafkaEnvelope = item.KafkaEnvelope, LegacyAmqpMetadata = !item.HasSeparatedAmqpMetadata,
-                LegacyAmqpBrokerHeaders = !item.HasClassifiedAmqpHeaders })).ToArray())
+                LegacyAmqpBrokerHeaders = !item.HasClassifiedAmqpHeaders,
+                AzureMessageAnnotations = AzureAnnotationJson.Decode(item.AzureMessageAnnotations) })).ToArray())
         { ConfigurationIdentity = document.ConfigurationIdentity };
 
     private sealed record ResendDocument(
@@ -213,5 +234,9 @@ public sealed class JsonScheduledResendStore(QueueLoomPaths paths) : IScheduledR
         public KafkaEnvelope? KafkaEnvelope { get; init; }
         public bool HasSeparatedAmqpMetadata { get; init; }
         public bool HasClassifiedAmqpHeaders { get; init; }
+        // Sender-set Azure AMQP annotations, typed (AzureAnnotationJson); absent in older files and for other services.
+        public JsonObject? AzureMessageAnnotations { get; init; }
+        // Annotations whose values had no lossless form, named so the loss is on record beside the job.
+        public List<string>? SkippedAzureMessageAnnotations { get; init; }
     }
 }
