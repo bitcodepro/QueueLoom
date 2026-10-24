@@ -118,7 +118,9 @@ public sealed partial class AzureServiceBusWorkspace
 
         if (everySessionReadToTheEnd && request.FromSequenceNumber is null)
         {
-            await ReportHeldSessionsAsync(request.Source, result.Count(message => message.State != QueueLoom.Core.ServiceBus.ServiceBusMessageState.Scheduled),
+            await ReportUnreadSessionMessagesAsync(request.Source,
+                result.Count(message => message.State is QueueLoom.Core.ServiceBus.ServiceBusMessageState.Active or QueueLoom.Core.ServiceBus.ServiceBusMessageState.Unknown),
+                result.Count(message => message.State == QueueLoom.Core.ServiceBus.ServiceBusMessageState.Deferred),
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -129,35 +131,79 @@ public sealed partial class AzureServiceBusWorkspace
     }
 
     /// <summary>
-    /// Service Bus hands out only sessions no consumer holds, so the messages of held sessions were missing from the
-    /// browse without a word. When the entity's active count is higher than what every readable session held, the
-    /// browse says it may be incomplete. The count is best effort: without management rights, or on the emulator,
-    /// nothing is said.
+    /// Service Bus hands out only sessions that no consumer holds and that have an active message, so the browse missed
+    /// the messages of held sessions, and the deferred messages of sessions with no active message left, without a word.
+    /// The entity's counts are compared with what the readable sessions held and any gap is reported. The counts are best
+    /// effort: without management rights, or on the emulator (which reports no counts), nothing is said.
     /// </summary>
-    private async Task ReportHeldSessionsAsync(ServiceBusEntityReference source, int read, CancellationToken cancellationToken)
+    private async Task ReportUnreadSessionMessagesAsync(ServiceBusEntityReference source, int readActive, int readDeferred,
+        CancellationToken cancellationToken)
     {
         if (_isEmulator) return;
         long active;
+        long deferred;
         try
         {
             var administration = GetAdministrationClient();
-            active = source.Kind == ServiceBusEntityKind.Queue
-                ? (await administration.GetQueueRuntimePropertiesAsync(source.Name, cancellationToken).ConfigureAwait(false)).Value.ActiveMessageCount
-                : (await administration.GetSubscriptionRuntimePropertiesAsync(source.TopicName!, source.Name, cancellationToken).ConfigureAwait(false))
-                    .Value.ActiveMessageCount;
+            if (source.Kind == ServiceBusEntityKind.Queue)
+            {
+                var properties = (await administration.GetQueueRuntimePropertiesAsync(source.Name, cancellationToken).ConfigureAwait(false)).Value;
+                (active, deferred) = (properties.ActiveMessageCount, DeferredCount(properties.TotalMessageCount, properties.ActiveMessageCount,
+                    properties.ScheduledMessageCount, properties.DeadLetterMessageCount, properties.TransferMessageCount, properties.TransferDeadLetterMessageCount));
+            }
+            else
+            {
+                var properties = (await administration.GetSubscriptionRuntimePropertiesAsync(source.TopicName!, source.Name, cancellationToken)
+                    .ConfigureAwait(false)).Value;
+                // A subscription has no scheduled count: scheduled messages wait in the topic.
+                (active, deferred) = (properties.ActiveMessageCount, DeferredCount(properties.TotalMessageCount, properties.ActiveMessageCount,
+                    scheduled: 0, properties.DeadLetterMessageCount, properties.TransferMessageCount, properties.TransferDeadLetterMessageCount));
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             return;
         }
-        if (active > read)
+        foreach (var (title, details) in UnreadSessionMessageNotices(source.DisplayName, active, deferred, readActive, readDeferred))
         {
-            // Only the discrepancy is known, not its cause: a consumer may hold sessions, or messages may have arrived in
-            // sessions this browse already read while it was still running.
-            ReportNotice("Session browse may be incomplete",
-                $"{source.DisplayName} reports {active.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} active messages, " +
-                $"but this browse read {read.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)}. Possible reasons: another " +
-                "consumer holds some sessions (Service Bus does not hand those out), or messages arrived while browsing. Browse again to see them.");
+            ReportNotice(title, details);
         }
+    }
+
+    /// <summary>
+    /// The SDK's runtime properties have no deferred count; deferred messages are the part of the total that is neither
+    /// active, scheduled, dead-lettered nor in transfer. The counts are read at slightly different moments, so never below zero.
+    /// </summary>
+    internal static long DeferredCount(long total, long active, long scheduled, long deadLetter, long transfer, long transferDeadLetter) =>
+        Math.Max(0, total - active - scheduled - deadLetter - transfer - transferDeadLetter);
+
+    /// <summary>
+    /// The notices for a session browse that read <paramref name="readActive"/> active and <paramref name="readDeferred"/>
+    /// deferred messages of an entity that reports <paramref name="active"/> and <paramref name="deferred"/>. Only the
+    /// discrepancy is known, not its cause: messages may also have arrived or been settled while the browse ran.
+    /// </summary>
+    internal static IReadOnlyList<(string Title, string Details)> UnreadSessionMessageNotices(
+        string displayName, long active, long deferred, int readActive, int readDeferred)
+    {
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        var notices = new List<(string, string)>();
+        if (active > readActive)
+        {
+            notices.Add(("Session browse may be incomplete",
+                $"{displayName} reports {active.ToString("N0", culture)} active messages, " +
+                $"but this browse read {readActive.ToString("N0", culture)}. Possible reasons: another " +
+                "consumer holds some sessions (Service Bus does not hand those out), or messages arrived while browsing. Browse again to see them."));
+        }
+        if (deferred > readDeferred)
+        {
+            var missing = deferred - readDeferred;
+            notices.Add(("Deferred session messages not listed",
+                $"{displayName} reports {deferred.ToString("N0", culture)} deferred messages, but this browse read " +
+                $"{readDeferred.ToString("N0", culture)}. Service Bus hands out only sessions that have an active message, so the " +
+                $"{missing.ToString("N0", culture)} deferred message(s) of sessions with no active message left (or of sessions another " +
+                "consumer holds) cannot be listed here. They stay in the entity; the application that deferred them can receive them by " +
+                "sequence number, and they appear here once their session gets an active message."));
+        }
+        return notices;
     }
 }
