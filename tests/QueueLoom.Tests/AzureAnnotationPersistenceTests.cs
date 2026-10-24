@@ -128,6 +128,23 @@ public sealed class AzureAnnotationPersistenceTests
     }
 
     [Fact]
+    public void ScheduledResend_WithAnAnnotationItCannotKeep_IsRemovedAsAddedAndKeepsItsRecordAcrossRewrites()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonScheduledResendStore(QueueLoomPaths.ForRoot(directory.Path));
+        var profile = Profile();
+        var job = Job(profile, Message(new Dictionary<string, object?> { ["kept"] = "yes", ["odd"] = new object() }));
+        var other = Job(profile, Message());
+        store.Add(job);
+        store.Add(other);
+        Assert.True(store.TryRemove(other));
+        Assert.Contains("odd: ", File.ReadAllText(store.FilePath), StringComparison.Ordinal);
+
+        Assert.True(store.TryRemove(job));
+        Assert.Empty(store.Load());
+    }
+
+    [Fact]
     public async Task BatchReplayAndDurableResend_SendTheAnnotationsTheyStored()
     {
         using var directory = new TemporaryDirectory();
