@@ -272,7 +272,8 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                  "(or, with no dead-letter target, such as a RabbitMQ quorum queue without a dead-letter exchange, drop it). " +
                  "Bodies longer than 4,000 characters are truncated, as are property values over 1,000 characters (at most 50 properties) " +
                  "and dead-letter reasons or descriptions over 4,000; the *Truncated fields say when. Packed bodies (gzip, base64, Avro, Protobuf) are also returned " +
-                 "unpacked in decodedBody. Use fromSequenceNumber to page on Azure. Reading 'active' on SQS, Pub/Sub or RabbitMQ " +
+                 "unpacked in decodedBody. Use fromSequenceNumber to page on Azure. With sessionId and 'active', Azure peeks that one session of a " +
+                 "session-enabled entity, deferred and scheduled messages too (a session whose messages are all deferred is otherwise not listed). Reading 'active' on SQS, Pub/Sub or RabbitMQ " +
                  "asks the user first, because those reads count as deliveries of live messages.")]
     public Task<MessageListInfo> PeekMessagesAsync(
         McpServer server,
@@ -281,11 +282,21 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
         [Description("'dlq' (default), 'transfer-dlq' or 'active'.")] string subQueue = "dlq",
         [Description("How many messages to return, 1-100.")] int maxMessages = 20,
         [Description("Start at this sequence number (for paging).")] long? fromSequenceNumber = null,
+        [Description("Azure Service Bus only: peek just this session of the active queue.")] string? sessionId = null,
         CancellationToken cancellationToken = default) =>
         McpGuard.RunAsync(async () =>
         {
             var profile = await session.ResolveProfileAsync(environment, cancellationToken).ConfigureAwait(false);
             var queue = McpMapping.ParseSubQueue(subQueue);
+            if (sessionId is not null && queue != ServiceBusSubQueue.Active)
+            {
+                throw new McpException("Dead-letter queues do not use sessions; pass subQueue 'active' with a sessionId.");
+            }
+            // The id is opaque and passed exactly as given; only a blank or overlong one is refused.
+            if (sessionId is not null && !BrowseMessagesRequest.IsValidSessionId(sessionId))
+            {
+                throw new McpException($"A session id has 1 to {BrowseMessagesRequest.MaximumSessionIdLength} characters and is not blank.");
+            }
             var count = Math.Clamp(maxMessages, 1, 100);
             await ConfirmLiveQueueReadAsync(server, profile, entity, queue, count, cancellationToken).ConfigureAwait(false);
             var cleanup = new List<string>();
@@ -294,7 +305,7 @@ public sealed class QueueLoomReadTools(McpWorkspaceSession session, McpServerSet
                 var topology = await workspace.GetTopologyAsync(forceRefresh: false, token).ConfigureAwait(false);
                 var source = EntityResolver.Resolve(topology, entity, requireMessageSource: true);
                 return await workspace.BrowseMessagesAsync(
-                        new BrowseMessagesRequest(source, queue, count, fromSequenceNumber), token)
+                        new BrowseMessagesRequest(source, queue, count, fromSequenceNumber) { SessionId = sessionId }, token)
                     .ConfigureAwait(false);
             }, cancellationToken, cleanup).ConfigureAwait(false);
             return new MessageListInfo(

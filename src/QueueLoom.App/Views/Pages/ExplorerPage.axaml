@@ -12,7 +12,7 @@
                  AutomationProperties.Name="Selected entity delivery note" />
     </StackPanel>
 
-    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
+    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
       <TextBox Grid.Column="0" MinWidth="150" Text="{Binding SearchText}" Classes="search"
                PlaceholderText="Filter entities…  (Ctrl+F)" AutomationProperties.Name="Filter entities">
         <TextBox.InnerLeftContent>
@@ -34,6 +34,12 @@
       <Button Grid.Column="14" Content="Redrive DLQ…" Classes="quiet" Command="{Binding RedriveSelectedDeadLettersCommand}"
               IsVisible="{Binding SupportsNativeRedrive}"
               ToolTip.Tip="Amazon SQS: AWS moves every message of the selected queue's dead-letter queue back to the queue it came from" />
+      <TextBox Grid.Column="16" Width="150" Text="{Binding SessionIdToOpen}" PlaceholderText="Session id"
+               IsVisible="{Binding CanOpenSessionById}" AutomationProperties.Name="Session id to open"
+               ToolTip.Tip="The id of one session of the selected queue or subscription" />
+      <Button Grid.Column="18" Content="Open session" Classes="quiet" Command="{Binding OpenSessionCommand}"
+              IsVisible="{Binding CanOpenSessionById}"
+              ToolTip.Tip="Peek every message of one session, deferred and scheduled ones too, without locking them. Service Bus does not hand a session whose messages are all deferred to View active" />
       <DropDownButton Grid.Column="12" Content="Manage" IsVisible="{Binding CanManageQueues}"
                       ToolTip.Tip="{Binding ManageQueuesHint}" AutomationProperties.Name="Manage queues">
         <DropDownButton.Flyout>

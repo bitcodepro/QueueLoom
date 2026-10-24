@@ -145,6 +145,10 @@ public abstract class LeasedMessagingWorkspace : IServiceBusWorkspace, ICleanupW
         ThrowIfDisposed();
         using var operation = await _operationGate.EnterOperationAsync(cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
+        if (request.SessionId is not null)
+        {
+            throw new NotSupportedException("Only Azure Service Bus queues and subscriptions have sessions to open by id.");
+        }
 
         // There is no position to continue from: every browse starts at whatever the service hands out
         // first. "Load more" therefore returns the first page again rather than duplicating messages.

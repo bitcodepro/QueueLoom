@@ -324,6 +324,26 @@ public sealed partial class McpServerTests
         Assert.Equal(ProfileAccessMode.ReadOnly, server.Workspace.ConnectedAccessMode);
     }
 
+    [Fact]
+    public async Task PeekMessages_CanOpenOneSessionById()
+    {
+        await using var server = await McpTestServer.StartAsync();
+
+        await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active", ["sessionId"] = "customer-7" });
+
+        Assert.Equal("customer-7", server.Workspace.BrowseRequests[^1].SessionId);
+        // The id is passed exactly; a blank one is refused before anything is read.
+        await server.CallAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active", ["sessionId"] = " customer-7 " });
+        Assert.Equal(" customer-7 ", server.Workspace.BrowseRequests[^1].SessionId);
+        var reads = server.Workspace.BrowseRequests.Count;
+        Assert.Contains("session id",
+            await server.CallForErrorAsync("peek_messages", new() { ["entity"] = "orders", ["subQueue"] = "active", ["sessionId"] = "  " }),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(reads, server.Workspace.BrowseRequests.Count);
+        Assert.Contains("do not use sessions",
+            await server.CallForErrorAsync("peek_messages", new() { ["entity"] = "orders", ["sessionId"] = "customer-7" }), StringComparison.Ordinal);
+    }
+
     // SQS, Pub/Sub and RabbitMQ have no peek: reading a live queue counts as a delivery and can make a redrive policy
     // move the messages. The read tools are marked read-only (clients may run them unasked), so such a read asks the
     // person first; refused, nothing is read. Dead-letter queues and Azure (a real peek) read without asking.

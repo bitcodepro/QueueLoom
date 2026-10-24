@@ -93,27 +93,7 @@ public sealed partial class AzureServiceBusWorkspace
         }
         finally
         {
-            var cleanupErrors = new List<Exception>();
-            foreach (var receiver in receivers)
-            {
-                try { await receiver.DisposeAsync().ConfigureAwait(false); }
-                catch (Exception error) { cleanupErrors.Add(error); }
-            }
-            if (cleanupErrors.Count > 0)
-            {
-                const string warning = "Could not close all browsed sessions. Some session locks may remain until they expire.";
-                var cleanupError = new AggregateException(warning, cleanupErrors);
-                // Cleanup must attempt every accepted session, even after cancellation. Keep
-                // the primary failure (and its cancellation token) intact for the caller.
-                if (browseError is not null) browseError.Data["SessionCleanupErrors"] = cleanupError;
-                else
-                {
-                    // A single-inner aggregate is unwrapped by general exception summaries.
-                    // Keep the operator warning separate from potentially sensitive SDK details.
-                    cleanupError.Data["SessionCleanupWarning"] = warning;
-                    throw cleanupError;
-                }
-            }
+            await CloseBrowsedSessionsAsync(receivers, browseError).ConfigureAwait(false);
         }
 
         if (everySessionReadToTheEnd && request.FromSequenceNumber is null)
@@ -126,6 +106,105 @@ public sealed partial class AzureServiceBusWorkspace
             .OrderBy(message => message.SequenceNumber)
             .Take(request.LoadAll ? int.MaxValue : request.MaxMessages)
             .ToArray();
+    }
+
+    /// <summary>
+    /// Accepts the one named session and peeks its messages, whatever their state. Service Bus never hands a session whose
+    /// messages are all deferred to <see cref="BrowseSessionsAsync"/>, but it accepts it by id. The session is locked only
+    /// while it is peeked and released at the end; messages are never locked or changed.
+    /// </summary>
+    private async Task<IReadOnlyList<BrowsedMessage>> BrowseOneSessionAsync(
+        BrowseMessagesRequest request,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var client = GetMessagingClient();
+        var options = new ServiceBusSessionReceiverOptions
+        {
+            ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            PrefetchCount = 0
+        };
+        ServiceBusSessionReceiver receiver;
+        try
+        {
+            receiver = request.Source.Kind == ServiceBusEntityKind.Queue
+                ? await client.AcceptSessionAsync(request.Source.Name, sessionId, options, cancellationToken).ConfigureAwait(false)
+                : await client.AcceptSessionAsync(request.Source.TopicName!, request.Source.Name, sessionId, options, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.SessionCannotBeLocked)
+        {
+            throw new InvalidOperationException(
+                $"Session '{sessionId}' of {request.Source.DisplayName} is held by another consumer, so it cannot be opened now. Try again once it is released.",
+                exception);
+        }
+
+        Exception? browseError = null;
+        try
+        {
+            var result = new List<BrowsedMessage>();
+            var remaining = request.LoadAll ? int.MaxValue : request.MaxMessages;
+            var cursor = request.FromSequenceNumber;
+            while (remaining > 0)
+            {
+                var page = await receiver.PeekMessagesAsync(Math.Min(BrowseBatchSize, remaining), cursor, cancellationToken)
+                    .ConfigureAwait(false);
+                if (page.Count == 0)
+                {
+                    break;
+                }
+
+                foreach (var message in page.Take(remaining))
+                {
+                    result.Add(AzureMessageMapper.FromAzure(message, request.Source, ServiceBusSubQueue.Active));
+                }
+                remaining -= Math.Min(page.Count, remaining);
+                var last = page[^1].SequenceNumber;
+                if (last == long.MaxValue || cursor.HasValue && last < cursor.Value)
+                {
+                    break;
+                }
+                cursor = last + 1;
+            }
+            return result.OrderBy(message => message.SequenceNumber).ToArray();
+        }
+        catch (Exception error)
+        {
+            browseError = error;
+            throw;
+        }
+        finally
+        {
+            await CloseBrowsedSessionsAsync([receiver], browseError).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Closes every accepted session, even after a failure or cancellation. A close failure is attached to
+    /// <paramref name="browseError"/> as SessionCleanupErrors so the primary failure (and its cancellation token) reaches
+    /// the caller intact; with no primary failure it is thrown, marked with the operator SessionCleanupWarning.
+    /// </summary>
+    private static async Task CloseBrowsedSessionsAsync(IEnumerable<ServiceBusSessionReceiver> receivers, Exception? browseError)
+    {
+        var cleanupErrors = new List<Exception>();
+        foreach (var receiver in receivers)
+        {
+            try { await receiver.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception error) { cleanupErrors.Add(error); }
+        }
+        if (cleanupErrors.Count > 0)
+        {
+            const string warning = "Could not close all browsed sessions. Some session locks may remain until they expire.";
+            var cleanupError = new AggregateException(warning, cleanupErrors);
+            if (browseError is not null) browseError.Data["SessionCleanupErrors"] = cleanupError;
+            else
+            {
+                // A single-inner aggregate is unwrapped by general exception summaries.
+                // Keep the operator warning separate from potentially sensitive SDK details.
+                cleanupError.Data["SessionCleanupWarning"] = warning;
+                throw cleanupError;
+            }
+        }
     }
 
     /// <summary>
@@ -173,6 +252,7 @@ public sealed partial class AzureServiceBusWorkspace
             $"{displayName} reports {active.ToString("N0", culture)} active messages, but this browse read " +
             $"{readNonScheduled.ToString("N0", culture)}, so {(active - readNonScheduled).ToString("N0", culture)} message(s) the counters " +
             "report were not listed. Possible causes: sessions held by another consumer, sessions whose messages are all deferred " +
-            "(Service Bus does not hand those out to a browse), or messages changing during the browse. Browse again to check.");
+            "(Service Bus does not hand those out to a browse; open such a session by its id to see its messages), or messages " +
+            "changing during the browse. Browse again to check.");
     }
 }

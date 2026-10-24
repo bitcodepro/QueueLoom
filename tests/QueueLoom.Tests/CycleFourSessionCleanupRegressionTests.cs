@@ -127,6 +127,60 @@ public sealed class CycleFourSessionCleanupRegressionTests
         Assert.Equal(1, retry.CloseAttempts);
     }
 
+    // Opening one session by id releases it the same way: the primary failure is kept and cleanup errors ride along.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NamedSessionPeekFailureSurvivesCleanupFailure(bool subscription)
+    {
+        var primary = new ServiceBusException("session lock lost while peeking", ServiceBusFailureReason.SessionLockLost);
+        var cleanup = new IOException("close failed");
+        var receiver = new Receiver(1, closeError: cleanup, peekError: primary);
+        await using var owner = Owner(subscription, new Client([receiver]));
+
+        var error = await Record.ExceptionAsync(() => owner.BrowseMessagesAsync(NamedRequest(subscription)));
+
+        Assert.Same(primary, error);
+        Assert.Equal(1, receiver.CloseAttempts);
+        Assert.Same(cleanup, Assert.IsType<AggregateException>(primary.Data["SessionCleanupErrors"]).InnerExceptions.Single());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NamedSessionCancellationSurvivesCleanupFailure(bool subscription)
+    {
+        using var stop = new CancellationTokenSource();
+        var receiver = new Receiver(1, closeError: new IOException("close failed"), beforePeek: () => stop.Cancel());
+        await using var owner = Owner(subscription, new Client([receiver]));
+
+        var error = await Record.ExceptionAsync(() => owner.BrowseMessagesAsync(NamedRequest(subscription), stop.Token));
+
+        var cancellation = Assert.IsAssignableFrom<OperationCanceledException>(error);
+        Assert.Equal(stop.Token, cancellation.CancellationToken);
+        Assert.IsType<AggregateException>(cancellation.Data["SessionCleanupErrors"]);
+        Assert.Equal(1, receiver.CloseAttempts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NamedSessionCleanupOnlyFailureCarriesTheLockWarning(bool subscription)
+    {
+        var cleanup = new IOException("close failed");
+        var receiver = new Receiver(1, closeError: cleanup);
+        await using var owner = Owner(subscription, new Client([receiver]));
+
+        var error = await Record.ExceptionAsync(() => owner.BrowseMessagesAsync(NamedRequest(subscription)));
+
+        var aggregate = Assert.IsType<AggregateException>(error);
+        Assert.Same(cleanup, aggregate.InnerExceptions.Single());
+        Assert.Contains("session locks may remain", Assert.IsType<string>(aggregate.Data["SessionCleanupWarning"]), StringComparison.Ordinal);
+        Assert.Equal(1, receiver.CloseAttempts);
+    }
+
+    private static BrowseMessagesRequest NamedRequest(bool subscription) => Request(subscription) with { SessionId = "customer-7" };
+
     private static BrowseMessagesRequest Request(bool subscription) => new(subscription
         ? ServiceBusEntityReference.Subscription("events", "billing") : ServiceBusEntityReference.Queue("orders"), maxMessages: 2);
 
@@ -161,6 +215,10 @@ public sealed class CycleFourSessionCleanupRegressionTests
         public override Task<ServiceBusSessionReceiver> AcceptNextSessionAsync(string queueName, ServiceBusSessionReceiverOptions? options = null,
             CancellationToken cancellationToken = default) => Next(cancellationToken);
         public override Task<ServiceBusSessionReceiver> AcceptNextSessionAsync(string topicName, string subscriptionName,
+            ServiceBusSessionReceiverOptions? options = null, CancellationToken cancellationToken = default) => Next(cancellationToken);
+        public override Task<ServiceBusSessionReceiver> AcceptSessionAsync(string queueName, string sessionId,
+            ServiceBusSessionReceiverOptions? options = null, CancellationToken cancellationToken = default) => Next(cancellationToken);
+        public override Task<ServiceBusSessionReceiver> AcceptSessionAsync(string topicName, string subscriptionName, string sessionId,
             ServiceBusSessionReceiverOptions? options = null, CancellationToken cancellationToken = default) => Next(cancellationToken);
     }
 
