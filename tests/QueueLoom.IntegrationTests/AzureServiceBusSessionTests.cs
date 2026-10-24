@@ -145,6 +145,51 @@ public sealed class AzureServiceBusSessionTests : IAsyncLifetime
         Assert.Empty(await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(subscription, ServiceBusSubQueue.DeadLetter)));
     }
 
+    /// <summary>
+    /// Service Bus hands out only sessions that have an active message: a session whose messages were all deferred is not
+    /// accepted, so a browse cannot list them (the workspace reports the gap from the entity's counts, which the emulator
+    /// does not have). Guards that assumption; the deferred messages stay reachable by session id and sequence number.
+    /// </summary>
+    [EmulatorFact(Emulators.ServiceBus)]
+    public async Task A_session_holding_only_deferred_messages_is_not_handed_out_to_a_browse()
+    {
+        var idle = "deferred-only-" + Guid.NewGuid().ToString("N")[..8];
+        await using (var sender = _client.CreateSender(SessionQueue))
+        {
+            await sender.SendMessagesAsync([new AzureMessage("deferred 1") { SessionId = idle }, new AzureMessage("deferred 2") { SessionId = idle },
+                new AzureMessage("active") { SessionId = "busy" }]);
+        }
+        var deferred = new List<long>();
+        await using (var receiver = await _client.AcceptSessionAsync(SessionQueue, idle))
+        {
+            foreach (var message in await receiver.ReceiveMessagesAsync(2, TimeSpan.FromSeconds(10)))
+            {
+                await receiver.DeferMessageAsync(message);
+                deferred.Add(message.SequenceNumber);
+            }
+        }
+        Assert.Equal(2, deferred.Count);
+        try
+        {
+            var browsed = await _workspace.BrowseMessagesAsync(new BrowseMessagesRequest(ServiceBusEntityReference.Queue(SessionQueue)));
+
+            Assert.Equal("busy", Assert.Single(browsed).Properties.SessionId);
+            await using var next = await _client.AcceptNextSessionAsync(SessionQueue);
+            Assert.Equal("busy", next.SessionId);
+            using var wait = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await Assert.ThrowsAnyAsync<Exception>(async () => await _client.AcceptNextSessionAsync(SessionQueue, cancellationToken: wait.Token));
+        }
+        finally
+        {
+            await using var receiver = await _client.AcceptSessionAsync(SessionQueue, idle);
+            Assert.Equal([Azure.Messaging.ServiceBus.ServiceBusMessageState.Deferred, Azure.Messaging.ServiceBus.ServiceBusMessageState.Deferred], (await receiver.PeekMessagesAsync(10)).Select(m => m.State));
+            foreach (var message in await receiver.ReceiveDeferredMessagesAsync(deferred))
+            {
+                await receiver.CompleteMessageAsync(message);
+            }
+        }
+    }
+
     private async Task DeadLetterAsync(string entity, string? subscription, string session, string body)
     {
         await using (var sender = _client.CreateSender(entity))

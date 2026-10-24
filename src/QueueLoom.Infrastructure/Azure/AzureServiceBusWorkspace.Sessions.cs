@@ -118,7 +118,7 @@ public sealed partial class AzureServiceBusWorkspace
 
         if (everySessionReadToTheEnd && request.FromSequenceNumber is null)
         {
-            await ReportHeldSessionsAsync(request.Source, result.Count(message => message.State != QueueLoom.Core.ServiceBus.ServiceBusMessageState.Scheduled),
+            await ReportUnreadSessionMessagesAsync(request.Source, result.Select(message => message.State).ToList(),
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -129,12 +129,13 @@ public sealed partial class AzureServiceBusWorkspace
     }
 
     /// <summary>
-    /// Service Bus hands out only sessions no consumer holds, so the messages of held sessions were missing from the
-    /// browse without a word. When the entity's active count is higher than what every readable session held, the
-    /// browse says it may be incomplete. The count is best effort: without management rights, or on the emulator,
-    /// nothing is said.
+    /// Service Bus hands out only sessions that no consumer holds and that have an active message, so the browse missed
+    /// the messages of held sessions, and of sessions whose messages are all deferred, without a word. The entity's active
+    /// count (which includes deferred messages) is compared with what the readable sessions held and any gap is reported.
+    /// The count is best effort: without management rights, or on the emulator (which reports no counts), nothing is said.
     /// </summary>
-    private async Task ReportHeldSessionsAsync(ServiceBusEntityReference source, int read, CancellationToken cancellationToken)
+    private async Task ReportUnreadSessionMessagesAsync(ServiceBusEntityReference source,
+        IReadOnlyCollection<QueueLoom.Core.ServiceBus.ServiceBusMessageState> read, CancellationToken cancellationToken)
     {
         if (_isEmulator) return;
         long active;
@@ -150,14 +151,28 @@ public sealed partial class AzureServiceBusWorkspace
         {
             return;
         }
-        if (active > read)
+        if (UnreadSessionMessageNotice(source.DisplayName, active, read) is { } notice)
         {
-            // Only the discrepancy is known, not its cause: a consumer may hold sessions, or messages may have arrived in
-            // sessions this browse already read while it was still running.
-            ReportNotice("Session browse may be incomplete",
-                $"{source.DisplayName} reports {active.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)} active messages, " +
-                $"but this browse read {read.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)}. Possible reasons: another " +
-                "consumer holds some sessions (Service Bus does not hand those out), or messages arrived while browsing. Browse again to see them.");
+            ReportNotice(notice.Title, notice.Details);
         }
+    }
+
+    /// <summary>
+    /// The notice for a session browse that read messages in the given <paramref name="read"/> states of an entity that
+    /// reports <paramref name="active"/> active messages, or null when nothing is missing. Service Bus counts deferred
+    /// messages as active, so every read message but the scheduled ones is compared with it. Only the gap is known, not
+    /// its cause, so no cause is named as certain and no deferred count is made up.
+    /// </summary>
+    internal static (string Title, string Details)? UnreadSessionMessageNotice(
+        string displayName, long active, IEnumerable<QueueLoom.Core.ServiceBus.ServiceBusMessageState> read)
+    {
+        var readNonScheduled = read.Count(state => state != QueueLoom.Core.ServiceBus.ServiceBusMessageState.Scheduled);
+        if (active <= readNonScheduled) return null;
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        return ("Session browse may be incomplete",
+            $"{displayName} reports {active.ToString("N0", culture)} active messages, but this browse read " +
+            $"{readNonScheduled.ToString("N0", culture)}, so {(active - readNonScheduled).ToString("N0", culture)} message(s) the counters " +
+            "report were not listed. Possible causes: sessions held by another consumer, sessions whose messages are all deferred " +
+            "(Service Bus does not hand those out to a browse), or messages changing during the browse. Browse again to check.");
     }
 }

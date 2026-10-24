@@ -25,7 +25,7 @@ public sealed class HeldSessionsNoticeTests
         var notice = Assert.Single(notices);
         Assert.Equal("Session browse may be incomplete", notice.Title);
         Assert.Contains("reports 5 active messages, but this browse read 2", notice.Details, StringComparison.Ordinal);
-        Assert.Contains("another consumer holds some sessions", notice.Details, StringComparison.Ordinal);
+        Assert.Contains("sessions held by another consumer", notice.Details, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -43,7 +43,7 @@ public sealed class HeldSessionsNoticeTests
         Assert.Equal(2, messages.Count);
         var notice = Assert.Single(notices);
         Assert.Contains("reports 5 active messages, but this browse read 2", notice.Details, StringComparison.Ordinal);
-        Assert.Contains("messages arrived while browsing", notice.Details, StringComparison.Ordinal);
+        Assert.Contains("messages changing during the browse", notice.Details, StringComparison.Ordinal);
         Assert.DoesNotContain("could not be browsed", notice.Title + notice.Details, StringComparison.Ordinal);
     }
 
