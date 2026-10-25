@@ -97,6 +97,33 @@ public sealed class InstallationFileBusyTests
         Assert.Equal(next, installation.SelectForLaunch().Version);
     }
 
+    [Theory]
+    [InlineData("cleanup-enumerate-staging")]
+    [InlineData("cleanup-enumerate-discarded")]
+    public void AnUnlistableCleanupFolderLeavesItAndTheLaunchGoesOn(string phase)
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        var next = Confirmed(installation, fixture);
+        var id = Guid.NewGuid().ToString("N");
+        var leftover = Path.Combine(installation.Store, "staging", id);
+        Directory.CreateDirectory(leftover);
+        File.WriteAllText(Path.Combine(leftover, ".staging-owner"), id);
+        var aside = Path.Combine(installation.Store, "discarded", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(aside);
+        // A folder that can be inspected but not listed fails at enumeration, outside each entry's deletion.
+        var failing = new VersionInstallation(fixture.Launcher, step =>
+        {
+            if (step == phase) throw new UnauthorizedAccessException("Listing denied.");
+        });
+
+        failing.CleanupStaging();
+
+        Assert.Equal(phase != "cleanup-enumerate-staging", !Directory.Exists(leftover));
+        Assert.Equal(phase != "cleanup-enumerate-discarded", !Directory.Exists(aside));
+        Assert.Equal(next, failing.SelectForLaunch().Version);
+    }
+
     private static VersionReference Confirmed(VersionInstallation installation, InstallationFixture fixture)
     {
         installation.StagePackage(fixture.Package("next").Path);
