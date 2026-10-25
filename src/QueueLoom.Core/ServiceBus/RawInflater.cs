@@ -33,7 +33,7 @@ internal sealed class RawInflater
     private readonly int _limit;
     private byte[] _output = new byte[4096];
     private int _position;
-    private int _bitBuffer;
+    private ulong _bitBuffer;
     private int _bitCount;
     private int _streamStart;
 
@@ -79,7 +79,7 @@ internal sealed class RawInflater
             }
             while (!last);
             // Bits left over in the last byte are padding; the next byte is the trailer.
-            end = _position;
+            end = _position - _bitCount / 8;
             return InflateResult.Done;
         }
         catch (CutOffException)
@@ -96,38 +96,56 @@ internal sealed class RawInflater
         }
     }
 
+    /// <summary>Tops the bit buffer up to at least 57 bits, or with whatever input is left.</summary>
+    private void Refill()
+    {
+        while (_bitCount <= 56 && _position < _input.Length)
+        {
+            _bitBuffer |= (ulong)_input[_position++] << _bitCount;
+            _bitCount += 8;
+        }
+    }
+
     private int Bits(int need)
     {
-        var value = _bitBuffer;
-        while (_bitCount < need)
+        if (_bitCount < need)
         {
-            if (_position >= _input.Length)
+            Refill();
+            if (_bitCount < need)
             {
                 throw new CutOffException();
             }
-            value |= _input[_position++] << _bitCount;
-            _bitCount += 8;
         }
-        _bitBuffer = value >> need;
+        var value = (int)(_bitBuffer & ((1UL << need) - 1));
+        _bitBuffer >>= need;
         _bitCount -= need;
-        return value & ((1 << need) - 1);
+        return value;
+    }
+
+    /// <summary>Room for <paramref name="count"/> more bytes; what fits under the limit, when they do not all fit.</summary>
+    private int Reserve(int count)
+    {
+        var room = Math.Min(count, _limit - Length);
+        if (Length + room > _output.Length)
+        {
+            Array.Resize(ref _output, (int)Math.Min(Math.Max((long)_output.Length * 2, Length + room), _limit));
+        }
+        return room;
     }
 
     private void Put(byte value)
     {
-        if (Length >= _limit)
+        if (Reserve(1) == 0)
         {
             throw new CappedException();
-        }
-        if (Length == _output.Length)
-        {
-            Array.Resize(ref _output, (int)Math.Min((long)_output.Length * 2, _limit));
         }
         _output[Length++] = value;
     }
 
     private void Stored()
     {
+        // The rest of the current byte is padding; whole bytes already in the bit buffer go back to the input.
+        _position -= _bitCount / 8;
         _bitBuffer = 0;
         _bitCount = 0;
         if (_position + 4 > _input.Length)
@@ -140,22 +158,32 @@ internal sealed class RawInflater
             throw new InvalidDataException();
         }
         _position += 4;
-        for (var index = 0; index < length; index++)
+        var available = Math.Min(length, _input.Length - _position);
+        var room = Reserve(available);
+        _input.AsSpan(_position, room).CopyTo(_output.AsSpan(Length));
+        Length += room;
+        _position += room;
+        if (room < available)
         {
-            if (_position >= _input.Length)
-            {
-                throw new CutOffException();
-            }
-            Put(_input[_position++]);
+            throw new CappedException();
+        }
+        if (available < length)
+        {
+            throw new CutOffException();
         }
     }
 
     /// <summary>A canonical Huffman code: how many codes have each length, and the symbols in code order.</summary>
-    private sealed class Huffman(short[] counts, short[] symbols)
+    private sealed class Huffman(short[] counts, short[] symbols, int[] fast)
     {
+        public const int FastBits = 9;
+
         public short[] Counts { get; } = counts;
 
         public short[] Symbols { get; } = symbols;
+
+        /// <summary>By the next nine input bits: symbol &lt;&lt; 4 | code length, or 0 for a longer (or unused) code.</summary>
+        public int[] Fast { get; } = fast;
 
         public static Huffman Build(ReadOnlySpan<byte> lengths)
         {
@@ -187,7 +215,27 @@ internal sealed class RawInflater
                     symbols[offsets[lengths[symbol]]++] = (short)symbol;
                 }
             }
-            return new Huffman(counts, symbols);
+            // Codes are read a bit at a time from the low end, so the table is indexed by each code reversed.
+            var fast = new int[1 << FastBits];
+            int code = 0, next = 0;
+            for (var length = 1; length <= FastBits; length++)
+            {
+                for (var index = 0; index < counts[length]; index++, code++)
+                {
+                    var reversed = 0;
+                    for (var bit = 0; bit < length; bit++)
+                    {
+                        reversed |= (code >> bit & 1) << (length - 1 - bit);
+                    }
+                    for (var fill = reversed; fill < fast.Length; fill += 1 << length)
+                    {
+                        fast[fill] = symbols[next + index] << 4 | length;
+                    }
+                }
+                next += counts[length];
+                code <<= 1;
+            }
+            return new Huffman(counts, symbols, fast);
         }
     }
 
@@ -205,6 +253,16 @@ internal sealed class RawInflater
 
     private int Decode(Huffman huffman)
     {
+        if (_bitCount < Huffman.FastBits)
+        {
+            Refill();
+        }
+        if (_bitCount >= Huffman.FastBits && huffman.Fast[(int)(_bitBuffer & ((1 << Huffman.FastBits) - 1))] is var entry and not 0)
+        {
+            _bitBuffer >>= entry & 15;
+            _bitCount -= entry & 15;
+            return entry >> 4;
+        }
         int code = 0, first = 0, index = 0;
         for (var length = 1; length < 16; length++)
         {
@@ -253,9 +311,23 @@ internal sealed class RawInflater
             {
                 throw new InvalidDataException();
             }
-            for (var copied = 0; copied < length; copied++)
+            var room = Reserve(length);
+            if (distance >= room)
             {
-                Put(_output[Length - distance]);
+                _output.AsSpan(Length - distance, room).CopyTo(_output.AsSpan(Length));
+                Length += room;
+            }
+            else
+            {
+                // An overlapping copy repeats what it has just written.
+                for (var copied = 0; copied < room; copied++, Length++)
+                {
+                    _output[Length] = _output[Length - distance];
+                }
+            }
+            if (room < length)
+            {
+                throw new CappedException();
             }
         }
     }
