@@ -50,7 +50,8 @@ public sealed class EntityItemViewModel
     public string ConsumersTip => Consumers?.Details ?? string.Empty;
 
     /// <summary>Highlighted when a group is behind, or when messages wait in a queue nobody reads.</summary>
-    public bool HasConsumerLag => Consumers is { MaximumLag: > 0 } || Consumers is { Consumers: 0 } && Active > 0;
+    public bool HasConsumerLag => Consumers is { MaximumLag: > 0 } || Consumers is { Consumers: 0 } && Active > 0 ||
+                                  Consumers is not null && Consumers.Groups.Any(group => group.Lag is null);
 
     public ServiceBusEntityReference Reference { get; }
 
