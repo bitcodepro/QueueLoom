@@ -182,7 +182,9 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         IProgress<UpdateProgress>? progress,
         CancellationToken cancellationToken)
     {
-        SweepStaleDownloads(target);
+        // The sweep validates and deletes whole trees; keep it off the caller (the dialog's Install handler) so many
+        // stale packages or a slow filesystem cannot freeze rendering or Cancel.
+        await Task.Run(() => SweepStaleDownloads(target, cancellationToken), cancellationToken).ConfigureAwait(false);
         var version = update.Version.ToString(3);
         var package = PackageUri(update.Tag, version, target.Rid);
         var id = Guid.NewGuid().ToString("N");
@@ -556,7 +558,10 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// folder. A folder a receipt still names, one changed within <see cref="StaleDownloadAge"/> (another window may be
     /// downloading into it) or one that cannot be checked is kept; an unreadable receipt keeps every folder.
     /// </summary>
-    public void SweepStaleDownloads(UpdateTarget? target)
+    /// <summary>Test seam: runs before each candidate folder is checked, to simulate a slow filesystem.</summary>
+    internal Action<string>? SweepingFolder { get; init; }
+
+    public void SweepStaleDownloads(UpdateTarget? target, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -566,8 +571,11 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             var root = Path.GetFullPath(_downloadRoot);
             foreach (var folder in Directory.EnumerateDirectories(root))
             {
+                // Stop between folders; a folder whose deletion was cut short is only ever deleted again, never used.
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
+                    SweepingFolder?.Invoke(folder);
                     var name = Path.GetFileName(folder);
                     var dash = name.LastIndexOf('-');
                     if (dash <= 0 || !Version.TryParse(name[..dash], out _) || !Guid.TryParseExact(name[(dash + 1)..], "N", out _)) continue;

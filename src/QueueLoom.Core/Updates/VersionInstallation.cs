@@ -281,21 +281,27 @@ public sealed class VersionInstallation
     /// <summary>Best effort: damaged versions moved aside are never selected, so a busy file is retried on a later launch.</summary>
     private void DeleteDiscarded()
     {
-        var parent = Path.Combine(Store, "discarded");
-        RejectOwnedPath(parent);
-        if (!Directory.Exists(parent)) return;
-        foreach (var directory in Directory.EnumerateDirectories(parent))
+        try
         {
-            try
+            var parent = Path.Combine(Store, "discarded");
+            RejectOwnedPath(parent);
+            if (!Directory.Exists(parent)) return;
+            _checkpoint?.Invoke("cleanup-enumerate-discarded");
+            foreach (var directory in Directory.EnumerateDirectories(parent))
             {
-                // Refuse links anywhere before recursively deleting.
-                RejectOwnedPath(directory);
-                _ = InspectTree(directory, directory).ToArray();
-                Directory.Delete(directory, recursive: true);
+                try
+                {
+                    // Refuse links anywhere before recursively deleting.
+                    RejectOwnedPath(directory);
+                    _ = InspectTree(directory, directory).ToArray();
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+            DurableInstallFile.FlushDirectory(parent);
         }
-        DurableInstallFile.FlushDirectory(parent);
+        // A folder that cannot be inspected or listed is retried later; a proven link still fails closed.
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 
     public LaunchSelection SelectForLaunch()
@@ -500,40 +506,49 @@ public sealed class VersionInstallation
     {
         using var ownership = Own();
         _checkpoint?.Invoke("cleanup-start");
-        var parent = Path.Combine(Store, "staging");
-        RejectOwnedPath(parent);
-        if (Directory.Exists(parent))
-            foreach (var directory in Directory.EnumerateDirectories(parent))
-            {
-                var id = Path.GetFileName(directory);
-                RejectOwnedPath(directory);
-                var marker = Path.Combine(directory, ".staging-owner");
-                RejectOwnedPath(marker);
-                // A marker another program holds open leaves its directory for a later launch instead of stopping this one.
-                string owner;
-                try { owner = !IsId(id) || !File.Exists(marker) ? string.Empty : ReadShared(marker, File.ReadAllText, _checkpoint); }
-                catch (InstallationFileBusyException) { continue; }
-                if (owner != id) continue;
-                // Refuse links anywhere before recursively deleting this owned incomplete staging directory.
-                _ = InspectTree(directory, directory).ToArray();
-                try
-                {
-                    // Retain ownership until every payload entry is gone. A scanner holding a nested file
-                    // must not prevent launch or lose the evidence needed to retry on the next launch.
-                    foreach (var entry in Directory.EnumerateFileSystemEntries(directory).Where(entry => entry != marker))
-                    {
-                        if (Directory.Exists(entry)) Directory.Delete(entry, recursive: true);
-                        else File.Delete(entry);
-                    }
-                    File.Delete(marker);
-                    Directory.Delete(directory);
-                }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
-                DurableInstallFile.FlushDirectory(parent);
-            }
+        // Staging cleanup is optional: a folder that cannot be inspected or listed is retried on a later launch
+        // instead of stopping this one. A proven link (InvalidDataException) still fails closed.
+        try { DeleteStaging(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         DeleteDiscarded();
         _checkpoint?.Invoke("cleanup-finished");
         // Protocol v1 deliberately retains committed versions and state history, including failed candidates.
+    }
+
+    private void DeleteStaging()
+    {
+        var parent = Path.Combine(Store, "staging");
+        RejectOwnedPath(parent);
+        if (!Directory.Exists(parent)) return;
+        _checkpoint?.Invoke("cleanup-enumerate-staging");
+        foreach (var directory in Directory.EnumerateDirectories(parent))
+        {
+            var id = Path.GetFileName(directory);
+            RejectOwnedPath(directory);
+            var marker = Path.Combine(directory, ".staging-owner");
+            RejectOwnedPath(marker);
+            // A marker another program holds open leaves its directory for a later launch instead of stopping this one.
+            string owner;
+            try { owner = !IsId(id) || !File.Exists(marker) ? string.Empty : ReadShared(marker, File.ReadAllText, _checkpoint); }
+            catch (InstallationFileBusyException) { continue; }
+            if (owner != id) continue;
+            try
+            {
+                // Refuse links anywhere before recursively deleting this owned incomplete staging directory.
+                _ = InspectTree(directory, directory).ToArray();
+                // Retain ownership until every payload entry is gone. A scanner holding a nested file
+                // must not prevent launch or lose the evidence needed to retry on the next launch.
+                foreach (var entry in Directory.EnumerateFileSystemEntries(directory).Where(entry => entry != marker))
+                {
+                    if (Directory.Exists(entry)) Directory.Delete(entry, recursive: true);
+                    else File.Delete(entry);
+                }
+                File.Delete(marker);
+                Directory.Delete(directory);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
+            DurableInstallFile.FlushDirectory(parent);
+        }
     }
 
     public string Verify(VersionReference version)

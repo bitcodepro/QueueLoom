@@ -63,6 +63,34 @@ public sealed partial class AppUpdaterTests
         Assert.True(Directory.Exists(foreign));
     }
 
+    [Fact]
+    public async Task Download_SweepsOffTheCallingThreadAndStopsWhenCancelled()
+    {
+        var target = Target("win-x64");
+        var downloads = Path.Combine(_root, "download");
+        var first = Attempt(downloads, "9.0.0", TimeSpan.FromDays(2));
+        var second = Attempt(downloads, "9.0.1", TimeSpan.FromDays(2));
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var cancel = new CancellationTokenSource();
+        var updater = new AppUpdater(new HttpClient(), downloads)
+        {
+            // A slow filesystem: the first folder blocks until the caller has regained control and cancelled.
+            SweepingFolder = _ => { entered.Set(); release.Wait(TimeSpan.FromSeconds(10)); },
+        };
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var download = updater.DownloadAsync(Update, target, null, cancel.Token);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5), "DownloadAsync blocked its caller on the sweep.");
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+        await cancel.CancelAsync();
+        release.Set();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => download);
+        // Only one of the two stale folders was reached before cancellation.
+        Assert.Single(new[] { first, second }, Directory.Exists);
+    }
+
     private static string Attempt(string downloads, string version, TimeSpan age)
     {
         var id = Guid.NewGuid().ToString("N");
