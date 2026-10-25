@@ -161,7 +161,6 @@ public sealed partial class MessageSearchQuery
         JsonDocument? document = null;
         // Decoding stopped at a limit (the first Avro records): a match in them is real, a miss decides nothing.
         var partial = false;
-        var partialProtobuf = false;
         try
         {
             try
@@ -175,10 +174,13 @@ public sealed partial class MessageSearchQuery
                 if (BodyDecoder.Decode(body, contentType, protos: protos) is { } decoded)
                 {
                     partial = !decoded.IsComplete;
-                    // A later Protobuf occurrence replaces an earlier one (a scalar, a oneof, a map key), so a cut
-                    // preview can show a value the message no longer has: a match in it is not a "yes" either.
-                    // Avro stops between whole records, which later records cannot change.
-                    partialProtobuf = partial && decoded.Steps.Any(step => step.StartsWith("Protobuf", StringComparison.Ordinal));
+                    // Only whole Avro records cut at the record limit are real on their own. Any other incomplete body
+                    // (a cut or damaged compression layer, even around Avro, or a cut Protobuf message) is a prefix
+                    // whose rest can change any answer.
+                    if (partial && !decoded.OnlyRecordsAreMissing)
+                    {
+                        throw new IncompleteBodySearchException();
+                    }
                     if (decoded.IsJson)
                     {
                         document = JsonDocument.Parse(decoded.Text);
@@ -214,7 +216,7 @@ public sealed partial class MessageSearchQuery
                         groupTimedOut ??= exception;
                     }
                 }
-                if (!failed && groupTimedOut is null && !partialProtobuf)
+                if (!failed && groupTimedOut is null)
                 {
                     return true;
                 }
@@ -786,3 +788,4 @@ public sealed partial class MessageSearchQuery
         private static long Digits(System.Numerics.BigInteger value) => System.Numerics.BigInteger.Abs(value).ToString(CultureInfo.InvariantCulture).Length;
     }
 }
+

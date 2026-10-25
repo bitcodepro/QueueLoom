@@ -11,6 +11,12 @@ public sealed record DecodedBody(IReadOnlyList<string> Steps, string Text, bool 
     /// <summary>False when decoding stopped at a limit: <see cref="Text"/> is then only the start of the body.</summary>
     public bool IsComplete { get; init; } = true;
 
+    /// <summary>
+    /// True when the only thing missing is Avro records past the record limit: the records in <see cref="Text"/> are
+    /// then whole and real. False for a complete body and for any other cut or damage (an outer compression layer).
+    /// </summary>
+    public bool OnlyRecordsAreMissing { get; init; }
+
     public string Summary => string.Join(" → ", Steps);
 }
 
@@ -82,12 +88,13 @@ public static class BodyDecoder
             if (IsGzip(span) || IsZlib(span))
             {
                 var gzip = IsGzip(span);
-                var (bytes, truncated) = Decompress(current, gzip);
+                var (bytes, truncated, cut) = Decompress(current, gzip);
                 if (bytes is not null)
                 {
                     steps.Add(gzip ? "gzip" : "zlib");
-                    note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown." : null;
-                    complete &= !truncated;
+                    note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown."
+                        : cut ? "The compressed body is cut off or damaged; showing the part that could be decompressed." : null;
+                    complete &= !truncated && !cut;
                     current = bytes;
                     continue;
                 }
@@ -101,7 +108,11 @@ public static class BodyDecoder
                 if (json is not null)
                 {
                     steps.Add("Avro");
-                    return new DecodedBody(steps, json, true, avroNote ?? note) { IsComplete = complete && !avroTruncated };
+                    return new DecodedBody(steps, json, true, avroNote ?? note)
+                    {
+                        IsComplete = complete && !avroTruncated,
+                        OnlyRecordsAreMissing = complete && avroTruncated
+                    };
                 }
                 return new DecodedBody([.. steps, "Avro"], HexDump(span), false, avroNote) { IsComplete = complete && !avroTruncated };
             }
@@ -320,36 +331,159 @@ public static class BodyDecoder
     private static bool IsWorthDecoding(ReadOnlyMemory<byte> decoded)
     {
         var span = decoded.Span;
-        return IsGzip(span) || IsZlib(span) || IsAvroContainer(span) ||
-               TryText(span, out var text) && text.Length >= 4 && text.Count(char.IsLetterOrDigit) * 2 >= text.Length;
+        if (IsAvroContainer(span) ||
+            TryText(span, out var text) && text.Length >= 4 && text.Count(char.IsLetterOrDigit) * 2 >= text.Length)
+        {
+            return true;
+        }
+        if (!IsGzip(span) && !IsZlib(span))
+        {
+            return false;
+        }
+        // The zlib header is two bytes, and about 1 in 2000 plain-text IDs ("eJx...") decode to one. The text is only
+        // taken for Base64 when the bytes really decompress, and cleanly or into readable text.
+        var (bytes, truncated, cut) = Decompress(decoded, IsGzip(span));
+        return bytes is not null && (truncated || !cut || TryText(bytes, out _));
     }
 
-    private static (byte[]? Bytes, bool Truncated) Decompress(ReadOnlyMemory<byte> data, bool gzip)
+    /// <summary>
+    /// The decompressed bytes (null when the data is not compressed at all); Truncated when the 16 MiB limit stopped it,
+    /// Cut when a stream does not reach its end and a trailer that matches what it produced (the body is cut off or
+    /// damaged).
+    /// </summary>
+    private static (byte[]? Bytes, bool Truncated, bool Cut) Decompress(ReadOnlyMemory<byte> data, bool gzip)
     {
-        try
+        var input = data.ToArray();
+        var inflater = new RawInflater(input, MaximumDecodedBytes);
+        var cut = false;
+        var truncated = false;
+        if (gzip)
         {
-            using var input = new MemoryStream(data.ToArray(), writable: false);
-            using Stream stream = gzip
-                ? new GZipStream(input, CompressionMode.Decompress)
-                : new ZLibStream(input, CompressionMode.Decompress);
-            using var output = new MemoryStream();
-            var buffer = new byte[81_920];
-            int read;
-            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+            // Every member is checked where its own DEFLATE data ends, not by guessing from the last eight bytes: an
+            // unfinished member can end in zeros, the CRC-32 and length of empty output.
+            var position = 0;
+            for (var member = 0; position < input.Length; member++)
             {
-                var room = MaximumDecodedBytes - (int)output.Length;
-                output.Write(buffer, 0, Math.Min(read, room));
-                if (read > room)
+                var start = inflater.Length;
+                var payload = GzipPayload(input, position);
+                if (payload < 0)
                 {
-                    return (output.ToArray(), true);
+                    // Bytes after the last member that do not start another one: a damaged body.
+                    if (member == 0)
+                    {
+                        return (null, false, false);
+                    }
+                    cut = true;
+                    break;
                 }
+                var result = inflater.Inflate(payload, out var end);
+                if (result != InflateResult.Done)
+                {
+                    if (result == InflateResult.Invalid && member == 0)
+                    {
+                        return (null, false, false);
+                    }
+                    truncated = result == InflateResult.Capped;
+                    cut = !truncated;
+                    break;
+                }
+                var output = inflater.Output[start..];
+                if (end + 8 > input.Length ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(end)) != Crc32(output) ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(end + 4)) != (uint)output.Length)
+                {
+                    cut = true;
+                    break;
+                }
+                position = end + 8;
             }
-            return output.Length == 0 ? (null, false) : (output.ToArray(), false);
         }
-        catch (InvalidDataException)
+        else
         {
-            return (null, false);
+            // The two-byte header (IsZlib rules out a preset dictionary), the data, then Adler-32 as the last four bytes.
+            var result = inflater.Inflate(2, out var end);
+            if (result == InflateResult.Invalid)
+            {
+                return (null, false, false);
+            }
+            truncated = result == InflateResult.Capped;
+            cut = result == InflateResult.CutOff ||
+                result == InflateResult.Done && (end + 4 != input.Length || BinaryPrimitives.ReadUInt32BigEndian(input.AsSpan(end)) != Adler32(inflater.Output));
         }
+        var bytes = inflater.Output.ToArray();
+        return bytes.Length == 0 ? (null, false, false) : (bytes, truncated, cut && !truncated);
+    }
+
+    /// <summary>Where a gzip member's DEFLATE data starts, past its header and optional fields; -1 when there is no header.</summary>
+    private static int GzipPayload(byte[] input, int position)
+    {
+        const int Text = 1, HeaderCrc = 2, Extra = 4, Name = 8, Comment = 16;
+        if (input.Length - position < 10 || input[position] != 0x1F || input[position + 1] != 0x8B || input[position + 2] != 8 ||
+            (input[position + 3] & ~(Text | HeaderCrc | Extra | Name | Comment)) != 0)
+        {
+            return -1;
+        }
+        var flags = input[position + 3];
+        var start = position;
+        position += 10;
+        if ((flags & Extra) != 0)
+        {
+            position = position + 2 > input.Length ? input.Length : position + 2 + (input[position] | input[position + 1] << 8);
+        }
+        foreach (var field in new[] { Name, Comment })
+        {
+            if ((flags & field) != 0)
+            {
+                var terminator = position < input.Length ? Array.IndexOf(input, (byte)0, position) : -1;
+                position = terminator < 0 ? input.Length : terminator + 1;
+            }
+        }
+        if ((flags & HeaderCrc) != 0)
+        {
+            if (position + 2 > input.Length)
+            {
+                return input.Length;
+            }
+            // The low 16 bits of the CRC-32 of everything from ID1 up to this field; a mismatch is a damaged header.
+            if ((input[position] | input[position + 1] << 8) != (Crc32(input.AsSpan(start, position - start)) & 0xFFFF))
+            {
+                return -1;
+            }
+            position += 2;
+        }
+        // A header cut short leaves no data, which the decoder reports as cut off.
+        return Math.Min(position, input.Length);
+    }
+
+    private static uint Adler32(ReadOnlySpan<byte> data)
+    {
+        uint a = 1, b = 0;
+        foreach (var value in data)
+        {
+            a = (a + value) % 65521;
+            b = (b + a) % 65521;
+        }
+        return b << 16 | a;
+    }
+
+    private static readonly uint[] Crc32Table = Enumerable.Range(0, 256).Select(index =>
+    {
+        var value = (uint)index;
+        for (var bit = 0; bit < 8; bit++)
+        {
+            value = (value & 1) != 0 ? 0xEDB88320 ^ value >> 1 : value >> 1;
+        }
+        return value;
+    }).ToArray();
+
+    private static uint Crc32(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var value in data)
+        {
+            crc = Crc32Table[(crc ^ value) & 0xFF] ^ crc >> 8;
+        }
+        return ~crc;
     }
 
     private static bool TryBase64(ReadOnlySpan<byte> span, out ReadOnlyMemory<byte> decoded)
@@ -1277,3 +1411,4 @@ public static class BodyDecoder
         }
     }
 }
+
