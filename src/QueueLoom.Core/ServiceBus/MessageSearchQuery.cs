@@ -171,6 +171,13 @@ public sealed partial class MessageSearchQuery
                 if (BodyDecoder.Decode(body, contentType) is { } decoded)
                 {
                     partial = !decoded.IsComplete;
+                    // Only whole Avro records cut at the record limit are real on their own. Any other incomplete body
+                    // (a cut or damaged compression layer, even around Avro, or a cut Protobuf message) is a prefix
+                    // whose rest can change any answer.
+                    if (partial && !decoded.OnlyRecordsAreMissing)
+                    {
+                        throw new IncompleteBodySearchException();
+                    }
                     if (decoded.IsJson)
                     {
                         document = JsonDocument.Parse(decoded.Text);

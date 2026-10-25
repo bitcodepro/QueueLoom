@@ -34,6 +34,7 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <None Update="Fixtures/diagnostics-rename-barrier.c" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures/inflate-python.*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
