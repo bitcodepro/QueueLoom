@@ -561,6 +561,63 @@ public sealed class StableLauncherTests
         Assert.Throws<InvalidDataException>(() => new VersionInstallation(fixture.Launcher).SelectForLaunch());
     }
 
+    [Fact]
+    public void DamagedRetainedCandidateIsReplacedWhenTheSameReleaseIsStagedAgain()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        var update = fixture.Package("damaged-candidate");
+        installation.StagePackage(update.Path);
+        installation.Recover(installation.SelectForLaunch());
+        var version = new VersionReference(update.Descriptor.Id, update.Descriptor.ManifestSha256);
+        Corrupt(installation.Verify(version));
+        Assert.Throws<InvalidDataException>(() => installation.Verify(version));
+
+        installation.StagePackage(update.Path);
+
+        Assert.True(File.Exists(installation.Verify(version)));
+        Assert.True(installation.HasPendingActivation());
+        Assert.Equal(version, installation.SelectForLaunch().Version);
+        Assert.Single(Directory.GetDirectories(Path.Combine(installation.Store, "versions"), update.Descriptor.Id + "*"));
+    }
+
+    [Fact]
+    public void DamagedActiveOrRollbackVersionIsNeverReplaced()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        var previous = fixture.Package("rollback");
+        var active = fixture.Package("active");
+        foreach (var package in new[] { previous, active })
+        {
+            installation.StagePackage(package.Path);
+            var selected = installation.SelectForLaunch();
+            installation.Acknowledge(selected.Version, selected.Attempt!);
+            installation.Confirm(selected);
+        }
+        var activeVersion = new VersionReference(active.Descriptor.Id, active.Descriptor.ManifestSha256);
+        var previousVersion = new VersionReference(previous.Descriptor.Id, previous.Descriptor.ManifestSha256);
+        Corrupt(installation.Verify(activeVersion));
+        Corrupt(installation.Verify(previousVersion));
+
+        Assert.Throws<IOException>(() => installation.StagePackage(active.Path));
+        var error = Assert.Throws<InvalidDataException>(() => installation.StagePackage(previous.Path));
+
+        Assert.Contains("missing or changed", error.Message, StringComparison.Ordinal);
+        Assert.Throws<InvalidDataException>(() => installation.Verify(activeVersion));
+        Assert.Throws<InvalidDataException>(() => installation.Verify(previousVersion));
+        Assert.False(installation.HasPendingActivation());
+    }
+
+    private static void Corrupt(string executable)
+    {
+        var dependency = Directory.GetFiles(Path.GetDirectoryName(executable)!)
+            .First(file => file != executable && new FileInfo(file).Length > 0);
+        var bytes = File.ReadAllBytes(dependency);
+        bytes[0] ^= 1;
+        File.WriteAllBytes(dependency, bytes);
+    }
+
     private sealed class Interrupted : Exception;
     private static Action<string> At(string boundary) => point => { if (point == boundary) throw new Interrupted(); };
     private static async Task WaitFor(string path, Process process)
