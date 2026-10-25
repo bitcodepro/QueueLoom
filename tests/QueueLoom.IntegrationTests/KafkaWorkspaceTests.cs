@@ -244,6 +244,31 @@ public sealed class KafkaWorkspaceTests : IAsyncLifetime
         Assert.DoesNotContain((await _workspace.GetTopologyAsync(forceRefresh: true)).Queues, queue => queue.Name.StartsWith(name, StringComparison.Ordinal));
     }
 
+    // Spring's DeadLetterPublishingRecoverer writes a failed record to the same partition number of "<topic>.DLT", so
+    // the dead-letter topic needs at least the partitions of its topic, also after the topic grows.
+    [EmulatorFact(Emulators.Kafka)]
+    public async Task The_dead_letter_topic_has_and_keeps_the_partitions_of_its_topic()
+    {
+        var name = Emulators.Unique("refunds");
+        await _workspace.CreateQueueAsync(new QueueDefinition(name, new QueueSettings(Partitions: 3)));
+        try
+        {
+            Assert.Equal(3, (await _workspace.GetQueueSettingsAsync(name + ".DLT")).Partitions);
+
+            await _workspace.UpdateQueueSettingsAsync(name, new QueueSettings(Partitions: 5));
+            // New partitions reach the client's metadata a moment after they are created.
+            for (var attempt = 0; attempt < 20 && (await _workspace.GetQueueSettingsAsync(name + ".DLT")).Partitions != 5; attempt++)
+            {
+                await Task.Delay(250);
+            }
+            Assert.Equal(5, (await _workspace.GetQueueSettingsAsync(name + ".DLT")).Partitions);
+        }
+        finally
+        {
+            await _admin.DeleteTopicsAsync([name, name + ".DLT"]);
+        }
+    }
+
     [EmulatorFact(Emulators.Kafka)]
     public async Task Reading_starts_at_the_newest_a_time_or_an_offset_and_pages_on()
     {

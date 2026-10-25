@@ -136,35 +136,56 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             using var consumer = CreateConsumer();
             var topics = metadata.Topics
                 .Where(topic => topic.Error.Code == ErrorCode.NoError && !KafkaTopologyIndex.IsInternal(topic.Topic))
-                .Select(topic =>
-                {
-                    long retained = 0;
-                    string? countError = null;
-                    var ends = new Dictionary<int, long>();
-                    foreach (var partition in topic.Partitions)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        var marks = QueryWatermarks(consumer, new TopicPartition(topic.Topic, partition.PartitionId), cancellationToken);
-                        if (marks is null)
-                        {
-                            countError = "counts unavailable: a partition has no leader right now";
-                            retained = 0;
-                            break;
-                        }
-                        retained += Math.Max(0, marks.High.Value - marks.Low.Value);
-                        ends[partition.PartitionId] = marks.High.Value;
-                    }
-                    return new KafkaTopicInfo(topic.Topic, topic.Partitions.Select(partition => partition.PartitionId).ToArray(), retained)
-                    {
-                        CountError = countError,
-                        Ends = ends
-                    };
-                })
+                .Select(topic => ReadTopicInfo(consumer, topic.Topic, topic.Partitions.Select(partition => partition.PartitionId).ToArray(),
+                    cancellationToken))
                 .ToArray();
             return new KafkaTopologyIndex(topics, suffixes);
         }, cancellationToken).ConfigureAwait(false);
         _index = await WithConsumerLagAsync(_index, cancellationToken).ConfigureAwait(false);
         return _index.ToTopology(TimeProvider.GetUtcNow());
+    }
+
+    /// <summary>
+    /// The retained count and the high watermark of every partition of one topic. A partition without a leader leaves
+    /// the count unknown; the other partitions are still read, and <see cref="KafkaTopicInfo.Ends"/> holds only those.
+    /// </summary>
+    internal static KafkaTopicInfo ReadTopicInfo(IConsumer<byte[]?, byte[]?> consumer, string topic, IReadOnlyList<int> partitions,
+        CancellationToken cancellationToken)
+    {
+        long retained = 0;
+        string? countError = null;
+        var ends = new Dictionary<int, long>();
+        foreach (var partition in partitions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var marks = QueryWatermarks(consumer, new TopicPartition(topic, partition), cancellationToken);
+            if (marks is null)
+            {
+                countError = "counts unavailable: a partition has no leader right now";
+                continue;
+            }
+            retained += Math.Max(0, marks.High.Value - marks.Low.Value);
+            ends[partition] = marks.High.Value;
+        }
+        return new KafkaTopicInfo(topic, partitions, countError is null ? retained : 0) { CountError = countError, Ends = ends };
+    }
+
+    /// <summary>
+    /// A group's lag on one topic, or null when the end of a partition it committed on could not be read: counting
+    /// that partition as caught up would understate the lag.
+    /// </summary>
+    internal static long? LagOf(KafkaTopicInfo info, IEnumerable<TopicPartitionOffsetError> committed)
+    {
+        long lag = 0;
+        foreach (var partition in committed)
+        {
+            if (!info.Ends.TryGetValue(partition.Partition.Value, out var end))
+            {
+                return null;
+            }
+            lag += Math.Max(0, end - partition.Offset.Value);
+        }
+        return lag;
     }
 
     /// <summary>
@@ -220,9 +241,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                 {
                     continue;
                 }
-                var lag = topic.Sum(partition => info.Ends.TryGetValue(partition.Partition.Value, out var end)
-                    ? Math.Max(0, end - partition.Offset.Value)
-                    : 0);
+                var lag = LagOf(info, topic);
                 if (!lags.TryGetValue(topic.Key, out var list))
                 {
                     lags[topic.Key] = list = [];

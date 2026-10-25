@@ -31,29 +31,17 @@ public sealed partial class KafkaWorkspace
         ManageAsync(async token =>
         {
             ArgumentNullException.ThrowIfNull(definition);
-            var configs = new Dictionary<string, string>(StringComparer.Ordinal);
-            if (definition.Settings.MessageTimeToLive is { } retention)
-            {
-                configs["retention.ms"] = ((long)retention.TotalMilliseconds).ToString(CultureInfo.InvariantCulture);
-            }
+            var (topic, deadLetterTopic) = TopicSpecifications(definition);
             // CreateTopics creates each topic of a request on its own, so one request for both could create one and
             // refuse the other. The topic goes first: when it is refused, nothing has been created.
-            // -1 lets the cluster pick its default replication factor.
-            await Administer(() => Admin.CreateTopicsAsync(
-            [
-                new TopicSpecification
-                {
-                    Name = definition.Name, NumPartitions = definition.Settings.Partitions ?? 1, ReplicationFactor = -1, Configs = configs
-                }
-            ])).ConfigureAwait(false);
+            await Administer(() => Admin.CreateTopicsAsync([topic])).ConfigureAwait(false);
             var created = new List<string> { definition.Name };
             if (definition.CreateDeadLetterQueue)
             {
-                var deadLetter = definition.Name + ".DLT";
+                var deadLetter = deadLetterTopic.Name;
                 try
                 {
-                    await Admin.CreateTopicsAsync([new TopicSpecification { Name = deadLetter, NumPartitions = 1, ReplicationFactor = -1 }])
-                        .ConfigureAwait(false);
+                    await Admin.CreateTopicsAsync([deadLetterTopic]).ConfigureAwait(false);
                     created.Add(deadLetter);
                 }
                 catch (CreateTopicsException exception) when (exception.Results.All(result =>
@@ -72,6 +60,23 @@ public sealed partial class KafkaWorkspace
             }
             await WaitUntilVisibleAsync(created, token).ConfigureAwait(false);
         }, cancellationToken);
+
+    /// <summary>
+    /// The topic and its ".DLT" topic. Spring's DeadLetterPublishingRecoverer writes a failed record to the same partition
+    /// number of the dead-letter topic, so that topic gets as many partitions as its topic.
+    /// </summary>
+    internal static (TopicSpecification Topic, TopicSpecification DeadLetter) TopicSpecifications(QueueDefinition definition)
+    {
+        var configs = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (definition.Settings.MessageTimeToLive is { } retention)
+        {
+            configs["retention.ms"] = ((long)retention.TotalMilliseconds).ToString(CultureInfo.InvariantCulture);
+        }
+        var partitions = definition.Settings.Partitions ?? 1;
+        // -1 lets the cluster pick its default replication factor.
+        return (new TopicSpecification { Name = definition.Name, NumPartitions = partitions, ReplicationFactor = -1, Configs = configs },
+            new TopicSpecification { Name = definition.Name + ".DLT", NumPartitions = partitions, ReplicationFactor = -1 });
+    }
 
     /// <summary>
     /// A new topic reaches every broker's metadata a moment after it is created; waiting here keeps the refresh that
@@ -121,9 +126,41 @@ public sealed partial class KafkaWorkspace
                 {
                     await Administer(() => Admin.CreatePartitionsAsync([new PartitionsSpecification { Topic = queue, IncreaseTo = partitions }]))
                         .ConfigureAwait(false);
+                    await GrowDeadLetterTopicsAsync(queue, partitions, token).ConfigureAwait(false);
                 }
             }
         }, cancellationToken);
+
+    /// <summary>
+    /// Spring's recoverer writes a failed record to the same partition number of the dead-letter topic, so a topic's
+    /// dead-letter topics (by the profile's endings) grow with it. They only grow: one that already has as many
+    /// partitions or more is left alone, and a dead-letter topic of another topic is never touched.
+    /// </summary>
+    private async Task GrowDeadLetterTopicsAsync(string queue, int partitions, CancellationToken cancellationToken)
+    {
+        var metadata = await Task.Run(() => Admin.GetMetadata(RequestTimeout), cancellationToken).ConfigureAwait(false);
+        var smaller = _index.Suffixes.Select(suffix => queue + suffix).Distinct(StringComparer.Ordinal)
+            .Select(name => metadata.Topics.FirstOrDefault(topic => topic.Topic == name && topic.Error.Code == ErrorCode.NoError))
+            .Where(topic => topic is not null && topic.Partitions.Count < partitions)
+            .Select(topic => topic!.Topic)
+            .ToList();
+        foreach (var deadLetter in smaller)
+        {
+            try
+            {
+                await Admin.CreatePartitionsAsync([new PartitionsSpecification { Topic = deadLetter, IncreaseTo = partitions }])
+                    .ConfigureAwait(false);
+            }
+            catch (KafkaException exception)
+            {
+                var reason = (exception as CreatePartitionsException)?.Results.FirstOrDefault(result => result.Error.IsError)?.Error.Reason
+                             ?? exception.Error.Reason;
+                throw new InvalidOperationException(
+                    $"Topic '{queue}' now has {partitions} partitions, but its dead-letter topic '{deadLetter}' could not grow to match " +
+                    $"({reason}); records failing on the new partitions cannot be dead-lettered until it does.", exception);
+            }
+        }
+    }
 
     public override Task DeleteQueueAsync(string queue, CancellationToken cancellationToken = default) =>
         ManageAsync(_ => Administer(() => Admin.DeleteTopicsAsync([queue])), cancellationToken);
