@@ -454,11 +454,16 @@ public static class BodyDecoder
     }
 
     /// <summary>
-    /// JSON bytes a Protobuf decoder may still write. The closing brackets of open objects and arrays need room as well:
-    /// at most a few per nesting level.
+    /// JSON bytes a Protobuf decoder may still write. The closing brackets of the open objects and arrays need room as
+    /// well, each on its own indented line, and so do two more levels the next value may open (a message in an array).
     /// </summary>
-    internal static long OutputRoom(Utf8JsonWriter writer) =>
-        MaximumDecodedBytes - 4 * 1024 - writer.BytesCommitted - writer.BytesPending;
+    internal static long OutputRoom(Utf8JsonWriter writer)
+    {
+        long depth = writer.CurrentDepth + 2;
+        // A closing line at level d: a line break, 2 × (d - 1) spaces of indentation and the bracket.
+        var closing = depth * (Environment.NewLine.Length + 1) + depth * (depth - 1);
+        return MaximumDecodedBytes - Math.Max(1024, closing + 256) - writer.BytesCommitted - writer.BytesPending;
+    }
 
     /// <summary>
     /// <paramref name="text"/> as the JSON string the decoders write, or its longest start that takes at most

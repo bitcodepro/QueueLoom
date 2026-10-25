@@ -91,6 +91,27 @@ public sealed class ProtobufBoundedOutputTests
         Assert.False(string.IsNullOrEmpty(json.RootElement.GetProperty(number == 1 ? "b" : "s").GetString()));
     }
 
+    // Review of the closing reserve: at the deepest typed nesting (32 repeated messages, each an object in an array) the
+    // indented closing brackets take more than a fixed 4 KiB, so a string filling the room passed the cap.
+    [Fact]
+    public void ACutStringAtTheDeepestTypedNestingStaysWithinTheOutputBudget()
+    {
+        var schemas = ProtoSchemaSet.FromProtoFiles([("e.proto", "syntax=\"proto3\"; message E { repeated E child = 1; string s = 2; }")]);
+        var body = Field(2, Enumerable.Repeat((byte)'"', 9 * 1024 * 1024).ToArray());
+        for (var level = 0; level < 32; level++)
+        {
+            body = Field(1, body);
+        }
+
+        var decoded = ProtoDecoder.Decode(body, schemas.Resolve("E")!, schemas)!.Value;
+
+        Assert.True(decoded.Truncated);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(decoded.Json) <= BodyDecoder.MaximumDecodedBytes,
+            $"{System.Text.Encoding.UTF8.GetByteCount(decoded.Json):N0} bytes");
+        // 65 levels of objects and arrays: more than JsonDocument reads by default.
+        using var json = JsonDocument.Parse(decoded.Json, new JsonDocumentOptions { MaxDepth = 128 });
+    }
+
     [Fact]
     public void ACutTypedPreviewIsNotADefinitiveMatchForAScalar()
     {
