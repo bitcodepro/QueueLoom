@@ -386,6 +386,66 @@ public sealed class StableLauncherTests
     }
 
     [Fact]
+    public void ABusyCandidateManifestOnlyLosesTheRollbackHintAndTheKnownGoodVersionStillLaunches()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.StagePackage(fixture.Package("2.0.0").Path);
+        var candidate = installation.SelectForLaunch();
+        var versionDirectory = Path.GetDirectoryName(Path.GetDirectoryName(candidate.Executable))!;
+        using (new FileStream(Path.Combine(versionDirectory, "manifest.json"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            installation.Recover(candidate);
+            var restored = installation.SelectForLaunch();
+            Assert.Equal(installation.Bootstrap, restored.Version);
+            Assert.True(File.Exists(restored.Executable));
+            var failure = installation.ReadFailedStartup();
+            Assert.NotNull(failure);
+            Assert.Equal(candidate.Version, failure.Failed);
+            Assert.Null(failure.FailedVersion); // The label is omitted, never guessed.
+        }
+
+        // A failure record a scanner holds is read as no hint, and marking it is retried on a later start.
+        var record = Directory.GetFiles(Path.Combine(Path.GetDirectoryName(versionDirectory)!, "..", "failures"), "*.json").Single();
+        var held = installation.ReadFailedStartup()!;
+        using (new FileStream(record, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Null(installation.ReadFailedStartup());
+            installation.NoticeFailedStartup(held);
+        }
+        Assert.False(installation.ReadFailedStartup()!.Noticed);
+        installation.NoticeFailedStartup(held);
+        Assert.True(installation.ReadFailedStartup()!.Noticed);
+    }
+
+    [Fact]
+    public async Task ACandidateWhoseLauncherDiedBeforeAcknowledgementIsRecordedAsAFailedStartup()
+    {
+        using var fixture = new InstallationFixture();
+        var update = fixture.Package("1.5.0");
+        new VersionInstallation(fixture.Launcher).StagePackage(update.Path);
+        using (var child = fixture.StartFixture("--version-interrupt", fixture.Launcher, "launch", "attempt-published"))
+        {
+            await WaitFor(Path.Combine(fixture.Root, "launch.barrier"), child);
+            child.Kill(entireProcessTree: true);
+            await child.WaitForExitAsync();
+        }
+
+        var installation = new VersionInstallation(fixture.Launcher);
+        var selection = installation.SelectForLaunch();
+        Assert.Equal(fixture.Initial.Id, selection.Version.Id);
+        Assert.Null(selection.Attempt);
+        var failure = installation.ReadFailedStartup();
+        Assert.NotNull(failure);
+        Assert.Equal(update.Descriptor.Id, failure.Failed.Id);
+        Assert.Equal("1.5.0", failure.FailedVersion);
+        Assert.Equal(installation.Bootstrap, failure.Restored);
+        var release = new UpdateCheckResult(Version.Parse("1.5.0"), "v1.5.0", new Uri("https://github.com/bitcodepro/QueueLoom/releases/tag/v1.5.0"));
+        installation.NoticeFailedStartup(failure);
+        Assert.False(FailedUpdateNotice.ShouldShow(release, installation.ReadFailedStartup()));
+    }
+
+    [Fact]
     public void RecoveryWithoutALaunchAttemptRecordsNoFailedStartup()
     {
         using var fixture = new InstallationFixture();

@@ -344,7 +344,9 @@ public sealed class VersionInstallation
             }
             if (state.Attempt is not null && !OwnerAlive(state))
             {
-                state = RecoverOwned(state);
+                // The candidate was launched and its launcher was killed, crashed or lost to a reboot before
+                // acknowledgement: that is a failed startup. A corrupt or never-attempted candidate is not.
+                state = RecoverFailedOwned(state);
                 return new(PayloadExecutable(VersionDirectory(state.Active)), state.Active, null, false);
             }
             var ownsAttempt = state.Attempt is null;
@@ -444,11 +446,15 @@ public sealed class VersionInstallation
         using var ownership = Own();
         var state = ReadState();
         if (state.Pending && state.Active == selection.Version && state.Attempt == selection.Attempt)
-        {
-            var recovered = RecoverOwned(state, out var sequence);
-            RecordFailedStartup(sequence, new FailedStartup(state.Active, ManifestVersion(state.Active),
-                recovered.Active, ManifestVersion(recovered.Active)));
-        }
+            RecoverFailedOwned(state);
+    }
+
+    private ActivationState RecoverFailedOwned(ActivationState state)
+    {
+        var recovered = RecoverOwned(state, out var sequence);
+        RecordFailedStartup(sequence, new FailedStartup(state.Active, ManifestVersion(state.Active),
+            recovered.Active, ManifestVersion(recovered.Active)));
+        return recovered;
     }
 
     private ActivationState RecoverOwned(ActivationState state) => RecoverOwned(state, out _);
@@ -495,7 +501,9 @@ public sealed class VersionInstallation
             if (ReadState() is not { Pending: false } state || state.Active != failure.Restored) return null;
             return failure with { Noticed = File.Exists(path + ".noticed") };
         }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+        // A record another program holds open is only a missing hint for now; it is read again on a later start.
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException
+            or InstallationFileBusyException)
         { return null; }
     }
 
@@ -536,7 +544,9 @@ public sealed class VersionInstallation
             if (Hash(path, _checkpoint) != version.ManifestSha256) return null;
             return ReadJson<PayloadManifest>(path, _checkpoint).Version;
         }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+        // Only a label for the rollback notice: a manifest another program holds open must not stop the known-good launch.
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException
+            or InstallationFileBusyException)
         { return null; }
     }
 
