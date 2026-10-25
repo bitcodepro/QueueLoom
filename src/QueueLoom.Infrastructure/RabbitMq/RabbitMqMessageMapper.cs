@@ -144,7 +144,9 @@ internal static class RabbitMqMessageMapper
             or ApplicationPropertyType.Int32 => int.Parse(property.Value, CultureInfo.InvariantCulture),
         ApplicationPropertyType.UInt32 or ApplicationPropertyType.Int64 => long.Parse(property.Value, CultureInfo.InvariantCulture),
         ApplicationPropertyType.Single or ApplicationPropertyType.Double => double.Parse(property.Value, CultureInfo.InvariantCulture),
-        ApplicationPropertyType.Decimal => decimal.Parse(property.Value, ApplicationPropertyValues.DecimalStyle, CultureInfo.InvariantCulture),
+        ApplicationPropertyType.Decimal => ApplicationPropertyValues.ToAmqpDecimal(
+                decimal.Parse(property.Value, ApplicationPropertyValues.DecimalStyle, CultureInfo.InvariantCulture)) ??
+            throw new InvalidOperationException(QueueLoom.Core.Validation.MessageDraftValidator.RabbitMqDecimalProblem(property.Name, property.Value)),
         ApplicationPropertyType.DateTime or ApplicationPropertyType.DateTimeOffset =>
             new AmqpTimestamp(DateTimeOffset.Parse(property.Value, CultureInfo.InvariantCulture).ToUnixTimeSeconds()),
         ApplicationPropertyType.Binary => Convert.FromBase64String(property.Value),

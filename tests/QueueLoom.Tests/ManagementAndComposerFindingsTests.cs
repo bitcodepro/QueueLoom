@@ -163,8 +163,92 @@ public sealed class ManagementAndComposerFindingsTests
         Assert.DoesNotContain(broker.Requests, request => request.StartsWith("DELETE", StringComparison.Ordinal));
     }
 
+    // A lookup that fails (a broker error, a proxy's 502, missing permissions) says nothing about whether the name is
+    // taken: the person must see the real failure, not "A queue named 'orders' already exists.", and nothing is created.
+    [Theory]
+    [InlineData("orders", HttpStatusCode.ServiceUnavailable, false)]
+    [InlineData("orders", HttpStatusCode.InternalServerError, true)]
+    [InlineData("orders", HttpStatusCode.BadGateway, true)]
+    [InlineData("orders", HttpStatusCode.Forbidden, false)]
+    [InlineData("orders.dlq", HttpStatusCode.ServiceUnavailable, true)]
+    public async Task RabbitMq_AFailedLookupReportsTheRealErrorNotAnExistingQueue(string failing, HttpStatusCode status, bool deadLetter)
+    {
+        var broker = new QueueBroker([]) { FailGetOf = (failing, status) };
+        await using var workspace = RabbitWorkspace(broker);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(
+            new QueueDefinition("orders", new QueueSettings(), CreateDeadLetterQueue: deadLetter)));
+
+        Assert.DoesNotContain("already exists", error.Message, StringComparison.Ordinal);
+        Assert.Contains(((int)status).ToString(System.Globalization.CultureInfo.InvariantCulture), error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("orders", broker.Queues);
+        Assert.DoesNotContain(broker.Requests, request => request.StartsWith("DELETE", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RabbitMq_ALookupTheBrokerRejectsAsUnauthorizedReportsTheSignInProblem()
+    {
+        var broker = new QueueBroker([]) { FailGetOf = ("orders", HttpStatusCode.Unauthorized) };
+        await using var workspace = RabbitWorkspace(broker);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings())));
+
+        Assert.Contains("user name or password", error.Message, StringComparison.Ordinal);
+        Assert.Empty(broker.Queues);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RabbitMq_AMissingNameIsCreatedAndATakenOneIsRefused(bool taken)
+    {
+        var broker = new QueueBroker(taken ? ["orders"] : []);
+        await using var workspace = RabbitWorkspace(broker);
+
+        if (taken)
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings())));
+            Assert.Contains("already exists", error.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(broker.Requests, request => request.StartsWith("PUT", StringComparison.Ordinal));
+        }
+        else
+        {
+            await workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings()));
+            Assert.Contains("orders", broker.Queues);
+        }
+    }
+
+    // RabbitMQ's x-message-ttl is whole milliseconds and 0 expires every message at once: a positive time to live
+    // below one millisecond rounds up instead of becoming 0.
+    [Fact]
+    public async Task RabbitMq_ASubMillisecondTimeToLiveNeverBecomesImmediateExpiry()
+    {
+        var broker = new QueueBroker([]);
+        await using var workspace = RabbitWorkspace(broker);
+
+        await workspace.CreateQueueAsync(new QueueDefinition("orders", new QueueSettings(TimeSpan.FromTicks(5_000))));
+
+        // The main queue is declared last, after its dead-letter queue.
+        Assert.Matches("\"x-message-ttl\":1[,}]", broker.PutBodies[^1]);
+    }
+
+    private static RabbitMqWorkspace RabbitWorkspace(QueueBroker broker)
+    {
+        var workspace = new RabbitMqWorkspace(new DeepAuditCloudTests.EmptyVault());
+        typeof(RabbitMqWorkspace).GetField("_management", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(workspace, new HttpClient(broker) { BaseAddress = new Uri("http://broker.invalid/") });
+        typeof(LeasedMessagingWorkspace).GetField("_profile", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(workspace,
+            ServiceBusProfile.CreateNew("isolated", EnvironmentKind.Test, new(AuthenticationKind.RabbitMqPassword),
+                accessMode: ProfileAccessMode.ReadWrite) with
+            { Provider = MessagingProvider.RabbitMq, AllowQueueManagement = true, RabbitMq = new("broker.invalid", "guest") });
+        return workspace;
+    }
+
     private sealed class QueueBroker(IEnumerable<string> existing) : HttpMessageHandler
     {
+        /// <summary>Every lookup of this queue fails with this status instead of answering 200 or 404.</summary>
+        public (string Name, HttpStatusCode Status)? FailGetOf { get; init; }
+        public List<string> PutBodies { get; } = [];
         /// <summary>Another creator declares this queue right after the dead-letter queue PUT succeeds.</summary>
         public (string Name, string Moment)? CreateConcurrently { get; init; }
         public List<string> Requests { get; } = [];
@@ -190,6 +274,10 @@ public sealed class ManagementAndComposerFindingsTests
             }
             HttpResponseMessage Reply(HttpStatusCode status, string body = "{}") =>
                 new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+            if (request.Method == HttpMethod.Get && FailGetOf is { } failure && name == failure.Name)
+                return Task.FromResult(Reply(failure.Status, """{"error":"unavailable","reason":"management plugin restarting"}"""));
+            if (request.Method == HttpMethod.Put)
+                PutBodies.Add(request.Content!.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult());
             if (request.Method == HttpMethod.Get)
                 return Task.FromResult(Queues.Contains(name) ? Reply(HttpStatusCode.OK) : Reply(HttpStatusCode.NotFound));
             if (request.Method == HttpMethod.Put)

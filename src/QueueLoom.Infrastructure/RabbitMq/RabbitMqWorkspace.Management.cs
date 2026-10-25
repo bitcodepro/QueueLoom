@@ -43,7 +43,8 @@ public sealed partial class RabbitMqWorkspace
             var arguments = new Dictionary<string, object> { ["x-queue-type"] = "quorum" };
             if (definition.Settings.MessageTimeToLive is { } timeToLive)
             {
-                arguments["x-message-ttl"] = (long)timeToLive.TotalMilliseconds;
+                // Whole milliseconds, rounded up: 0 would expire every message at once.
+                arguments["x-message-ttl"] = (long)Math.Ceiling(timeToLive.TotalMilliseconds);
             }
             if (definition.Settings.MaxDeliveryCount is { } limit)
             {
@@ -99,10 +100,14 @@ public sealed partial class RabbitMqWorkspace
         var management = _management ?? throw new InvalidOperationException("Connect to the environment first.");
         using var existing = await management.GetAsync($"api/queues/{Escape(_virtualHost)}/{Uri.EscapeDataString(name)}", cancellationToken)
             .ConfigureAwait(false);
-        if (existing.StatusCode != HttpStatusCode.NotFound)
+        if (existing.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new InvalidOperationException($"A queue named '{name}' already exists.");
+            return;
         }
+        // Only an answer with the queue means the name is taken; a failed lookup (5xx, a proxy's 502, 401/403) is
+        // reported as itself.
+        await EnsureSuccessAsync(existing, "the management API", cancellationToken).ConfigureAwait(false);
+        throw new InvalidOperationException($"A queue named '{name}' already exists.");
     }
 
     /// <summary>Whether a failed PUT certainly created nothing: it was never sent, or the broker answered 4xx.</summary>
