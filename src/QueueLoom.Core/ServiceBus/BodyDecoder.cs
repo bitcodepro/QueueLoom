@@ -30,6 +30,11 @@ public static class BodyDecoder
 
     /// <summary>At most this many records of an Avro container are decoded.</summary>
     public const int MaximumAvroRecords = MaximumRecords;
+
+    /// <summary>At most this many Protobuf fields (and packed values) are decoded from one body.</summary>
+    public const int MaximumProtobufValues = 100_000;
+    internal static readonly string ProtobufLimitNote =
+        $"Only the first {MaximumProtobufValues:N0} fields are shown (or as many as fit {MaximumDecodedBytes / (1024 * 1024)} MiB of JSON).";
     private static readonly UTF8Encoding StrictUtf8 = new(false, throwOnInvalidBytes: true);
     private static readonly JsonWriterOptions Indented = new()
     {
@@ -122,17 +127,18 @@ public static class BodyDecoder
             {
                 steps.Add($"Protobuf ({typed.Type.FullName})");
                 var named = protos.Resolve(messageType) == typed.Type;
-                return new DecodedBody(steps, typed.Json, true, note ??
-                    (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body.")) { IsComplete = complete };
+                return new DecodedBody(steps, typed.Json, true, note ?? (typed.Truncated ? ProtobufLimitNote + " " : string.Empty) +
+                    (named ? $"Message type {typed.Type.FullName}, as the message says." : $"Message type {typed.Type.FullName}: the loaded type that fits the body.")) { IsComplete = complete && !typed.Truncated };
             }
             // Guessing fields without a schema is for bodies that are not text, or that say they are Protobuf. A readable
             // body whose only hint is a message type (often a "type" property that text and JSON senders set
             // routinely) is shown as text unless a loaded schema decodes it.
-            if ((!readable || protobufHint) && Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf))
+            if ((!readable || protobufHint) && Protobuf.TryToJson(final, requireMessage: !protobufHint, out var protobuf, out var protobufTruncated))
             {
                 steps.Add("Protobuf (no schema)");
                 return new DecodedBody(steps, protobuf, true,
-                    note ?? "Without the .proto file, fields are shown by number and nested messages are guessed.") { IsComplete = complete };
+                    note ?? (protobufTruncated ? ProtobufLimitNote + " " : string.Empty) +
+                    "Without the .proto file, fields are shown by number and nested messages are guessed.") { IsComplete = complete && !protobufTruncated };
             }
         }
         if (readable)
@@ -196,13 +202,16 @@ public static class BodyDecoder
                     ProtoDecoder.Decode(span[position..], registry.Type, registry.Schemas) is { } typedRegistry)
                 {
                     return new DecodedBody(["Schema Registry", "Protobuf"], typedRegistry.Json, true,
-                        $"Schema id {schemaId}, message {registry.Type.FullName}.");
+                        $"Schema id {schemaId}, message {registry.Type.FullName}." + (typedRegistry.Truncated ? " " + ProtobufLimitNote : string.Empty))
+                    { IsComplete = !typedRegistry.Truncated };
                 }
                 var message = ProtobufMessageName(schema.Text);
-                return Protobuf.TryToJson(span[position..], requireMessage: false, out var protobuf)
+                return Protobuf.TryToJson(span[position..], requireMessage: false, out var protobuf, out var protobufTruncated)
                     ? new DecodedBody(["Schema Registry", "Protobuf"], protobuf, true,
                         $"Schema id {schemaId}{(message is null ? string.Empty : $", message {message}")}. Fields are shown by number, as in the .proto file." +
-                        (schema.Unresolved.Count > 0 ? $" It imports schemas from other subjects that the Schema Registry did not hand out ({string.Join(", ", schema.Unresolved.Take(5))})." : string.Empty))
+                        (schema.Unresolved.Count > 0 ? $" It imports schemas from other subjects that the Schema Registry did not hand out ({string.Join(", ", schema.Unresolved.Take(5))})." : string.Empty) +
+                        (protobufTruncated ? " " + ProtobufLimitNote : string.Empty))
+                    { IsComplete = !protobufTruncated }
                     : null;
             default:
                 try
@@ -449,9 +458,14 @@ public static class BodyDecoder
     {
         private const int MaximumDepth = 12;
 
-        public static bool TryToJson(ReadOnlySpan<byte> data, bool requireMessage, out string json)
+        /// <summary>
+        /// <paramref name="truncated"/> is true when decoding stopped at <see cref="MaximumProtobufValues"/> fields or near
+        /// <see cref="MaximumDecodedBytes"/> of JSON: the JSON is then valid but holds only the fields read until then.
+        /// </summary>
+        public static bool TryToJson(ReadOnlySpan<byte> data, bool requireMessage, out string json, out bool truncated)
         {
             json = string.Empty;
+            truncated = false;
             if (data.Length == 0 || !IsMessage(data, 0))
             {
                 return false;
@@ -461,14 +475,31 @@ public static class BodyDecoder
                 return false;
             }
 
+            var budget = new Budget();
             using var stream = new MemoryStream();
             using (var writer = new Utf8JsonWriter(stream, Indented))
             {
-                WriteMessage(writer, data, 0);
+                WriteMessage(writer, data, 0, budget);
             }
+            truncated = budget.Exhausted;
             json = Encoding.UTF8.GetString(stream.ToArray());
             return true;
         }
+
+        /// <summary>Fields and JSON bytes left for one decode, shared by every nested message.</summary>
+        private sealed class Budget
+        {
+            public int Values = MaximumProtobufValues;
+            public bool Exhausted;
+            public bool OutputFull;
+
+            // The closing brackets of open objects and arrays need room as well: at most a few per nesting level.
+            public bool Fits(Utf8JsonWriter writer, long bytes) =>
+                !OutputFull && writer.BytesCommitted + writer.BytesPending + bytes <= MaximumDecodedBytes - 4 * 1024;
+        }
+
+        /// <summary>One field as the wire holds it: a number, or where its length-delimited bytes are.</summary>
+        private readonly record struct Field(ulong Number, int WireType, ulong Value, int Start, int Length);
 
         private static bool IsMessage(ReadOnlySpan<byte> data, int depth)
         {
@@ -521,53 +552,82 @@ public static class BodyDecoder
             return true;
         }
 
-        private static void WriteMessage(Utf8JsonWriter writer, ReadOnlySpan<byte> data, int depth)
+        private static void WriteMessage(Utf8JsonWriter writer, ReadOnlySpan<byte> data, int depth, Budget budget)
         {
-            var fields = new List<(ulong Field, Action<Utf8JsonWriter> Write)>();
+            // Plain structs, grouped by field number in first-seen order: no allocation per field beyond the list.
+            var fields = new List<Field>();
+            var order = new Dictionary<ulong, List<int>>();
             var position = 0;
             while (position < data.Length)
             {
+                if (budget.Values <= 0)
+                {
+                    budget.Exhausted = true;
+                    break;
+                }
+                budget.Values--;
                 TryReadVarint(data, ref position, out var tag);
-                var field = tag >> 3;
-                switch (tag & 7)
+                var number = tag >> 3;
+                var wireType = (int)(tag & 7);
+                Field field;
+                switch (wireType)
                 {
                     case 0:
                         TryReadVarint(data, ref position, out var varint);
-                        fields.Add((field, w => w.WriteNumberValue(varint)));
+                        field = new Field(number, 0, varint, 0, 0);
                         break;
                     case 1:
-                        var fixed64 = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(position, 8));
+                        field = new Field(number, 1, BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(position, 8)), 0, 0);
                         position += 8;
-                        fields.Add((field, w => w.WriteNumberValue(fixed64)));
                         break;
                     case 5:
-                        var fixed32 = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(position, 4));
+                        field = new Field(number, 5, BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(position, 4)), 0, 0);
                         position += 4;
-                        fields.Add((field, w => w.WriteNumberValue(fixed32)));
                         break;
                     default:
                         TryReadVarint(data, ref position, out var length);
-                        var bytes = data.Slice(position, (int)length).ToArray();
+                        field = new Field(number, 2, 0, position, (int)length);
                         position += (int)length;
-                        fields.Add((field, w => WriteLengthDelimited(w, bytes, depth)));
                         break;
                 }
+                if (!order.TryGetValue(number, out var indexes))
+                {
+                    order[number] = indexes = [];
+                }
+                indexes.Add(fields.Count);
+                fields.Add(field);
             }
 
             writer.WriteStartObject();
-            foreach (var group in fields.GroupBy(item => item.Field))
+            foreach (var (number, indexes) in order)
             {
-                writer.WritePropertyName(group.Key.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                var values = group.ToArray();
-                if (values.Length > 1)
+                // The first value is checked before its name, so a property is never left without a value.
+                if (!Fits(writer, budget, fields[indexes[0]]))
+                {
+                    break;
+                }
+                writer.WritePropertyName(number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (indexes.Count > 1)
                 {
                     writer.WriteStartArray();
                 }
-                foreach (var value in values)
+                for (var item = 0; item < indexes.Count; item++)
                 {
-                    value.Write(writer);
+                    var field = fields[indexes[item]];
+                    if (item > 0 && !Fits(writer, budget, field))
+                    {
+                        break;
+                    }
+                    if (field.WireType == 2)
+                    {
+                        WriteLengthDelimited(writer, data.Slice(field.Start, field.Length), depth, budget);
+                    }
+                    else
+                    {
+                        writer.WriteNumberValue(field.Value);
+                    }
                 }
-                if (values.Length > 1)
+                if (indexes.Count > 1)
                 {
                     writer.WriteEndArray();
                 }
@@ -575,7 +635,18 @@ public static class BodyDecoder
             writer.WriteEndObject();
         }
 
-        private static void WriteLengthDelimited(Utf8JsonWriter writer, byte[] bytes, int depth)
+        // Base64 is the widest form a length-delimited value takes; the name, quotes and indentation add a little.
+        private static bool Fits(Utf8JsonWriter writer, Budget budget, Field field)
+        {
+            if (budget.Fits(writer, field.WireType == 2 ? (field.Length + 2L) / 3 * 4 + 128 : 128))
+            {
+                return true;
+            }
+            budget.Exhausted = budget.OutputFull = true;
+            return false;
+        }
+
+        private static void WriteLengthDelimited(Utf8JsonWriter writer, ReadOnlySpan<byte> bytes, int depth, Budget budget)
         {
             if (bytes.Length > 0 && TryText(bytes, out var text) && text.Count(character => !char.IsControl(character)) == text.Length)
             {
@@ -583,7 +654,7 @@ public static class BodyDecoder
             }
             else if (IsMessage(bytes, depth + 1))
             {
-                WriteMessage(writer, bytes, depth + 1);
+                WriteMessage(writer, bytes, depth + 1, budget);
             }
             else
             {
@@ -601,6 +672,11 @@ public static class BodyDecoder
                     return false;
                 }
                 var next = data[position++];
+                // The tenth byte holds only bit 63: anything more does not fit 64 bits.
+                if (shift == 63 && next > 1)
+                {
+                    return false;
+                }
                 value |= (ulong)(next & 0x7F) << shift;
                 if ((next & 0x80) == 0)
                 {
@@ -744,6 +820,8 @@ public static class BodyDecoder
             for (var shift = 0; shift < 64; shift += 7)
             {
                 var next = data[_position++];
+                // The tenth byte holds only bit 63 of the zigzag value: anything more does not fit a long.
+                if (shift == 63 && next > 1) break;
                 value |= (ulong)(next & 0x7F) << shift;
                 if ((next & 0x80) == 0)
                 {
