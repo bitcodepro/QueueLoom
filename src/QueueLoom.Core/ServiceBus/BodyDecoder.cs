@@ -329,55 +329,101 @@ public static class BodyDecoder
 
     /// <summary>
     /// The decompressed bytes (null when the data is not compressed at all); Truncated when the 16 MiB limit stopped it,
-    /// Cut when the stream does not end in a trailer that matches what was produced (the body is cut off or damaged).
+    /// Cut when a stream does not reach its end and a trailer that matches what it produced (the body is cut off or
+    /// damaged).
     /// </summary>
     private static (byte[]? Bytes, bool Truncated, bool Cut) Decompress(ReadOnlyMemory<byte> data, bool gzip)
     {
-        try
+        var input = data.ToArray();
+        var inflater = new RawInflater(input, MaximumDecodedBytes);
+        var cut = false;
+        var truncated = false;
+        if (gzip)
         {
-            using var input = new MemoryStream(data.ToArray(), writable: false);
-            using Stream stream = gzip
-                ? new GZipStream(input, CompressionMode.Decompress)
-                : new ZLibStream(input, CompressionMode.Decompress);
-            using var output = new MemoryStream();
-            var buffer = new byte[81_920];
-            int read;
-            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+            // Every member is checked where its own DEFLATE data ends, not by guessing from the last eight bytes: an
+            // unfinished member can end in zeros, the CRC-32 and length of empty output.
+            var position = 0;
+            for (var member = 0; position < input.Length; member++)
             {
-                var room = MaximumDecodedBytes - (int)output.Length;
-                output.Write(buffer, 0, Math.Min(read, room));
-                if (read > room)
+                var start = inflater.Length;
+                var payload = GzipPayload(input, position);
+                if (payload < 0)
                 {
-                    return (output.ToArray(), true, false);
+                    // Bytes after the last member that do not start another one: a damaged body.
+                    if (member == 0)
+                    {
+                        return (null, false, false);
+                    }
+                    cut = true;
+                    break;
                 }
+                var result = inflater.Inflate(payload, out var end);
+                if (result != InflateResult.Done)
+                {
+                    if (result == InflateResult.Invalid && member == 0)
+                    {
+                        return (null, false, false);
+                    }
+                    truncated = result == InflateResult.Capped;
+                    cut = !truncated;
+                    break;
+                }
+                var output = inflater.Output[start..];
+                if (end + 8 > input.Length ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(end)) != Crc32(output) ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(end + 4)) != (uint)output.Length)
+                {
+                    cut = true;
+                    break;
+                }
+                position = end + 8;
             }
-            var bytes = output.ToArray();
-            // The decompressors often just stop at a cut instead of throwing; the trailer tells whether the body ended.
-            return bytes.Length == 0 ? (null, false, false) : (bytes, false, !EndsCleanly(data.Span, bytes, gzip));
         }
-        catch (InvalidDataException)
+        else
         {
-            return (null, false, false);
+            // The two-byte header (IsZlib rules out a preset dictionary), the data, then Adler-32 as the last four bytes.
+            var result = inflater.Inflate(2, out var end);
+            if (result == InflateResult.Invalid)
+            {
+                return (null, false, false);
+            }
+            truncated = result == InflateResult.Capped;
+            cut = result == InflateResult.CutOff ||
+                result == InflateResult.Done && (end + 4 != input.Length || BinaryPrimitives.ReadUInt32BigEndian(input.AsSpan(end)) != Adler32(inflater.Output));
         }
+        var bytes = inflater.Output.ToArray();
+        return bytes.Length == 0 ? (null, false, false) : (bytes, truncated, cut && !truncated);
     }
 
-    /// <summary>
-    /// Whether the compressed data ends in the trailer of what was produced: gzip's CRC-32 and length (of the last
-    /// member, as concatenated members are decompressed together), or zlib's Adler-32.
-    /// </summary>
-    private static bool EndsCleanly(ReadOnlySpan<byte> data, byte[] output, bool gzip)
+    /// <summary>Where a gzip member's DEFLATE data starts, past its header and optional fields; -1 when there is no header.</summary>
+    private static int GzipPayload(byte[] input, int position)
     {
-        if (!gzip)
+        const int Text = 1, HeaderCrc = 2, Extra = 4, Name = 8, Comment = 16;
+        if (input.Length - position < 10 || input[position] != 0x1F || input[position + 1] != 0x8B || input[position + 2] != 8 ||
+            (input[position + 3] & ~(Text | HeaderCrc | Extra | Name | Comment)) != 0)
         {
-            return data.Length >= 6 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(data[^4..]) == Adler32(output);
+            return -1;
         }
-        if (data.Length < 18)
+        var flags = input[position + 3];
+        position += 10;
+        if ((flags & Extra) != 0)
         {
-            return false;
+            position = position + 2 > input.Length ? input.Length : position + 2 + (input[position] | input[position + 1] << 8);
         }
-        var crc = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data[^8..]);
-        var size = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data[^4..]);
-        return size <= output.Length && Crc32(output.AsSpan(output.Length - (int)size)) == crc;
+        foreach (var field in new[] { Name, Comment })
+        {
+            if ((flags & field) != 0)
+            {
+                var terminator = position < input.Length ? Array.IndexOf(input, (byte)0, position) : -1;
+                position = terminator < 0 ? input.Length : terminator + 1;
+            }
+        }
+        if ((flags & HeaderCrc) != 0)
+        {
+            position += 2;
+        }
+        // A header cut short leaves no data, which the decoder reports as cut off.
+        return Math.Min(position, input.Length);
     }
 
     private static uint Adler32(ReadOnlySpan<byte> data)

@@ -81,6 +81,51 @@ public sealed class BodyDecoderTruncationTests
         Assert.Equal("first part, second part", decoded.Text);
     }
 
+    // A second gzip header and the start of a stored block whose last eight bytes are zero: those zeros are the CRC-32
+    // and length of empty output, so a check of the final eight bytes took the unfinished member for an empty one.
+    private static readonly byte[] UnfinishedEmptyLookingMember = Convert.FromHexString("1f8b0800000000000000000000");
+
+    [Fact]
+    public void UnfinishedMemberWhoseLastBytesAreZeroIsNotComplete()
+    {
+        var decoded = BodyDecoder.Decode((byte[])[.. Compress("first part", true), .. UnfinishedEmptyLookingMember]);
+
+        Assert.NotNull(decoded);
+        Assert.False(decoded.IsComplete);
+        Assert.Contains("cut off", decoded.Note, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SearchIsUndecidedOnAnUnfinishedMemberWhoseLastBytesAreZero()
+    {
+        var body = Compress("first part", true).Concat(UnfinishedEmptyLookingMember).ToArray();
+        var message = new BrowsedMessage(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1, body,
+            new EditableMessageProperties(MessageId: "m-1"));
+
+        Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse("first").Matches(message));
+    }
+
+    [Fact]
+    public void GenuineEmptyGzipMemberAppendedIsComplete()
+    {
+        var decoded = BodyDecoder.Decode((byte[])[.. Compress("first part", true), .. Compress(string.Empty, true)]);
+
+        Assert.NotNull(decoded);
+        Assert.True(decoded.IsComplete);
+        Assert.Equal("first part", decoded.Text);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TrailingBytesAfterTheLastMemberAreNotComplete(bool gzip)
+    {
+        var decoded = BodyDecoder.Decode((byte[])[.. Compress(Json, gzip), 0x00, 0x00]);
+
+        Assert.NotNull(decoded);
+        Assert.False(decoded.IsComplete);
+    }
+
     [Theory]
     [InlineData("eJxOrderNumber42")]
     [InlineData("eJwAbCdEfGhIjKl")]
