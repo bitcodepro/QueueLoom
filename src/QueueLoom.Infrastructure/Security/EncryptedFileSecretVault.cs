@@ -34,7 +34,7 @@ public sealed class EncryptedFileSecretVault : ISecretVault, IProfileSecretReade
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(masterKeyStore);
         _paths = paths;
-        _identityProvider = new InstallationIdentityProvider(paths);
+        _identityProvider = new InstallationIdentityProvider(paths, masterKeyStore);
         _masterKeyStore = masterKeyStore;
         _paths.EnsureCreated();
     }
@@ -78,7 +78,8 @@ public sealed class EncryptedFileSecretVault : ISecretVault, IProfileSecretReade
                 return null;
             }
 
-            var installationId = await _identityProvider.GetOrCreateAsync(cancellationToken).ConfigureAwait(false);
+            var installationId = await _identityProvider.GetOrCreateAsync(hasStoredSecrets: true, cancellationToken)
+                .ConfigureAwait(false);
             var masterKey = await _masterKeyStore.GetOrCreateAsync(installationId, cancellationToken)
                 .ConfigureAwait(false);
             try
@@ -182,7 +183,11 @@ public sealed class EncryptedFileSecretVault : ISecretVault, IProfileSecretReade
             await using var storageLock = await CrossProcessFileLock.AcquireAsync(
                 _paths.StorageLockFile,
                 cancellationToken).ConfigureAwait(false);
-            var installationId = await _identityProvider.GetOrCreateAsync(cancellationToken).ConfigureAwait(false);
+            // Loaded under the storage lock before the identity is resolved, so no other process can add the first
+            // secret between the check and a freshly minted id.
+            var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
+            var installationId = await _identityProvider.GetOrCreateAsync(document.Entries.Count > 0, cancellationToken)
+                .ConfigureAwait(false);
             var masterKey = await _masterKeyStore.GetOrCreateAsync(installationId, cancellationToken)
                 .ConfigureAwait(false);
             var plaintext = Encoding.UTF8.GetBytes(secret);
@@ -194,7 +199,6 @@ public sealed class EncryptedFileSecretVault : ISecretVault, IProfileSecretReade
                 using var aes = new AesGcm(masterKey, TagSize);
                 aes.Encrypt(nonce, plaintext, ciphertext, tag, GetAdditionalData(installationId, key));
 
-                var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
                 document.Entries[GetEntryName(key)] = new SecretEntry
                 {
                     Version = 1,
