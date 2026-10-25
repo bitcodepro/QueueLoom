@@ -277,6 +277,21 @@ public static class MessageDraftValidator
                     $"{nameof(MessageDraft.ApplicationProperties)}[{index}]"));
             }
         }
+        else if (rules == MessagingProvider.RabbitMq)
+        {
+            for (var index = 0; index < applicationProperties.Count; index++)
+            {
+                if (applicationProperties[index] is { Type: ApplicationPropertyType.Decimal, Value: { } decimalText } property &&
+                    decimal.TryParse(decimalText, ApplicationPropertyValues.DecimalStyle, CultureInfo.InvariantCulture, out var number) &&
+                    ApplicationPropertyValues.ToAmqpDecimal(number) is null)
+                {
+                    errors.Add(new ValidationError(
+                        "message.application_property.amqp_decimal_overflow",
+                        RabbitMqDecimalProblem(property.Name, decimalText),
+                        $"{nameof(MessageDraft.ApplicationProperties)}[{index}]"));
+                }
+            }
+        }
         else if (rules == MessagingProvider.GooglePubSub)
         {
             // The same map the publish builds: standard attributes first, then application properties, which replace a
@@ -316,6 +331,14 @@ public static class MessageDraftValidator
                 }
             }
         }
+    }
+
+    /// <summary>Why a Decimal property cannot travel as an AMQP 0-9-1 decimal (see ApplicationPropertyValues.ToAmqpDecimal).</summary>
+    public static string RabbitMqDecimalProblem(string? name, string value)
+    {
+        var label = name is { Length: > 40 } longName ? TextLimits.Head(longName, 40) + "…" : name;
+        return $"RabbitMQ carries a Decimal as at most 2,147,483,647 without its decimal point (for example 21474.83647); " +
+               $"'{label}' = {value} does not fit exactly. Send it as a Double or a String instead.";
     }
 
     /// <summary>
