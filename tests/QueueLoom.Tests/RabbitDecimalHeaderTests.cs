@@ -43,10 +43,14 @@ public sealed class RabbitDecimalHeaderTests
         Assert.True(MessageDraftValidator.Validate(Draft(value), MessagingProvider.RabbitMq).IsValid);
 
         var properties = RabbitMqMessageMapper.ToAmqp(Draft(value));
-        // The client's own frame writer accepts it.
+        // Serialize with the client's own frame writer, then decode those wire bytes with the client's own content-header
+        // reader, so the decimal is proven to survive the actual AMQP encoding rather than only the in-memory mapper.
         var writeable = (IAmqpWriteable)properties;
-        writeable.WriteTo(new byte[writeable.GetRequiredBufferSize()]);
-        var read = RabbitMqMessageMapper.FromAmqp(Array.Empty<byte>(), properties, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.Active);
+        var wire = new byte[writeable.GetRequiredBufferSize()];
+        var written = writeable.WriteTo(wire);
+        var decoded = new ReadOnlyBasicProperties(wire.AsSpan(0, written));
+        Assert.Equal(decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), Assert.IsType<decimal>(decoded.Headers!["amount"]));
+        var read = RabbitMqMessageMapper.FromAmqp(Array.Empty<byte>(), decoded, "orders", ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.Active);
 
         var amount = Assert.Single(read.ApplicationProperties, property => property.Name == "amount");
         Assert.Equal(ApplicationPropertyType.Decimal, amount.Type);
