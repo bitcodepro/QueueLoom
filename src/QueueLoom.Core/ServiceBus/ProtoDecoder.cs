@@ -20,9 +20,10 @@ public static class ProtoDecoder
 
     /// <summary>
     /// The body as JSON, and how well it fits the type: 1 when every field is declared with a matching wire type,
-    /// lower for each field that is not; null when the bytes are not Protobuf at all.
+    /// lower for each field that is not; null when the bytes are not Protobuf at all. Truncated when decoding stopped
+    /// after <see cref="BodyDecoder.MaximumProtobufValues"/> fields and packed values: the rest of the body is not read.
     /// </summary>
-    public static (string Json, double Fit)? Decode(ReadOnlySpan<byte> body, ProtoMessageType type, ProtoSchemaSet schemas)
+    public static (string Json, double Fit, bool Truncated)? Decode(ReadOnlySpan<byte> body, ProtoMessageType type, ProtoSchemaSet schemas)
     {
         ArgumentNullException.ThrowIfNull(type);
         ArgumentNullException.ThrowIfNull(schemas);
@@ -44,24 +45,24 @@ public static class ProtoDecoder
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, Indented))
         {
-            Write(writer, tree);
+            Write(writer, tree, stats.Budget);
         }
-        return (Encoding.UTF8.GetString(stream.ToArray()), stats.Total == 0 ? 1 : (double)stats.Matched / stats.Total);
+        return (Encoding.UTF8.GetString(stream.ToArray()), stats.Total == 0 ? 1 : (double)stats.Matched / stats.Total, stats.Budget.Exhausted);
     }
 
     /// <summary>
     /// The type that fits the body best: <paramref name="hint"/> when it names a known type, else every type is tried
     /// and one that fits exactly is taken (the one with the most fields set). Null when none fits exactly.
     /// </summary>
-    public static (ProtoMessageType Type, string Json)? DecodeBestFit(ReadOnlySpan<byte> body, ProtoSchemaSet schemas, string? hint = null)
+    public static (ProtoMessageType Type, string Json, bool Truncated)? DecodeBestFit(ReadOnlySpan<byte> body, ProtoSchemaSet schemas, string? hint = null)
     {
         ArgumentNullException.ThrowIfNull(schemas);
         if (schemas.Resolve(hint) is { } hinted && Decode(body, hinted, schemas) is { } decoded)
         {
-            return (hinted, decoded.Json);
+            return (hinted, decoded.Json, decoded.Truncated);
         }
 
-        (ProtoMessageType Type, string Json, int Fields)? best = null;
+        (ProtoMessageType Type, string Json, bool Truncated, int Fields)? best = null;
         var copy = body.ToArray();
         // One pass over the top-level fields: a type that does not declare one of them with a matching wire type
         // cannot fit exactly, so it is not decoded at all. With hundreds of types this keeps browsing fast; the result
@@ -83,10 +84,10 @@ public static class ProtoDecoder
             var fields = CountFields(copy, type);
             if (best is null || fields > best.Value.Fields)
             {
-                best = (type, candidate.Json, fields);
+                best = (type, candidate.Json, candidate.Truncated, fields);
             }
         }
-        return best is { } found ? (found.Type, found.Json) : null;
+        return best is { } found ? (found.Type, found.Json, found.Truncated) : null;
     }
 
     /// <summary>Full decodes attempted on this thread; tests read it.</summary>
@@ -128,6 +129,44 @@ public static class ProtoDecoder
     {
         public int Total;
         public int Matched;
+        public Budget Budget { get; init; } = new();
+    }
+
+    /// <summary>Fields and packed values left for one decode, shared by every nested message.</summary>
+    private sealed class Budget
+    {
+        private int _values = BodyDecoder.MaximumProtobufValues;
+        public bool Exhausted { get; private set; }
+
+        /// <summary>The JSON reached the same byte budget as schema-less decoding: nothing more is written.</summary>
+        public bool OutputFull { get; private set; }
+
+        /// <summary>
+        /// Whether a value (with <paramref name="name"/> before it, if any) still fits; when not, writing stops.
+        /// Strings are measured on their own; 128 bytes cover a number, brackets and indentation.
+        /// </summary>
+        public bool Fits(Utf8JsonWriter writer, string? name = null)
+        {
+            if (!OutputFull && BodyDecoder.OutputRoom(writer) >= (name?.Length ?? 0) * 6L + 128)
+            {
+                return true;
+            }
+            Stop();
+            return false;
+        }
+
+        public void Stop() => Exhausted = OutputFull = true;
+
+        public bool Take()
+        {
+            if (_values > 0)
+            {
+                _values--;
+                return true;
+            }
+            Exhausted = true;
+            return false;
+        }
     }
 
     /// <summary>A decoded message: field name to value, list or nested message, in field-number order.</summary>
@@ -159,7 +198,7 @@ public static class ProtoDecoder
             MapValueDefault = type.IsMapEntry ? MapDefault(type.FieldsByNumber.GetValueOrDefault(2), schemas) : null
         };
         var position = 0;
-        while (position < data.Length)
+        while (position < data.Length && stats.Budget.Take())
         {
             if (!TryReadTag(data, ref position, out var number, out var wireType) || number <= 0)
             {
@@ -230,7 +269,7 @@ public static class ProtoDecoder
                     {
                         if (field.TypeName is not null && schemas.FindMessage(field.TypeName) is { } nested)
                         {
-                            var inner = new Stats();
+                            var inner = new Stats { Budget = stats.Budget };
                             try
                             {
                                 value = ReadMessage(bytes, nested, schemas, inner, depth + 1);
@@ -251,7 +290,7 @@ public static class ProtoDecoder
                     }
                     else if (field.IsRepeated && IsPackable(field.Type))
                     {
-                        var items = ReadPacked(bytes, field, schemas);
+                        var items = ReadPacked(bytes, field, schemas, stats.Budget);
                         if (items is null)
                         {
                             matched = false;
@@ -365,13 +404,13 @@ public static class ProtoDecoder
 
     private static bool IsPackable(ProtoFieldType type) => type is not (ProtoFieldType.String or ProtoFieldType.Bytes or ProtoFieldType.Message or ProtoFieldType.Group);
 
-    private static List<object?>? ReadPacked(byte[] bytes, ProtoField field, ProtoSchemaSet schemas)
+    private static List<object?>? ReadPacked(byte[] bytes, ProtoField field, ProtoSchemaSet schemas, Budget budget)
     {
         var items = new List<object?>();
         var position = 0;
         try
         {
-            while (position < bytes.Length)
+            while (position < bytes.Length && budget.Take())
             {
                 switch (field.Type)
                 {
@@ -438,7 +477,7 @@ public static class ProtoDecoder
         _ => 0
     };
 
-    private static void Write(Utf8JsonWriter writer, object? value)
+    private static void Write(Utf8JsonWriter writer, object? value, Budget budget)
     {
         switch (value)
         {
@@ -449,6 +488,11 @@ public static class ProtoDecoder
                 writer.WriteStartObject();
                 foreach (var (_, (name, values, repeated)) in node)
                 {
+                    // The name is written only with room for a value after it, so the JSON stays whole when cut.
+                    if (!budget.Fits(writer, name))
+                    {
+                        break;
+                    }
                     writer.WritePropertyName(name);
                     if (repeated && values.Count > 0 && values.All(item => item is Node { IsMapEntry: true }))
                     {
@@ -465,8 +509,12 @@ public static class ProtoDecoder
                         writer.WriteStartObject();
                         foreach (var key in order)
                         {
+                            if (!budget.Fits(writer, key))
+                            {
+                                break;
+                            }
                             writer.WritePropertyName(key);
-                            Write(writer, entries[key]);
+                            Write(writer, entries[key], budget);
                         }
                         writer.WriteEndObject();
                     }
@@ -475,19 +523,28 @@ public static class ProtoDecoder
                         writer.WriteStartArray();
                         foreach (var item in values)
                         {
-                            Write(writer, item);
+                            if (!budget.Fits(writer))
+                            {
+                                break;
+                            }
+                            Write(writer, item, budget);
                         }
                         writer.WriteEndArray();
                     }
                     else
                     {
-                        Write(writer, values[^1]);
+                        Write(writer, values[^1], budget);
                     }
                 }
                 writer.WriteEndObject();
                 break;
             case string text:
-                writer.WriteStringValue(text);
+                // Escapes and base64 make a string longer than its bytes on the wire: it is cut to the room left.
+                writer.WriteStringValue(BodyDecoder.FitJsonString(text, BodyDecoder.OutputRoom(writer), out var cut));
+                if (cut)
+                {
+                    budget.Stop();
+                }
                 break;
             case bool flag:
                 writer.WriteBooleanValue(flag);
@@ -595,6 +652,11 @@ public static class ProtoDecoder
                 throw new InvalidDataException("A number runs past the end.");
             }
             var current = data[position++];
+            // The tenth byte holds only bit 63: anything more does not fit 64 bits.
+            if (shift == 63 && current > 1)
+            {
+                throw new InvalidDataException("A number is too large.");
+            }
             value |= (ulong)(current & 0x7F) << shift;
             if ((current & 0x80) == 0)
             {

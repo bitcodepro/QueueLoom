@@ -149,7 +149,10 @@ public sealed partial class MessageSearchQuery
         }
     }
 
-    private bool MatchesJson(ReadOnlyMemory<byte> body, string? contentType)
+    /// <summary>A JSON query against one body, decoding Protobuf with <paramref name="protos"/>; tests use it.</summary>
+    internal bool Matches(ReadOnlyMemory<byte> body, string? contentType, ProtoSchemaSet protos) => MatchesJson(body, contentType, protos);
+
+    private bool MatchesJson(ReadOnlyMemory<byte> body, string? contentType, ProtoSchemaSet? protos = null)
     {
         if (body.Length == 0)
         {
@@ -168,7 +171,7 @@ public sealed partial class MessageSearchQuery
             catch (JsonException)
             {
                 // Packed bodies (gzip, base64, Avro…) are searched in their decoded JSON.
-                if (BodyDecoder.Decode(body, contentType) is { } decoded)
+                if (BodyDecoder.Decode(body, contentType, protos: protos) is { } decoded)
                 {
                     partial = !decoded.IsComplete;
                     // Only whole Avro records cut at the record limit are real on their own. Any other incomplete body
@@ -785,3 +788,4 @@ public sealed partial class MessageSearchQuery
         private static long Digits(System.Numerics.BigInteger value) => System.Numerics.BigInteger.Abs(value).ToString(CultureInfo.InvariantCulture).Length;
     }
 }
+
