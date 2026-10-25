@@ -18,9 +18,6 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
 
     public const int MaximumTemplates = 200;
 
-    /// <summary>How many files a save reads at most to count the templates.</summary>
-    private const int MaximumFilesCounted = 10 * MaximumTemplates;
-
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -34,7 +31,7 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
     public async Task<IReadOnlyList<ComposerTemplate>> ListAsync(CancellationToken cancellationToken = default)
     {
         var templates = new List<ComposerTemplate>();
-        await foreach (var template in ReadAllAsync(int.MaxValue, cancellationToken).ConfigureAwait(false))
+        await foreach (var template in ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             templates.Add(template);
         }
@@ -73,12 +70,13 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
 
     /// <summary>
     /// Counts only the templates the list shows, so files it skips cannot use up places the app gives no way to free.
-    /// The count stops at the limit, and a folder full of junk is read only up to a bound so a save stays quick.
+    /// The count stops at the limit but otherwise reads every file: a scan bounded by files read could stop before the
+    /// templates and admit new ones without end. Each skipped file costs at most one bounded read.
     /// </summary>
     private async Task<int> CountAsync(CancellationToken cancellationToken)
     {
         var count = 0;
-        await foreach (var _ in ReadAllAsync(MaximumFilesCounted, cancellationToken).ConfigureAwait(false))
+        await foreach (var _ in ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             if (++count >= MaximumTemplates)
             {
@@ -88,14 +86,14 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
         return count;
     }
 
-    private async IAsyncEnumerable<ComposerTemplate> ReadAllAsync(int maximumFiles,
+    private async IAsyncEnumerable<ComposerTemplate> ReadAllAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!Directory.Exists(directory))
         {
             yield break;
         }
-        foreach (var file in Directory.EnumerateFiles(directory, "*.json").Take(maximumFiles))
+        foreach (var file in Directory.EnumerateFiles(directory, "*.json"))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (await TryReadAsync(file, cancellationToken).ConfigureAwait(false) is { } template)
