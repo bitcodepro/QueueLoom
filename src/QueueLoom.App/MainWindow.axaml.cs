@@ -240,6 +240,11 @@ public sealed partial class MainWindow : Window
             }
 
             var target = AppUpdater.CurrentTarget();
+            // A release that failed to start and was rolled back is explained once, then no longer offered.
+            var failedStartup = await Task.Run(() => FailedUpdateNotice.Read(target));
+            if (!FailedUpdateNotice.ShouldShow(update, failedStartup) || _shutdownInProgress) return;
+            if (failedStartup is not null && FailedUpdateNotice.IsFailedRelease(update, failedStartup))
+                await Task.Run(() => FailedUpdateNotice.MarkNoticed(target, failedStartup));
             var reason = target is null
                 ? "This is a development build, which is not updated in place."
                 : await AppUpdater.CanInstallAsync(target)
@@ -256,7 +261,7 @@ public sealed partial class MainWindow : Window
                 }
                 : null;
             var dialog = new UpdateDialogViewModel(GitHubUpdateChecker.CurrentVersionText, update, install, reason,
-                _viewModel?.ExportDiagnosticsCommand, _viewModel?.Diagnostics);
+                _viewModel?.ExportDiagnosticsCommand, _viewModel?.Diagnostics, failedStartup);
             if (await _dialogService.ShowUpdateAsync(dialog, _launcher) == UpdateDialogResult.Restart && target is not null)
             {
                 try { await Task.Run(() => AppUpdater.StartInstalled(target)); }

@@ -27,6 +27,24 @@ public sealed class UpdateDialogUiTests
     });
 
     [Fact]
+    public Task RolledBackRelease_OffersInstallAnywayInsteadOfUpdateNow() => UiSession.RunAsync(() =>
+    {
+        BindingErrors.Instance.Clear();
+        var update = new UpdateCheckResult(new Version(1, 5, 0), "v1.5.0", new Uri("https://github.com/bitcodepro/QueueLoom/releases/tag/v1.5.0"));
+        var failure = new QueueLoom.Core.Updates.FailedStartup(
+            new QueueLoom.Core.Updates.VersionReference(Guid.NewGuid().ToString("N"), new string('a', 64)), "1.5.0",
+            new QueueLoom.Core.Updates.VersionReference(Guid.NewGuid().ToString("N"), new string('b', 64)), "1.4.0");
+        var window = new UpdateDialogWindow(new UpdateDialogViewModel("1.4.0", update, (_, _) => Task.CompletedTask, failedStartup: failure), null);
+        window.Show();
+        Assert.Equal(["Release notes", "Not now", "Install anyway"], VisibleButtons(window));
+        Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text =>
+            text.Text?.StartsWith("QueueLoom 1.5.0 failed to start, and QueueLoom returned to version 1.4.0.", StringComparison.Ordinal) == true);
+        window.Close();
+        Assert.True(BindingErrors.Instance.Messages.Count == 0, string.Join(Environment.NewLine, BindingErrors.Instance.Messages.Distinct()));
+        return Task.CompletedTask;
+    });
+
+    [Fact]
     public Task UpdateDialog_ShowsTheRightButtonsInEachStage() => UiSession.RunAsync(async () =>
     {
         BindingErrors.Instance.Clear();

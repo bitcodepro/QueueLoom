@@ -44,13 +44,16 @@ public sealed class UpdateDialogViewModel : ObservableObject
         Func<IProgress<UpdateProgress>, CancellationToken, Task>? install,
         string? cannotInstallReason = null,
         AsyncRelayCommand? exportDiagnostics = null,
-        DiagnosticsJournal? diagnostics = null)
+        DiagnosticsJournal? diagnostics = null,
+        QueueLoom.Core.Updates.FailedStartup? failedStartup = null)
     {
         CurrentVersion = currentVersion;
         Update = update;
         _install = install;
         ExportDiagnosticsCommand = exportDiagnostics;
         _diagnostics = diagnostics ?? new();
+        FailedStartup = failedStartup;
+        IsRolledBack = FailedUpdateNotice.IsFailedRelease(update, failedStartup);
         CannotInstallReason = install is null
             ? cannotInstallReason ?? "This copy of QueueLoom cannot replace itself."
             : null;
@@ -66,6 +69,18 @@ public sealed class UpdateDialogViewModel : ObservableObject
     public string NewVersion => Update.Version.ToString(3);
 
     public string? CannotInstallReason { get; }
+
+    /// <summary>The last update that failed to start and was rolled back, if the launcher remembered one.</summary>
+    public QueueLoom.Core.Updates.FailedStartup? FailedStartup { get; }
+
+    /// <summary>The offered release is the one that failed to start: it is installed only through Install anyway.</summary>
+    public bool IsRolledBack { get; }
+
+    public bool ShowInstallAnyway => IsAvailable && CanInstall && IsRolledBack;
+
+    private string RollbackText => FailedStartup is null ? string.Empty :
+        $"QueueLoom {FailedStartup.FailedVersion ?? "update"} failed to start, and QueueLoom returned to version " +
+        $"{FailedStartup.RestoredVersion ?? CurrentVersion}. ";
 
     public bool CanInstall => _install is not null;
     public bool CanRetry => IsFailed && _canRetry && CanInstall;
@@ -96,6 +111,7 @@ public sealed class UpdateDialogViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsReady));
                 OnPropertyChanged(nameof(IsFailed));
                 OnPropertyChanged(nameof(ShowInstallButton));
+                OnPropertyChanged(nameof(ShowInstallAnyway));
                 OnPropertyChanged(nameof(CanRetry));
                 OnPropertyChanged(nameof(CanCancel));
             }
@@ -110,14 +126,14 @@ public sealed class UpdateDialogViewModel : ObservableObject
 
     public bool IsFailed => Stage == UpdateDialogStage.Failed;
 
-    public bool ShowInstallButton => IsAvailable && CanInstall;
+    public bool ShowInstallButton => IsAvailable && CanInstall && !IsRolledBack;
 
     public string Title => Stage switch
     {
         UpdateDialogStage.Downloading => $"Updating to QueueLoom {NewVersion}",
         UpdateDialogStage.Ready => $"QueueLoom {NewVersion} is installed",
         UpdateDialogStage.Failed => $"Update stopped: {StageLabel}",
-        _ => $"QueueLoom {NewVersion} is available"
+        _ => IsRolledBack ? $"QueueLoom {NewVersion} failed to start" : $"QueueLoom {NewVersion} is available"
     };
 
     public string Message => Stage switch
@@ -129,10 +145,13 @@ public sealed class UpdateDialogViewModel : ObservableObject
         UpdateDialogStage.Failed =>
             CanRetry ? "This stage can be retried safely. Retry starts a fresh verified download." :
                 "The installation state has not been verified. Retry is blocked while recovery may be required. Keep the update receipt and previous files, and inspect the failure before using the releases page.",
-        _ => CanInstall
+        _ when IsRolledBack => RollbackText +
+            "It is not offered again automatically; a newer release will be. " +
+            (CanInstall ? "Install anyway tries this version again." : "Download it from the releases page to try it again."),
+        _ => RollbackText + (CanInstall
             ? $"You have {CurrentVersion}. QueueLoom downloads the new version from GitHub, checks it and installs it. " +
               "It restarts automatically after installation. Your environments, settings and backups are kept."
-            : $"You have {CurrentVersion}. {CannotInstallReason} Download the new version from the releases page."
+            : $"You have {CurrentVersion}. {CannotInstallReason} Download the new version from the releases page.")
     };
 
     public double Progress

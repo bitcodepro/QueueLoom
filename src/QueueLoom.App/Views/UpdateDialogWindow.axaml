@@ -46,6 +46,8 @@
         <Button Content="Close" Click="LaterClick" IsVisible="{Binding IsFailed}" />
         <Button Content="Restart later" Click="LaterClick" IsVisible="{Binding IsReady}" />
         <Button Content="Update now" Classes="primary" Click="InstallClick" IsVisible="{Binding ShowInstallButton}" />
+        <Button Content="Install anyway" Click="InstallClick" IsVisible="{Binding ShowInstallAnyway}"
+                ToolTip.Tip="Try this version again; QueueLoom returns to the current version if it fails to start" />
         <Button Content="Retry update" Classes="primary" Click="InstallClick" IsVisible="{Binding CanRetry}" />
         <Button Content="Open releases page" Classes="primary" Click="ReleaseNotesClick" IsVisible="{Binding IsFailed}" />
         <Button Content="Open releases page" Classes="primary" Click="ReleaseNotesClick"
