@@ -53,6 +53,29 @@ public static class ApplicationPropertyValues
             : null;
     }
 
+    /// <summary>
+    /// The value as an AMQP 0-9-1 (RabbitMQ) decimal carries it: a scale and a sign plus 31-bit magnitude, so the unscaled
+    /// value must be at most 2,147,483,647. Trailing zeros are dropped when that makes it fit ("1.500000000000" is 1.5).
+    /// Null when no exact form fits: RabbitMQ.Client throws for some such values and silently corrupts others
+    /// (2147483648 is written as 0), so they are refused instead.
+    /// </summary>
+    public static decimal? ToAmqpDecimal(decimal value)
+    {
+        if (FitsAmqpDecimal(value))
+        {
+            return value;
+        }
+        var normalized = value / 1.000000000000000000000000000000000m;
+        return FitsAmqpDecimal(normalized) ? normalized : null;
+    }
+
+    private static bool FitsAmqpDecimal(decimal value)
+    {
+        Span<int> bits = stackalloc int[4];
+        decimal.GetBits(value, bits);
+        return bits[1] == 0 && bits[2] == 0 && bits[0] >= 0;
+    }
+
     /// <summary>The typed value; throws <see cref="FormatException"/> when the text does not fit the type.</summary>
     /// <summary>The Decimal spellings QueueLoom accepts wherever it reads one, such as "1,000", "100-" and "1e3".</summary>
     public const NumberStyles DecimalStyle = NumberStyles.Number | NumberStyles.AllowExponent;

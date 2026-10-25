@@ -10,6 +10,10 @@ internal sealed class WindowsDpapiMasterKeyStore(QueueLoomPaths paths) : IPlatfo
 
     public string BackendName => "Windows DPAPI (CurrentUser)";
 
+    // The key file is protected with entropy from the old identity: a fresh identity cannot unprotect it, so it goes too.
+    public string DescribeReset(QueueLoomPaths paths) =>
+        $"remove both {paths.SecretsFile} and {paths.ProtectedMasterKeyFile}.";
+
     public async ValueTask<byte[]> GetOrCreateAsync(
         string installationId,
         CancellationToken cancellationToken = default)
