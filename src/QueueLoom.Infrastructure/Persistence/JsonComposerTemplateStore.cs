@@ -24,6 +24,9 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
         Converters = { new JsonStringEnumConverter() }
     };
 
+    /// <summary>Lists the folder's template files; tests set the order, which the file system does not promise.</summary>
+    internal Func<string, IEnumerable<string>> EnumerateFiles { get; init; } = folder => Directory.EnumerateFiles(folder, "*.json");
+
     public JsonComposerTemplateStore(QueueLoomPaths paths) : this(Path.Combine(paths.RootDirectory, "templates"))
     {
     }
@@ -93,7 +96,7 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
         {
             yield break;
         }
-        foreach (var file in Directory.EnumerateFiles(directory, "*.json"))
+        foreach (var file in EnumerateFiles(directory))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (await TryReadAsync(file, cancellationToken).ConfigureAwait(false) is { } template)

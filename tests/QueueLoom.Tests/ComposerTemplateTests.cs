@@ -196,12 +196,19 @@ public sealed class ComposerTemplateStoreTests
     public async Task ManySkippedFilesDoNotLetSavesPassTheLimit()
     {
         using var directory = new TemporaryDirectory();
-        var store = new JsonComposerTemplateStore(directory.Path);
+        // The skipped files are listed first, whatever order the file system uses, so a scan bounded by files read
+        // would reach none of the templates.
+        var store = new JsonComposerTemplateStore(directory.Path)
+        {
+            EnumerateFiles = folder => Directory.EnumerateFiles(folder, "*.json")
+                .OrderBy(file => Path.GetFileName(file).StartsWith('!') ? 0 : 1)
+                .ThenBy(file => file, StringComparer.Ordinal)
+                .ToArray()
+        };
         for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates; index++)
         {
             await store.SaveAsync(new ComposerTemplate($"T{index}", "x", MessageBodyFormat.Text));
         }
-        // Named to be listed before the templates' hex names, so a bounded scan reaches none of them.
         for (var index = 0; index < 10 * JsonComposerTemplateStore.MaximumTemplates + 100; index++)
         {
             File.WriteAllText(Path.Combine(directory.Path, $"!damaged{index:D5}.json"), "{ not json");
