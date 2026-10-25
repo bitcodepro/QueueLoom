@@ -45,7 +45,7 @@ public static class ProtoDecoder
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, Indented))
         {
-            Write(writer, tree);
+            Write(writer, tree, stats.Budget);
         }
         return (Encoding.UTF8.GetString(stream.ToArray()), stats.Total == 0 ? 1 : (double)stats.Matched / stats.Total, stats.Budget.Exhausted);
     }
@@ -137,6 +137,25 @@ public static class ProtoDecoder
     {
         private int _values = BodyDecoder.MaximumProtobufValues;
         public bool Exhausted { get; private set; }
+
+        /// <summary>The JSON reached the same byte budget as schema-less decoding: nothing more is written.</summary>
+        public bool OutputFull { get; private set; }
+
+        /// <summary>
+        /// Whether a value (with <paramref name="name"/> before it, if any) still fits; when not, writing stops.
+        /// Strings are measured on their own; 128 bytes cover a number, brackets and indentation.
+        /// </summary>
+        public bool Fits(Utf8JsonWriter writer, string? name = null)
+        {
+            if (!OutputFull && BodyDecoder.OutputRoom(writer) >= (name?.Length ?? 0) * 6L + 128)
+            {
+                return true;
+            }
+            Stop();
+            return false;
+        }
+
+        public void Stop() => Exhausted = OutputFull = true;
 
         public bool Take()
         {
@@ -458,7 +477,7 @@ public static class ProtoDecoder
         _ => 0
     };
 
-    private static void Write(Utf8JsonWriter writer, object? value)
+    private static void Write(Utf8JsonWriter writer, object? value, Budget budget)
     {
         switch (value)
         {
@@ -469,6 +488,11 @@ public static class ProtoDecoder
                 writer.WriteStartObject();
                 foreach (var (_, (name, values, repeated)) in node)
                 {
+                    // The name is written only with room for a value after it, so the JSON stays whole when cut.
+                    if (!budget.Fits(writer, name))
+                    {
+                        break;
+                    }
                     writer.WritePropertyName(name);
                     if (repeated && values.Count > 0 && values.All(item => item is Node { IsMapEntry: true }))
                     {
@@ -485,8 +509,12 @@ public static class ProtoDecoder
                         writer.WriteStartObject();
                         foreach (var key in order)
                         {
+                            if (!budget.Fits(writer, key))
+                            {
+                                break;
+                            }
                             writer.WritePropertyName(key);
-                            Write(writer, entries[key]);
+                            Write(writer, entries[key], budget);
                         }
                         writer.WriteEndObject();
                     }
@@ -495,19 +523,28 @@ public static class ProtoDecoder
                         writer.WriteStartArray();
                         foreach (var item in values)
                         {
-                            Write(writer, item);
+                            if (!budget.Fits(writer))
+                            {
+                                break;
+                            }
+                            Write(writer, item, budget);
                         }
                         writer.WriteEndArray();
                     }
                     else
                     {
-                        Write(writer, values[^1]);
+                        Write(writer, values[^1], budget);
                     }
                 }
                 writer.WriteEndObject();
                 break;
             case string text:
-                writer.WriteStringValue(text);
+                // Escapes and base64 make a string longer than its bytes on the wire: it is cut to the room left.
+                writer.WriteStringValue(BodyDecoder.FitJsonString(text, BodyDecoder.OutputRoom(writer), out var cut));
+                if (cut)
+                {
+                    budget.Stop();
+                }
                 break;
             case bool flag:
                 writer.WriteBooleanValue(flag);

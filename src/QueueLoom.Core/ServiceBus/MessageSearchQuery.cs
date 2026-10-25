@@ -149,7 +149,10 @@ public sealed partial class MessageSearchQuery
         }
     }
 
-    private bool MatchesJson(ReadOnlyMemory<byte> body, string? contentType)
+    /// <summary>A JSON query against one body, decoding Protobuf with <paramref name="protos"/>; tests use it.</summary>
+    internal bool Matches(ReadOnlyMemory<byte> body, string? contentType, ProtoSchemaSet protos) => MatchesJson(body, contentType, protos);
+
+    private bool MatchesJson(ReadOnlyMemory<byte> body, string? contentType, ProtoSchemaSet? protos = null)
     {
         if (body.Length == 0)
         {
@@ -158,6 +161,7 @@ public sealed partial class MessageSearchQuery
         JsonDocument? document = null;
         // Decoding stopped at a limit (the first Avro records): a match in them is real, a miss decides nothing.
         var partial = false;
+        var partialProtobuf = false;
         try
         {
             try
@@ -168,9 +172,13 @@ public sealed partial class MessageSearchQuery
             catch (JsonException)
             {
                 // Packed bodies (gzip, base64, Avro…) are searched in their decoded JSON.
-                if (BodyDecoder.Decode(body, contentType) is { } decoded)
+                if (BodyDecoder.Decode(body, contentType, protos: protos) is { } decoded)
                 {
                     partial = !decoded.IsComplete;
+                    // A later Protobuf occurrence replaces an earlier one (a scalar, a oneof, a map key), so a cut
+                    // preview can show a value the message no longer has: a match in it is not a "yes" either.
+                    // Avro stops between whole records, which later records cannot change.
+                    partialProtobuf = partial && decoded.Steps.Any(step => step.StartsWith("Protobuf", StringComparison.Ordinal));
                     if (decoded.IsJson)
                     {
                         document = JsonDocument.Parse(decoded.Text);
@@ -206,7 +214,7 @@ public sealed partial class MessageSearchQuery
                         groupTimedOut ??= exception;
                     }
                 }
-                if (!failed && groupTimedOut is null)
+                if (!failed && groupTimedOut is null && !partialProtobuf)
                 {
                     return true;
                 }

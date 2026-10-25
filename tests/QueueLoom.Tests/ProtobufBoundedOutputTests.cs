@@ -61,6 +61,56 @@ public sealed class ProtobufBoundedOutputTests
         Assert.Equal(BodyDecoder.MaximumProtobufValues - 1, json.RootElement.GetProperty("v").GetArrayLength());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SchemaLessEscapedTextStaysWithinTheOutputBudget(bool gzip)
+    {
+        // Quotes pass as text, and each one doubles when written as JSON: the base64 estimate is too small for them.
+        var raw = Field(1, Enumerable.Repeat((byte)'"', 9 * 1024 * 1024).ToArray());
+        var decoded = BodyDecoder.Decode(gzip ? Gzip(raw) : raw, "application/x-protobuf", protos: ProtoSchemaSet.Empty);
+        Assert.NotNull(decoded);
+        Assert.False(decoded.IsComplete);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(decoded.Text) <= BodyDecoder.MaximumDecodedBytes, $"{decoded.Text.Length:N0} chars");
+        using var json = JsonDocument.Parse(decoded.Text);
+        Assert.StartsWith("\"\"\"", json.RootElement.GetProperty("1").GetString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(1, 13)]
+    [InlineData(2, 9)]
+    public void TypedProtobufStaysWithinTheOutputBudget(int number, int mebibytes)
+    {
+        // 13 MiB of bytes is over 17 MiB of base64; 9 MiB of quotes is 18 MiB escaped.
+        var schemas = ProtoSchemaSet.FromProtoFiles([("e.proto", "syntax=\"proto3\"; message E { bytes b = 1; string s = 2; }")]);
+        var body = Field(number, Enumerable.Repeat((byte)'"', mebibytes * 1024 * 1024).ToArray());
+        var decoded = ProtoDecoder.Decode(body, schemas.Resolve("E")!, schemas)!.Value;
+        Assert.True(decoded.Truncated);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(decoded.Json) <= BodyDecoder.MaximumDecodedBytes, $"{decoded.Json.Length:N0} chars");
+        using var json = JsonDocument.Parse(decoded.Json);
+        Assert.False(string.IsNullOrEmpty(json.RootElement.GetProperty(number == 1 ? "b" : "s").GetString()));
+    }
+
+    [Fact]
+    public void ACutTypedPreviewIsNotADefinitiveMatchForAScalar()
+    {
+        // The last occurrence wins: the preview stops at the field budget and keeps 1, though the field is 2.
+        var schemas = ProtoSchemaSet.FromProtoFiles([("e.proto", "syntax=\"proto3\"; message E { int32 status = 1; }")]);
+        byte[] body = [.. Enumerable.Repeat(new byte[] { 0x08, 0x01 }, BodyDecoder.MaximumProtobufValues).SelectMany(pair => pair), 0x08, 0x02];
+        var search = MessageSearchQuery.Parse("$.status == 1");
+        Assert.Throws<IncompleteBodySearchException>(() => search.Matches(body, "application/x-protobuf; messageType=E", schemas));
+    }
+
+    private static byte[] Field(int number, byte[] value)
+    {
+        var bytes = new List<byte> { (byte)(number << 3 | 2) };
+        var length = (uint)value.Length;
+        while (length >= 0x80) { bytes.Add((byte)(length | 0x80)); length >>= 7; }
+        bytes.Add((byte)length);
+        bytes.AddRange(value);
+        return [.. bytes];
+    }
+
     [Fact]
     public void OverlongVarintsAreRejected()
     {

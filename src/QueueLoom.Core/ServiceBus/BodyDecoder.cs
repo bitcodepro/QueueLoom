@@ -453,6 +453,44 @@ public static class BodyDecoder
         return builder.ToString();
     }
 
+    /// <summary>
+    /// JSON bytes a Protobuf decoder may still write. The closing brackets of open objects and arrays need room as well:
+    /// at most a few per nesting level.
+    /// </summary>
+    internal static long OutputRoom(Utf8JsonWriter writer) =>
+        MaximumDecodedBytes - 4 * 1024 - writer.BytesCommitted - writer.BytesPending;
+
+    /// <summary>
+    /// <paramref name="text"/> as the JSON string the decoders write, or its longest start that takes at most
+    /// <paramref name="room"/> bytes with its quotes; <paramref name="cut"/> is true when it was shortened.
+    /// </summary>
+    internal static JsonEncodedText FitJsonString(string text, long room, out bool cut)
+    {
+        var encoded = JsonEncodedText.Encode(text, Indented.Encoder);
+        cut = encoded.EncodedUtf8Bytes.Length + 2L > room;
+        if (!cut)
+        {
+            return encoded;
+        }
+        // Each character is counted at its widest: an escape such as \u2028 is six bytes, as is any surrogate half.
+        long used = 2;
+        var length = 0;
+        for (; length < text.Length; length++)
+        {
+            var cost = text[length] is '"' or '\\' ? 2 : text[length] is >= ' ' and <= '~' ? 1 : 6;
+            if (used + cost > room)
+            {
+                break;
+            }
+            used += cost;
+        }
+        if (length > 0 && char.IsHighSurrogate(text[length - 1]))
+        {
+            length--;
+        }
+        return JsonEncodedText.Encode(text.AsSpan(0, length), Indented.Encoder);
+    }
+
     /// <summary>Schema-less Protobuf: field numbers with their values; length-delimited fields become text, nested messages or base64.</summary>
     internal static class Protobuf
     {
@@ -493,9 +531,7 @@ public static class BodyDecoder
             public bool Exhausted;
             public bool OutputFull;
 
-            // The closing brackets of open objects and arrays need room as well: at most a few per nesting level.
-            public bool Fits(Utf8JsonWriter writer, long bytes) =>
-                !OutputFull && writer.BytesCommitted + writer.BytesPending + bytes <= MaximumDecodedBytes - 4 * 1024;
+            public bool Fits(Utf8JsonWriter writer, long bytes) => !OutputFull && OutputRoom(writer) >= bytes;
         }
 
         /// <summary>One field as the wire holds it: a number, or where its length-delimited bytes are.</summary>
@@ -650,7 +686,12 @@ public static class BodyDecoder
         {
             if (bytes.Length > 0 && TryText(bytes, out var text) && text.Count(character => !char.IsControl(character)) == text.Length)
             {
-                writer.WriteStringValue(text);
+                // Quotes and backslashes double when escaped, so the text is measured as it is written, not as base64.
+                writer.WriteStringValue(FitJsonString(text, OutputRoom(writer), out var cut));
+                if (cut)
+                {
+                    budget.Exhausted = budget.OutputFull = true;
+                }
             }
             else if (IsMessage(bytes, depth + 1))
             {
