@@ -116,40 +116,71 @@ public sealed partial class KafkaWorkspace
             }
             if (settings.Partitions is { } partitions)
             {
-                var current = await Task.Run(() => Admin.GetMetadata(queue, RequestTimeout).Topics.Single().Partitions.Count, token)
-                    .ConfigureAwait(false);
-                if (partitions < current)
-                {
-                    throw new InvalidOperationException($"Topic '{queue}' has {current} partitions; Kafka cannot remove partitions.");
-                }
-                if (partitions > current)
-                {
-                    await Administer(() => Admin.CreatePartitionsAsync([new PartitionsSpecification { Topic = queue, IncreaseTo = partitions }]))
-                        .ConfigureAwait(false);
-                    await GrowDeadLetterTopicsAsync(queue, partitions, token).ConfigureAwait(false);
-                }
+                await GrowPartitionsAsync(new AdminPartitions(Admin), queue, partitions, _index.Suffixes, RequestTimeout, token).ConfigureAwait(false);
             }
         }, cancellationToken);
+
+    /// <summary>The two admin calls a partition change needs, so it can be tested without a cluster.</summary>
+    internal interface IPartitionAdmin
+    {
+        Metadata GetMetadata(TimeSpan timeout);
+
+        Task CreatePartitionsAsync(string topic, int increaseTo);
+    }
+
+    private sealed class AdminPartitions(IAdminClient admin) : IPartitionAdmin
+    {
+        public Metadata GetMetadata(TimeSpan timeout) => admin.GetMetadata(timeout);
+
+        public Task CreatePartitionsAsync(string topic, int increaseTo) =>
+            admin.CreatePartitionsAsync([new PartitionsSpecification { Topic = topic, IncreaseTo = increaseTo }]);
+    }
+
+    internal static async Task GrowPartitionsAsync(IPartitionAdmin admin, string queue, int partitions, IReadOnlyList<string> suffixes,
+        TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var metadata = await Task.Run(() => admin.GetMetadata(timeout), cancellationToken).ConfigureAwait(false);
+        var source = metadata.Topics.FirstOrDefault(topic => topic.Topic == queue);
+        if (source is null || source.Error.IsError)
+        {
+            throw new InvalidOperationException($"Topic '{queue}' could not be read ({source?.Error.Reason ?? "not found"}).");
+        }
+        var current = source.Partitions.Count;
+        if (partitions < current)
+        {
+            throw new InvalidOperationException($"Topic '{queue}' has {current} partitions; Kafka cannot remove partitions.");
+        }
+        if (partitions > current)
+        {
+            await Administer(() => admin.CreatePartitionsAsync(queue, partitions)).ConfigureAwait(false);
+        }
+        // Also when the topic already has them: a retry after a dead-letter topic failed to grow repairs it.
+        await GrowDeadLetterTopicsAsync(admin, metadata, queue, partitions, suffixes).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Spring's recoverer writes a failed record to the same partition number of the dead-letter topic, so a topic's
     /// dead-letter topics (by the profile's endings) grow with it. They only grow: one that already has as many
-    /// partitions or more is left alone, and a dead-letter topic of another topic is never touched.
+    /// partitions or more is left alone, and a dead-letter topic of another topic is never touched: with endings
+    /// "-dlt" and "-retry-dlt", "orders-retry-dlt" belongs to "orders-retry" when that topic exists, as the topology
+    /// shows it. A dead-letter topic whose metadata cannot be read is reported, not taken for absent or changed.
     /// </summary>
-    private async Task GrowDeadLetterTopicsAsync(string queue, int partitions, CancellationToken cancellationToken)
+    private static async Task GrowDeadLetterTopicsAsync(IPartitionAdmin admin, Metadata metadata, string queue, int partitions,
+        IReadOnlyList<string> suffixes)
     {
-        var metadata = await Task.Run(() => Admin.GetMetadata(RequestTimeout), cancellationToken).ConfigureAwait(false);
-        var smaller = _index.Suffixes.Select(suffix => queue + suffix).Distinct(StringComparer.Ordinal)
-            .Select(name => metadata.Topics.FirstOrDefault(topic => topic.Topic == name && topic.Error.Code == ErrorCode.NoError))
-            .Where(topic => topic is not null && topic.Partitions.Count < partitions)
-            .Select(topic => topic!.Topic)
+        var index = new KafkaTopologyIndex(metadata.Topics.Select(topic => new KafkaTopicInfo(topic.Topic, [], 0)).ToList(), suffixes);
+        var owned = suffixes.Select(suffix => queue + suffix).Distinct(StringComparer.Ordinal)
+            .Select(name => metadata.Topics.FirstOrDefault(topic => topic.Topic == name))
+            .Where(topic => topic is not null && topic.Error.Code != ErrorCode.UnknownTopicOrPart && index.SourceOf(topic.Topic) == queue)
+            .Select(topic => topic!)
             .ToList();
+        var unreadable = owned.Where(topic => topic.Error.IsError).ToList();
+        var smaller = owned.Where(topic => !topic.Error.IsError && topic.Partitions.Count < partitions).Select(topic => topic.Topic).ToList();
         foreach (var deadLetter in smaller)
         {
             try
             {
-                await Admin.CreatePartitionsAsync([new PartitionsSpecification { Topic = deadLetter, IncreaseTo = partitions }])
-                    .ConfigureAwait(false);
+                await admin.CreatePartitionsAsync(deadLetter, partitions).ConfigureAwait(false);
             }
             catch (KafkaException exception)
             {
@@ -159,6 +190,13 @@ public sealed partial class KafkaWorkspace
                     $"Topic '{queue}' now has {partitions} partitions, but its dead-letter topic '{deadLetter}' could not grow to match " +
                     $"({reason}); records failing on the new partitions cannot be dead-lettered until it does.", exception);
             }
+        }
+        if (unreadable.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Topic '{queue}' now has {partitions} partitions, but the partitions of its dead-letter topic " +
+                string.Join(", ", unreadable.Select(topic => $"'{topic.Topic}' ({topic.Error.Reason})")) +
+                " could not be read, so it was left unchanged; refresh and save again to make it match.");
         }
     }
 
