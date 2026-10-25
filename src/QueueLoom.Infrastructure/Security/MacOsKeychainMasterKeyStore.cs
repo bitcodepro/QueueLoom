@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Security;
 
@@ -15,6 +16,11 @@ internal sealed class MacOsKeychainMasterKeyStore : IPlatformMasterKeyStore
     private static readonly byte[] ServiceName = Encoding.UTF8.GetBytes("io.queueloom.master-key");
 
     public string BackendName => "macOS Keychain";
+
+    // The Keychain item is keyed by installation id, so a fresh identity gets its own; the old one is only clutter.
+    public string DescribeReset(QueueLoomPaths paths) =>
+        $"remove {paths.SecretsFile}. The old vault key stays in the Keychain unused; to delete it, remove the " +
+        "generic password with service \"io.queueloom.master-key\" whose account is the old installation id in Keychain Access.";
 
     public ValueTask<byte[]> GetOrCreateAsync(
         string installationId,

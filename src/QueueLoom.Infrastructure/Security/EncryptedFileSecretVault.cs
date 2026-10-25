@@ -34,7 +34,7 @@ public sealed class EncryptedFileSecretVault : ISecretVault, IProfileSecretReade
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(masterKeyStore);
         _paths = paths;
-        _identityProvider = new InstallationIdentityProvider(paths);
+        _identityProvider = new InstallationIdentityProvider(paths, masterKeyStore);
         _masterKeyStore = masterKeyStore;
         _paths.EnsureCreated();
     }

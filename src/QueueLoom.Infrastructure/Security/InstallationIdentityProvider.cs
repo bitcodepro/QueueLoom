@@ -2,7 +2,7 @@ using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Security;
 
-internal sealed class InstallationIdentityProvider(QueueLoomPaths paths)
+internal sealed class InstallationIdentityProvider(QueueLoomPaths paths, IPlatformMasterKeyStore masterKeyStore)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _cached;
@@ -40,7 +40,7 @@ internal sealed class InstallationIdentityProvider(QueueLoomPaths paths)
                 {
                     throw new SecretVaultException(
                         $"The QueueLoom installation identity file is damaged ({paths.InstallationIdFile}) although saved secrets remain. " +
-                        "Restore the file from a backup, or remove the secrets file to start over and enter the passwords again.");
+                        RecoveryAdvice());
                 }
             }
             else if (hasStoredSecrets)
@@ -49,7 +49,7 @@ internal sealed class InstallationIdentityProvider(QueueLoomPaths paths)
                 // new ones would be written under a second key. Leave everything as it is for the user to restore.
                 throw new SecretVaultException(
                     $"The QueueLoom installation identity file is missing ({paths.InstallationIdFile}) although saved secrets remain. " +
-                    "Restore the file from a backup, or remove the secrets file to start over and enter the passwords again.");
+                    RecoveryAdvice());
             }
 
             var installationId = Guid.NewGuid().ToString("N");
@@ -62,4 +62,11 @@ internal sealed class InstallationIdentityProvider(QueueLoomPaths paths)
             _gate.Release();
         }
     }
+
+    // Restoring keeps the saved passwords, so it comes first. Starting over must remove whatever the key store bound to
+    // the old identity too (on Windows the DPAPI key file), or the fresh identity cannot open it and saving still fails.
+    private string RecoveryAdvice() =>
+        $"Restore the original {Path.GetFileName(paths.InstallationIdFile)} from a backup to keep the saved passwords. " +
+        $"To start over, close QueueLoom and {masterKeyStore.DescribeReset(paths)} " +
+        "All saved passwords and connection strings will be lost and must be entered again.";
 }

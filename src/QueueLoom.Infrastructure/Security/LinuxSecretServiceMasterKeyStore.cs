@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
+using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Security;
 
@@ -9,6 +10,11 @@ internal sealed class LinuxSecretServiceMasterKeyStore : IPlatformMasterKeyStore
     private const int MasterKeySize = 32;
 
     public string BackendName => "Linux Secret Service";
+
+    // The keyring entry is looked up by installation id, so a fresh identity gets its own; the old one is only clutter.
+    public string DescribeReset(QueueLoomPaths paths) =>
+        $"remove {paths.SecretsFile}. The old vault key stays in the keyring unused; to delete it, run " +
+        "'secret-tool clear application QueueLoom vault <old installation id>' (label \"QueueLoom local vault key\").";
 
     public async ValueTask<byte[]> GetOrCreateAsync(
         string installationId,
