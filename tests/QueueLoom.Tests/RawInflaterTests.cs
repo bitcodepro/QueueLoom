@@ -106,4 +106,34 @@ public sealed class RawInflaterTests
             Convert.ToHexStringLower(SHA256.HashData(inflater.Output)));
         Assert.True(BodyDecoder.Decode(input)!.IsComplete);
     }
+
+    // Dynamic blocks with hand-picked code lengths, checked against Python's zlib. As in zlib's puff.c, the code-length
+    // code must be complete; a literal/length or distance code may be incomplete only as a single code of length 1.
+    [Theory]
+    [InlineData("05e0010800000000200000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000088")] // incomplete code-length code
+    [InlineData("0de1010400000080200000000000000000080000000000000000000000000000000000000000000000f83701")] // two distance codes of length 2
+    [InlineData("05c00104000000802000000000000000000300000000000000000000000000000000000000000000008700")] // 'A' and end of block both length 2
+    public void RejectsIncompleteHuffmanCodes(string hex)
+    {
+        Assert.Equal(InflateResult.Invalid, new RawInflater(Convert.FromHexString(hex), BodyDecoder.MaximumDecodedBytes).Inflate(0, out _));
+    }
+
+    [Fact]
+    public void IncompleteLiteralCodeInZlibIsNotDecoded()
+    {
+        var decoded = BodyDecoder.Decode(Convert.FromHexString("789c05c00104000000802000000000000000000300000000000000000000000000000000000000000000008700420042"));
+
+        Assert.True(decoded is null || decoded.Steps[0] != "zlib" || !decoded.IsComplete);
+    }
+
+    [Theory]
+    [InlineData("0de0010400000080200000000000000000080000000000000000000000000000000000000000000000f82c", "AAAA")] // one distance code, length 1
+    [InlineData("05e001040000000010000000000000000008000000000000000000000000000000000000000000000044", "AA")] // no distance codes
+    public void AcceptsTheDegenerateCodesZlibAllows(string hex, string expected)
+    {
+        var inflater = new RawInflater(Convert.FromHexString(hex), BodyDecoder.MaximumDecodedBytes);
+
+        Assert.Equal(InflateResult.Done, inflater.Inflate(0, out _));
+        Assert.Equal(expected, Encoding.ASCII.GetString(inflater.Output));
+    }
 }

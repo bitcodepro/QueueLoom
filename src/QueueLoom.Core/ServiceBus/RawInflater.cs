@@ -185,7 +185,12 @@ internal sealed class RawInflater
         /// <summary>By the next nine input bits: symbol &lt;&lt; 4 | code length, or 0 for a longer (or unused) code.</summary>
         public int[] Fast { get; } = fast;
 
-        public static Huffman Build(ReadOnlySpan<byte> lengths)
+        /// <summary>
+        /// As zlib's puff.c: a code with unused code space is invalid unless <paramref name="single"/> allows the one
+        /// degenerate case (a single code of length 1, or no codes at all), or <paramref name="anyIncomplete"/> is set
+        /// (the fixed distance code, whose 30 codes leave two unused).
+        /// </summary>
+        public static Huffman Build(ReadOnlySpan<byte> lengths, bool single = false, bool anyIncomplete = false)
         {
             var counts = new short[16];
             foreach (var length in lengths)
@@ -201,6 +206,12 @@ internal sealed class RawInflater
                     // Over-subscribed: more codes than the lengths allow.
                     throw new InvalidDataException();
                 }
+            }
+            if (left > 0 && !anyIncomplete && counts[0] != lengths.Length &&
+                !(single && counts[1] == 1 && counts[0] + 1 == lengths.Length))
+            {
+                // Incomplete: some bit patterns decode to nothing.
+                throw new InvalidDataException();
             }
             var offsets = new short[16];
             for (var length = 1; length < 15; length++)
@@ -249,7 +260,7 @@ internal sealed class RawInflater
         return Huffman.Build(lengths);
     });
 
-    private static readonly Lazy<Huffman> FixedDistances = new(() => Huffman.Build(Enumerable.Repeat((byte)5, 30).ToArray()));
+    private static readonly Lazy<Huffman> FixedDistances = new(() => Huffman.Build(Enumerable.Repeat((byte)5, 30).ToArray(), anyIncomplete: true));
 
     private int Decode(Huffman huffman)
     {
@@ -383,7 +394,7 @@ internal sealed class RawInflater
             // Without an end-of-block code the block could never end.
             throw new InvalidDataException();
         }
-        Codes(Huffman.Build(lengths.AsSpan(0, lengthCount)), Huffman.Build(lengths.AsSpan(lengthCount)));
+        Codes(Huffman.Build(lengths.AsSpan(0, lengthCount), single: true), Huffman.Build(lengths.AsSpan(lengthCount), single: true));
     }
 
     private sealed class CutOffException : Exception;

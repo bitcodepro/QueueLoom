@@ -150,4 +150,82 @@ public sealed class BodyDecoderTruncationTests
         Assert.True(decoded.IsComplete);
         Assert.Contains("\"orderId\": 42", decoded.Text, StringComparison.Ordinal);
     }
+
+    private static BrowsedMessage Message(byte[] body) => new(ServiceBusEntityReference.Queue("orders"), ServiceBusSubQueue.DeadLetter, 1,
+        body, new EditableMessageProperties(MessageId: "m-1"));
+
+    // The JSON of a complete first member is only a prefix of the body: what the unfinished rest holds can change the answer.
+    [Fact]
+    public void JsonSearchIsUndecidedOnACompleteMemberBeforeAnUnfinishedOne()
+    {
+        var body = Compress("""{"status":"failed"}""", true).Concat(UnfinishedEmptyLookingMember).ToArray();
+
+        Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse("$.status == 'failed'").Matches(Message(body)));
+    }
+
+    [Fact]
+    public void JsonSearchIsUndecidedWhenTheGzipChecksumIsDamaged()
+    {
+        var body = Compress("""{"status":"failed"}""", true);
+        body[^8] ^= 0xFF;
+
+        Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse("$.status == 'failed'").Matches(Message(body)));
+    }
+
+    [Fact]
+    public void JsonSearchStillMatchesCompleteGzipJson()
+    {
+        var body = Compress("""{"status":"failed"}""", true);
+
+        Assert.True(MessageSearchQuery.Parse("$.status == 'failed'").Matches(Message(body)));
+        Assert.False(MessageSearchQuery.Parse("$.status == 'done'").Matches(Message(body)));
+    }
+
+    // FHCRC: the low 16 bits of the CRC-32 of the header, from ID1 up to the CRC itself.
+    private static byte[] WithHeaderCrc(string text, int flip = 0)
+    {
+        var plain = Compress(text, true);
+        var header = plain[..10];
+        header[3] = 2;
+        var crc = (ushort)(Crc32(header) ^ flip);
+        return [.. header, (byte)crc, (byte)(crc >> 8), .. plain[10..]];
+    }
+
+    private static uint Crc32(byte[] data)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var value in data)
+        {
+            crc ^= value;
+            for (var bit = 0; bit < 8; bit++)
+            {
+                crc = (crc & 1) != 0 ? 0xEDB88320 ^ crc >> 1 : crc >> 1;
+            }
+        }
+        return ~crc;
+    }
+
+    [Fact]
+    public void GzipHeaderCrcIsChecked()
+    {
+        var valid = BodyDecoder.Decode(WithHeaderCrc("first part"));
+        Assert.NotNull(valid);
+        Assert.True(valid.IsComplete);
+        Assert.Equal("first part", valid.Text);
+
+        // A damaged header is no gzip at all, as with any other header damage.
+        var damaged = BodyDecoder.Decode(WithHeaderCrc("first part", 1));
+        Assert.True(damaged is null || damaged.Steps[0] != "gzip");
+
+        // A second member whose header CRC is wrong is damage after the first.
+        var second = BodyDecoder.Decode((byte[])[.. Compress("first part", true), .. WithHeaderCrc("second", 1)]);
+        Assert.NotNull(second);
+        Assert.False(second.IsComplete);
+
+        // Cut inside the header CRC: cut off.
+        var cut = BodyDecoder.Decode((byte[])[.. Compress("first part", true), .. WithHeaderCrc("second")[..11]]);
+        Assert.NotNull(cut);
+        Assert.False(cut.IsComplete);
+        Assert.Contains("cut off", cut.Note, StringComparison.Ordinal);
+    }
 }

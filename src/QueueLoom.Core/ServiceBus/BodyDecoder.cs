@@ -405,6 +405,7 @@ public static class BodyDecoder
             return -1;
         }
         var flags = input[position + 3];
+        var start = position;
         position += 10;
         if ((flags & Extra) != 0)
         {
@@ -420,6 +421,15 @@ public static class BodyDecoder
         }
         if ((flags & HeaderCrc) != 0)
         {
+            if (position + 2 > input.Length)
+            {
+                return input.Length;
+            }
+            // The low 16 bits of the CRC-32 of everything from ID1 up to this field; a mismatch is a damaged header.
+            if ((input[position] | input[position + 1] << 8) != (Crc32(input.AsSpan(start, position - start)) & 0xFFFF))
+            {
+                return -1;
+            }
             position += 2;
         }
         // A header cut short leaves no data, which the decoder reports as cut off.
