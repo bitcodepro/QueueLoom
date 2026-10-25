@@ -13,6 +13,13 @@ public sealed record BootstrapDescriptor(int Protocol, string Id, string Rid, st
 public sealed record VersionReference(string Id, string ManifestSha256);
 public sealed record ActivationState(VersionReference Active, VersionReference Previous, bool Pending,
     string? Attempt = null, int OwnerPid = 0, long OwnerStartTicks = 0);
+/// <summary>
+/// A candidate that started without acknowledging and was rolled back. It belongs to the recovery state record
+/// it was written for: any later activation, confirmation or recovery supersedes it. Versions are the payloads'
+/// release texts, or null when a manifest could not be read.
+/// </summary>
+public sealed record FailedStartup(VersionReference Failed, string? FailedVersion, VersionReference Restored,
+    string? RestoredVersion, bool Noticed = false);
 public sealed record LaunchSelection(string Executable, VersionReference Version, string? Attempt, bool OwnsAttempt);
 
 /// <summary>
@@ -379,10 +386,16 @@ public sealed class VersionInstallation
         using var ownership = Own();
         var state = ReadState();
         if (state.Pending && state.Active == selection.Version && state.Attempt == selection.Attempt)
-            RecoverOwned(state);
+        {
+            var recovered = RecoverOwned(state, out var sequence);
+            RecordFailedStartup(sequence, new FailedStartup(state.Active, ManifestVersion(state.Active),
+                recovered.Active, ManifestVersion(recovered.Active)));
+        }
     }
 
-    private ActivationState RecoverOwned(ActivationState state)
+    private ActivationState RecoverOwned(ActivationState state) => RecoverOwned(state, out _);
+
+    private ActivationState RecoverOwned(ActivationState state, out long sequence)
     {
         var previous = state.Previous;
         if (previous == Bootstrap && !Directory.Exists(VersionDirectory(Bootstrap))) EnsureBootstrapOwned();
@@ -394,8 +407,79 @@ public sealed class VersionInstallation
             Verify(previous);
         }
         var recovered = new ActivationState(previous, Bootstrap, false);
-        Commit(recovered, "recover");
+        sequence = Commit(recovered, "recover");
         return recovered;
+    }
+
+    /// <summary>
+    /// The candidate that failed to start and was rolled back, while that recovery is still the latest state.
+    /// A separate record keeps the state envelope readable by launchers that predate it; a missing or damaged
+    /// record only loses this hint, never the installation.
+    /// </summary>
+    public FailedStartup? ReadFailedStartup()
+    {
+        using var ownership = Own();
+        return ReadFailedStartupOwned();
+    }
+
+    private FailedStartup? ReadFailedStartupOwned()
+    {
+        try
+        {
+            var latest = StateFiles().Select(file => file.Sequence).DefaultIfEmpty(0).Max();
+            if (latest == 0) return null;
+            var path = FailedStartupPath(latest);
+            RejectOwnedPath(path);
+            if (!File.Exists(path)) return null;
+            var failure = ReadJson<FailedStartup>(path, _checkpoint);
+            ValidateReference(failure.Failed);
+            ValidateReference(failure.Restored);
+            if (ReadState() is not { Pending: false } state || state.Active != failure.Restored) return null;
+            return failure with { Noticed = File.Exists(path + ".noticed") };
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+        { return null; }
+    }
+
+    /// <summary>Remembers that the rollback was shown, so the failed release is not offered on every start.</summary>
+    public void NoticeFailedStartup(FailedStartup failure)
+    {
+        using var ownership = Own();
+        var latest = StateFiles().Select(file => file.Sequence).DefaultIfEmpty(0).Max();
+        var path = FailedStartupPath(latest) + ".noticed";
+        RejectOwnedPath(path);
+        if (latest == 0 || ReadFailedStartupOwned()?.Failed != failure.Failed || File.Exists(path)) return;
+        DurableInstallFile.WriteNew(path, System.Text.Encoding.ASCII.GetBytes(failure.Failed.Id));
+    }
+
+    private void RecordFailedStartup(long sequence, FailedStartup failure)
+    {
+        try
+        {
+            var path = FailedStartupPath(sequence);
+            RejectOwnedPath(path);
+            CreateDirectory(Path.GetDirectoryName(path)!);
+            DurableInstallFile.WriteNew(path, JsonSerializer.SerializeToUtf8Bytes(failure));
+            _checkpoint?.Invoke("failure-published");
+        }
+        // The rollback itself is already durable; losing the hint must not stop the known-good launch.
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+
+    private string FailedStartupPath(long sequence) =>
+        Path.Combine(Store, "failures", sequence.ToString("D20", CultureInfo.InvariantCulture) + ".json");
+
+    private string? ManifestVersion(VersionReference version)
+    {
+        try
+        {
+            var path = Path.Combine(VersionDirectory(version), "manifest.json");
+            RejectOwnedPath(path);
+            if (Hash(path, _checkpoint) != version.ManifestSha256) return null;
+            return ReadJson<PayloadManifest>(path, _checkpoint).Version;
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+        { return null; }
     }
 
     private ActivationState ReadState()
@@ -432,7 +516,7 @@ public sealed class VersionInstallation
                 yield return (file, sequence);
     }
 
-    private void Commit(ActivationState state, string phase)
+    private long Commit(ActivationState state, string phase)
     {
         var directory = Path.Combine(Store, "state");
         RejectOwnedPath(directory);
@@ -442,6 +526,7 @@ public sealed class VersionInstallation
         var envelope = new StateEnvelope(state, HashBytes(JsonSerializer.SerializeToUtf8Bytes(state)));
         DurableInstallFile.WriteNew(path, JsonSerializer.SerializeToUtf8Bytes(envelope), () => _checkpoint?.Invoke(phase + "-state-flushed"));
         _checkpoint?.Invoke(phase + "-state-published");
+        return sequence;
     }
 
     public void CleanupStaging()

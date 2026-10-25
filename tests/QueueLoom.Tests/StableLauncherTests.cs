@@ -341,6 +341,62 @@ public sealed class StableLauncherTests
         Assert.Throws<IOException>(() => installation.StagePackage(fixture.Package("third").Path));
     }
 
+    [Fact]
+    public void RecoveredCandidateIsRememberedUntilAManualRetryStartsOrALaterVersionIsConfirmed()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        Assert.Null(installation.ReadFailedStartup());
+        var failed = fixture.Package("2.0.0");
+        installation.StagePackage(failed.Path);
+        var candidate = installation.SelectForLaunch();
+        installation.Recover(candidate);
+
+        var failure = installation.ReadFailedStartup();
+        Assert.NotNull(failure);
+        Assert.Equal(candidate.Version, failure.Failed);
+        Assert.Equal("2.0.0", failure.FailedVersion);
+        Assert.Equal(installation.Bootstrap, failure.Restored);
+        Assert.Equal("initial", failure.RestoredVersion);
+        Assert.False(failure.Noticed);
+        Assert.Equal(failure, new VersionInstallation(fixture.Launcher).ReadFailedStartup()); // Durable across processes.
+        installation.NoticeFailedStartup(failure);
+        Assert.True(installation.ReadFailedStartup()!.Noticed);
+
+        // Install anyway: the same release still stages, and once it starts the failure no longer applies.
+        installation.StagePackage(failed.Path);
+        Assert.Null(installation.ReadFailedStartup());
+        var retry = installation.SelectForLaunch();
+        Assert.Equal(candidate.Version, retry.Version);
+        installation.Acknowledge(retry.Version, retry.Attempt!);
+        installation.Confirm(retry);
+        Assert.Null(installation.ReadFailedStartup());
+
+        var next = installation.SelectForLaunch();
+        installation.StagePackage(fixture.Package("2.1.0").Path);
+        var later = installation.SelectForLaunch();
+        installation.Recover(later);
+        Assert.Equal("2.1.0", installation.ReadFailedStartup()!.FailedVersion);
+        Assert.Equal(next.Version, installation.ReadFailedStartup()!.Restored);
+        installation.StagePackage(fixture.Package("2.2.0").Path);
+        var newer = installation.SelectForLaunch();
+        installation.Acknowledge(newer.Version, newer.Attempt!);
+        installation.Confirm(newer);
+        Assert.Null(installation.ReadFailedStartup());
+    }
+
+    [Fact]
+    public void RecoveryWithoutALaunchAttemptRecordsNoFailedStartup()
+    {
+        using var fixture = new InstallationFixture();
+        var installation = new VersionInstallation(fixture.Launcher);
+        installation.StagePackage(fixture.Package("2.0.0").Path);
+        var candidate = installation.SelectForLaunch();
+        installation.Recover(candidate with { Attempt = Guid.NewGuid().ToString("N") }); // Not the active attempt.
+        Assert.Null(installation.ReadFailedStartup());
+        Assert.True(installation.HasPendingActivation());
+    }
+
     [Theory]
     [InlineData("payload/../../escaped")]
     [InlineData("payload/CON")]
