@@ -242,8 +242,60 @@ public sealed class VersionInstallation
         var destination = VersionDirectory(version);
         RejectOwnedPath(destination);
         CreateDirectory(Path.GetDirectoryName(destination)!);
-        if (Directory.Exists(destination)) { Verify(version); return; }
+        if (Directory.Exists(destination))
+        {
+            try { Verify(version); return; }
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+            {
+                // A retained candidate that was damaged after it was committed (a quarantined or changed file) would
+                // block this release forever. Only a version no state, rollback or running process can select is
+                // replaced by the freshly verified copy; anything else keeps the existing error.
+                if (!CanReplaceDamaged(version)) throw;
+            }
+            var discarded = Path.Combine(Store, "discarded");
+            RejectOwnedPath(discarded);
+            CreateDirectory(discarded);
+            var aside = Path.Combine(discarded, version.Id + "-" + Guid.NewGuid().ToString("N"));
+            RejectOwnedPath(aside);
+            // Each rename is durable on its own: a crash leaves either the damaged copy in place (retried by the next
+            // StagePackage), or no copy under versions (published fresh next time), never a partial version.
+            DurableInstallFile.MoveNew(destination, aside);
+            _checkpoint?.Invoke("damaged-version-discarded");
+            DurableInstallFile.MoveNew(staged, destination);
+            Verify(version);
+            DeleteDiscarded();
+            return;
+        }
         DurableInstallFile.MoveNew(staged, destination);
+    }
+
+    /// <summary>Whether a damaged committed version is out of reach of every selection: not active, not the rollback
+    /// target, not the bootstrap fallback and not the payload this process runs.</summary>
+    private bool CanReplaceDamaged(VersionReference version)
+    {
+        var state = ReadState();
+        return version.Id != state.Active.Id && version.Id != state.Previous.Id && version.Id != _bootstrap.Id &&
+            !state.Pending && version.Id != Environment.GetEnvironmentVariable(ContextVersion);
+    }
+
+    /// <summary>Best effort: damaged versions moved aside are never selected, so a busy file is retried on a later launch.</summary>
+    private void DeleteDiscarded()
+    {
+        var parent = Path.Combine(Store, "discarded");
+        RejectOwnedPath(parent);
+        if (!Directory.Exists(parent)) return;
+        foreach (var directory in Directory.EnumerateDirectories(parent))
+        {
+            try
+            {
+                // Refuse links anywhere before recursively deleting.
+                RejectOwnedPath(directory);
+                _ = InspectTree(directory, directory).ToArray();
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+        }
+        DurableInstallFile.FlushDirectory(parent);
     }
 
     public LaunchSelection SelectForLaunch()
@@ -479,6 +531,7 @@ public sealed class VersionInstallation
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
                 DurableInstallFile.FlushDirectory(parent);
             }
+        DeleteDiscarded();
         _checkpoint?.Invoke("cleanup-finished");
         // Protocol v1 deliberately retains committed versions and state history, including failed candidates.
     }

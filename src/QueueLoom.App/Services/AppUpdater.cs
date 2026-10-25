@@ -182,6 +182,7 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         IProgress<UpdateProgress>? progress,
         CancellationToken cancellationToken)
     {
+        SweepStaleDownloads(target);
         var version = update.Version.ToString(3);
         var package = PackageUri(update.Tag, version, target.Rid);
         var id = Guid.NewGuid().ToString("N");
@@ -264,7 +265,12 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
     /// <summary>Retry after replacement is allowed only with no outstanding transaction receipt.</summary>
     public static async Task InstallWithProgressAsync(UpdateTarget target, string staging, IProgress<UpdateProgress> progress, CancellationToken token)
     {
-        token.ThrowIfCancellationRequested();
+        if (token.IsCancellationRequested)
+        {
+            // Cancelled between unpacking and installing: nothing references the download yet.
+            DiscardDownload(staging);
+            token.ThrowIfCancellationRequested();
+        }
         var diagnosticOperation = DiagnosticsJournal.Session.Begin("Update");
         DiagnosticsJournal.Session.Record(diagnosticOperation, DiagnosticStage.Executing, updateStage: UpdatePhase.Installation);
         progress.Report(new UpdateProgress(0, null) { Phase = UpdatePhase.Installation });
@@ -293,7 +299,14 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
         if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
         {
             var installation = new QueueLoom.Core.Updates.VersionInstallation(target.Executable);
-            var download = StableDownloadReceipt(installation, target, staging);
+            (UpdateRestart.Receipt Receipt, string Path)? download;
+            try { download = StableDownloadReceipt(installation, target, staging); }
+            catch
+            {
+                // No cleanup receipt was written and nothing was handed to the store, so the download is ours to remove.
+                DiscardDownload(staging);
+                throw;
+            }
             if (download is null) { installation.StagePackage(staging); return; }
             var (stableReceipt, path) = download.Value;
             using var stableOwnership = UpdateRestart.OwnTransaction(path);
@@ -396,6 +409,8 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
                 }
             }
             File.Delete(receiptPath);
+            // The receipt that named the download is gone and its files were moved back, so nothing else removes it.
+            if (downloadDirectory.Length > 0) TryDelete(downloadDirectory);
             throw;
         }
     }
@@ -531,6 +546,87 @@ public sealed class AppUpdater(HttpClient httpClient, string? downloadRoot = nul
             // Startup was successful. Retry only the backups recorded by this update.
             UpdateRestart.CleanAsync(receipt, path, TimeSpan.Zero).GetAwaiter().GetResult();
         }
+    }
+
+    /// <summary>Downloads older than this are abandoned: a crash or kill mid-download, or a window closed before installing.</summary>
+    internal static readonly TimeSpan StaleDownloadAge = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Removes abandoned download attempts ("version-id" folders holding their own id in the marker) from the download
+    /// folder. A folder a receipt still names, one changed within <see cref="StaleDownloadAge"/> (another window may be
+    /// downloading into it) or one that cannot be checked is kept; an unreadable receipt keeps every folder.
+    /// </summary>
+    public void SweepStaleDownloads(UpdateTarget? target)
+    {
+        try
+        {
+            if (!Directory.Exists(_downloadRoot)) return;
+            var referenced = ReferencedDownloads(target);
+            if (referenced is null) return;
+            var root = Path.GetFullPath(_downloadRoot);
+            foreach (var folder in Directory.EnumerateDirectories(root))
+            {
+                try
+                {
+                    var name = Path.GetFileName(folder);
+                    var dash = name.LastIndexOf('-');
+                    if (dash <= 0 || !Version.TryParse(name[..dash], out _) || !Guid.TryParseExact(name[(dash + 1)..], "N", out _)) continue;
+                    if (referenced.Contains(Path.GetFullPath(folder))) continue;
+                    ValidateDownloadTree(folder, root);
+                    var marker = Path.Combine(folder, DownloadMarker);
+                    if (!File.Exists(marker) || File.ReadAllText(marker) != name[(dash + 1)..]) continue;
+                    var newest = Directory.EnumerateFileSystemEntries(folder, "*", SearchOption.AllDirectories)
+                        .Select(File.GetLastWriteTimeUtc).Append(Directory.GetLastWriteTimeUtc(folder)).Max();
+                    if (DateTime.UtcNow - newest < StaleDownloadAge) continue;
+                    TryDelete(folder);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+    }
+
+    /// <summary>Download folders named by a restart receipt or a stable cleanup receipt; null when one cannot be read.</summary>
+    private static HashSet<string>? ReferencedDownloads(UpdateTarget? target)
+    {
+        var referenced = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (target is null) return referenced;
+        var receipts = new List<string> { UpdateRestart.ReceiptPath(target) };
+        if (QueueLoom.Core.Updates.VersionInstallation.HasDescriptor(target.Executable))
+        {
+            var installation = new QueueLoom.Core.Updates.VersionInstallation(target.Executable);
+            var folder = Path.Combine(installation.Store, "download-cleanup");
+            installation.RejectOwnedPath(folder);
+            if (Directory.Exists(folder)) receipts.AddRange(Directory.GetFiles(folder, "*.json"));
+        }
+        foreach (var path in receipts.Where(File.Exists))
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<UpdateRestart.Receipt>(File.ReadAllText(path)) is not { DownloadDirectory: { Length: > 0 } directory }) continue;
+                referenced.Add(Path.GetFullPath(directory));
+            }
+            catch (Exception error) when (error is JsonException or ArgumentException or NotSupportedException) { return null; }
+        }
+        return referenced;
+    }
+
+    /// <summary>Removes the download attempt that holds <paramref name="staging"/>, when it is one of ours and link-free.</summary>
+    private static void DiscardDownload(string staging)
+    {
+        try
+        {
+            var source = Path.GetFullPath(staging);
+            var directory = Path.GetDirectoryName(source);
+            if (directory is null || Path.GetFileName(source) != "files") return;
+            var marker = Path.Combine(directory, DownloadMarker);
+            if (!File.Exists(marker)) return;
+            var id = File.ReadAllText(marker);
+            if (!Guid.TryParseExact(id, "N", out _) || !Path.GetFileName(directory).EndsWith("-" + id, StringComparison.Ordinal)) return;
+            ValidateDownloadTree(directory, Path.GetDirectoryName(directory)!);
+            TryDelete(directory);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException) { }
     }
 
     private void RecordSkippedCleanup(Exception error)
