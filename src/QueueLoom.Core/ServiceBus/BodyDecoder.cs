@@ -77,12 +77,13 @@ public static class BodyDecoder
             if (IsGzip(span) || IsZlib(span))
             {
                 var gzip = IsGzip(span);
-                var (bytes, truncated) = Decompress(current, gzip);
+                var (bytes, truncated, cut) = Decompress(current, gzip);
                 if (bytes is not null)
                 {
                     steps.Add(gzip ? "gzip" : "zlib");
-                    note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown." : null;
-                    complete &= !truncated;
+                    note ??= truncated ? $"Only the first {MaximumDecodedBytes / (1024 * 1024)} MiB are shown."
+                        : cut ? "The compressed body is cut off or damaged; showing the part that could be decompressed." : null;
+                    complete &= !truncated && !cut;
                     current = bytes;
                     continue;
                 }
@@ -311,11 +312,26 @@ public static class BodyDecoder
     private static bool IsWorthDecoding(ReadOnlyMemory<byte> decoded)
     {
         var span = decoded.Span;
-        return IsGzip(span) || IsZlib(span) || IsAvroContainer(span) ||
-               TryText(span, out var text) && text.Length >= 4 && text.Count(char.IsLetterOrDigit) * 2 >= text.Length;
+        if (IsAvroContainer(span) ||
+            TryText(span, out var text) && text.Length >= 4 && text.Count(char.IsLetterOrDigit) * 2 >= text.Length)
+        {
+            return true;
+        }
+        if (!IsGzip(span) && !IsZlib(span))
+        {
+            return false;
+        }
+        // The zlib header is two bytes, and about 1 in 2000 plain-text IDs ("eJx...") decode to one. The text is only
+        // taken for Base64 when the bytes really decompress, and cleanly or into readable text.
+        var (bytes, truncated, cut) = Decompress(decoded, IsGzip(span));
+        return bytes is not null && (truncated || !cut || TryText(bytes, out _));
     }
 
-    private static (byte[]? Bytes, bool Truncated) Decompress(ReadOnlyMemory<byte> data, bool gzip)
+    /// <summary>
+    /// The decompressed bytes (null when the data is not compressed at all); Truncated when the 16 MiB limit stopped it,
+    /// Cut when the stream does not end in a trailer that matches what was produced (the body is cut off or damaged).
+    /// </summary>
+    private static (byte[]? Bytes, bool Truncated, bool Cut) Decompress(ReadOnlyMemory<byte> data, bool gzip)
     {
         try
         {
@@ -332,15 +348,67 @@ public static class BodyDecoder
                 output.Write(buffer, 0, Math.Min(read, room));
                 if (read > room)
                 {
-                    return (output.ToArray(), true);
+                    return (output.ToArray(), true, false);
                 }
             }
-            return output.Length == 0 ? (null, false) : (output.ToArray(), false);
+            var bytes = output.ToArray();
+            // The decompressors often just stop at a cut instead of throwing; the trailer tells whether the body ended.
+            return bytes.Length == 0 ? (null, false, false) : (bytes, false, !EndsCleanly(data.Span, bytes, gzip));
         }
         catch (InvalidDataException)
         {
-            return (null, false);
+            return (null, false, false);
         }
+    }
+
+    /// <summary>
+    /// Whether the compressed data ends in the trailer of what was produced: gzip's CRC-32 and length (of the last
+    /// member, as concatenated members are decompressed together), or zlib's Adler-32.
+    /// </summary>
+    private static bool EndsCleanly(ReadOnlySpan<byte> data, byte[] output, bool gzip)
+    {
+        if (!gzip)
+        {
+            return data.Length >= 6 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(data[^4..]) == Adler32(output);
+        }
+        if (data.Length < 18)
+        {
+            return false;
+        }
+        var crc = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data[^8..]);
+        var size = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data[^4..]);
+        return size <= output.Length && Crc32(output.AsSpan(output.Length - (int)size)) == crc;
+    }
+
+    private static uint Adler32(ReadOnlySpan<byte> data)
+    {
+        uint a = 1, b = 0;
+        foreach (var value in data)
+        {
+            a = (a + value) % 65521;
+            b = (b + a) % 65521;
+        }
+        return b << 16 | a;
+    }
+
+    private static readonly uint[] Crc32Table = Enumerable.Range(0, 256).Select(index =>
+    {
+        var value = (uint)index;
+        for (var bit = 0; bit < 8; bit++)
+        {
+            value = (value & 1) != 0 ? 0xEDB88320 ^ value >> 1 : value >> 1;
+        }
+        return value;
+    }).ToArray();
+
+    private static uint Crc32(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var value in data)
+        {
+            crc = Crc32Table[(crc ^ value) & 0xFF] ^ crc >> 8;
+        }
+        return ~crc;
     }
 
     private static bool TryBase64(ReadOnlySpan<byte> span, out ReadOnlyMemory<byte> decoded)
