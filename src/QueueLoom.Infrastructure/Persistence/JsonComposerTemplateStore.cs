@@ -18,6 +18,9 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
 
     public const int MaximumTemplates = 200;
 
+    /// <summary>How many files a save reads at most to count the templates.</summary>
+    private const int MaximumFilesCounted = 10 * MaximumTemplates;
+
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -30,18 +33,10 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
 
     public async Task<IReadOnlyList<ComposerTemplate>> ListAsync(CancellationToken cancellationToken = default)
     {
-        if (!Directory.Exists(directory))
-        {
-            return [];
-        }
         var templates = new List<ComposerTemplate>();
-        foreach (var file in Directory.EnumerateFiles(directory, "*.json"))
+        await foreach (var template in ReadAllAsync(int.MaxValue, cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (await TryReadAsync(file, cancellationToken).ConfigureAwait(false) is { } template)
-            {
-                templates.Add(template);
-            }
+            templates.Add(template);
         }
         return templates.OrderBy(template => template.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }
@@ -62,7 +57,7 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
         // cannot both see room for one more.
         await using var ownership = await CrossProcessFileLock.AcquireAsync(Path.Combine(directory, ".lock"), cancellationToken)
             .ConfigureAwait(false);
-        if (!File.Exists(path) && Directory.EnumerateFiles(directory, "*.json").Count() >= MaximumTemplates)
+        if (!File.Exists(path) && await CountAsync(cancellationToken).ConfigureAwait(false) >= MaximumTemplates)
         {
             throw new InvalidOperationException($"At most {MaximumTemplates} templates can be saved. Delete one first.");
         }
@@ -74,6 +69,40 @@ public sealed class JsonComposerTemplateStore(string directory) : IComposerTempl
         cancellationToken.ThrowIfCancellationRequested();
         File.Delete(PathFor(ComposerTemplate.NormalizeName(name)));
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Counts only the templates the list shows, so files it skips cannot use up places the app gives no way to free.
+    /// The count stops at the limit, and a folder full of junk is read only up to a bound so a save stays quick.
+    /// </summary>
+    private async Task<int> CountAsync(CancellationToken cancellationToken)
+    {
+        var count = 0;
+        await foreach (var _ in ReadAllAsync(MaximumFilesCounted, cancellationToken).ConfigureAwait(false))
+        {
+            if (++count >= MaximumTemplates)
+            {
+                break;
+            }
+        }
+        return count;
+    }
+
+    private async IAsyncEnumerable<ComposerTemplate> ReadAllAsync(int maximumFiles,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(directory))
+        {
+            yield break;
+        }
+        foreach (var file in Directory.EnumerateFiles(directory, "*.json").Take(maximumFiles))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await TryReadAsync(file, cancellationToken).ConfigureAwait(false) is { } template)
+            {
+                yield return template;
+            }
+        }
     }
 
     private string PathFor(string name) => Path.Combine(directory,

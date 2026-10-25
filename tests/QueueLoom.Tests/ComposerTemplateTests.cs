@@ -172,6 +172,44 @@ public sealed class ComposerTemplateStoreTests
         }
     }
 
+    // Every *.json file counted toward the limit, also the ones the list skips, so junk the app cannot show or delete
+    // refused every save.
+    [Fact]
+    public async Task FilesTheListSkipsDoNotCountTowardTheLimit()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonComposerTemplateStore(directory.Path);
+        for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates; index++)
+        {
+            File.WriteAllText(Path.Combine(directory.Path, $"damaged{index}.json"), "{ not json");
+        }
+
+        await store.SaveAsync(new ComposerTemplate("New", "x", MessageBodyFormat.Text));
+
+        Assert.Equal("New", Assert.Single(await store.ListAsync()).Name);
+        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates + 1, Directory.GetFiles(directory.Path, "*.json").Length);
+    }
+
+    [Fact]
+    public async Task AtTheLimitANewNameIsRefusedButAnExistingOneIsReplaced()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonComposerTemplateStore(directory.Path);
+        for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates; index++)
+        {
+            await store.SaveAsync(new ComposerTemplate($"T{index}", "x", MessageBodyFormat.Text));
+        }
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.SaveAsync(new ComposerTemplate("New", "x", MessageBodyFormat.Text)));
+        Assert.Equal($"At most {JsonComposerTemplateStore.MaximumTemplates} templates can be saved. Delete one first.", error.Message);
+        await store.SaveAsync(new ComposerTemplate("t0", "replaced", MessageBodyFormat.Text));
+
+        var templates = await store.ListAsync();
+        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, templates.Count);
+        Assert.Equal("replaced", Assert.Single(templates, template => template.Name == "t0").Body);
+    }
+
     [Fact]
     public async Task NoFolderMeansNoTemplates()
     {
