@@ -172,6 +172,80 @@ public sealed class ComposerTemplateStoreTests
         }
     }
 
+    // Every *.json file counted toward the limit, also the ones the list skips, so junk the app cannot show or delete
+    // refused every save.
+    [Fact]
+    public async Task FilesTheListSkipsDoNotCountTowardTheLimit()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonComposerTemplateStore(directory.Path);
+        for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates; index++)
+        {
+            File.WriteAllText(Path.Combine(directory.Path, $"damaged{index}.json"), "{ not json");
+        }
+
+        await store.SaveAsync(new ComposerTemplate("New", "x", MessageBodyFormat.Text));
+
+        Assert.Equal("New", Assert.Single(await store.ListAsync()).Name);
+        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates + 1, Directory.GetFiles(directory.Path, "*.json").Length);
+    }
+
+    // Review of the count: a scan that stopped after 2,000 files counted only the templates among them, so behind
+    // enough skipped files every new save was admitted and the limit could be passed without end.
+    [Fact]
+    public async Task ManySkippedFilesDoNotLetSavesPassTheLimit()
+    {
+        using var directory = new TemporaryDirectory();
+        // The skipped files are listed first, whatever order the file system uses, so a scan bounded by files read
+        // would reach none of the templates.
+        var store = new JsonComposerTemplateStore(directory.Path)
+        {
+            EnumerateFiles = folder => Directory.EnumerateFiles(folder, "*.json")
+                .OrderBy(file => Path.GetFileName(file).StartsWith('!') ? 0 : 1)
+                .ThenBy(file => file, StringComparer.Ordinal)
+                .ToArray()
+        };
+        for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates; index++)
+        {
+            await store.SaveAsync(new ComposerTemplate($"T{index}", "x", MessageBodyFormat.Text));
+        }
+        for (var index = 0; index < 10 * JsonComposerTemplateStore.MaximumTemplates + 100; index++)
+        {
+            File.WriteAllText(Path.Combine(directory.Path, $"!damaged{index:D5}.json"), "{ not json");
+        }
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => store.SaveAsync(new ComposerTemplate($"New{attempt}", "x", MessageBodyFormat.Text)));
+        }
+        await store.SaveAsync(new ComposerTemplate("T0", "replaced", MessageBodyFormat.Text));
+
+        var templates = await store.ListAsync();
+        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, templates.Count);
+        Assert.Equal("replaced", templates.Single(template => template.Name == "T0").Body);
+    }
+
+    [Fact]
+    public async Task AtTheLimitANewNameIsRefusedButAnExistingOneIsReplaced()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new JsonComposerTemplateStore(directory.Path);
+        for (var index = 0; index < JsonComposerTemplateStore.MaximumTemplates; index++)
+        {
+            await store.SaveAsync(new ComposerTemplate($"T{index}", "x", MessageBodyFormat.Text));
+        }
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.SaveAsync(new ComposerTemplate("New", "x", MessageBodyFormat.Text)));
+        Assert.Equal($"At most {JsonComposerTemplateStore.MaximumTemplates} templates can be saved. Delete one first.", error.Message);
+        await store.SaveAsync(new ComposerTemplate("t0", "replaced", MessageBodyFormat.Text));
+
+        var templates = await store.ListAsync();
+        Assert.Equal(JsonComposerTemplateStore.MaximumTemplates, templates.Count);
+        Assert.Equal("replaced", Assert.Single(templates, template => template.Name == "t0").Body);
+    }
+
     [Fact]
     public async Task NoFolderMeansNoTemplates()
     {
