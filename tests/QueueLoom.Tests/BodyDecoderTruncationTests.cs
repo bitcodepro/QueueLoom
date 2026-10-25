@@ -11,14 +11,16 @@ public sealed class BodyDecoderTruncationTests
 {
     private static readonly string Json = "{" + string.Join(",", Enumerable.Range(0, 400).Select(index => $"\"key{index}\":\"value number {index * 7919 % 1000}\"")) + "}";
 
-    private static byte[] Compress(string text, bool gzip)
+    private static byte[] Compress(string text, bool gzip) => Compress(Encoding.UTF8.GetBytes(text), gzip);
+
+    private static byte[] Compress(byte[] data, bool gzip)
     {
         using var output = new MemoryStream();
         using (Stream stream = gzip
                    ? new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true)
                    : new ZLibStream(output, CompressionLevel.Optimal, leaveOpen: true))
         {
-            stream.Write(Encoding.UTF8.GetBytes(text));
+            stream.Write(data);
         }
         return output.ToArray();
     }
@@ -170,6 +172,31 @@ public sealed class BodyDecoderTruncationTests
         body[^8] ^= 0xFF;
 
         Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse("$.status == 'failed'").Matches(Message(body)));
+    }
+
+    // A complete-looking Avro record inside a damaged wrapper is not trusted: only an Avro record limit is.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AvroSearchIsUndecidedWhenTheCompressionChecksumIsDamaged(bool gzip)
+    {
+        var body = Compress(BodyDecoderTests.AvroFile("\"long\"", "null", 1, [2]), gzip);
+        body[gzip ? ^8 : ^4] ^= 0xFF;
+
+        var decoded = BodyDecoder.Decode(body)!;
+        Assert.Equal([gzip ? "gzip" : "zlib", "Avro"], decoded.Steps);
+        Assert.False(decoded.IsComplete);
+        Assert.Throws<IncompleteBodySearchException>(() => MessageSearchQuery.Parse("$[0] == 1").Matches(Message(body)));
+    }
+
+    [Fact]
+    public void AvroSearchStillMatchesTheRecordsBeforeTheLimitInsideIntactGzip()
+    {
+        var body = Compress(BodyDecoderTests.AvroFile("\"long\"", "null", BodyDecoder.MaximumAvroRecords + 1,
+            [.. Enumerable.Repeat((byte)0, BodyDecoder.MaximumAvroRecords), 2]), true);
+
+        Assert.False(BodyDecoder.Decode(body)!.IsComplete);
+        Assert.True(MessageSearchQuery.Parse("$[0] == 0").Matches(Message(body)));
     }
 
     [Fact]

@@ -11,6 +11,12 @@ public sealed record DecodedBody(IReadOnlyList<string> Steps, string Text, bool 
     /// <summary>False when decoding stopped at a limit: <see cref="Text"/> is then only the start of the body.</summary>
     public bool IsComplete { get; init; } = true;
 
+    /// <summary>
+    /// True when the only thing missing is Avro records past the record limit: the records in <see cref="Text"/> are
+    /// then whole and real. False for a complete body and for any other cut or damage (an outer compression layer).
+    /// </summary>
+    public bool OnlyRecordsAreMissing { get; init; }
+
     public string Summary => string.Join(" → ", Steps);
 }
 
@@ -97,7 +103,11 @@ public static class BodyDecoder
                 if (json is not null)
                 {
                     steps.Add("Avro");
-                    return new DecodedBody(steps, json, true, avroNote ?? note) { IsComplete = complete && !avroTruncated };
+                    return new DecodedBody(steps, json, true, avroNote ?? note)
+                    {
+                        IsComplete = complete && !avroTruncated,
+                        OnlyRecordsAreMissing = complete && avroTruncated
+                    };
                 }
                 return new DecodedBody([.. steps, "Avro"], HexDump(span), false, avroNote) { IsComplete = complete && !avroTruncated };
             }
