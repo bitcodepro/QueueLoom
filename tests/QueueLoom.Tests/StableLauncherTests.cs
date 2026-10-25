@@ -392,7 +392,7 @@ public sealed class StableLauncherTests
         var installation = new VersionInstallation(fixture.Launcher);
         installation.StagePackage(fixture.Package("2.0.0").Path);
         var candidate = installation.SelectForLaunch();
-        var versionDirectory = Path.GetDirectoryName(Path.GetDirectoryName(candidate.Executable))!;
+        var versionDirectory = Path.Combine(installation.Store, "versions", candidate.Version.Id);
         using (new FileStream(Path.Combine(versionDirectory, "manifest.json"), FileMode.Open, FileAccess.Read, FileShare.None))
         {
             installation.Recover(candidate);
@@ -406,7 +406,7 @@ public sealed class StableLauncherTests
         }
 
         // A failure record a scanner holds is read as no hint, and marking it is retried on a later start.
-        var record = Directory.GetFiles(Path.Combine(Path.GetDirectoryName(versionDirectory)!, "..", "failures"), "*.json").Single();
+        var record = Directory.GetFiles(Path.Combine(installation.Store, "failures"), "*.json").Single();
         var held = installation.ReadFailedStartup()!;
         using (new FileStream(record, FileMode.Open, FileAccess.Read, FileShare.None))
         {
