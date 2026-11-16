@@ -74,6 +74,16 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
                                   ?? throw new InvalidOperationException("The Kafka password is missing. Edit the environment and enter it again.");
         }
 
+        if (settings.UseTls && settings.Tls is { IsEmpty: false } tls)
+        {
+            var password = tls.ClientCertificatePath is null
+                ? null
+                : await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ClientCertificatePassword, cancellationToken).ConfigureAwait(false);
+            // Read here to report a missing file or a wrong password by name; librdkafka then reads the same files.
+            ClientTls.Load(tls, password).Dispose();
+            ApplyTls(config, tls, password);
+        }
+
         if (settings.SchemaRegistryUrl is { } registryUrl)
         {
             var registryPassword = settings.SchemaRegistryUserName is null
@@ -111,6 +121,27 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         {
             await CloseAsync().ConfigureAwait(false);
             throw;
+        }
+    }
+
+    /// <summary>A private certificate authority and a client certificate, as librdkafka reads them.</summary>
+    internal static void ApplyTls(ClientConfig config, TlsClientSettings tls, string? password)
+    {
+        config.SslCaLocation = tls.CaCertificatePath;
+        if (tls.ClientCertificatePath is not { } certificate)
+        {
+            return;
+        }
+        if (tls.IsPkcs12)
+        {
+            config.SslKeystoreLocation = certificate;
+            config.SslKeystorePassword = password;
+        }
+        else
+        {
+            config.SslCertificateLocation = certificate;
+            config.SslKeyLocation = tls.ClientKeyPath ?? certificate;
+            config.SslKeyPassword = string.IsNullOrEmpty(password) ? null : password;
         }
     }
 

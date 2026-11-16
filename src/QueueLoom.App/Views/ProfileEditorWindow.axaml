@@ -243,6 +243,26 @@
               </StackPanel>
               <CheckBox Grid.Column="2" IsChecked="{Binding RabbitUseTls}" Content="Use TLS (amqps and https)" VerticalAlignment="Bottom" />
             </Grid>
+            <StackPanel Spacing="7" IsVisible="{Binding RabbitUseTls}">
+              <TextBlock Text="CERTIFICATES (OPTIONAL)" Classes="eyebrow" />
+              <Grid ColumnDefinitions="*,8,Auto" RowDefinitions="Auto,8,Auto,8,Auto">
+                <TextBox Grid.Row="0" Text="{Binding TlsCaCertificatePath}" PlaceholderText="Certificate authority (PEM)"
+                         AutomationProperties.Name="Certificate authority file" />
+                <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Tag="ca" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the certificate authority file" />
+                <TextBox Grid.Row="2" Text="{Binding TlsClientCertificatePath}" PlaceholderText="Client certificate (.pfx, .p12 or PEM)"
+                         AutomationProperties.Name="Client certificate file" />
+                <Button Grid.Row="2" Grid.Column="2" Content="Browse…" Tag="certificate" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client certificate file" />
+                <TextBox Grid.Row="4" Text="{Binding TlsClientKeyPath}" PlaceholderText="Client key (PEM, only if separate)"
+                         AutomationProperties.Name="Client key file" />
+                <Button Grid.Row="4" Grid.Column="2" Content="Browse…" Tag="key" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client key file" />
+              </Grid>
+              <TextBox Text="{Binding TlsClientCertificatePassword}" PasswordChar="•" PlaceholderText="Certificate or key password"
+                       AutomationProperties.Name="Client certificate password" />
+              <TextBlock Text="{Binding TlsHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
             <Grid ColumnDefinitions="*,14,*">
               <StackPanel Grid.Column="0" Spacing="7">
                 <TextBlock Text="USER NAME" Classes="eyebrow" />
@@ -269,6 +289,26 @@
                        AutomationProperties.Name="Bootstrap servers" />
             </StackPanel>
             <CheckBox IsChecked="{Binding KafkaUseTls}" Content="Use TLS" />
+            <StackPanel Spacing="7" IsVisible="{Binding KafkaUseTls}">
+              <TextBlock Text="CERTIFICATES (OPTIONAL)" Classes="eyebrow" />
+              <Grid ColumnDefinitions="*,8,Auto" RowDefinitions="Auto,8,Auto,8,Auto">
+                <TextBox Grid.Row="0" Text="{Binding TlsCaCertificatePath}" PlaceholderText="Certificate authority (PEM)"
+                         AutomationProperties.Name="Certificate authority file" />
+                <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Tag="ca" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the certificate authority file" />
+                <TextBox Grid.Row="2" Text="{Binding TlsClientCertificatePath}" PlaceholderText="Client certificate (.pfx, .p12 or PEM)"
+                         AutomationProperties.Name="Client certificate file" />
+                <Button Grid.Row="2" Grid.Column="2" Content="Browse…" Tag="certificate" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client certificate file" />
+                <TextBox Grid.Row="4" Text="{Binding TlsClientKeyPath}" PlaceholderText="Client key (PEM, only if separate)"
+                         AutomationProperties.Name="Client key file" />
+                <Button Grid.Row="4" Grid.Column="2" Content="Browse…" Tag="key" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client key file" />
+              </Grid>
+              <TextBox Text="{Binding TlsClientCertificatePassword}" PasswordChar="•" PlaceholderText="Certificate or key password"
+                       AutomationProperties.Name="Client certificate password" />
+              <TextBlock Text="{Binding TlsHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
             <StackPanel Spacing="12" IsVisible="{Binding IsKafkaSasl}">
               <Grid ColumnDefinitions="160,14,*,14,*">
                 <StackPanel Grid.Column="0" Spacing="7">

@@ -417,10 +417,13 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         }
 
         var (registryPassword, removeRegistryPassword) = SchemaRegistrySecret(profile);
+        var (certificatePassword, removeCertificatePassword) = ClientCertificateSecret(profile);
         result = new ProfileEditorResult(profile, newSecret, newSecret is not null)
         {
             SchemaRegistryPassword = registryPassword,
-            RemovesSchemaRegistryPassword = removeRegistryPassword
+            RemovesSchemaRegistryPassword = removeRegistryPassword,
+            ClientCertificatePassword = certificatePassword,
+            RemovesClientCertificatePassword = removeCertificatePassword
         };
         return true;
     }

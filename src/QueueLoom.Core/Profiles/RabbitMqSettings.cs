@@ -9,13 +9,17 @@ namespace QueueLoom.Core.Profiles;
 /// <param name="AmqpPort">5672, or 5671 with TLS.</param>
 /// <param name="ManagementPort">The management plugin's HTTP port: 15672, or 15671 with TLS.</param>
 /// <param name="UseTls">Connect with TLS (amqps and https).</param>
+/// <param name="Tls">A private certificate authority or a client certificate, used for both AMQP and the management API.</param>
 public sealed record RabbitMqSettings(
     string Host,
     string UserName,
     string VirtualHost = "/",
     int AmqpPort = 5672,
     int ManagementPort = 15672,
-    bool UseTls = false)
+    bool UseTls = false,
+    // Omitted while unset, so an unchanged profile serializes, and is identified, as before.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    TlsClientSettings? Tls = null)
 {
     /// <summary>
     /// The host to connect to: without surrounding spaces, and an IPv6 address without the brackets it may be written

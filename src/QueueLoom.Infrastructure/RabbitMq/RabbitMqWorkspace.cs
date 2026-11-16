@@ -27,6 +27,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     private readonly HttpMessageHandler? _httpHandler;
     private HttpClient? _management;
     private IConnection? _connection;
+    private ClientTls? _tls;
     private string _virtualHost = "/";
     private RabbitMqTopologyIndex _index = RabbitMqTopologyIndex.Empty;
     private readonly Func<ConnectionFactory, CancellationToken, Task<IConnection>>? _openBindingConnection;
@@ -54,7 +55,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         var settings = profile.RabbitMq ?? throw new InvalidOperationException("The RabbitMQ settings are missing.");
         var password = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidOperationException("The RabbitMQ password is missing. Edit the environment and enter it again.");
-        var factory = CreateAmqpFactory(settings, password);
+        var factory = CreateAmqpFactory(settings, password, _tls);
         // These mutations are durable broker topology, not resources owned by the long-lived client.
         // HTTP deletion cannot remove autorecovery records. Keep mutation records off the main connection.
         factory.AutomaticRecoveryEnabled = false;
@@ -65,13 +66,50 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             : await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static ConnectionFactory CreateAmqpFactory(RabbitMqSettings settings, string password) => new()
+    private static ConnectionFactory CreateAmqpFactory(RabbitMqSettings settings, string password, ClientTls? tls) => new()
     {
         HostName = settings.HostName, Port = settings.AmqpPort, UserName = settings.UserName, Password = password,
         VirtualHost = settings.VirtualHost, ClientProvidedName = "QueueLoom",
-        Ssl = new SslOption { Enabled = settings.UseTls, ServerName = settings.HostName },
+        Ssl = CreateSslOption(settings, tls),
         RequestedConnectionTimeout = TimeSpan.FromSeconds(15)
     };
+
+    internal static SslOption CreateSslOption(RabbitMqSettings settings, ClientTls? tls)
+    {
+        var option = new SslOption { Enabled = settings.UseTls, ServerName = settings.HostName };
+        if (tls?.ClientCertificate is { } certificate)
+        {
+            option.Certs = [certificate];
+        }
+        if (tls?.Authorities is not null)
+        {
+            option.CertificateValidationCallback = (_, certificate, _, errors) => tls.ValidateServerCertificate(certificate, errors);
+        }
+        return option;
+    }
+
+    /// <summary>The management API client: the same certificate authority and client certificate as AMQP.</summary>
+    private HttpClient CreateManagementClient(ClientTls? tls)
+    {
+        if (_httpHandler is not null)
+        {
+            return new HttpClient(_httpHandler, disposeHandler: false);
+        }
+        if (tls is null)
+        {
+            return new HttpClient();
+        }
+        var handler = new SocketsHttpHandler();
+        if (tls.ClientCertificate is { } certificate)
+        {
+            handler.SslOptions.ClientCertificates = [certificate];
+        }
+        if (tls.Authorities is not null)
+        {
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) => tls.ValidateServerCertificate(certificate, errors);
+        }
+        return new HttpClient(handler, disposeHandler: true);
+    }
 
     private IConnection Connection => _connection ?? throw new InvalidOperationException("Connect to the environment first.");
 
@@ -82,8 +120,9 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
                            .ConfigureAwait(false)
                        ?? throw new InvalidOperationException("The RabbitMQ password is missing. Edit the environment and enter it again.");
         _virtualHost = settings.VirtualHost;
+        _tls = settings.UseTls ? await ClientTls.LoadAsync(profile, settings.Tls, _secretVault, cancellationToken).ConfigureAwait(false) : null;
 
-        var management = _httpHandler is null ? new HttpClient() : new HttpClient(_httpHandler, disposeHandler: false);
+        var management = CreateManagementClient(_tls);
         management.BaseAddress = settings.ManagementUri;
         management.Timeout = TimeSpan.FromSeconds(30);
         // Responses other calls buffer whole (queue details, rule changes) stay bounded too.
@@ -97,7 +136,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
             using var response = await management.GetAsync($"api/vhosts/{Escape(_virtualHost)}", cancellationToken).ConfigureAwait(false);
             await EnsureSuccessAsync(response, "the management API").ConfigureAwait(false);
 
-            var factory = CreateAmqpFactory(settings, password);
+            var factory = CreateAmqpFactory(settings, password, _tls);
             _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (BrokerUnreachableException exception)
@@ -143,6 +182,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         finally
         {
             management?.Dispose();
+            _tls?.Dispose();
+            _tls = null;
         }
     }
 

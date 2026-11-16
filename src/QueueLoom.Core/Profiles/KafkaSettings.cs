@@ -29,6 +29,7 @@ public enum KafkaSaslMechanism
 /// permission). Off by default: the producer is idempotent, so librdkafka's own retry after a lost acknowledgement
 /// cannot write a record twice. On, such a retry can duplicate it. It is never turned on automatically.
 /// </param>
+/// <param name="Tls">A private certificate authority or a client certificate, when TLS needs one.</param>
 public sealed record KafkaSettings(
     string BootstrapServers,
     bool UseTls = false,
@@ -42,7 +43,10 @@ public sealed record KafkaSettings(
     bool JavaCompatiblePartitioner = false,
     // Omitted while off, like JavaCompatiblePartitioner.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
-    bool NonIdempotentProducer = false)
+    bool NonIdempotentProducer = false,
+    // Omitted while unset, so an unchanged profile serializes, and is identified, as before.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    TlsClientSettings? Tls = null)
 {
     public static readonly IReadOnlyList<string> DefaultDeadLetterSuffixes = [".DLT", "-dlt", ".dlq", "-dlq", "_dlq", ".DLQ"];
 

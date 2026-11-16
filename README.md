@@ -59,8 +59,8 @@ The update dialog distinguishes checksum fetch, download, verification, extracti
    - **Azure Service Bus**: Microsoft Entra ID or a connection string.
    - **Amazon SQS / SNS**: a region and an access key, or your AWS profile.
    - **Google Cloud Pub/Sub**: a project ID and a service account key, or `gcloud` default credentials.
-   - **RabbitMQ**: host, virtual host, user and password. The management plugin must be on (it lists the queues).
-   - **Apache Kafka**: bootstrap servers, with or without TLS and SASL, and optionally a Schema Registry.
+   - **RabbitMQ**: host, virtual host, user and password. The management plugin must be on (it lists the queues). With TLS, you can add a private certificate authority and a client certificate (mutual TLS).
+   - **Apache Kafka**: bootstrap servers, with or without TLS and SASL, and optionally a Schema Registry. With TLS, you can add a private certificate authority and a client certificate (.pfx, .p12 or PEM) for mutual TLS.
 2. Choose the environment in the top bar and press **Connect**.
 3. **Explorer** shows every queue, topic and subscription with live counters. Select one and press **View DLQ** or **View active**.
 

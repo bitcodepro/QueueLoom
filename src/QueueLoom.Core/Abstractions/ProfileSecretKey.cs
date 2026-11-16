@@ -7,4 +7,7 @@ public readonly record struct ProfileSecretKey(Guid ProfileId, ProfileSecretKind
 
     public static ProfileSecretKey SchemaRegistryPassword(Guid profileId) =>
         new(profileId, ProfileSecretKind.SchemaRegistryPassword);
+
+    public static ProfileSecretKey ClientCertificatePassword(Guid profileId) =>
+        new(profileId, ProfileSecretKind.ClientCertificatePassword);
 }

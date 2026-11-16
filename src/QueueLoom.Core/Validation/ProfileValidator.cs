@@ -306,6 +306,31 @@ public static partial class ProfileValidator
         {
             errors.Add(new ValidationError("profile.rabbitmq.port.invalid", "Ports must be between 1 and 65535.", nameof(profile.RabbitMq)));
         }
+        ValidateTls(settings.Tls, settings.UseTls, "rabbitmq", nameof(profile.RabbitMq), errors);
+    }
+
+    private static void ValidateTls(TlsClientSettings? tls, bool useTls, string provider, string field, ICollection<ValidationError> errors)
+    {
+        if (tls is null || tls.IsEmpty)
+        {
+            return;
+        }
+        if (!useTls)
+        {
+            errors.Add(new ValidationError($"profile.{provider}.tls.off",
+                "A certificate authority or client certificate needs TLS. Turn on TLS or clear the certificate files.", field));
+        }
+        if (new[] { tls.CaCertificatePath, tls.ClientCertificatePath, tls.ClientKeyPath }.Any(path => path is not null &&
+            (string.IsNullOrWhiteSpace(path) || path != path.Trim() || path.Any(char.IsControl))))
+        {
+            errors.Add(new ValidationError($"profile.{provider}.tls.path_invalid",
+                "Certificate file paths cannot be blank, start or end with spaces, or contain control characters.", field));
+        }
+        if (tls.ClientKeyPath is not null && (tls.ClientCertificatePath is null || tls.IsPkcs12))
+        {
+            errors.Add(new ValidationError($"profile.{provider}.tls.key_without_pem",
+                "A separate key file goes with a PEM client certificate; a .pfx or .p12 file already holds its key.", field));
+        }
     }
 
     private static void ValidateKafka(ServiceBusProfile profile, ICollection<ValidationError> errors, bool allowLegacyRegistryUrl)
@@ -328,6 +353,7 @@ public static partial class ProfileValidator
             errors.Add(new ValidationError("profile.kafka.sasl.incomplete",
                 "SASL sign-in needs a mechanism and a user name.", nameof(profile.Kafka)));
         }
+        ValidateTls(settings.Tls, settings.UseTls, "kafka", nameof(profile.Kafka), errors);
         if (settings.DeadLetterSuffixes?.Any(suffix => string.IsNullOrWhiteSpace(suffix) || suffix.Any(char.IsWhiteSpace)) == true)
         {
             errors.Add(new ValidationError("profile.kafka.dlq_suffix.invalid",
