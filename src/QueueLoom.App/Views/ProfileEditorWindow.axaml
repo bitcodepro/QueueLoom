@@ -327,6 +327,52 @@
               </Grid>
               <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
             </StackPanel>
+            <StackPanel Spacing="12" IsVisible="{Binding IsKafkaOAuth}">
+              <StackPanel Spacing="7">
+                <TextBlock Text="TOKEN ENDPOINT" Classes="eyebrow" />
+                <TextBox Text="{Binding KafkaOAuthTokenEndpoint}" PlaceholderText="https://login.example.com/oauth2/token"
+                         AutomationProperties.Name="OAuth token endpoint" />
+              </StackPanel>
+              <Grid ColumnDefinitions="*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="CLIENT ID" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaOAuthClientId}" AutomationProperties.Name="OAuth client ID" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="CLIENT SECRET" Classes="eyebrow" />
+                  <TextBox Text="{Binding BrokerPassword}" PasswordChar="•" AutomationProperties.Name="OAuth client secret" />
+                </StackPanel>
+              </Grid>
+              <Grid ColumnDefinitions="*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="SCOPE (OPTIONAL)" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaOAuthScope}" AutomationProperties.Name="OAuth scope" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="SASL EXTENSIONS (OPTIONAL)" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaOAuthExtensions}" PlaceholderText="logicalCluster=lkc-…,identityPoolId=pool-…"
+                           AutomationProperties.Name="SASL extensions" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="SASL/OAUTHBEARER with the client credentials flow; the token is fetched and renewed automatically. Confluent Cloud needs the logicalCluster and identityPoolId extensions." />
+            </StackPanel>
+            <StackPanel Spacing="12" IsVisible="{Binding IsKafkaAwsIam}">
+              <Grid ColumnDefinitions="160,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="REGION" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaAwsRegion}" PlaceholderText="eu-west-1" AutomationProperties.Name="Amazon MSK region" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="AWS PROFILE (OPTIONAL)" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaAwsProfileName}" PlaceholderText="default credential chain"
+                           AutomationProperties.Name="AWS profile" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="Signs in with the AWS credentials of this computer: environment variables, the shared credentials file or SSO, or the named profile. Use TLS and the cluster's IAM port (9098, or 9198 for public access)." />
+            </StackPanel>
             <StackPanel Spacing="7">
               <TextBlock Text="DEAD-LETTER TOPICS END WITH" Classes="eyebrow" />
               <TextBox Text="{Binding KafkaDeadLetterSuffixes}" AutomationProperties.Name="Dead-letter topic endings" />

@@ -65,7 +65,14 @@ public static partial class KafkaGroupListing
         IAdminClient admin;
         try
         {
-            admin = new AdminClientBuilder(new AdminClientConfig(request.Config)).Build();
+            var builder = new AdminClientBuilder(new AdminClientConfig(request.Config));
+            if (request.Token is { } token)
+            {
+                // The token was signed by the app: the child needs no AWS credentials, and its work is over long before
+                // the token expires.
+                builder.SetOAuthBearerTokenRefreshHandler((client, _) => client.OAuthBearerSetToken(token.Value, token.ExpiryMs, token.Principal));
+            }
+            admin = builder.Build();
         }
         catch (Exception exception) when (exception is ArgumentException or KafkaException or InvalidOperationException)
         {
@@ -97,7 +104,7 @@ public static partial class KafkaGroupListing
 
     /// <summary>Lists the groups in a child when one is set up, otherwise with <paramref name="admin"/>.</summary>
     internal static async Task<IReadOnlyList<ListedGroup>> ListAsync(IAdminClient? admin, ClientConfig? config, TimeSpan timeout,
-        CancellationToken cancellationToken, Func<ProcessStartInfo>? helperStart = null)
+        CancellationToken cancellationToken, Func<ProcessStartInfo>? helperStart = null, Func<Task<ListingToken>>? token = null)
     {
         if ((helperStart ?? HelperStart) is not { } helper)
         {
@@ -107,6 +114,16 @@ public static partial class KafkaGroupListing
         }
 
         ArgumentNullException.ThrowIfNull(config);
+        ListingToken? listingToken = null;
+        try
+        {
+            listingToken = token is null ? null : await token().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+        {
+            // Lag is extra, as when the child cannot start.
+            throw new GroupListingException($"the sign-in token could not be created ({exception.Message})");
+        }
         var start = helper();
         start.RedirectStandardInput = true;
         start.RedirectStandardOutput = true;
@@ -146,7 +163,7 @@ public static partial class KafkaGroupListing
             try
             {
                 await JsonSerializer.SerializeAsync(child.Input,
-                    new ListingRequest(config.ToDictionary(pair => pair.Key, pair => pair.Value), (int)timeout.TotalMilliseconds),
+                    new ListingRequest(config.ToDictionary(pair => pair.Key, pair => pair.Value), (int)timeout.TotalMilliseconds, listingToken),
                     ListingJson.Default.ListingRequest, deadline.Token).ConfigureAwait(false);
                 child.Input.Close();
             }
@@ -223,7 +240,10 @@ public static partial class KafkaGroupListing
 
     internal sealed record ListedGroup(string GroupId, string State, string Type, bool IsSimple);
 
-    internal sealed record ListingRequest(Dictionary<string, string> Config, int TimeoutMs);
+    /// <summary>The child's request; <paramref name="Token"/> is a ready OAUTHBEARER token when sign-in needs one (Amazon MSK IAM).</summary>
+    internal sealed record ListingRequest(Dictionary<string, string> Config, int TimeoutMs, ListingToken? Token = null);
+
+    internal sealed record ListingToken(string Value, long ExpiryMs, string Principal);
 
     internal sealed record ListingResponse(List<ListedGroup>? Groups, string? Error);
 

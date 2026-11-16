@@ -77,6 +77,8 @@ public sealed record ServiceBusProfile(
         AuthenticationKind.RabbitMqPassword => $"User {RabbitMq?.UserName}",
         AuthenticationKind.KafkaNone => Kafka?.UseTls == true ? "TLS, no sign-in" : "No sign-in",
         AuthenticationKind.KafkaSaslPassword => $"SASL {Kafka?.SaslMechanism} · {Kafka?.UserName}",
+        AuthenticationKind.KafkaOAuth => $"OAuth · {Kafka?.OAuth?.ClientId}",
+        AuthenticationKind.KafkaAwsIam => $"AWS IAM · {Kafka?.AwsIam?.ProfileName ?? "default credentials"}",
         _ => Authentication.Kind.ToString()
     };
 

@@ -24,6 +24,12 @@ public sealed partial class ProfileEditorViewModel
     private string _schemaRegistryUserName = string.Empty;
     private string _schemaRegistryPassword = string.Empty;
     private bool _hasExistingSchemaRegistryPassword;
+    private string _kafkaOAuthTokenEndpoint = string.Empty;
+    private string _kafkaOAuthClientId = string.Empty;
+    private string _kafkaOAuthScope = string.Empty;
+    private string _kafkaOAuthExtensions = string.Empty;
+    private string _kafkaAwsRegion = string.Empty;
+    private string _kafkaAwsProfileName = string.Empty;
     private string _tlsCaCertificatePath = string.Empty;
     private string _tlsClientCertificatePath = string.Empty;
     private string _tlsClientKeyPath = string.Empty;
@@ -109,6 +115,50 @@ public sealed partial class ProfileEditorViewModel
     }
 
     public bool IsKafkaSasl => AuthenticationKind == AuthenticationKind.KafkaSaslPassword;
+
+    public bool IsKafkaOAuth => AuthenticationKind == AuthenticationKind.KafkaOAuth;
+
+    public bool IsKafkaAwsIam => AuthenticationKind == AuthenticationKind.KafkaAwsIam;
+
+    /// <summary>The identity provider's token endpoint for OAuth sign-in.</summary>
+    public string KafkaOAuthTokenEndpoint
+    {
+        get => _kafkaOAuthTokenEndpoint;
+        set => SetProperty(ref _kafkaOAuthTokenEndpoint, value);
+    }
+
+    public string KafkaOAuthClientId
+    {
+        get => _kafkaOAuthClientId;
+        set => SetProperty(ref _kafkaOAuthClientId, value);
+    }
+
+    public string KafkaOAuthScope
+    {
+        get => _kafkaOAuthScope;
+        set => SetProperty(ref _kafkaOAuthScope, value);
+    }
+
+    /// <summary>SASL extensions as name=value pairs, for example Confluent Cloud's logicalCluster and identityPoolId.</summary>
+    public string KafkaOAuthExtensions
+    {
+        get => _kafkaOAuthExtensions;
+        set => SetProperty(ref _kafkaOAuthExtensions, value);
+    }
+
+    /// <summary>The Amazon MSK cluster's region for IAM sign-in.</summary>
+    public string KafkaAwsRegion
+    {
+        get => _kafkaAwsRegion;
+        set => SetProperty(ref _kafkaAwsRegion, value);
+    }
+
+    /// <summary>A named AWS profile; empty for the default credential chain.</summary>
+    public string KafkaAwsProfileName
+    {
+        get => _kafkaAwsProfileName;
+        set => SetProperty(ref _kafkaAwsProfileName, value);
+    }
 
     public IReadOnlyList<KafkaSaslMechanism> KafkaSaslMechanisms { get; } = Enum.GetValues<KafkaSaslMechanism>();
 
@@ -226,6 +276,12 @@ public sealed partial class ProfileEditorViewModel
             _schemaRegistryUserName = kafka.SchemaRegistryUserName ?? string.Empty;
             _hasExistingSchemaRegistryPassword = kafka.SchemaRegistryUserName is not null;
             InitializeTls(kafka.Tls);
+            _kafkaOAuthTokenEndpoint = kafka.OAuth?.TokenEndpoint ?? string.Empty;
+            _kafkaOAuthClientId = kafka.OAuth?.ClientId ?? string.Empty;
+            _kafkaOAuthScope = kafka.OAuth?.Scope ?? string.Empty;
+            _kafkaOAuthExtensions = kafka.OAuth?.Extensions ?? string.Empty;
+            _kafkaAwsRegion = kafka.AwsIam?.Region ?? string.Empty;
+            _kafkaAwsProfileName = kafka.AwsIam?.ProfileName ?? string.Empty;
         }
     }
 
@@ -250,7 +306,7 @@ public sealed partial class ProfileEditorViewModel
     private (ServiceBusProfile Profile, string? Secret)? BuildKafka()
     {
         string? newSecret = null;
-        if (IsKafkaSasl && !TakePassword(out newSecret))
+        if ((IsKafkaSasl || IsKafkaOAuth) && !TakePassword(out newSecret))
         {
             return null;
         }
@@ -269,7 +325,12 @@ public sealed partial class ProfileEditorViewModel
             NullIfWhiteSpace(SchemaRegistryUrl) is null ? null : NullIfWhiteSpace(SchemaRegistryUserName),
             KafkaJavaCompatiblePartitioner,
             KafkaNonIdempotentProducer,
-            BuildTls(KafkaUseTls));
+            BuildTls(KafkaUseTls),
+            IsKafkaOAuth
+                ? new KafkaOAuthSettings(KafkaOAuthTokenEndpoint.Trim(), KafkaOAuthClientId.Trim(), NullIfWhiteSpace(KafkaOAuthScope)?.Trim(),
+                    NullIfWhiteSpace(KafkaOAuthExtensions)?.Replace(" ", string.Empty, StringComparison.Ordinal))
+                : null,
+            IsKafkaAwsIam ? new KafkaAwsIamSettings(KafkaAwsRegion.Trim(), NullIfWhiteSpace(KafkaAwsProfileName)?.Trim()) : null);
         if (settings.SchemaRegistryUserName is not null && string.IsNullOrEmpty(SchemaRegistryPassword) && !_hasExistingSchemaRegistryPassword)
         {
             Error = "Enter the Schema Registry password or API secret.";
@@ -322,7 +383,7 @@ public sealed partial class ProfileEditorViewModel
         {
             return true;
         }
-        Error = "Enter the password.";
+        Error = IsKafkaOAuth ? "Enter the OAuth client secret." : "Enter the password.";
         return false;
     }
 

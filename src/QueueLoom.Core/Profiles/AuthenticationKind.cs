@@ -24,7 +24,13 @@ public enum AuthenticationKind
     KafkaNone,
 
     /// <summary>Kafka SASL (PLAIN or SCRAM) with a user name and password; the password is kept in the vault.</summary>
-    KafkaSaslPassword
+    KafkaSaslPassword,
+
+    /// <summary>Kafka SASL/OAUTHBEARER with an OAuth client ID and secret; the secret is kept in the vault.</summary>
+    KafkaOAuth,
+
+    /// <summary>Amazon MSK IAM sign-in with the standard AWS credential chain or a named profile.</summary>
+    KafkaAwsIam
 }
 
 public static class AuthenticationKinds
@@ -34,21 +40,22 @@ public static class AuthenticationKinds
         AuthenticationKind.AwsAccessKey or AuthenticationKind.AwsDefaultCredentials => MessagingProvider.AmazonSqsSns,
         AuthenticationKind.GoogleServiceAccountKey or AuthenticationKind.GoogleApplicationDefault => MessagingProvider.GooglePubSub,
         AuthenticationKind.RabbitMqPassword => MessagingProvider.RabbitMq,
-        AuthenticationKind.KafkaNone or AuthenticationKind.KafkaSaslPassword => MessagingProvider.Kafka,
+        AuthenticationKind.KafkaNone or AuthenticationKind.KafkaSaslPassword or AuthenticationKind.KafkaOAuth
+            or AuthenticationKind.KafkaAwsIam => MessagingProvider.Kafka,
         _ => MessagingProvider.AzureServiceBus
     };
 
     /// <summary>Whether this method keeps a secret (connection string, access key or key file) in the vault.</summary>
     public static bool UsesStoredSecret(this AuthenticationKind kind) =>
         kind is AuthenticationKind.ConnectionString or AuthenticationKind.AwsAccessKey or AuthenticationKind.GoogleServiceAccountKey
-            or AuthenticationKind.RabbitMqPassword or AuthenticationKind.KafkaSaslPassword;
+            or AuthenticationKind.RabbitMqPassword or AuthenticationKind.KafkaSaslPassword or AuthenticationKind.KafkaOAuth;
 
     public static IReadOnlyList<AuthenticationKind> For(MessagingProvider provider) => provider switch
     {
         MessagingProvider.AmazonSqsSns => [AuthenticationKind.AwsAccessKey, AuthenticationKind.AwsDefaultCredentials],
         MessagingProvider.GooglePubSub => [AuthenticationKind.GoogleServiceAccountKey, AuthenticationKind.GoogleApplicationDefault],
         MessagingProvider.RabbitMq => [AuthenticationKind.RabbitMqPassword],
-        MessagingProvider.Kafka => [AuthenticationKind.KafkaNone, AuthenticationKind.KafkaSaslPassword],
+        MessagingProvider.Kafka => [AuthenticationKind.KafkaNone, AuthenticationKind.KafkaSaslPassword, AuthenticationKind.KafkaOAuth, AuthenticationKind.KafkaAwsIam],
         _ => [AuthenticationKind.EntraId, AuthenticationKind.ConnectionString]
     };
 }

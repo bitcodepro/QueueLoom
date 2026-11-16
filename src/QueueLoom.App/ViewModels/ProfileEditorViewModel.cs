@@ -577,6 +577,8 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(AwsAccessKeyHint));
         OnPropertyChanged(nameof(GoogleKeySummary));
         OnPropertyChanged(nameof(IsKafkaSasl));
+        OnPropertyChanged(nameof(IsKafkaOAuth));
+        OnPropertyChanged(nameof(IsKafkaAwsIam));
         OnPropertyChanged(nameof(BrokerPasswordHint));
     }
 
@@ -591,6 +593,8 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         AuthenticationKind.RabbitMqPassword => "User name and password",
         AuthenticationKind.KafkaNone => "No sign-in",
         AuthenticationKind.KafkaSaslPassword => "SASL user name and password",
+        AuthenticationKind.KafkaOAuth => "OAuth client credentials (OIDC)",
+        AuthenticationKind.KafkaAwsIam => "Amazon MSK IAM",
         _ => kind.ToString()
     };
 

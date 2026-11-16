@@ -30,6 +30,8 @@ public enum KafkaSaslMechanism
 /// cannot write a record twice. On, such a retry can duplicate it. It is never turned on automatically.
 /// </param>
 /// <param name="Tls">A private certificate authority or a client certificate, when TLS needs one.</param>
+/// <param name="OAuth">The identity provider of OAuth sign-in (<see cref="AuthenticationKind.KafkaOAuth"/>).</param>
+/// <param name="AwsIam">The region and profile of Amazon MSK IAM sign-in (<see cref="AuthenticationKind.KafkaAwsIam"/>).</param>
 public sealed record KafkaSettings(
     string BootstrapServers,
     bool UseTls = false,
@@ -46,7 +48,12 @@ public sealed record KafkaSettings(
     bool NonIdempotentProducer = false,
     // Omitted while unset, so an unchanged profile serializes, and is identified, as before.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    TlsClientSettings? Tls = null)
+    TlsClientSettings? Tls = null,
+    // Set only for their sign-in method, and omitted otherwise, like Tls.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    KafkaOAuthSettings? OAuth = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    KafkaAwsIamSettings? AwsIam = null)
 {
     public static readonly IReadOnlyList<string> DefaultDeadLetterSuffixes = [".DLT", "-dlt", ".dlq", "-dlq", "_dlq", ".DLQ"];
 

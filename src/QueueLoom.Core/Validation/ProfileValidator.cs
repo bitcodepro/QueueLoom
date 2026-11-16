@@ -354,6 +354,23 @@ public static partial class ProfileValidator
                 "SASL sign-in needs a mechanism and a user name.", nameof(profile.Kafka)));
         }
         ValidateTls(settings.Tls, settings.UseTls, "kafka", nameof(profile.Kafka), errors);
+        if (profile.Authentication?.Kind == AuthenticationKind.KafkaOAuth)
+        {
+            ValidateKafkaOAuth(settings.OAuth, errors);
+        }
+        if (profile.Authentication?.Kind == AuthenticationKind.KafkaAwsIam)
+        {
+            if (settings.AwsIam is null || !AwsRegionPattern().IsMatch(settings.AwsIam.Region))
+            {
+                errors.Add(new ValidationError("profile.kafka.aws_iam.region",
+                    "Amazon MSK IAM sign-in needs the cluster's region, for example eu-west-1.", nameof(profile.Kafka)));
+            }
+            if (!settings.UseTls)
+            {
+                errors.Add(new ValidationError("profile.kafka.aws_iam.tls",
+                    "Amazon MSK accepts IAM sign-in only over TLS (port 9098 inside AWS, 9198 over public access). Turn on TLS.", nameof(profile.Kafka)));
+            }
+        }
         if (settings.DeadLetterSuffixes?.Any(suffix => string.IsNullOrWhiteSpace(suffix) || suffix.Any(char.IsWhiteSpace)) == true)
         {
             errors.Add(new ValidationError("profile.kafka.dlq_suffix.invalid",
@@ -372,6 +389,30 @@ public static partial class ProfileValidator
                 "Enter the Schema Registry URL for its user name.", nameof(profile.Kafka)));
         }
     }
+
+    private static void ValidateKafkaOAuth(KafkaOAuthSettings? oauth, ICollection<ValidationError> errors)
+    {
+        if (oauth is null || !Uri.TryCreate(oauth.TokenEndpoint, UriKind.Absolute, out var endpoint) ||
+            endpoint.Scheme != Uri.UriSchemeHttps && !(endpoint.Scheme == Uri.UriSchemeHttp && endpoint.IsLoopback) ||
+            !string.IsNullOrEmpty(endpoint.UserInfo))
+        {
+            errors.Add(new ValidationError("profile.kafka.oauth.endpoint",
+                "OAuth sign-in needs the token endpoint as an https:// address without credentials (http:// only for localhost).", nameof(ServiceBusProfile.Kafka)));
+        }
+        if (oauth is null || string.IsNullOrWhiteSpace(oauth.ClientId) || oauth.ClientId.Any(char.IsControl))
+        {
+            errors.Add(new ValidationError("profile.kafka.oauth.client",
+                "OAuth sign-in needs the client ID.", nameof(ServiceBusProfile.Kafka)));
+        }
+        if (oauth?.Extensions is { } extensions && !KafkaOAuthExtensionsPattern().IsMatch(extensions))
+        {
+            errors.Add(new ValidationError("profile.kafka.oauth.extensions",
+                "Write SASL extensions as name=value pairs separated by commas, for example logicalCluster=lkc-abc12,identityPoolId=pool-XyZ1.", nameof(ServiceBusProfile.Kafka)));
+        }
+    }
+
+    [GeneratedRegex("^[A-Za-z]+=[\\x21-\\x2B\\x2D-\\x7E]+(,[A-Za-z]+=[\\x21-\\x2B\\x2D-\\x7E]+)*$")]
+    private static partial Regex KafkaOAuthExtensionsPattern();
 
     [GeneratedRegex("^[a-z]{2}(-[a-z]+)+-[0-9]+$")]
     private static partial Regex AwsRegionPattern();

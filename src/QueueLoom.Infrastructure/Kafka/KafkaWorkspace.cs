@@ -26,6 +26,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     private ClientConfig? _config;
     private IAdminClient? _admin;
     private IProducer<byte[]?, byte[]?>? _producer;
+    private KafkaAwsIamTokens? _iamTokens;
     private volatile Error? _producerFatalError;
     private SchemaRegistryClient? _schemaRegistry;
     private KafkaTopologyIndex _index = KafkaTopologyIndex.Empty;
@@ -52,7 +53,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             ClientId = "QueueLoom",
             SocketTimeoutMs = (int)RequestTimeout.TotalMilliseconds
         };
-        var sasl = profile.Authentication.Kind == AuthenticationKind.KafkaSaslPassword;
+        var kind = profile.Authentication.Kind;
+        var sasl = kind is AuthenticationKind.KafkaSaslPassword or AuthenticationKind.KafkaOAuth or AuthenticationKind.KafkaAwsIam;
         config.SecurityProtocol = (settings.UseTls, sasl) switch
         {
             (true, true) => SecurityProtocol.SaslSsl,
@@ -60,7 +62,21 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             (false, true) => SecurityProtocol.SaslPlaintext,
             _ => SecurityProtocol.Plaintext
         };
-        if (sasl)
+        _iamTokens = null;
+        if (kind == AuthenticationKind.KafkaOAuth)
+        {
+            var secret = await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.ConnectionString, cancellationToken)
+                             .ConfigureAwait(false)
+                         ?? throw new InvalidOperationException("The OAuth client secret is missing. Edit the environment and enter it again.");
+            ApplyOAuth(config, settings.OAuth ?? throw new InvalidOperationException("The OAuth settings are missing."), secret);
+        }
+        else if (kind == AuthenticationKind.KafkaAwsIam)
+        {
+            config.SaslMechanism = SaslMechanism.OAuthBearer;
+            var iam = settings.AwsIam ?? throw new InvalidOperationException("The AWS IAM settings are missing.");
+            _iamTokens = CreateIamTokens?.Invoke(iam) ?? new KafkaAwsIamTokens(iam);
+        }
+        else if (sasl)
         {
             config.SaslMechanism = settings.SaslMechanism switch
             {
@@ -94,7 +110,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
 
         _config = config;
         _index = KafkaTopologyIndex.Empty with { Suffixes = settings.EffectiveDeadLetterSuffixes };
-        _admin = new AdminClientBuilder(new AdminClientConfig(config)).Build();
+        var adminBuilder = new AdminClientBuilder(new AdminClientConfig(config));
+        if (_iamTokens is { } adminTokens)
+        {
+            adminBuilder.SetOAuthBearerTokenRefreshHandler((client, _) => adminTokens.Refresh(client));
+        }
+        _admin = adminBuilder.Build();
         try
         {
             // Proves the servers and the credentials without touching any topic.
@@ -106,7 +127,12 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             var producerConfig = CreateProducerConfig(config, settings.JavaCompatiblePartitioner, settings.NonIdempotentProducer);
             ConfigureProducer?.Invoke(producerConfig);
             _producerFatalError = null;
-            _producer = new ProducerBuilder<byte[]?, byte[]?>(producerConfig)
+            var producerBuilder = new ProducerBuilder<byte[]?, byte[]?>(producerConfig);
+            if (_iamTokens is { } producerTokens)
+            {
+                producerBuilder.SetOAuthBearerTokenRefreshHandler((client, _) => producerTokens.Refresh(client));
+            }
+            _producer = producerBuilder
                 // librdkafka reports why a producer stopped (a refused idempotent producer ID, for example) only here;
                 // the failed sends themselves carry just "purged" or "fatal".
                 .SetErrorHandler((_, error) => { if (error.IsFatal) _producerFatalError = error; })
@@ -122,6 +148,21 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             await CloseAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>Test seam: replaces the AWS signer of Amazon MSK IAM sign-in.</summary>
+    internal Func<KafkaAwsIamSettings, KafkaAwsIamTokens>? CreateIamTokens { get; set; }
+
+    /// <summary>OAuth sign-in: librdkafka fetches and renews the token from the endpoint itself (client credentials).</summary>
+    internal static void ApplyOAuth(ClientConfig config, KafkaOAuthSettings oauth, string clientSecret)
+    {
+        config.SaslMechanism = SaslMechanism.OAuthBearer;
+        config.SaslOauthbearerMethod = SaslOauthbearerMethod.Oidc;
+        config.SaslOauthbearerTokenEndpointUrl = oauth.TokenEndpoint;
+        config.SaslOauthbearerClientId = oauth.ClientId;
+        config.SaslOauthbearerClientSecret = clientSecret;
+        config.SaslOauthbearerScope = string.IsNullOrWhiteSpace(oauth.Scope) ? null : oauth.Scope.Trim();
+        config.SaslOauthbearerExtensions = string.IsNullOrWhiteSpace(oauth.Extensions) ? null : oauth.Extensions.Trim();
     }
 
     /// <summary>A private certificate authority and a client certificate, as librdkafka reads them.</summary>
@@ -150,6 +191,7 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         CloseChannels();
         _producer?.Dispose();
         _producer = null;
+        _iamTokens = null;
         _admin?.Dispose();
         _admin = null;
         _schemaRegistry?.Dispose();
@@ -228,7 +270,8 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
         List<KafkaGroupListing.ListedGroup> groups;
         try
         {
-            groups = (await KafkaGroupListing.ListAsync(Admin, _config, RequestTimeout, cancellationToken).ConfigureAwait(false))
+            groups = (await KafkaGroupListing.ListAsync(Admin, _config, RequestTimeout, cancellationToken,
+                token: _iamTokens is { } tokens ? tokens.ListingTokenAsync : null).ConfigureAwait(false))
                 .Where(group => !group.GroupId.StartsWith("queueloom-reader-", StringComparison.Ordinal))
                 .OrderBy(group => group.GroupId, StringComparer.Ordinal)
                 .Take(MaximumConsumerGroups)
@@ -467,8 +510,13 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     /// <summary>Test seam: replaces the SDK consumer of this workspace when set.</summary>
     internal Func<IConsumer<byte[]?, byte[]?>>? ConsumerFactory { get; set; }
 
-    private IConsumer<byte[]?, byte[]?> CreateConsumer() => ConsumerFactory?.Invoke() ??
-        new ConsumerBuilder<byte[]?, byte[]?>(new ConsumerConfig(Config)
+    private IConsumer<byte[]?, byte[]?> CreateConsumer()
+    {
+        if (ConsumerFactory?.Invoke() is { } fake)
+        {
+            return fake;
+        }
+        var builder = new ConsumerBuilder<byte[]?, byte[]?>(new ConsumerConfig(Config)
         {
             // Partitions are assigned by hand and nothing is committed, so the group never appears on the cluster.
             GroupId = $"queueloom-reader-{Guid.NewGuid():N}",
@@ -476,7 +524,13 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             EnableAutoOffsetStore = false,
             AutoOffsetReset = AutoOffsetReset.Earliest,
             EnablePartitionEof = true
-        }).Build();
+        });
+        if (_iamTokens is { } tokens)
+        {
+            builder.SetOAuthBearerTokenRefreshHandler((client, _) => tokens.Refresh(client));
+        }
+        return builder.Build();
+    }
 
     private void CloseChannels()
     {
