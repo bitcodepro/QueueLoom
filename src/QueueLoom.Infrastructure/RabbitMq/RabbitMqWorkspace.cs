@@ -89,17 +89,24 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
     }
 
     /// <summary>The management API client: the same certificate authority and client certificate as AMQP.</summary>
-    private HttpClient CreateManagementClient(ClientTls? tls)
+    private HttpClient CreateManagementClient(ClientTls? tls, IWebProxy? proxy)
     {
         if (_httpHandler is not null)
         {
             return new HttpClient(_httpHandler, disposeHandler: false);
         }
+        return new HttpClient(CreateManagementHandler(tls, proxy), disposeHandler: true);
+    }
+
+    /// <summary>The management API's handler: the environment's proxy (AMQP itself connects directly) and its certificates.</summary>
+    internal static SocketsHttpHandler CreateManagementHandler(ClientTls? tls, IWebProxy? proxy)
+    {
+        var handler = new SocketsHttpHandler();
+        ProxyFactory.Apply(handler, proxy);
         if (tls is null)
         {
-            return new HttpClient();
+            return handler;
         }
-        var handler = new SocketsHttpHandler();
         if (tls.ClientCertificate is { } certificate)
         {
             handler.SslOptions.ClientCertificates = [certificate];
@@ -108,7 +115,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         {
             handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) => tls.ValidateServerCertificate(certificate, errors);
         }
-        return new HttpClient(handler, disposeHandler: true);
+        return handler;
     }
 
     private IConnection Connection => _connection ?? throw new InvalidOperationException("Connect to the environment first.");
@@ -122,7 +129,8 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         _virtualHost = settings.VirtualHost;
         _tls = settings.UseTls ? await ClientTls.LoadAsync(profile, settings.Tls, _secretVault, cancellationToken).ConfigureAwait(false) : null;
 
-        var management = CreateManagementClient(_tls);
+        var management = CreateManagementClient(_tls,
+            await ProxyFactory.CreateAsync(profile, _secretVault, cancellationToken).ConfigureAwait(false));
         management.BaseAddress = settings.ManagementUri;
         management.Timeout = TimeSpan.FromSeconds(30);
         // Responses other calls buffer whole (queue details, rule changes) stay bounded too.

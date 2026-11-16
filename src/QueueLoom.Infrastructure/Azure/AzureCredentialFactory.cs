@@ -1,4 +1,6 @@
+using System.Net;
 using Azure.Core;
+using Azure.Core.Pipeline;
 using Azure.Identity;
 using QueueLoom.Core.Profiles;
 
@@ -6,16 +8,17 @@ namespace QueueLoom.Infrastructure.Azure;
 
 internal static class AzureCredentialFactory
 {
-    public static TokenCredential Create(EntraIdSettings settings)
+    public static TokenCredential Create(EntraIdSettings settings, IWebProxy? proxy = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
+        var transport = AzureProxy.Transport(proxy);
         return settings.CredentialKind switch
         {
-            EntraIdCredentialKind.DefaultAzureCredential => CreateDefault(settings),
-            EntraIdCredentialKind.InteractiveBrowser => CreateInteractive(settings),
+            EntraIdCredentialKind.DefaultAzureCredential => CreateDefault(settings, transport),
+            EntraIdCredentialKind.InteractiveBrowser => CreateInteractive(settings, transport),
             EntraIdCredentialKind.AzureCli => CreateAzureCli(settings),
-            EntraIdCredentialKind.ManagedIdentity => CreateManagedIdentity(settings),
+            EntraIdCredentialKind.ManagedIdentity => CreateManagedIdentity(settings, transport),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(settings),
                 settings.CredentialKind,
@@ -23,12 +26,13 @@ internal static class AzureCredentialFactory
         };
     }
 
-    private static DefaultAzureCredential CreateDefault(EntraIdSettings settings)
+    private static DefaultAzureCredential CreateDefault(EntraIdSettings settings, HttpPipelineTransport? transport)
     {
         var options = new DefaultAzureCredentialOptions
         {
             ExcludeInteractiveBrowserCredential = true
         };
+        UseTransport(options, transport);
         if (!string.IsNullOrWhiteSpace(settings.TenantId))
         {
             options.TenantId = settings.TenantId.Trim();
@@ -41,12 +45,13 @@ internal static class AzureCredentialFactory
         return new DefaultAzureCredential(options);
     }
 
-    private static InteractiveBrowserCredential CreateInteractive(EntraIdSettings settings)
+    private static InteractiveBrowserCredential CreateInteractive(EntraIdSettings settings, HttpPipelineTransport? transport)
     {
         // Keep interactive tokens in memory only. This makes deleting an
         // environment complete and avoids leaving a second credential store
         // that QueueLoom cannot reliably enumerate or erase cross-platform.
         var options = new InteractiveBrowserCredentialOptions();
+        UseTransport(options, transport);
         if (!string.IsNullOrWhiteSpace(settings.TenantId))
         {
             options.TenantId = settings.TenantId.Trim();
@@ -70,8 +75,21 @@ internal static class AzureCredentialFactory
         return new AzureCliCredential(options);
     }
 
-    private static ManagedIdentityCredential CreateManagedIdentity(EntraIdSettings settings) =>
-        string.IsNullOrWhiteSpace(settings.ClientId)
-            ? new ManagedIdentityCredential(ManagedIdentityId.SystemAssigned)
-            : new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(settings.ClientId.Trim()));
+    private static ManagedIdentityCredential CreateManagedIdentity(EntraIdSettings settings, HttpPipelineTransport? transport)
+    {
+        var options = new ManagedIdentityCredentialOptions(string.IsNullOrWhiteSpace(settings.ClientId)
+            ? ManagedIdentityId.SystemAssigned
+            : ManagedIdentityId.FromUserAssignedClientId(settings.ClientId.Trim()));
+        UseTransport(options, transport);
+        return new ManagedIdentityCredential(options);
+    }
+
+    // Token requests go through the environment's proxy too; the Azure CLI runs as its own process with its own proxy.
+    private static void UseTransport(TokenCredentialOptions options, HttpPipelineTransport? transport)
+    {
+        if (transport is not null)
+        {
+            options.Transport = transport;
+        }
+    }
 }

@@ -10,4 +10,7 @@ public readonly record struct ProfileSecretKey(Guid ProfileId, ProfileSecretKind
 
     public static ProfileSecretKey ClientCertificatePassword(Guid profileId) =>
         new(profileId, ProfileSecretKind.ClientCertificatePassword);
+
+    public static ProfileSecretKey ProxyPassword(Guid profileId) =>
+        new(profileId, ProfileSecretKind.ProxyPassword);
 }

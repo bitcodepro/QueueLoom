@@ -42,6 +42,13 @@ public static partial class ProfileValidator
         ValidateAccessMode(profile, errors);
         ValidateProvider(profile, errors);
         ValidateAuthentication(profile, errors);
+        ValidateProxy(profile.Proxy, errors);
+        if (profile.Proxy?.Mode == ProxyMode.Custom && profile.Provider == MessagingProvider.AzureServiceBus && !profile.UseAmqpWebSockets)
+        {
+            errors.Add(new ValidationError("profile.proxy.websockets",
+                "Azure Service Bus goes through a proxy only over AMQP WebSockets. Turn on AMQP over WebSockets.",
+                nameof(profile.Proxy)));
+        }
         if (profile.UseAmqpWebSockets && profile.Provider != MessagingProvider.AzureServiceBus)
         {
             errors.Add(new ValidationError(
@@ -389,6 +396,33 @@ public static partial class ProfileValidator
                 "Enter the Schema Registry URL for its user name.", nameof(profile.Kafka)));
         }
     }
+
+    private static void ValidateProxy(ProxySettings? proxy, ICollection<ValidationError> errors)
+    {
+        if (proxy is null)
+        {
+            return;
+        }
+        var custom = proxy.Mode == ProxyMode.Custom;
+        if (custom != proxy.Address is not null || custom && !IsProxyAddress(proxy.Address!))
+        {
+            errors.Add(new ValidationError("profile.proxy.address",
+                custom
+                    ? "Enter the proxy as http://, https:// or socks5:// host and port, without a path or credentials."
+                    : "Only a custom proxy has an address.",
+                nameof(ServiceBusProfile.Proxy)));
+        }
+        if (proxy.UserName is not null && (!custom || string.IsNullOrWhiteSpace(proxy.UserName) || proxy.UserName.Any(char.IsControl)))
+        {
+            errors.Add(new ValidationError("profile.proxy.user",
+                "A proxy user name needs a custom proxy and must not be blank.", nameof(ServiceBusProfile.Proxy)));
+        }
+    }
+
+    private static bool IsProxyAddress(string address) =>
+        Uri.TryCreate(address.Trim(), UriKind.Absolute, out var uri) &&
+        uri.Scheme is "http" or "https" or "socks4" or "socks4a" or "socks5" &&
+        string.IsNullOrEmpty(uri.UserInfo) && uri.AbsolutePath == "/" && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
 
     private static void ValidateKafkaOAuth(KafkaOAuthSettings? oauth, ICollection<ValidationError> errors)
     {

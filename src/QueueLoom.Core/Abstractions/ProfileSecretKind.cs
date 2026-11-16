@@ -8,5 +8,8 @@ public enum ProfileSecretKind
     SchemaRegistryPassword,
 
     /// <summary>The password of a client certificate's private key (mutual TLS).</summary>
-    ClientCertificatePassword
+    ClientCertificatePassword,
+
+    /// <summary>The password of the environment's proxy.</summary>
+    ProxyPassword
 }

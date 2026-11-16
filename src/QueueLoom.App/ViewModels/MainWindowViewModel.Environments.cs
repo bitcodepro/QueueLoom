@@ -315,7 +315,8 @@ public sealed partial class MainWindowViewModel
         return new (ProfileSecretKey Key, string? Password, bool Remove)[]
             {
                 (ProfileSecretKey.SchemaRegistryPassword(id), result.SchemaRegistryPassword, result.RemovesSchemaRegistryPassword),
-                (ProfileSecretKey.ClientCertificatePassword(id), result.ClientCertificatePassword, result.RemovesClientCertificatePassword)
+                (ProfileSecretKey.ClientCertificatePassword(id), result.ClientCertificatePassword, result.RemovesClientCertificatePassword),
+                (ProfileSecretKey.ProxyPassword(id), result.ProxyPassword, result.RemovesProxyPassword)
             }
             .Where(change => change.Password is not null || change.Remove)
             .Select(change => (change.Key, change.Password))
@@ -380,6 +381,8 @@ public sealed partial class MainWindowViewModel
         await _secretVault.RemoveAsync(ProfileSecretKey.SchemaRegistryPassword(selected.Id), CancellationToken.None)
             .ConfigureAwait(true);
         await _secretVault.RemoveAsync(ProfileSecretKey.ClientCertificatePassword(selected.Id), CancellationToken.None)
+            .ConfigureAwait(true);
+        await _secretVault.RemoveAsync(ProfileSecretKey.ProxyPassword(selected.Id), CancellationToken.None)
             .ConfigureAwait(true);
         coordinator?.CompleteCredentialUpdate(selected.Id);
         if (_writeUnlockProfileId == selected.Id)

@@ -61,6 +61,7 @@ The update dialog distinguishes checksum fetch, download, verification, extracti
    - **Google Cloud Pub/Sub**: a project ID and a service account key, or `gcloud` default credentials.
    - **RabbitMQ**: host, virtual host, user and password. The management plugin must be on (it lists the queues). With TLS, you can add a private certificate authority and a client certificate (mutual TLS).
    - **Apache Kafka**: bootstrap servers, with or without TLS, and optionally a Schema Registry. Sign in with SASL (PLAIN or SCRAM), OAuth client credentials (OIDC, for example Confluent Cloud) or Amazon MSK IAM. With TLS, you can add a private certificate authority and a client certificate (.pfx, .p12 or PEM) for mutual TLS.
+   - **Proxy** (any service): use the computer's proxy settings (the default), connect directly, or set a proxy (http, https or socks5) with an optional user and password. HTTP, gRPC and WebSocket connections go through it: Azure Service Bus needs AMQP over WebSockets for that. Kafka brokers and RabbitMQ's AMQP port always connect directly; the RabbitMQ management API and the Schema Registry use the proxy.
 2. Choose the environment in the top bar and press **Connect**.
 3. **Explorer** shows every queue, topic and subscription with live counters. Select one and press **View DLQ** or **View active**.
 

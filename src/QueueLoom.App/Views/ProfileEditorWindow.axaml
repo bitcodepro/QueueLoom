@@ -406,6 +406,31 @@
           </StackPanel>
         </Border>
 
+        <Border Classes="card">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Proxy" FontSize="16" FontWeight="SemiBold" />
+            <ComboBox ItemsSource="{Binding ProxyModeOptions}" SelectedItem="{Binding SelectedProxyMode}"
+                      HorizontalAlignment="Stretch" AutomationProperties.Name="Proxy">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:ProxyModeOption">
+                  <TextBlock Text="{Binding Label}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <StackPanel Spacing="7" IsVisible="{Binding IsCustomProxy}">
+              <TextBox Text="{Binding ProxyAddress}" PlaceholderText="http://proxy.example.com:3128"
+                       AutomationProperties.Name="Proxy address" />
+              <Grid ColumnDefinitions="*,14,*">
+                <TextBox Grid.Column="0" Text="{Binding ProxyUserName}" PlaceholderText="User (optional)"
+                         AutomationProperties.Name="Proxy user" />
+                <TextBox Grid.Column="2" Text="{Binding ProxyPassword}" PasswordChar="•" PlaceholderText="Password"
+                         AutomationProperties.Name="Proxy password" />
+              </Grid>
+            </StackPanel>
+            <TextBlock Text="{Binding ProxyHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
         <Border Background="{DynamicResource DangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding IsProduction}">
           <TextBlock Text="PROD profiles are always persisted read-only. Write access can only be unlocked temporarily in the active session."
                      Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />

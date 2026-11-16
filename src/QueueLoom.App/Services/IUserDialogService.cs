@@ -81,4 +81,10 @@ public sealed record ProfileEditorResult(
 
     /// <summary>The client certificate was removed, so its stored password is removed too.</summary>
     public bool RemovesClientCertificatePassword { get; init; }
+
+    /// <summary>A new password of the environment's proxy to store, if one was entered.</summary>
+    public string? ProxyPassword { get; init; }
+
+    /// <summary>The proxy no longer signs in, so its stored password is removed.</summary>
+    public bool RemovesProxyPassword { get; init; }
 }

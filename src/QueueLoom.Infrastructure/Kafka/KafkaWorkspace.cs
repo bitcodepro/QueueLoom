@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using QueueLoom.Core.Abstractions;
@@ -105,7 +106,9 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
             var registryPassword = settings.SchemaRegistryUserName is null
                 ? null
                 : await _secretVault.RetrieveForProfileAsync(profile, ProfileSecretKind.SchemaRegistryPassword, cancellationToken).ConfigureAwait(false);
-            _schemaRegistry = new SchemaRegistryClient(registryUrl, settings.SchemaRegistryUserName, registryPassword);
+            // The registry is HTTP and goes through the environment's proxy; librdkafka connects to the brokers directly.
+            var proxy = await ProxyFactory.CreateAsync(profile, _secretVault, cancellationToken).ConfigureAwait(false);
+            _schemaRegistry = new SchemaRegistryClient(registryUrl, settings.SchemaRegistryUserName, registryPassword, RegistryHandler(proxy), ownsHandler: true);
         }
 
         _config = config;
@@ -154,6 +157,14 @@ public sealed partial class KafkaWorkspace : LeasedMessagingWorkspace
     internal Func<KafkaAwsIamSettings, KafkaAwsIamTokens>? CreateIamTokens { get; set; }
 
     /// <summary>OAuth sign-in: librdkafka fetches and renews the token from the endpoint itself (client credentials).</summary>
+    /// <summary>The Schema Registry's handler, through the environment's proxy (or the computer's).</summary>
+    internal static SocketsHttpHandler RegistryHandler(IWebProxy? proxy)
+    {
+        var handler = new SocketsHttpHandler();
+        ProxyFactory.Apply(handler, proxy);
+        return handler;
+    }
+
     internal static void ApplyOAuth(ClientConfig config, KafkaOAuthSettings oauth, string clientSecret)
     {
         config.SaslMechanism = SaslMechanism.OAuthBearer;
