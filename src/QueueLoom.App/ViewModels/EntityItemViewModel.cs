@@ -4,8 +4,25 @@ using QueueLoom.Core.ServiceBus;
 
 namespace QueueLoom.App.ViewModels;
 
-public sealed class EntityItemViewModel
+public sealed class EntityItemViewModel : ObservableObject
 {
+    private bool _isFavorite;
+
+    /// <summary>Marked as a favourite in the connected environment: shown first in Explorer.</summary>
+    public bool IsFavorite
+    {
+        get => _isFavorite;
+        set
+        {
+            if (SetProperty(ref _isFavorite, value))
+            {
+                OnPropertyChanged(nameof(FavoriteGlyph));
+            }
+        }
+    }
+
+    public string FavoriteGlyph => IsFavorite ? "★" : "☆";
+
     public EntityItemViewModel(
         ServiceBusEntityReference reference,
         ServiceBusEntityRuntime runtime,

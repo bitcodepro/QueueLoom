@@ -12,7 +12,7 @@
                  AutomationProperties.Name="Selected entity delivery note" />
     </StackPanel>
 
-    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
+    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
       <TextBox Grid.Column="0" MinWidth="150" Text="{Binding SearchText}" Classes="search"
                PlaceholderText="Filter entities…  (Ctrl+F)" AutomationProperties.Name="Filter entities">
         <TextBox.InnerLeftContent>
@@ -40,6 +40,26 @@
       <Button Grid.Column="18" Content="Open session" Classes="quiet" Command="{Binding OpenSessionCommand}"
               IsVisible="{Binding CanOpenSessionById}"
               ToolTip.Tip="Peek every message of one session, deferred and scheduled ones too, without locking them. Service Bus does not hand a session whose messages are all deferred to View active" />
+      <ToggleButton Grid.Column="20" Content="★ Favourites" Classes="quiet" IsChecked="{Binding ShowFavoritesOnly}"
+                    ToolTip.Tip="Show only the favourites of this environment. Click ☆ on a row to add one; favourites always come first"
+                    AutomationProperties.Name="Show favourites only" />
+      <DropDownButton Grid.Column="22" Content="Recent" IsEnabled="{Binding HasRecentEntities}"
+                      ToolTip.Tip="Queues and subscriptions opened last in this environment" AutomationProperties.Name="Recent entities">
+        <DropDownButton.Flyout>
+          <Flyout Placement="BottomEdgeAlignedRight">
+            <ItemsControl ItemsSource="{Binding RecentEntityItems}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:EntityItemViewModel">
+                  <Button Content="{Binding Reference.DisplayName}" Classes="quiet" HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Left"
+                          Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).OpenRecentEntityCommand}"
+                          CommandParameter="{Binding}" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </Flyout>
+        </DropDownButton.Flyout>
+      </DropDownButton>
       <DropDownButton Grid.Column="12" Content="Manage" IsVisible="{Binding CanManageQueues}"
                       ToolTip.Tip="{Binding ManageQueuesHint}" AutomationProperties.Name="Manage queues">
         <DropDownButton.Flyout>
@@ -124,7 +144,13 @@
                               CommandParameter="{Binding ParentPath}" />
                   </ContextMenu>
                 </Grid.ContextMenu>
-                <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <Button Content="{Binding FavoriteGlyph}" Classes="link" Classes.sorted="{Binding IsFavorite}"
+                          Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).ToggleFavoriteCommand}"
+                          CommandParameter="{Binding}" ToolTip.Tip="Add to or remove from favourites"
+                          AutomationProperties.Name="{Binding Name, StringFormat='Favourite {0}'}" />
+                  <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
+                </StackPanel>
                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1" Margin="{Binding IndentMargin}">
                   <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
                              TextTrimming="CharacterEllipsis" Cursor="Hand"
