@@ -2,10 +2,28 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "AWS.MSK.Auth": {
+        "type": "Transitive",
+        "resolved": "1.1.3",
+        "contentHash": "NC+d4ttPLRaY94gFkywz5uOKeikM+AVQ69NWJETk5F8aqPemYAS4dYA0kQ7P7WnxXlhsvHvmJCHiwWCsNht0nw==",
+        "dependencies": {
+          "AWSSDK.Core": "4.0.3.14",
+          "AWSSDK.SecurityToken": "4.0.5.9",
+          "Microsoft.Extensions.Logging.Abstractions": "9.0.7"
+        }
+      },
       "AWSSDK.Core": {
         "type": "Transitive",
         "resolved": "4.0.102.8",
         "contentHash": "90B9Skhl+ORbtWNXrrmGdGhGvAfZiPmZafRYrB/xHelZjePIwPvXioqz9UiiF1vo21eDLzTnXh5EC4RjbNWsFQ=="
+      },
+      "AWSSDK.SecurityToken": {
+        "type": "Transitive",
+        "resolved": "4.0.5.9",
+        "contentHash": "08Zbm36oR+SLhaVb4vHUUpaPup0MAClHBPROWxWpJePuLALaNijI5d5whdIWxa7x1xI4JD2z/9B7x0xuslM98w==",
+        "dependencies": {
+          "AWSSDK.Core": "[4.0.3.12, 5.0.0)"
+        }
       },
       "AWSSDK.SimpleNotificationService": {
         "type": "Transitive",
@@ -358,6 +376,7 @@
       "queueloom.infrastructure": {
         "type": "Project",
         "dependencies": {
+          "AWS.MSK.Auth": "[1.1.3, )",
           "AWSSDK.SQS": "[4.0.100.15, )",
           "AWSSDK.SimpleNotificationService": "[4.0.100.16, )",
           "Azure.Identity": "[1.21.0, )",
