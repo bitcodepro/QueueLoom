@@ -55,8 +55,7 @@
                 <DataTemplate x:DataType="vm:EntityItemViewModel">
                   <Button Content="{Binding Reference.DisplayName}" Classes="quiet" HorizontalAlignment="Stretch"
                           HorizontalContentAlignment="Left"
-                          Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).OpenRecentEntityCommand}"
-                          CommandParameter="{Binding}" />
+                          Click="OnRecentEntityClick" />
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -155,8 +154,7 @@
                 </Grid.ContextMenu>
                 <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                   <Button Content="{Binding FavoriteGlyph}" Classes="link" Classes.sorted="{Binding IsFavorite}"
-                          Command="{Binding $parent[UserControl].((vm:MainWindowViewModel)DataContext).ToggleFavoriteCommand}"
-                          CommandParameter="{Binding}" ToolTip.Tip="Add to or remove from favourites"
+                          Click="OnFavoriteClick" ToolTip.Tip="Add to or remove from favourites"
                           AutomationProperties.Name="{Binding Name, StringFormat='Favourite {0}'}" />
                   <TextBlock Text="{Binding KindLabel}" Classes="eyebrow" VerticalAlignment="Center" />
                 </StackPanel>

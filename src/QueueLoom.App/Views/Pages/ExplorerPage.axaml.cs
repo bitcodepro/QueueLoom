@@ -11,6 +11,22 @@ public sealed partial class ExplorerPage : UserControl
         InitializeComponent();
     }
 
+    private void OnFavoriteClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        if (sender is Control { DataContext: EntityItemViewModel entity } && DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.ToggleFavoriteCommand.Execute(entity);
+        }
+    }
+
+    private void OnRecentEntityClick(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        if (sender is Control { DataContext: EntityItemViewModel entity } && DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.OpenRecentEntityCommand.Execute(entity);
+        }
+    }
+
     private void OnEntityNameDoubleTapped(object? sender, TappedEventArgs args)
     {
         args.Handled = true;
