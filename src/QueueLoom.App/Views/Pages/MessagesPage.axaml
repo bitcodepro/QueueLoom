@@ -214,12 +214,24 @@
                           MinWidth="0" Padding="0" VerticalAlignment="Center"
                           ToolTip.Tip="Select all dead-lettered messages in the list"
                           AutomationProperties.Name="Select all messages" />
-                <TextBlock Grid.Column="1" Text="SEQ" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="ENV" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="3" Text="SOURCE" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="4" Text="MESSAGE" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="5" Text="REASON" Classes="eyebrow" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="6" Text="ENQUEUED" Classes="eyebrow" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="{Binding SequenceHeader}" Classes="columnHeader"
+                        Command="{Binding SortMessagesCommand}" CommandParameter="Sequence"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip.Tip="Sort by this column; click again to reverse, a third time for arrival order" />
+                <Button Grid.Column="2" Content="{Binding EnvironmentHeader}" Classes="columnHeader"
+                        Command="{Binding SortMessagesCommand}" CommandParameter="Environment"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip.Tip="Sort by this column; click again to reverse, a third time for arrival order" />
+                <Button Grid.Column="3" Content="{Binding SourceHeader}" Classes="columnHeader"
+                        Command="{Binding SortMessagesCommand}" CommandParameter="Source"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip.Tip="Sort by this column; click again to reverse, a third time for arrival order" />
+                <Button Grid.Column="4" Content="{Binding MessageHeader}" Classes="columnHeader"
+                        Command="{Binding SortMessagesCommand}" CommandParameter="Message"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip.Tip="Sort by this column; click again to reverse, a third time for arrival order" />
+                <Button Grid.Column="5" Content="{Binding ReasonHeader}" Classes="columnHeader"
+                        Command="{Binding SortMessagesCommand}" CommandParameter="Reason"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip.Tip="Sort by this column; click again to reverse, a third time for arrival order" />
+                <Button Grid.Column="6" Content="{Binding EnqueuedHeader}" Classes="columnHeader"
+                        Command="{Binding SortMessagesCommand}" CommandParameter="Enqueued"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip.Tip="Sort by this column; click again to reverse, a third time for arrival order" />
               </Grid>
             </Border>
             <StackPanel Grid.Row="1">
@@ -307,7 +319,7 @@
                                  Icon="{x:Static controls:Icons.Messages}"
                                  Title="No messages loaded"
                                  Description="{Binding EmptyMessagesText}" />
-            <ListBox Grid.Row="2" ItemsSource="{Binding Messages}" SelectedItem="{Binding SelectedMessage}" Margin="6"
+            <ListBox Grid.Row="2" ItemsSource="{Binding MessageList}" SelectedItem="{Binding SelectedMessage}" Margin="6"
                      Classes="messageRows" IsEnabled="{Binding !IsBusy}" IsVisible="{Binding HasMessages}"
                      AutomationProperties.Name="Messages">
               <ListBox.ItemTemplate>
