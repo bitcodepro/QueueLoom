@@ -14,6 +14,7 @@ public sealed partial class MainWindowViewModel
             if (SetProperty(ref _selectedEntity, value))
             {
                 OnPropertyChanged(nameof(HasSelectedEntity));
+                SessionStateText = string.Empty;
                 NotifyBrowseDeliveryNotes();
                 OnPropertyChanged(nameof(MonitorTargetPreview));
                 NotifyCommandStates();
@@ -47,6 +48,8 @@ public sealed partial class MainWindowViewModel
             if (SetProperty(ref _sessionIdToOpen, value ?? string.Empty))
             {
                 OpenSessionCommand.NotifyCanExecuteChanged();
+                NotifySessionStateCommands();
+                SessionStateText = string.Empty;
             }
         }
     }

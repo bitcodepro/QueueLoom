@@ -118,26 +118,7 @@ public sealed partial class AzureServiceBusWorkspace
         string sessionId,
         CancellationToken cancellationToken)
     {
-        var client = GetMessagingClient();
-        var options = new ServiceBusSessionReceiverOptions
-        {
-            ReceiveMode = ServiceBusReceiveMode.PeekLock,
-            PrefetchCount = 0
-        };
-        ServiceBusSessionReceiver receiver;
-        try
-        {
-            receiver = request.Source.Kind == ServiceBusEntityKind.Queue
-                ? await client.AcceptSessionAsync(request.Source.Name, sessionId, options, cancellationToken).ConfigureAwait(false)
-                : await client.AcceptSessionAsync(request.Source.TopicName!, request.Source.Name, sessionId, options, cancellationToken)
-                    .ConfigureAwait(false);
-        }
-        catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.SessionCannotBeLocked)
-        {
-            throw new InvalidOperationException(
-                $"Session '{sessionId}' of {request.Source.DisplayName} is held by another consumer, so it cannot be opened now. Try again once it is released.",
-                exception);
-        }
+        var receiver = await AcceptNamedSessionAsync(request.Source, sessionId, cancellationToken).ConfigureAwait(false);
 
         Exception? browseError = null;
         try
@@ -177,6 +158,51 @@ public sealed partial class AzureServiceBusWorkspace
         {
             await CloseBrowsedSessionsAsync([receiver], browseError).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Locks one named session of a queue or subscription; the caller disposes the receiver to release it.</summary>
+    private async Task<ServiceBusSessionReceiver> AcceptNamedSessionAsync(
+        ServiceBusEntityReference source,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var client = GetMessagingClient();
+        var options = new ServiceBusSessionReceiverOptions
+        {
+            ReceiveMode = ServiceBusReceiveMode.PeekLock,
+            PrefetchCount = 0
+        };
+        try
+        {
+            return source.Kind == ServiceBusEntityKind.Queue
+                ? await client.AcceptSessionAsync(source.Name, sessionId, options, cancellationToken).ConfigureAwait(false)
+                : await client.AcceptSessionAsync(source.TopicName!, source.Name, sessionId, options, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (ServiceBusException exception) when (exception.Reason == ServiceBusFailureReason.SessionCannotBeLocked)
+        {
+            throw new InvalidOperationException(
+                $"Session '{sessionId}' of {source.DisplayName} is held by another consumer, so it cannot be opened now. Try again once it is released.",
+                exception);
+        }
+    }
+
+    /// <summary>Reads a session's state. The session is locked only while it is read; its messages are not touched.</summary>
+    public async Task<byte[]?> GetSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        await using var receiver = await AcceptNamedSessionAsync(source, sessionId, cancellationToken).ConfigureAwait(false);
+        var state = await receiver.GetSessionStateAsync(cancellationToken).ConfigureAwait(false);
+        return state?.ToArray();
+    }
+
+    /// <summary>Removes a session's state, for example a consumer's stuck workflow step. Needs write access.</summary>
+    public async Task ClearSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        EnsureWriteAllowed();
+        await using var receiver = await AcceptNamedSessionAsync(source, sessionId, cancellationToken).ConfigureAwait(false);
+        await receiver.SetSessionStateAsync(null, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

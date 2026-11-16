@@ -10,9 +10,12 @@
       <TextBlock Text="{Binding SelectedEntityDeliveryNote}" Classes="warning" FontSize="12" TextWrapping="Wrap"
                  IsVisible="{Binding HasSelectedEntityDeliveryNote}"
                  AutomationProperties.Name="Selected entity delivery note" />
+      <SelectableTextBlock Text="{Binding SessionStateText, StringFormat='Session state: {0}'}" FontSize="12" TextWrapping="Wrap"
+                           FontFamily="{StaticResource MonoFontFamily}" IsVisible="{Binding HasSessionStateText}"
+                           AutomationProperties.Name="Session state" />
     </StackPanel>
 
-    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
+    <Grid Grid.Row="2" ColumnDefinitions="*,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto,8,Auto">
       <TextBox Grid.Column="0" MinWidth="150" Text="{Binding SearchText}" Classes="search"
                PlaceholderText="Filter entities…  (Ctrl+F)" AutomationProperties.Name="Filter entities">
         <TextBox.InnerLeftContent>
@@ -40,6 +43,12 @@
       <Button Grid.Column="18" Content="Open session" Classes="quiet" Command="{Binding OpenSessionCommand}"
               IsVisible="{Binding CanOpenSessionById}"
               ToolTip.Tip="Peek every message of one session, deferred and scheduled ones too, without locking them. Service Bus does not hand a session whose messages are all deferred to View active" />
+      <Button Grid.Column="20" Content="Session state" Classes="quiet" Command="{Binding ShowSessionStateCommand}"
+              IsVisible="{Binding CanOpenSessionById}"
+              ToolTip.Tip="Read the state a consumer stored on this session. The session is locked only while it is read" />
+      <Button Grid.Column="22" Content="Clear state…" Classes="quiet" Command="{Binding ClearSessionStateCommand}"
+              IsVisible="{Binding CanOpenSessionById}"
+              ToolTip.Tip="Remove this session's state, for example a stuck workflow step. Needs write access; messages are not changed" />
       <DropDownButton Grid.Column="12" Content="Manage" IsVisible="{Binding CanManageQueues}"
                       ToolTip.Tip="{Binding ManageQueuesHint}" AutomationProperties.Name="Manage queues">
         <DropDownButton.Flyout>
