@@ -169,7 +169,9 @@ public sealed partial class ViewModelStateTests
         using var directory = new TemporaryDirectory();
         var profileId = Guid.NewGuid();
         var tenOClock = DateTimeOffset.Parse("2026-10-10T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
-        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"));
+        // The store's clock is the range's end: on the real clock, the fixed samples would one day pass the retention and
+        // be compacted away.
+        var store = new JsonLinesDeadLetterHistoryStore(Path.Combine(directory.Path, "history.jsonl"), new FixedClock(tenOClock.AddHours(6).AddMinutes(2)));
         await store.AppendAsync(Observed(profileId, tenOClock, EstimatedThrough("orders", 100, "reader", tenOClock)));
         await store.AppendAsync(Observed(profileId, tenOClock.AddMinutes(5), EstimatedThrough("orders", 0, "reader", tenOClock.AddMinutes(-5))));
         var to = tenOClock.AddHours(6).AddMinutes(2);
@@ -296,6 +298,11 @@ public sealed partial class ViewModelStateTests
 
     private static ServiceBusProfile ReportedProfile() =>
         ServiceBusProfile.CreateNew("Reported", EnvironmentKind.Test, new(AuthenticationKind.KafkaNone)) with { Provider = MessagingProvider.Kafka, Kafka = new("broker.invalid:9092") };
+
+    private sealed class FixedClock(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 
     // Reports an estimated dead-letter count through a reader at a point in time, as Pub/Sub's Cloud Monitoring does.
     private sealed class ReportedDeadLetterWorkspace(QueueLoomPaths paths) : LeasedMessagingWorkspace(new DeadLetterJsonBackupStore(paths), null)
