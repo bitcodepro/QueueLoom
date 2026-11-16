@@ -82,6 +82,14 @@ public interface IServiceBusWorkspace : IAsyncDisposable
     Task<string> StartNativeRedriveAsync(NativeRedrivePlan plan, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Only Amazon SQS moves a dead-letter queue back to its source queues itself.");
 
+    /// <summary>Azure Service Bus: the state a consumer stored on a session, or null when it has none.</summary>
+    Task<byte[]?> GetSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Azure Service Bus sessions keep a state.");
+
+    /// <summary>Azure Service Bus: removes a session's state; its messages are not touched.</summary>
+    Task ClearSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Only Azure Service Bus sessions keep a state.");
+
     /// <summary>What queue management this service offers; null when it offers none.</summary>
     QueueManagementCapabilities? QueueManagement => null;
 

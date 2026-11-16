@@ -133,6 +133,12 @@ public sealed class MultiProviderWorkspace : IServiceBusWorkspace, ICleanupWarni
 
     public QueueManagementCapabilities? QueueManagement => _current?.QueueManagement;
 
+    public Task<byte[]?> GetSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default) =>
+        WithWorkspaceAsync(workspace => workspace.GetSessionStateAsync(source, sessionId, cancellationToken), cancellationToken);
+
+    public Task ClearSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default) =>
+        WithWorkspaceAsync(workspace => workspace.ClearSessionStateAsync(source, sessionId, cancellationToken), cancellationToken);
+
     public Task<QueueSettings> GetQueueSettingsAsync(string queue, CancellationToken cancellationToken = default) =>
         WithWorkspaceAsync(workspace => workspace.GetQueueSettingsAsync(queue, cancellationToken), cancellationToken);
 

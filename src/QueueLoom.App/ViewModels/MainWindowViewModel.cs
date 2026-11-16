@@ -251,6 +251,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         OpenSessionCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening session", OpenSessionByIdAsync, token),
             () => !IsBusy && CanOpenSessionById && BrowseMessagesRequest.IsValidSessionId(SessionIdToOpen));
+        InitializeSessionStateCommands();
         BrowseDlqSourceCommand = _commands.Create(
             token => RunWorkspaceOperationAsync("Opening DLQ", BrowseSelectedDlqSourceAsync, token),
             () => !IsBusy && SelectedDlqSource is { CanBrowse: true });
@@ -701,6 +702,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         BrowseDlqSourceCommand.NotifyCanExecuteChanged();
         OpenSessionCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanOpenSessionById));
+        NotifySessionStateCommands();
         PurgeEnvironmentDeadLettersCommand.NotifyCanExecuteChanged();
         PurgeTopicDeadLettersCommand.NotifyCanExecuteChanged();
         PurgeSelectedDeadLettersCommand.NotifyCanExecuteChanged();
