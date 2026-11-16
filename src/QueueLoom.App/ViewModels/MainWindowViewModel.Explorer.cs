@@ -155,21 +155,23 @@ public sealed partial class MainWindowViewModel
         var query = SearchText.Trim();
         var selection = SelectedEntity?.Reference;
         Entities.Clear();
-        foreach (var item in OrderEntities(_allEntities.Where(item =>
+        foreach (var item in PinFavorites(OrderEntities(_allEntities.Where(item =>
                      query.Length == 0 ||
                      item.Reference.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                     item.KindLabel.Contains(query, StringComparison.OrdinalIgnoreCase))))
+                     item.KindLabel.Contains(query, StringComparison.OrdinalIgnoreCase)))))
         {
             Entities.Add(item);
         }
         SelectedEntity = selection is null
             ? Entities.FirstOrDefault()
             : Entities.FirstOrDefault(item => item.Reference == selection) ?? Entities.FirstOrDefault();
+        RefreshRecentEntityItems();
     }
 
     private Task BrowseSelectedEntityAsync(ServiceBusSubQueue subQueue, CancellationToken cancellationToken)
     {
         var entity = SelectedEntity ?? throw new InvalidOperationException("Select a queue or subscription first.");
+        RememberEntity(entity);
         var profile = GetConnectedProfileItem();
         return BrowseAsync(profile, entity.Reference, subQueue, cancellationToken);
     }

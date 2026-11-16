@@ -41,6 +41,12 @@ public sealed record AppSettings(
     /// <summary>Backups older than this many days are deleted at start-up; 0 keeps them forever.</summary>
     public int BackupRetentionDays { get; init; }
 
+    /// <summary>Queues, topics and subscriptions marked as favourites; they come first in Explorer.</summary>
+    public IReadOnlyList<FavoriteEntity> FavoriteEntities { get; init; } = [];
+
+    /// <summary>The entities opened last in each environment, newest first.</summary>
+    public IReadOnlyList<FavoriteEntity> RecentEntities { get; init; } = [];
+
     public AppSettings Normalize() => this with
     {
         MonitorIntervalSeconds = Math.Clamp(
@@ -60,7 +66,9 @@ public sealed record AppSettings(
             .Take(MaximumSavedSearches)
             .ToArray(),
         AlertWebhookUrl = IsValidWebhookUrl(AlertWebhookUrl) ? AlertWebhookUrl!.Trim() : null,
-        BackupRetentionDays = Math.Clamp(BackupRetentionDays, 0, MaximumBackupRetentionDays)
+        BackupRetentionDays = Math.Clamp(BackupRetentionDays, 0, MaximumBackupRetentionDays),
+        FavoriteEntities = FavoriteEntity.NormalizeFavorites(FavoriteEntities),
+        RecentEntities = FavoriteEntity.NormalizeRecent(RecentEntities)
     };
 
     /// <summary>Only https addresses are accepted: alerts carry environment and queue names.</summary>

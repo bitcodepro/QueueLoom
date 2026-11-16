@@ -87,6 +87,8 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                     AlertWebhookUrl = updated.AlertWebhookUrl,
                     ProtobufSchemaPath = updated.ProtobufSchemaPath,
                     BackupRetentionDays = updated.BackupRetentionDays,
+                    FavoriteEntities = updated.FavoriteEntities.ToList(),
+                    RecentEntities = updated.RecentEntities.ToList(),
                     // Preferences written by another version are kept instead of being dropped on every save.
                     AdditionalFields = additionalFields
                 },
@@ -178,7 +180,9 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
                 KeepInTray = document.KeepInTray,
                 AlertWebhookUrl = document.AlertWebhookUrl,
                 ProtobufSchemaPath = document.ProtobufSchemaPath,
-                BackupRetentionDays = document.BackupRetentionDays
+                BackupRetentionDays = document.BackupRetentionDays,
+                FavoriteEntities = document.FavoriteEntities ?? [],
+                RecentEntities = document.RecentEntities ?? []
             }.Normalize(), FileState.Read,
                 // Cloned: the parsed document is disposed when this method returns.
                 document.AdditionalFields?.ToDictionary(field => field.Key, field => field.Value.Clone()));
@@ -200,6 +204,8 @@ public sealed class JsonAppSettingsStore(QueueLoomPaths paths) : IDisposable
         public string? AlertWebhookUrl { get; set; }
         public string? ProtobufSchemaPath { get; set; }
         public int BackupRetentionDays { get; set; }
+        public List<FavoriteEntity>? FavoriteEntities { get; set; }
+        public List<FavoriteEntity>? RecentEntities { get; set; }
 
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalFields { get; set; }

@@ -174,6 +174,14 @@ public sealed partial class MainWindow : Window
                 TrackPreferenceSave(() =>
                     _settingsStore.UpdateAsync(settings => settings with { BackupRetentionDays = retention }));
                 break;
+            case nameof(MainWindowViewModel.FavoriteEntities):
+                var favorites = _viewModel.FavoriteEntities;
+                TrackPreferenceSave(() => _settingsStore.UpdateAsync(settings => settings with { FavoriteEntities = favorites }));
+                break;
+            case nameof(MainWindowViewModel.RecentEntities):
+                var recent = _viewModel.RecentEntities;
+                TrackPreferenceSave(() => _settingsStore.UpdateAsync(settings => settings with { RecentEntities = recent }));
+                break;
             case nameof(MainWindowViewModel.SavedSearches):
                 var searches = _viewModel.CaptureSavedSearchChanges();
                 TrackPreferenceSave(() => _viewModel.PersistSavedSearchesAsync(searches, merge =>
