@@ -42,6 +42,13 @@ public static partial class ProfileValidator
         ValidateAccessMode(profile, errors);
         ValidateProvider(profile, errors);
         ValidateAuthentication(profile, errors);
+        ValidateProxy(profile.Proxy, errors);
+        if (profile.Proxy?.Mode == ProxyMode.Custom && profile.Provider == MessagingProvider.AzureServiceBus && !profile.UseAmqpWebSockets)
+        {
+            errors.Add(new ValidationError("profile.proxy.websockets",
+                "Azure Service Bus goes through a proxy only over AMQP WebSockets. Turn on AMQP over WebSockets.",
+                nameof(profile.Proxy)));
+        }
         if (profile.UseAmqpWebSockets && profile.Provider != MessagingProvider.AzureServiceBus)
         {
             errors.Add(new ValidationError(
@@ -306,6 +313,31 @@ public static partial class ProfileValidator
         {
             errors.Add(new ValidationError("profile.rabbitmq.port.invalid", "Ports must be between 1 and 65535.", nameof(profile.RabbitMq)));
         }
+        ValidateTls(settings.Tls, settings.UseTls, "rabbitmq", nameof(profile.RabbitMq), errors);
+    }
+
+    private static void ValidateTls(TlsClientSettings? tls, bool useTls, string provider, string field, ICollection<ValidationError> errors)
+    {
+        if (tls is null || tls.IsEmpty)
+        {
+            return;
+        }
+        if (!useTls)
+        {
+            errors.Add(new ValidationError($"profile.{provider}.tls.off",
+                "A certificate authority or client certificate needs TLS. Turn on TLS or clear the certificate files.", field));
+        }
+        if (new[] { tls.CaCertificatePath, tls.ClientCertificatePath, tls.ClientKeyPath }.Any(path => path is not null &&
+            (string.IsNullOrWhiteSpace(path) || path != path.Trim() || path.Any(char.IsControl))))
+        {
+            errors.Add(new ValidationError($"profile.{provider}.tls.path_invalid",
+                "Certificate file paths cannot be blank, start or end with spaces, or contain control characters.", field));
+        }
+        if (tls.ClientKeyPath is not null && (tls.ClientCertificatePath is null || tls.IsPkcs12))
+        {
+            errors.Add(new ValidationError($"profile.{provider}.tls.key_without_pem",
+                "A separate key file goes with a PEM client certificate; a .pfx or .p12 file already holds its key.", field));
+        }
     }
 
     private static void ValidateKafka(ServiceBusProfile profile, ICollection<ValidationError> errors, bool allowLegacyRegistryUrl)
@@ -328,6 +360,24 @@ public static partial class ProfileValidator
             errors.Add(new ValidationError("profile.kafka.sasl.incomplete",
                 "SASL sign-in needs a mechanism and a user name.", nameof(profile.Kafka)));
         }
+        ValidateTls(settings.Tls, settings.UseTls, "kafka", nameof(profile.Kafka), errors);
+        if (profile.Authentication?.Kind == AuthenticationKind.KafkaOAuth)
+        {
+            ValidateKafkaOAuth(settings.OAuth, errors);
+        }
+        if (profile.Authentication?.Kind == AuthenticationKind.KafkaAwsIam)
+        {
+            if (settings.AwsIam is null || !AwsRegionPattern().IsMatch(settings.AwsIam.Region))
+            {
+                errors.Add(new ValidationError("profile.kafka.aws_iam.region",
+                    "Amazon MSK IAM sign-in needs the cluster's region, for example eu-west-1.", nameof(profile.Kafka)));
+            }
+            if (!settings.UseTls)
+            {
+                errors.Add(new ValidationError("profile.kafka.aws_iam.tls",
+                    "Amazon MSK accepts IAM sign-in only over TLS (port 9098 inside AWS, 9198 over public access). Turn on TLS.", nameof(profile.Kafka)));
+            }
+        }
         if (settings.DeadLetterSuffixes?.Any(suffix => string.IsNullOrWhiteSpace(suffix) || suffix.Any(char.IsWhiteSpace)) == true)
         {
             errors.Add(new ValidationError("profile.kafka.dlq_suffix.invalid",
@@ -346,6 +396,57 @@ public static partial class ProfileValidator
                 "Enter the Schema Registry URL for its user name.", nameof(profile.Kafka)));
         }
     }
+
+    private static void ValidateProxy(ProxySettings? proxy, ICollection<ValidationError> errors)
+    {
+        if (proxy is null)
+        {
+            return;
+        }
+        var custom = proxy.Mode == ProxyMode.Custom;
+        if (custom != proxy.Address is not null || custom && !IsProxyAddress(proxy.Address!))
+        {
+            errors.Add(new ValidationError("profile.proxy.address",
+                custom
+                    ? "Enter the proxy as http://, https:// or socks5:// host and port, without a path or credentials."
+                    : "Only a custom proxy has an address.",
+                nameof(ServiceBusProfile.Proxy)));
+        }
+        if (proxy.UserName is not null && (!custom || string.IsNullOrWhiteSpace(proxy.UserName) || proxy.UserName.Any(char.IsControl)))
+        {
+            errors.Add(new ValidationError("profile.proxy.user",
+                "A proxy user name needs a custom proxy and must not be blank.", nameof(ServiceBusProfile.Proxy)));
+        }
+    }
+
+    private static bool IsProxyAddress(string address) =>
+        Uri.TryCreate(address.Trim(), UriKind.Absolute, out var uri) &&
+        uri.Scheme is "http" or "https" or "socks4" or "socks4a" or "socks5" &&
+        string.IsNullOrEmpty(uri.UserInfo) && uri.AbsolutePath == "/" && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
+
+    private static void ValidateKafkaOAuth(KafkaOAuthSettings? oauth, ICollection<ValidationError> errors)
+    {
+        if (oauth is null || !Uri.TryCreate(oauth.TokenEndpoint, UriKind.Absolute, out var endpoint) ||
+            endpoint.Scheme != Uri.UriSchemeHttps && !(endpoint.Scheme == Uri.UriSchemeHttp && endpoint.IsLoopback) ||
+            !string.IsNullOrEmpty(endpoint.UserInfo))
+        {
+            errors.Add(new ValidationError("profile.kafka.oauth.endpoint",
+                "OAuth sign-in needs the token endpoint as an https:// address without credentials (http:// only for localhost).", nameof(ServiceBusProfile.Kafka)));
+        }
+        if (oauth is null || string.IsNullOrWhiteSpace(oauth.ClientId) || oauth.ClientId.Any(char.IsControl))
+        {
+            errors.Add(new ValidationError("profile.kafka.oauth.client",
+                "OAuth sign-in needs the client ID.", nameof(ServiceBusProfile.Kafka)));
+        }
+        if (oauth?.Extensions is { } extensions && !KafkaOAuthExtensionsPattern().IsMatch(extensions))
+        {
+            errors.Add(new ValidationError("profile.kafka.oauth.extensions",
+                "Write SASL extensions as name=value pairs separated by commas, for example logicalCluster=lkc-abc12,identityPoolId=pool-XyZ1.", nameof(ServiceBusProfile.Kafka)));
+        }
+    }
+
+    [GeneratedRegex("^[A-Za-z]+=[\\x21-\\x2B\\x2D-\\x7E]+(,[A-Za-z]+=[\\x21-\\x2B\\x2D-\\x7E]+)*$")]
+    private static partial Regex KafkaOAuthExtensionsPattern();
 
     [GeneratedRegex("^[a-z]{2}(-[a-z]+)+-[0-9]+$")]
     private static partial Regex AwsRegionPattern();

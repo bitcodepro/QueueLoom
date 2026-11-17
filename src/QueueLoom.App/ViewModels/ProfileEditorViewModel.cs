@@ -49,6 +49,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         _existing = existing;
         EmulatorManagementPort = existing?.EmulatorManagementPort ?? 5300;
         UseAmqpWebSockets = existing?.UseAmqpWebSockets ?? false;
+        InitializeProxy(existing?.Proxy);
         _name = existing?.Name ?? string.Empty;
         _environment = existing?.Environment ?? EnvironmentKind.Development;
         _customEnvironmentName = existing?.CustomEnvironmentName ?? string.Empty;
@@ -409,6 +410,7 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         }
 
         var (profile, newSecret) = built.Value;
+        profile = profile with { Proxy = BuildProxy() };
         var validation = ProfileValidator.Validate(profile);
         if (!validation.IsValid)
         {
@@ -417,10 +419,16 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         }
 
         var (registryPassword, removeRegistryPassword) = SchemaRegistrySecret(profile);
+        var (certificatePassword, removeCertificatePassword) = ClientCertificateSecret(profile);
+        var (proxyPassword, removeProxyPassword) = ProxySecret(profile);
         result = new ProfileEditorResult(profile, newSecret, newSecret is not null)
         {
             SchemaRegistryPassword = registryPassword,
-            RemovesSchemaRegistryPassword = removeRegistryPassword
+            RemovesSchemaRegistryPassword = removeRegistryPassword,
+            ClientCertificatePassword = certificatePassword,
+            RemovesClientCertificatePassword = removeCertificatePassword,
+            ProxyPassword = proxyPassword,
+            RemovesProxyPassword = removeProxyPassword
         };
         return true;
     }
@@ -574,6 +582,8 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(AwsAccessKeyHint));
         OnPropertyChanged(nameof(GoogleKeySummary));
         OnPropertyChanged(nameof(IsKafkaSasl));
+        OnPropertyChanged(nameof(IsKafkaOAuth));
+        OnPropertyChanged(nameof(IsKafkaAwsIam));
         OnPropertyChanged(nameof(BrokerPasswordHint));
     }
 
@@ -588,6 +598,8 @@ public sealed partial class ProfileEditorViewModel : ObservableObject
         AuthenticationKind.RabbitMqPassword => "User name and password",
         AuthenticationKind.KafkaNone => "No sign-in",
         AuthenticationKind.KafkaSaslPassword => "SASL user name and password",
+        AuthenticationKind.KafkaOAuth => "OAuth client credentials (OIDC)",
+        AuthenticationKind.KafkaAwsIam => "Amazon MSK IAM",
         _ => kind.ToString()
     };
 

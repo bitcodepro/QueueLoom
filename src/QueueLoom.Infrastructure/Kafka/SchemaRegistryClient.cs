@@ -54,10 +54,10 @@ internal sealed class SchemaRegistryClient : IDisposable
     }
 
     public SchemaRegistryClient(string url, string? userName, string? password, HttpMessageHandler? handler = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null, bool ownsHandler = false)
     {
         _time = time ?? TimeProvider.System;
-        _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+        _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: ownsHandler);
         _http.BaseAddress = new Uri(url.TrimEnd('/') + "/");
         _http.Timeout = Timeout;
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.schemaregistry.v1+json"));

@@ -243,6 +243,26 @@
               </StackPanel>
               <CheckBox Grid.Column="2" IsChecked="{Binding RabbitUseTls}" Content="Use TLS (amqps and https)" VerticalAlignment="Bottom" />
             </Grid>
+            <StackPanel Spacing="7" IsVisible="{Binding RabbitUseTls}">
+              <TextBlock Text="CERTIFICATES (OPTIONAL)" Classes="eyebrow" />
+              <Grid ColumnDefinitions="*,8,Auto" RowDefinitions="Auto,8,Auto,8,Auto">
+                <TextBox Grid.Row="0" Text="{Binding TlsCaCertificatePath}" PlaceholderText="Certificate authority (PEM)"
+                         AutomationProperties.Name="Certificate authority file" />
+                <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Tag="ca" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the certificate authority file" />
+                <TextBox Grid.Row="2" Text="{Binding TlsClientCertificatePath}" PlaceholderText="Client certificate (.pfx, .p12 or PEM)"
+                         AutomationProperties.Name="Client certificate file" />
+                <Button Grid.Row="2" Grid.Column="2" Content="Browse…" Tag="certificate" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client certificate file" />
+                <TextBox Grid.Row="4" Text="{Binding TlsClientKeyPath}" PlaceholderText="Client key (PEM, only if separate)"
+                         AutomationProperties.Name="Client key file" />
+                <Button Grid.Row="4" Grid.Column="2" Content="Browse…" Tag="key" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client key file" />
+              </Grid>
+              <TextBox Text="{Binding TlsClientCertificatePassword}" PasswordChar="•" PlaceholderText="Certificate or key password"
+                       AutomationProperties.Name="Client certificate password" />
+              <TextBlock Text="{Binding TlsHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
             <Grid ColumnDefinitions="*,14,*">
               <StackPanel Grid.Column="0" Spacing="7">
                 <TextBlock Text="USER NAME" Classes="eyebrow" />
@@ -269,6 +289,26 @@
                        AutomationProperties.Name="Bootstrap servers" />
             </StackPanel>
             <CheckBox IsChecked="{Binding KafkaUseTls}" Content="Use TLS" />
+            <StackPanel Spacing="7" IsVisible="{Binding KafkaUseTls}">
+              <TextBlock Text="CERTIFICATES (OPTIONAL)" Classes="eyebrow" />
+              <Grid ColumnDefinitions="*,8,Auto" RowDefinitions="Auto,8,Auto,8,Auto">
+                <TextBox Grid.Row="0" Text="{Binding TlsCaCertificatePath}" PlaceholderText="Certificate authority (PEM)"
+                         AutomationProperties.Name="Certificate authority file" />
+                <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Tag="ca" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the certificate authority file" />
+                <TextBox Grid.Row="2" Text="{Binding TlsClientCertificatePath}" PlaceholderText="Client certificate (.pfx, .p12 or PEM)"
+                         AutomationProperties.Name="Client certificate file" />
+                <Button Grid.Row="2" Grid.Column="2" Content="Browse…" Tag="certificate" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client certificate file" />
+                <TextBox Grid.Row="4" Text="{Binding TlsClientKeyPath}" PlaceholderText="Client key (PEM, only if separate)"
+                         AutomationProperties.Name="Client key file" />
+                <Button Grid.Row="4" Grid.Column="2" Content="Browse…" Tag="key" Click="BrowseTlsFileClick"
+                        AutomationProperties.Name="Choose the client key file" />
+              </Grid>
+              <TextBox Text="{Binding TlsClientCertificatePassword}" PasswordChar="•" PlaceholderText="Certificate or key password"
+                       AutomationProperties.Name="Client certificate password" />
+              <TextBlock Text="{Binding TlsHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
             <StackPanel Spacing="12" IsVisible="{Binding IsKafkaSasl}">
               <Grid ColumnDefinitions="160,14,*,14,*">
                 <StackPanel Grid.Column="0" Spacing="7">
@@ -286,6 +326,52 @@
                 </StackPanel>
               </Grid>
               <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Spacing="12" IsVisible="{Binding IsKafkaOAuth}">
+              <StackPanel Spacing="7">
+                <TextBlock Text="TOKEN ENDPOINT" Classes="eyebrow" />
+                <TextBox Text="{Binding KafkaOAuthTokenEndpoint}" PlaceholderText="https://login.example.com/oauth2/token"
+                         AutomationProperties.Name="OAuth token endpoint" />
+              </StackPanel>
+              <Grid ColumnDefinitions="*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="CLIENT ID" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaOAuthClientId}" AutomationProperties.Name="OAuth client ID" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="CLIENT SECRET" Classes="eyebrow" />
+                  <TextBox Text="{Binding BrokerPassword}" PasswordChar="•" AutomationProperties.Name="OAuth client secret" />
+                </StackPanel>
+              </Grid>
+              <Grid ColumnDefinitions="*,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="SCOPE (OPTIONAL)" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaOAuthScope}" AutomationProperties.Name="OAuth scope" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="SASL EXTENSIONS (OPTIONAL)" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaOAuthExtensions}" PlaceholderText="logicalCluster=lkc-…,identityPoolId=pool-…"
+                           AutomationProperties.Name="SASL extensions" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="{Binding BrokerPasswordHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="SASL/OAUTHBEARER with the client credentials flow; the token is fetched and renewed automatically. Confluent Cloud needs the logicalCluster and identityPoolId extensions." />
+            </StackPanel>
+            <StackPanel Spacing="12" IsVisible="{Binding IsKafkaAwsIam}">
+              <Grid ColumnDefinitions="160,14,*">
+                <StackPanel Grid.Column="0" Spacing="7">
+                  <TextBlock Text="REGION" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaAwsRegion}" PlaceholderText="eu-west-1" AutomationProperties.Name="Amazon MSK region" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="7">
+                  <TextBlock Text="AWS PROFILE (OPTIONAL)" Classes="eyebrow" />
+                  <TextBox Text="{Binding KafkaAwsProfileName}" PlaceholderText="default credential chain"
+                           AutomationProperties.Name="AWS profile" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                         Text="Signs in with the AWS credentials of this computer: environment variables, the shared credentials file or SSO, or the named profile. Use TLS and the cluster's IAM port (9098, or 9198 for public access)." />
             </StackPanel>
             <StackPanel Spacing="7">
               <TextBlock Text="DEAD-LETTER TOPICS END WITH" Classes="eyebrow" />
@@ -317,6 +403,31 @@
               </Grid>
               <TextBlock Text="{Binding SchemaRegistryHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
             </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <Border Classes="card">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Proxy" FontSize="16" FontWeight="SemiBold" />
+            <ComboBox ItemsSource="{Binding ProxyModeOptions}" SelectedItem="{Binding SelectedProxyMode}"
+                      HorizontalAlignment="Stretch" AutomationProperties.Name="Proxy">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:ProxyModeOption">
+                  <TextBlock Text="{Binding Label}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <StackPanel Spacing="7" IsVisible="{Binding IsCustomProxy}">
+              <TextBox Text="{Binding ProxyAddress}" PlaceholderText="http://proxy.example.com:3128"
+                       AutomationProperties.Name="Proxy address" />
+              <Grid ColumnDefinitions="*,14,*">
+                <TextBox Grid.Column="0" Text="{Binding ProxyUserName}" PlaceholderText="User (optional)"
+                         AutomationProperties.Name="Proxy user" />
+                <TextBox Grid.Column="2" Text="{Binding ProxyPassword}" PasswordChar="•" PlaceholderText="Password"
+                         AutomationProperties.Name="Proxy password" />
+              </Grid>
+            </StackPanel>
+            <TextBlock Text="{Binding ProxyHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
 

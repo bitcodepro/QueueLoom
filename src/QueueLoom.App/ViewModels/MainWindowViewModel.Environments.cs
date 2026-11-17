@@ -176,24 +176,27 @@ public sealed partial class MainWindowViewModel
             previousConnectionString = await _secretVault.RetrieveAsync(secretKey, cancellationToken)
                 .ConfigureAwait(true);
         }
-        var registryKey = ProfileSecretKey.SchemaRegistryPassword(result.Profile.Id);
-        var changesRegistryPassword = result.SchemaRegistryPassword is not null || result.RemovesSchemaRegistryPassword;
+        // Passwords kept beside the main credential: the Schema Registry's and the client certificate's.
         var alreadyPending = coordinator?.IsCredentialUpdatePending(result.Profile.Id) == true;
+        // After an interrupted update the vault may hold passwords written for a configuration that never committed,
+        // so this save decides every additional password: what was entered now is stored, anything else is removed.
+        var additional = AdditionalSecretChanges(result, authoritative: alreadyPending);
+        var changesAdditionalSecrets = additional.Length > 0;
         if (alreadyPending &&
             (result.Profile.Authentication.Kind.UsesStoredSecret() && !replacesConnectionString ||
              result.Profile.Kafka?.SchemaRegistryUserName is not null && result.SchemaRegistryPassword is null))
             throw new InvalidOperationException("The previous credential update is incomplete. Re-enter all credentials used by this environment before saving.");
-        string? previousRegistryPassword = null;
-        if (changesRegistryPassword)
+        var previousAdditional = new Dictionary<ProfileSecretKey, string?>();
+        foreach (var change in additional)
         {
-            previousRegistryPassword = await _secretVault.RetrieveAsync(registryKey, cancellationToken)
+            previousAdditional[change.Key] = await _secretVault.RetrieveAsync(change.Key, cancellationToken)
                 .ConfigureAwait(true);
         }
 
         var secretReplacementAttempted = false;
-        var registryPasswordAttempted = false;
+        var additionalAttempted = new List<ProfileSecretKey>();
         var metadataRollbackNeeded = false;
-        var pendingMarked = coordinator is not null && (changesConnectionString || changesRegistryPassword || alreadyPending);
+        var pendingMarked = coordinator is not null && (changesConnectionString || changesAdditionalSecrets || alreadyPending);
         if (pendingMarked)
             await coordinator!.MarkCredentialUpdatePendingAsync(result.Profile.Id, cancellationToken).ConfigureAwait(true);
         try
@@ -206,10 +209,13 @@ public sealed partial class MainWindowViewModel
                 else
                     await _secretVault.RemoveAsync(secretKey, cancellationToken).ConfigureAwait(true);
             }
-            if (changesRegistryPassword)
+            foreach (var change in additional)
             {
-                registryPasswordAttempted = true;
-                await SaveSchemaRegistryPasswordAsync(result, cancellationToken).ConfigureAwait(true);
+                additionalAttempted.Add(change.Key);
+                if (change.Password is { } password)
+                    await _secretVault.StoreAsync(change.Key, password, cancellationToken).ConfigureAwait(true);
+                else
+                    await _secretVault.RemoveAsync(change.Key, cancellationToken).ConfigureAwait(true);
             }
 
             // The outer profile lock owns the entire save/rollback. Individual vault and
@@ -251,15 +257,14 @@ public sealed partial class MainWindowViewModel
                     rollbackFailures.Add(rollbackException);
                 }
             }
-            if (registryPasswordAttempted)
+            foreach (var key in additionalAttempted)
             {
                 try
                 {
-                    if (previousRegistryPassword is null)
-                        await _secretVault.RemoveAsync(registryKey, CancellationToken.None).ConfigureAwait(true);
+                    if (previousAdditional[key] is not { } previous)
+                        await _secretVault.RemoveAsync(key, CancellationToken.None).ConfigureAwait(true);
                     else
-                        await _secretVault.StoreAsync(registryKey, previousRegistryPassword, CancellationToken.None)
-                            .ConfigureAwait(true);
+                        await _secretVault.StoreAsync(key, previous, CancellationToken.None).ConfigureAwait(true);
                 }
                 catch (Exception rollbackException)
                 {
@@ -305,17 +310,31 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException("The environment changed or was removed in another window. Refresh environments and edit it again.");
     }
 
-    private async Task SaveSchemaRegistryPasswordAsync(ProfileEditorResult result, CancellationToken cancellationToken)
+    /// <summary>
+    /// The additional passwords an edit stores (a new value) or removes (null). <paramref name="authoritative"/> also
+    /// removes every one not entered in this edit, so none is kept from an update that did not finish.
+    /// </summary>
+    private static (ProfileSecretKey Key, string? Password)[] AdditionalSecretChanges(ProfileEditorResult result, bool authoritative = false)
     {
-        var key = ProfileSecretKey.SchemaRegistryPassword(result.Profile.Id);
-        if (result.SchemaRegistryPassword is { } password)
+        var id = result.Profile.Id;
+        if (authoritative)
         {
-            await _secretVault.StoreAsync(key, password, cancellationToken).ConfigureAwait(true);
+            return
+            [
+                (ProfileSecretKey.SchemaRegistryPassword(id), result.SchemaRegistryPassword),
+                (ProfileSecretKey.ClientCertificatePassword(id), result.ClientCertificatePassword),
+                (ProfileSecretKey.ProxyPassword(id), result.ProxyPassword)
+            ];
         }
-        else if (result.RemovesSchemaRegistryPassword)
-        {
-            await _secretVault.RemoveAsync(key, cancellationToken).ConfigureAwait(true);
-        }
+        return new (ProfileSecretKey Key, string? Password, bool Remove)[]
+            {
+                (ProfileSecretKey.SchemaRegistryPassword(id), result.SchemaRegistryPassword, result.RemovesSchemaRegistryPassword),
+                (ProfileSecretKey.ClientCertificatePassword(id), result.ClientCertificatePassword, result.RemovesClientCertificatePassword),
+                (ProfileSecretKey.ProxyPassword(id), result.ProxyPassword, result.RemovesProxyPassword)
+            }
+            .Where(change => change.Password is not null || change.Remove)
+            .Select(change => (change.Key, change.Password))
+            .ToArray();
     }
 
     private async Task DeleteEnvironmentAsync(ProfileItemViewModel? target, CancellationToken cancellationToken)
@@ -374,6 +393,10 @@ public sealed partial class MainWindowViewModel
             throw;
         }
         await _secretVault.RemoveAsync(ProfileSecretKey.SchemaRegistryPassword(selected.Id), CancellationToken.None)
+            .ConfigureAwait(true);
+        await _secretVault.RemoveAsync(ProfileSecretKey.ClientCertificatePassword(selected.Id), CancellationToken.None)
+            .ConfigureAwait(true);
+        await _secretVault.RemoveAsync(ProfileSecretKey.ProxyPassword(selected.Id), CancellationToken.None)
             .ConfigureAwait(true);
         coordinator?.CompleteCredentialUpdate(selected.Id);
         if (_writeUnlockProfileId == selected.Id)

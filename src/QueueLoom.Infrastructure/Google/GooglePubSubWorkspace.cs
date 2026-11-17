@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using Google.Api.Gax;
 using Google.Api.Gax.Grpc;
@@ -89,6 +90,16 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
             var credential = ParseServiceAccountKey(json);
             publisherBuilder.GoogleCredential = subscriberBuilder.GoogleCredential = credential;
         }
+        if (string.IsNullOrWhiteSpace(settings.EmulatorHost) &&
+            await ProxyFactory.CreateAsync(profile, _secretVault, cancellationToken).ConfigureAwait(false) is { } proxy)
+        {
+            // Both the gRPC calls and the credential's token requests go through the environment's proxy.
+            var credential = publisherBuilder.GoogleCredential ??
+                await GoogleCredential.GetApplicationDefaultAsync(cancellationToken).ConfigureAwait(false);
+            publisherBuilder.GoogleCredential = subscriberBuilder.GoogleCredential =
+                credential.CreateWithHttpClientFactory(global::Google.Apis.Http.HttpClientFactory.ForProxy(proxy));
+            publisherBuilder.GrpcAdapter = subscriberBuilder.GrpcAdapter = ProxiedAdapter(proxy);
+        }
 
         _publisher = await publisherBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
         TrackChannel(publisherBuilder.LastCreatedChannel);
@@ -98,7 +109,7 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
         // permission the counts fall back to reading dead letters, as before.
         if (string.IsNullOrWhiteSpace(settings.EmulatorHost))
         {
-            var metricsBuilder = new Monitoring.MetricServiceClientBuilder { GoogleCredential = publisherBuilder.GoogleCredential };
+            var metricsBuilder = new Monitoring.MetricServiceClientBuilder { GoogleCredential = publisherBuilder.GoogleCredential, GrpcAdapter = publisherBuilder.GrpcAdapter };
             _metrics = await metricsBuilder.BuildAsync(cancellationToken).ConfigureAwait(false);
             TrackChannel(metricsBuilder.LastCreatedChannel);
         }
@@ -618,6 +629,15 @@ public sealed partial class GooglePubSubWorkspace : LeasedMessagingWorkspace
                 : null)
         { HasSequenceNumber = false };
     }
+
+    /// <summary>gRPC over a handler that goes through the proxy (HTTP/2 through CONNECT).</summary>
+    internal static GrpcAdapter ProxiedAdapter(IWebProxy proxy) =>
+        GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
+        {
+            var handler = new SocketsHttpHandler { EnableMultipleHttp2Connections = true };
+            ProxyFactory.Apply(handler, proxy);
+            options.HttpHandler = handler;
+        });
 
     internal static GoogleCredential ParseServiceAccountKey(string? json)
     {

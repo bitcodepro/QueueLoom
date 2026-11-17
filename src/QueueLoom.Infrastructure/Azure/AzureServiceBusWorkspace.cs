@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
+using System.Net;
 using Azure;
 using Azure.Core;
 using Azure.Messaging.ServiceBus;
@@ -11,6 +12,7 @@ using QueueLoom.Core.Profiles;
 using QueueLoom.Core.Routing;
 using QueueLoom.Core.ServiceBus;
 using QueueLoom.Core.Validation;
+using QueueLoom.Infrastructure.Messaging;
 using QueueLoom.Infrastructure.Persistence;
 
 namespace QueueLoom.Infrastructure.Azure;
@@ -99,8 +101,9 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace, IWo
             var isEmulator = false;
             try
             {
-                var clientOptions = CreateMessagingClientOptions(profile.UseAmqpWebSockets);
-                var administrationOptions = CreateAdministrationClientOptions();
+                var proxy = await ProxyFactory.CreateAsync(profile, _secretVault, cancellationToken).ConfigureAwait(false);
+                var clientOptions = CreateMessagingClientOptions(profile.UseAmqpWebSockets, proxy);
+                var administrationOptions = CreateAdministrationClientOptions(proxy);
 
                 if (profile.Authentication.Kind == AuthenticationKind.ConnectionString)
                 {
@@ -148,7 +151,7 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace, IWo
 
                     var settings = profile.Authentication.EntraId
                         ?? throw new InvalidOperationException("Entra ID settings are missing.");
-                    TokenCredential credential = AzureCredentialFactory.Create(settings);
+                    TokenCredential credential = AzureCredentialFactory.Create(settings, proxy);
                     client = new ServiceBusClient(profile.FullyQualifiedNamespace, credential, clientOptions);
                     administration = new ServiceBusAdministrationClient(
                         profile.FullyQualifiedNamespace,
@@ -285,8 +288,10 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace, IWo
     }
 
     /// <param name="webSockets">AMQP over WebSockets (port 443) instead of AMQP over TCP (port 5671).</param>
-    internal static ServiceBusClientOptions CreateMessagingClientOptions(bool webSockets = false) => new()
+    internal static ServiceBusClientOptions CreateMessagingClientOptions(bool webSockets = false, IWebProxy? proxy = null) => new()
     {
+        // Only the WebSocket transport goes through a proxy; validation requires it for a custom one.
+        WebProxy = webSockets ? proxy : null,
         TransportType = webSockets ? ServiceBusTransportType.AmqpWebSockets : ServiceBusTransportType.AmqpTcp,
         EnableCrossEntityTransactions = false,
         RetryOptions = new ServiceBusRetryOptions
@@ -299,9 +304,13 @@ public sealed partial class AzureServiceBusWorkspace : IServiceBusWorkspace, IWo
         }
     };
 
-    internal static ServiceBusAdministrationClientOptions CreateAdministrationClientOptions()
+    internal static ServiceBusAdministrationClientOptions CreateAdministrationClientOptions(IWebProxy? proxy = null)
     {
         var options = new ServiceBusAdministrationClientOptions();
+        if (AzureProxy.Transport(proxy) is { } transport)
+        {
+            options.Transport = transport;
+        }
         options.Retry.Mode = RetryMode.Exponential;
         options.Retry.MaxRetries = InteractiveMaximumRetries;
         options.Retry.Delay = InteractiveRetryDelay;

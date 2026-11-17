@@ -65,6 +65,11 @@ public sealed partial class AwsSqsSnsWorkspace : LeasedMessagingWorkspace
             sqsConfig.Profile = new Profile(settings.ProfileName.Trim());
             snsConfig.Profile = new Profile(settings.ProfileName.Trim());
         }
+        if (await ProxyFactory.CreateAsync(profile, _secretVault, cancellationToken).ConfigureAwait(false) is { } proxy)
+        {
+            sqsConfig.SetWebProxy(proxy);
+            snsConfig.SetWebProxy(proxy);
+        }
 
         _sqs = credentials is null ? new AmazonSQSClient(sqsConfig) : new AmazonSQSClient(credentials, sqsConfig);
         _sns = credentials is null

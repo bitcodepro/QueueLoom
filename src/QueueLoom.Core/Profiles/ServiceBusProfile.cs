@@ -35,6 +35,10 @@ public sealed record ServiceBusProfile(
 
     public KafkaSettings? Kafka { get; init; }
 
+    /// <summary>The proxy for this environment; none means the computer's own. Left out of the saved JSON when unset.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ProxySettings? Proxy { get; init; }
+
     /// <summary>Where the environment lives, in the provider's own terms: namespace, region or project.</summary>
     public string? EndpointDisplay => Provider switch
     {
@@ -77,6 +81,8 @@ public sealed record ServiceBusProfile(
         AuthenticationKind.RabbitMqPassword => $"User {RabbitMq?.UserName}",
         AuthenticationKind.KafkaNone => Kafka?.UseTls == true ? "TLS, no sign-in" : "No sign-in",
         AuthenticationKind.KafkaSaslPassword => $"SASL {Kafka?.SaslMechanism} · {Kafka?.UserName}",
+        AuthenticationKind.KafkaOAuth => $"OAuth · {Kafka?.OAuth?.ClientId}",
+        AuthenticationKind.KafkaAwsIam => $"AWS IAM · {Kafka?.AwsIam?.ProfileName ?? "default credentials"}",
         _ => Authentication.Kind.ToString()
     };
 

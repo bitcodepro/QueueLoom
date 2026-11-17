@@ -1000,6 +1000,14 @@ public sealed partial class ViewModelStateTests
         /// <summary>Called as a redrive starts, before it is recorded.</summary>
         public Action? OnRedriveStart { get; set; }
         public bool SupportsNativeRedrive => RedrivePlan is not null;
+        public Dictionary<(ServiceBusEntityReference Source, string SessionId), byte[]> SessionStates { get; } = [];
+        public Task<byte[]?> GetSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(SessionStates.GetValueOrDefault((source, sessionId)));
+        public Task ClearSessionStateAsync(ServiceBusEntityReference source, string sessionId, CancellationToken cancellationToken = default)
+        {
+            SessionStates.Remove((source, sessionId));
+            return Task.CompletedTask;
+        }
         public Task<NativeRedrivePlan> PlanNativeRedriveAsync(ServiceBusEntityReference source, CancellationToken cancellationToken = default) =>
             Task.FromResult(RedrivePlan ?? throw new NotSupportedException());
         /// <summary>Called once the move was submitted and accepted, before the answer reaches the caller.</summary>

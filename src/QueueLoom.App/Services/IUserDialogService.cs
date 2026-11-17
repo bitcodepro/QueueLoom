@@ -75,4 +75,16 @@ public sealed record ProfileEditorResult(
 
     /// <summary>The registry no longer needs a password, so the stored one is removed.</summary>
     public bool RemovesSchemaRegistryPassword { get; init; }
+
+    /// <summary>A new password of the client certificate (mutual TLS) to store, if one was entered.</summary>
+    public string? ClientCertificatePassword { get; init; }
+
+    /// <summary>The client certificate was removed, so its stored password is removed too.</summary>
+    public bool RemovesClientCertificatePassword { get; init; }
+
+    /// <summary>A new password of the environment's proxy to store, if one was entered.</summary>
+    public string? ProxyPassword { get; init; }
+
+    /// <summary>The proxy no longer signs in, so its stored password is removed.</summary>
+    public bool RemovesProxyPassword { get; init; }
 }
