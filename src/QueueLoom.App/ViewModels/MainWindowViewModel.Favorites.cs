@@ -37,7 +37,7 @@ public sealed partial class MainWindowViewModel
 
     public RelayCommand<EntityItemViewModel> ToggleFavoriteCommand => _toggleFavoriteCommand ??= new(entity =>
     {
-        if (entity is null || _workspace.ConnectedProfileId is not { } profileId)
+        if (entity is null || ConnectedProfileId is not { } profileId)
         {
             return;
         }
@@ -73,8 +73,10 @@ public sealed partial class MainWindowViewModel
         ApplyEntityFilter();
     }
 
+    // The environment Explorer shows, not the workspace's connection: a background monitor check of another
+    // environment connects the workspace there for a moment while this one stays on screen.
     private bool IsFavorite(EntityItemViewModel entity) =>
-        _workspace.ConnectedProfileId is { } profileId && _favoriteEntities.Contains(new FavoriteEntity(profileId, entity.Reference));
+        ConnectedProfileId is { } profileId && _favoriteEntities.Contains(new FavoriteEntity(profileId, entity.Reference));
 
     /// <summary>Favourites first (each group in the chosen order), or only favourites.</summary>
     private IEnumerable<EntityItemViewModel> PinFavorites(IEnumerable<EntityItemViewModel> ordered)
@@ -91,7 +93,7 @@ public sealed partial class MainWindowViewModel
     /// <summary>Records that an entity was opened, for the Recent list.</summary>
     private void RememberEntity(EntityItemViewModel entity)
     {
-        if (_workspace.ConnectedProfileId is not { } profileId)
+        if (ConnectedProfileId is not { } profileId)
         {
             return;
         }
@@ -109,7 +111,7 @@ public sealed partial class MainWindowViewModel
     private void RefreshRecentEntityItems()
     {
         RecentEntityItems.Clear();
-        if (_workspace.ConnectedProfileId is { } profileId)
+        if (ConnectedProfileId is { } profileId)
         {
             foreach (var recent in _recentEntities.Where(item => item.ProfileId == profileId))
             {

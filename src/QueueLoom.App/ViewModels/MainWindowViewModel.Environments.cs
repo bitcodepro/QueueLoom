@@ -177,9 +177,11 @@ public sealed partial class MainWindowViewModel
                 .ConfigureAwait(true);
         }
         // Passwords kept beside the main credential: the Schema Registry's and the client certificate's.
-        var additional = AdditionalSecretChanges(result);
-        var changesAdditionalSecrets = additional.Length > 0;
         var alreadyPending = coordinator?.IsCredentialUpdatePending(result.Profile.Id) == true;
+        // After an interrupted update the vault may hold passwords written for a configuration that never committed,
+        // so this save decides every additional password: what was entered now is stored, anything else is removed.
+        var additional = AdditionalSecretChanges(result, authoritative: alreadyPending);
+        var changesAdditionalSecrets = additional.Length > 0;
         if (alreadyPending &&
             (result.Profile.Authentication.Kind.UsesStoredSecret() && !replacesConnectionString ||
              result.Profile.Kafka?.SchemaRegistryUserName is not null && result.SchemaRegistryPassword is null))
@@ -308,10 +310,22 @@ public sealed partial class MainWindowViewModel
             throw new InvalidOperationException("The environment changed or was removed in another window. Refresh environments and edit it again.");
     }
 
-    /// <summary>The additional passwords an edit stores (a new value) or removes (null).</summary>
-    private static (ProfileSecretKey Key, string? Password)[] AdditionalSecretChanges(ProfileEditorResult result)
+    /// <summary>
+    /// The additional passwords an edit stores (a new value) or removes (null). <paramref name="authoritative"/> also
+    /// removes every one not entered in this edit, so none is kept from an update that did not finish.
+    /// </summary>
+    private static (ProfileSecretKey Key, string? Password)[] AdditionalSecretChanges(ProfileEditorResult result, bool authoritative = false)
     {
         var id = result.Profile.Id;
+        if (authoritative)
+        {
+            return
+            [
+                (ProfileSecretKey.SchemaRegistryPassword(id), result.SchemaRegistryPassword),
+                (ProfileSecretKey.ClientCertificatePassword(id), result.ClientCertificatePassword),
+                (ProfileSecretKey.ProxyPassword(id), result.ProxyPassword)
+            ];
+        }
         return new (ProfileSecretKey Key, string? Password, bool Remove)[]
             {
                 (ProfileSecretKey.SchemaRegistryPassword(id), result.SchemaRegistryPassword, result.RemovesSchemaRegistryPassword),

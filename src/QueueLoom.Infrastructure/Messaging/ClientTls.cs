@@ -71,7 +71,9 @@ internal sealed class ClientTls : IDisposable
     /// Accepts the broker's certificate as the system would, or, with a private authority, when it chains to that
     /// authority. The host name must match either way.
     /// </summary>
-    public bool ValidateServerCertificate(X509Certificate? certificate, SslPolicyErrors errors)
+    /// <param name="peerCertificates">What the broker sent with its certificate (intermediates); they help build the chain
+    /// but are never trusted themselves.</param>
+    public bool ValidateServerCertificate(X509Certificate? certificate, IEnumerable<X509Certificate2>? peerCertificates, SslPolicyErrors errors)
     {
         if (errors == SslPolicyErrors.None)
         {
@@ -86,10 +88,24 @@ internal sealed class ClientTls : IDisposable
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         chain.ChainPolicy.CustomTrustStore.AddRange(Authorities);
+        if (peerCertificates is not null)
+        {
+            chain.ChainPolicy.ExtraStore.AddRange(peerCertificates.ToArray());
+        }
+        // The system check this replaces is for a server: a certificate meant only for clients is not accepted.
+        chain.ChainPolicy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
         // A private authority rarely publishes revocation lists the client can reach.
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
         return chain.Build(leaf);
     }
+
+    private const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
+
+    /// <summary>The certificates a TLS callback's chain carries: those the peer sent and those the system found.</summary>
+    public static IEnumerable<X509Certificate2> PeerCertificates(X509Chain? chain) =>
+        chain is null
+            ? []
+            : chain.ChainPolicy.ExtraStore.Cast<X509Certificate2>().Concat(chain.ChainElements.Select(element => element.Certificate));
 
     public void Dispose()
     {

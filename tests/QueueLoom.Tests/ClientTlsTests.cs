@@ -107,11 +107,46 @@ public sealed class ClientTlsTests
         using var tls = ClientTls.Load(new TlsClientSettings(CaCertificatePath: path), null);
 
         Assert.Single(tls.Authorities!);
-        Assert.True(tls.ValidateServerCertificate(server, SslPolicyErrors.RemoteCertificateChainErrors));
-        Assert.False(tls.ValidateServerCertificate(stranger, SslPolicyErrors.RemoteCertificateChainErrors));
+        Assert.True(tls.ValidateServerCertificate(server, null, SslPolicyErrors.RemoteCertificateChainErrors));
+        Assert.False(tls.ValidateServerCertificate(stranger, null, SslPolicyErrors.RemoteCertificateChainErrors));
         // The host name is still checked: a private authority does not excuse another host's certificate.
-        Assert.False(tls.ValidateServerCertificate(server, SslPolicyErrors.RemoteCertificateChainErrors | SslPolicyErrors.RemoteCertificateNameMismatch));
-        Assert.True(tls.ValidateServerCertificate(stranger, SslPolicyErrors.None));
+        Assert.False(tls.ValidateServerCertificate(server, null, SslPolicyErrors.RemoteCertificateChainErrors | SslPolicyErrors.RemoteCertificateNameMismatch));
+        Assert.True(tls.ValidateServerCertificate(stranger, null, SslPolicyErrors.None));
+    }
+
+    [Fact]
+    public void AServerCertificateMustBeForServerAuthentication()
+    {
+        using var directory = new TemporaryDirectory();
+        using var authority = Issue("Synthetic CA", authority: true);
+        using var clientOnly = Issue("broker.invalid", issuer: authority, usage: "1.3.6.1.5.5.7.3.2");
+        using var server = Issue("broker.invalid", issuer: authority, usage: "1.3.6.1.5.5.7.3.1");
+        var path = Path.Combine(directory.Path, "ca.pem");
+        File.WriteAllText(path, authority.ExportCertificatePem());
+        using var tls = ClientTls.Load(new TlsClientSettings(CaCertificatePath: path), null);
+
+        Assert.False(tls.ValidateServerCertificate(clientOnly, null, SslPolicyErrors.RemoteCertificateChainErrors));
+        Assert.True(tls.ValidateServerCertificate(server, null, SslPolicyErrors.RemoteCertificateChainErrors));
+    }
+
+    [Fact]
+    public void AnIntermediateSentByTheBrokerCompletesTheChainButIsNotTrustedItself()
+    {
+        using var directory = new TemporaryDirectory();
+        using var root = Issue("Synthetic root", authority: true);
+        using var intermediate = Issue("Synthetic intermediate", authority: true, issuer: root);
+        using var server = Issue("broker.invalid", issuer: intermediate);
+        using var otherRoot = Issue("Other root", authority: true);
+        using var otherIntermediate = Issue("Other intermediate", authority: true, issuer: otherRoot);
+        using var stranger = Issue("broker.invalid", issuer: otherIntermediate);
+        var path = Path.Combine(directory.Path, "ca.pem");
+        File.WriteAllText(path, root.ExportCertificatePem());
+        using var tls = ClientTls.Load(new TlsClientSettings(CaCertificatePath: path), null);
+
+        Assert.False(tls.ValidateServerCertificate(server, null, SslPolicyErrors.RemoteCertificateChainErrors));
+        Assert.True(tls.ValidateServerCertificate(server, [server, intermediate], SslPolicyErrors.RemoteCertificateChainErrors));
+        // A broker cannot make its own authority trusted by sending it along.
+        Assert.False(tls.ValidateServerCertificate(stranger, [stranger, otherIntermediate, otherRoot], SslPolicyErrors.RemoteCertificateChainErrors));
     }
 
     [Fact]
@@ -123,8 +158,8 @@ public sealed class ClientTlsTests
         File.WriteAllBytes(path, certificate.Export(X509ContentType.Pkcs12));
         using var tls = ClientTls.Load(new TlsClientSettings(ClientCertificatePath: path), null);
 
-        Assert.False(tls.ValidateServerCertificate(certificate, SslPolicyErrors.RemoteCertificateChainErrors));
-        Assert.True(tls.ValidateServerCertificate(certificate, SslPolicyErrors.None));
+        Assert.False(tls.ValidateServerCertificate(certificate, null, SslPolicyErrors.RemoteCertificateChainErrors));
+        Assert.True(tls.ValidateServerCertificate(certificate, null, SslPolicyErrors.None));
     }
 
     [Fact]
@@ -213,10 +248,14 @@ public sealed class ClientTlsTests
         Assert.DoesNotContain("Tls\":", rabbit.Replace("UseTls\":", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
     }
 
-    internal static X509Certificate2 Issue(string name, bool authority = false, X509Certificate2? issuer = null)
+    internal static X509Certificate2 Issue(string name, bool authority = false, X509Certificate2? issuer = null, string? usage = null)
     {
         using var key = RSA.Create(2048);
         var request = new CertificateRequest($"CN={name}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        if (usage is not null)
+        {
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid(usage)], false));
+        }
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(authority, false, 0, authority));
         if (authority)
         {

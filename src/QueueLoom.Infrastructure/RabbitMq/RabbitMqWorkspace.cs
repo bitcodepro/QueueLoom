@@ -83,7 +83,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         }
         if (tls?.Authorities is not null)
         {
-            option.CertificateValidationCallback = (_, certificate, _, errors) => tls.ValidateServerCertificate(certificate, errors);
+            option.CertificateValidationCallback = (_, certificate, chain, errors) => tls.ValidateServerCertificate(certificate, ClientTls.PeerCertificates(chain), errors);
         }
         return option;
     }
@@ -113,7 +113,7 @@ public sealed partial class RabbitMqWorkspace : LeasedMessagingWorkspace
         }
         if (tls.Authorities is not null)
         {
-            handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) => tls.ValidateServerCertificate(certificate, errors);
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, chain, errors) => tls.ValidateServerCertificate(certificate, ClientTls.PeerCertificates(chain), errors);
         }
         return handler;
     }

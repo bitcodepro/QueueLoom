@@ -96,6 +96,34 @@ public sealed partial class ViewModelStateTests
     }
 
     [Fact]
+    public async Task AFavouriteBelongsToTheShownEnvironmentWhileAMonitorReadsAnother()
+    {
+        var shown = CreateProfile("Development", EnvironmentKind.Development);
+        var monitored = CreateProfile("Test", EnvironmentKind.Test);
+        var workspace = new FakeWorkspace
+        {
+            Topology = new ServiceBusTopology(
+                DateTimeOffset.UtcNow,
+                [
+                    new ServiceBusQueue("alpha", new ServiceBusEntityRuntime(new ServiceBusMessageCounts())),
+                    new ServiceBusQueue("beta", new ServiceBusEntityRuntime(new ServiceBusMessageCounts()))
+                ])
+        };
+        await using var viewModel = CreateViewModel(new FakeProfileRepository([shown, monitored], shown.Id), workspace);
+        await viewModel.InitializeAsync();
+        await viewModel.ConnectCommand.ExecuteAsync();
+
+        // A background monitor check connects the workspace to another environment; Explorer still shows this one.
+        await workspace.ConnectAsync(monitored);
+        var beta = viewModel.Entities.Single(entity => entity.Name == "beta");
+        viewModel.ToggleFavoriteCommand.Execute(beta);
+
+        Assert.Equal([new FavoriteEntity(shown.Id, ServiceBusEntityReference.Queue("beta"))], viewModel.FavoriteEntities);
+        Assert.True(beta.IsFavorite);
+        Assert.Equal(["beta", "alpha"], viewModel.Entities.Select(entity => entity.Name));
+    }
+
+    [Fact]
     public async Task StoredFavouritesAndRecentEntitiesApplyToTheirOwnEnvironment()
     {
         var profile = CreateProfile("Development", EnvironmentKind.Development);

@@ -209,3 +209,74 @@ public sealed partial class ViewModelStateTests
         Assert.Equal(replacement ? "synthetic-reviewed" : "synthetic-uncommitted", await vault.RetrieveAsync(ProfileSecretKey.ConnectionString(profile.Id)));
     }
 }
+
+public sealed partial class ViewModelStateTests
+{
+    [Theory]
+    [InlineData(null)]
+    [InlineData("synthetic-reviewed")]
+    public async Task AfterAnInterruptedUpdateTheNextSaveDecidesEveryAdditionalPassword(string? reentered)
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        using var repository = new JsonProfileRepository(paths);
+        // Kafka without SASL needs no main credential, so only the proxy and certificate passwords are at stake.
+        var profile = ServiceBusProfile.CreateNew("Kafka", EnvironmentKind.Development, new(AuthenticationKind.KafkaNone)) with
+        {
+            Provider = MessagingProvider.Kafka,
+            Kafka = new KafkaSettings("broker.invalid:9093", UseTls: true, Tls: new TlsClientSettings(ClientCertificatePath: "client.pfx")),
+            Proxy = new ProxySettings(ProxyMode.Custom, "http://proxy.invalid:3128", "me")
+        };
+        await repository.UpsertAndSelectAsync(profile);
+        var vault = new FakeSecretVault();
+        // Written for a configuration whose metadata never committed.
+        await vault.StoreAsync(ProfileSecretKey.ProxyPassword(profile.Id), "synthetic-uncommitted");
+        await vault.StoreAsync(ProfileSecretKey.ClientCertificatePassword(profile.Id), "synthetic-uncommitted");
+        await using (await repository.AcquireProfileMutationAsync())
+            await repository.MarkCredentialUpdatePendingAsync(profile.Id);
+        await using var vm = CreateViewModel(repository, new FakeWorkspace(), new FakeDialogService
+        {
+            EditResult = new(profile with { Name = "Recovered" }, null, false)
+            {
+                ProxyPassword = reentered,
+                ClientCertificatePassword = reentered
+            }
+        }, secretVault: vault);
+
+        await vm.InitializeAsync();
+        await vm.EditEnvironmentCommand.ExecuteAsync();
+
+        Assert.False(vm.HasError, vm.StatusText);
+        Assert.False(repository.IsCredentialUpdatePending(profile.Id));
+        Assert.Equal("Recovered", (await repository.GetAsync(profile.Id))!.Name);
+        // A password not entered again is removed, never reactivated from the interrupted update.
+        Assert.Equal(reentered, await vault.RetrieveAsync(ProfileSecretKey.ProxyPassword(profile.Id)));
+        Assert.Equal(reentered, await vault.RetrieveAsync(ProfileSecretKey.ClientCertificatePassword(profile.Id)));
+    }
+
+    [Fact]
+    public async Task AfterAnInterruptedUpdatePasswordsOfSettingsNoLongerUsedAreRemoved()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = QueueLoomPaths.ForRoot(directory.Path);
+        using var repository = new JsonProfileRepository(paths);
+        var profile = ServiceBusProfile.CreateNew("Kafka", EnvironmentKind.Development, new(AuthenticationKind.KafkaNone)) with
+        {
+            Provider = MessagingProvider.Kafka,
+            Kafka = new KafkaSettings("broker.invalid:9093", UseTls: true)
+        };
+        await repository.UpsertAndSelectAsync(profile);
+        var vault = new FakeSecretVault();
+        await vault.StoreAsync(ProfileSecretKey.ProxyPassword(profile.Id), "synthetic-uncommitted");
+        await using (await repository.AcquireProfileMutationAsync())
+            await repository.MarkCredentialUpdatePendingAsync(profile.Id);
+        await using var vm = CreateViewModel(repository, new FakeWorkspace(), new FakeDialogService
+            { EditResult = new(profile with { Name = "Recovered" }, null, false) }, secretVault: vault);
+
+        await vm.InitializeAsync();
+        await vm.EditEnvironmentCommand.ExecuteAsync();
+
+        Assert.False(repository.IsCredentialUpdatePending(profile.Id));
+        Assert.Null(await vault.RetrieveAsync(ProfileSecretKey.ProxyPassword(profile.Id)));
+    }
+}
