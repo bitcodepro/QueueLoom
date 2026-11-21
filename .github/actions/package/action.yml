@@ -68,13 +68,15 @@ runs:
       shell: pwsh
       env:
         INSTALLER: ${{ steps.package.outputs.installer }}
-      run: ./.github/scripts/smoke-windows-installer.ps1 -Installer $env:INSTALLER
+        PORTABLE_ZIP: ${{ steps.package.outputs.archive }}
+      run: |
+        dotnet build tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj -c Release
+        ./.github/scripts/smoke-windows-installer.ps1 -Installer $env:INSTALLER -PortableZip $env:PORTABLE_ZIP
 
     - name: Smoke test Windows update restart and cleanup
       if: inputs.rid == 'win-x64'
       shell: pwsh
       run: |
-        dotnet build tests/QueueLoom.UpdateFixture/QueueLoom.UpdateFixture.csproj -c Release
         ./.github/scripts/smoke-update.ps1
         ./.github/scripts/smoke-update.ps1 -StablePackageDirectory artifacts/package-win-x64
 

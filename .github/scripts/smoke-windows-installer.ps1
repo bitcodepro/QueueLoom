@@ -1,4 +1,7 @@
-param([Parameter(Mandatory)] [string] $Installer)
+param(
+    [Parameter(Mandatory)] [string] $Installer,
+    [Parameter(Mandatory)] [string] $PortableZip
+)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'smoke-processes.ps1')
 # Run only on an isolated Windows CI image; never replace a user's registered install.
@@ -11,6 +14,8 @@ $earlier = Join-Path $root 'earlier'
 $fixtureContent = Join-Path $root 'payload fixture'
 $source = (Resolve-Path -LiteralPath 'artifacts/package-win-x64').Path
 $installer = (Resolve-Path -LiteralPath $Installer).Path
+$portableZip = (Resolve-Path -LiteralPath $PortableZip).Path
+$updateFixture = (Resolve-Path -LiteralPath 'tests/QueueLoom.UpdateFixture/bin/Release/net10.0/QueueLoom.UpdateFixture.exe').Path
 $executable = Join-Path $installed 'QueueLoom.exe'
 $env:QUEUELOOM_DATA_DIRECTORY = $data
 $env:DOTNET_BUNDLE_EXTRACT_BASE_DIR = Join-Path $root 'bundle cache'
@@ -154,6 +159,29 @@ try {
     foreach ($file in 'QueueLoom.exe', 'QueueLoom.bootstrap.json', 'QueueLoom.bootstrap.zip') {
         if ((Digest (Join-Path $installed $file)) -ne (Digest (Join-Path $source $file))) { throw "Reinstall did not restore $file" }
     }
+    Uninstall-TestApp
+    $installed = Join-Path $root 'automatic update'
+    $executable = Join-Path $installed 'QueueLoom.exe'
+    if ((Invoke-Setup $oldInstaller (Join-Path $root 'auto-baseline.log')) -ne 0) { throw 'Automatic update baseline setup failed' }
+    Assert-Mcp
+    Assert-Active $manifest.Id
+    $backup = Join-Path $installed 'backups/keep.txt'
+    New-Item -ItemType Directory -Path (Split-Path $backup) -Force | Out-Null
+    [IO.File]::WriteAllText($backup, 'keep backup')
+    # Only the test fixture replaces HTTP transport. It invokes the actual release checker,
+    # ZIP/checksum verification and update staging against the installed program.
+    & $updateFixture --installed-release-update $executable $portableZip (Join-Path $root 'auto downloads')
+    if ($LASTEXITCODE -ne 0) { throw 'Installed ZIP updater fixture failed' }
+    Assert-Mcp
+    Assert-Active $expected
+    foreach ($file in 'QueueLoom.exe', 'QueueLoom.bootstrap.json', 'QueueLoom.bootstrap.zip') {
+        if ((Digest (Join-Path $installed $file)) -ne (Digest (Join-Path $earlier $file))) { throw "ZIP update replaced $file" }
+    }
+    Uninstall-TestApp
+    if ([IO.File]::ReadAllText($settingsMarker) -ne 'keep settings' -or [IO.File]::ReadAllText($backup) -ne 'keep backup') {
+        throw 'ZIP update or later uninstall changed settings or backups'
+    }
+    Write-Host 'PASS installed app release selection, invalid checksum rejection, verified ZIP update, native activation, unchanged bootstrap and retained user files after uninstall'
     Write-Host 'PASS fresh install, manual activation, unchanged launcher/bootstrap, equal-version reinstall, blocked downgrade, retained data, reinstall, and rejected old Setup after uninstall'
 } catch {
     Get-ChildItem -LiteralPath $root -Filter '*.log' -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Tail 40 }
