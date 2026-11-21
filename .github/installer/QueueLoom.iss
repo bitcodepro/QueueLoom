@@ -29,6 +29,7 @@ Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
 ; Put temporary files first so solid extraction does not traverse the launcher.
 Source: "{#PackageInput}\QueueLoom.bootstrap.json"; Flags: dontcopy noencryption
 Source: "{#PackageInput}\QueueLoom.bootstrap.zip"; Flags: dontcopy noencryption
+Source: "{#PackageInput}\QueueLoom.exe"; Flags: dontcopy noencryption
 ; A manual upgrade keeps the installed entry and fallback bootstrap byte-for-byte.
 Source: "{#PackageInput}\QueueLoom.exe"; DestDir: "{app}"; Check: InstallBootstrap
 Source: "{#PackageInput}\QueueLoom.bootstrap.json"; DestDir: "{app}"; Check: InstallBootstrap
@@ -99,8 +100,9 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  AppDir, RegisteredDir: String;
+  AppDir, RegisteredDir, TempDir: String;
   Marker: AnsiString;
+  ExitCode: Integer;
 begin
   Result := '';
   AppDir := ExpandConstant('{app}');
@@ -131,7 +133,19 @@ begin
       not FileExists(AppDir + '\QueueLoom.bootstrap.json') and
       not FileExists(AppDir + '\QueueLoom.bootstrap.zip');
     if not Reinstall then
+    begin
       Result := 'The installation directory contains existing files. Move that portable installation to a different folder before running Setup.';
+      Exit;
+    end;
+    // The previous launcher was uninstalled. Run the setup's temporary launcher,
+    // against the retained install path, before Inno copies or registers anything.
+    TempDir := ExpandConstant('{tmp}');
+    ExtractTemporaryFile('QueueLoom.exe');
+    ExtractTemporaryFile('QueueLoom.bootstrap.json');
+    ExtractTemporaryFile('QueueLoom.bootstrap.zip');
+    if not Exec(TempDir + '\QueueLoom.exe', '--installer-check-reinstall "' + AppDir + '"',
+      TempDir, SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+      Result := 'The retained QueueLoom installation could not be validated or is newer than this Setup. No files were changed. Run the latest Setup or use a new installation folder.';
   end;
 end;
 

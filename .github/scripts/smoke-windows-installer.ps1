@@ -143,10 +143,17 @@ try {
     Assert-Active $expected
     Uninstall-TestApp
     if ((Invoke-Setup $oldInstaller (Join-Path $root 'reinstall-older.log')) -eq 0) { throw 'Older Setup reported a successful reinstall' }
+    if (Test-Path -LiteralPath $key) { throw 'Rejected older Setup changed the uninstall registration' }
+    foreach ($file in 'QueueLoom.exe', 'QueueLoom.bootstrap.json', 'QueueLoom.bootstrap.zip') {
+        if (Test-Path -LiteralPath (Join-Path $installed $file)) { throw "Rejected older Setup wrote $file" }
+    }
+    Assert-Active $expected
+    if ((Invoke-Setup $installer (Join-Path $root 'repair-latest.log')) -ne 0) { throw 'Latest Setup could not reinstall after rejection' }
     Assert-Mcp
     Assert-Active $expected
-    if ((Invoke-Setup $installer (Join-Path $root 'repair-latest.log')) -ne 0) { throw 'Latest Setup could not repair a rejected older reinstall' }
-    Assert-Active $expected
+    foreach ($file in 'QueueLoom.exe', 'QueueLoom.bootstrap.json', 'QueueLoom.bootstrap.zip') {
+        if ((Digest (Join-Path $installed $file)) -ne (Digest (Join-Path $source $file))) { throw "Reinstall did not restore $file" }
+    }
     Write-Host 'PASS fresh install, manual activation, unchanged launcher/bootstrap, equal-version reinstall, blocked downgrade, retained data, reinstall, and rejected old Setup after uninstall'
 } catch {
     Get-ChildItem -LiteralPath $root -Filter '*.log' -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Tail 40 }

@@ -45,7 +45,10 @@ payload. Finish any pending update and close QueueLoom and its MCP clients befor
 
 Uninstall removes registered files and shortcuts, not the user data, adjacent backups, or retained
 update history. Reinstall into that managed directory restores the entry without deleting those
-files. Windows setup packages retain the release checksum and build provenance, not Authenticode
+files. Setup verifies retained update state before writing new bootstrap files or uninstall metadata.
+If it cannot verify the retained state, it refuses to overwrite it; use the latest Setup or install in
+another empty directory by passing `/DIR="C:\path\to\QueueLoom"` to Setup.
+Windows setup packages retain the release checksum and build provenance, not Authenticode
 publisher signing.
 
 ## Activation and recovery
