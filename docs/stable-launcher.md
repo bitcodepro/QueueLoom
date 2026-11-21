@@ -30,6 +30,27 @@ The **first upgrade from a legacy executable still uses that legacy controller**
 retroactively remove the replacement gap in old code already running. The launcher forwards legacy
 helper/startup arguments and preserves the old PID readiness handshake for this transition.
 
+## Windows installer
+
+Setup installs the same flat bootstrap and stable entry as the portable ZIP, per user under
+`%LOCALAPPDATA%\Programs\QueueLoom`. It does not overwrite a portable installation in that folder.
+An installed app checks and applies the same portable ZIP and checksum, like a portable app; no
+installer is launched by the updater and the installer is never chosen as an update asset.
+
+A newer Setup for an existing managed installation passes its packaged bootstrap to the existing
+stable launcher, which verifies and stages it using the same rollback mechanism. The next start
+activates the candidate, retaining the previous confirmed payload if startup fails. Setup reapplied
+to the currently active version is idempotent; an older Setup cannot roll back a newer active
+payload. Finish any pending update and close QueueLoom and its MCP clients before rerunning Setup.
+
+Uninstall removes registered files and shortcuts, not the user data, adjacent backups, or retained
+update history. Reinstall into that managed directory restores the entry without deleting those
+files. Setup verifies retained update state before writing new bootstrap files or uninstall metadata.
+If it cannot verify the retained state, it refuses to overwrite it; use the latest Setup or install in
+another empty directory by passing `/DIR="C:\path\to\QueueLoom"` to Setup.
+Windows setup packages retain the release checksum and build provenance, not Authenticode
+publisher signing.
+
 ## Activation and recovery
 
 1. Acquire the installation lock. Verify the downloaded payload archive against its descriptor.

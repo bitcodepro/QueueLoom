@@ -49,9 +49,17 @@ The update dialog distinguishes checksum fetch, download, verification, extracti
 
 | System | Package | Start |
 |---|---|---|
-| Windows | `QueueLoom-<version>-win-x64.zip` | unzip, run `QueueLoom.exe` |
+| Windows (installer) | `QueueLoom-<version>-win-x64-setup.exe` | run Setup; launch from Start, or uninstall from Windows Settings |
+| Windows (portable) | `QueueLoom-<version>-win-x64.zip` | unzip, run `QueueLoom.exe` |
 | macOS (Apple silicon / Intel) | `QueueLoom-<version>-osx-arm64.zip` / `-osx-x64.zip` | unzip, move `QueueLoom.app` to Applications; the first time, right-click it → **Open** (the app is not notarized by Apple) |
 | Linux | `QueueLoom-<version>-linux-x64.tar.gz` | `tar -xzf` it, run `./QueueLoom`; `./install-desktop-entry.sh` adds it to the application menu |
+
+The Windows installer is per-user and does not need administrator rights. It defaults to
+`%LOCALAPPDATA%\Programs\QueueLoom` and keeps the same preferences and credentials location as the portable app.
+Both installations update in place from the same checksum-verified ZIP; the app never downloads or executes Setup.
+Running a newer installer stages the payload for activation on the next launch, without replacing the installed launcher.
+Uninstall removes the registered app entry and shortcuts but retains preferences, backups and update recovery files.
+The installer has a SHA-256 checksum and GitHub build provenance attestation, not a Windows publisher signature.
 
 ## Getting started
 

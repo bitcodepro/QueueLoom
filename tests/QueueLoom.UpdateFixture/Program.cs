@@ -1,6 +1,9 @@
 using QueueLoom.App.Services;
 using QueueLoom.Core.Updates;
 
+if (args.Length == 4 && args[0] == "--installed-release-update")
+    return await InstalledReleaseUpdateFixture.RunAsync(args[1], args[2], args[3]);
+
 if (args.Length == 2 && args[0] == "--listing-fixture")
 {
     // A Kafka group-listing child with a chosen outcome, so the parent's handling is tested without the real librdkafka
