@@ -197,16 +197,26 @@ public sealed class VersionInstallation
         _checkpoint?.Invoke("bootstrap-published");
     }
 
-    public void StagePackage(string packageDirectory) => StagePackage(packageDirectory, installer: false);
+    public void StagePackage(string packageDirectory) => StagePackage(packageDirectory, installer: false, validateOnly: false);
 
-    /// <summary>Stage a manually installed Windows package without replacing the stable entry or rolling back updates.</summary>
-    public void StageInstallerPackage(string packageDirectory)
+    /// <summary>Pin the verified initial payload independently of the installer files that uninstall can remove.</summary>
+    public void RecordInstallerBootstrap()
     {
         if (Rid != "win-x64") throw new PlatformNotSupportedException("The installer is Windows x64 only.");
-        StagePackage(packageDirectory, installer: true);
+        using var ownership = Own();
+        EnsureBootstrapOwned();
+        if (!StateFiles().Any())
+            Commit(new ActivationState(Bootstrap, Bootstrap, false), "install");
     }
 
-    private void StagePackage(string packageDirectory, bool installer)
+    /// <summary>Stage a manually installed Windows package without replacing the stable entry or rolling back updates.</summary>
+    public void StageInstallerPackage(string packageDirectory, bool validateOnly)
+    {
+        if (Rid != "win-x64") throw new PlatformNotSupportedException("The installer is Windows x64 only.");
+        StagePackage(packageDirectory, installer: true, validateOnly);
+    }
+
+    private void StagePackage(string packageDirectory, bool installer, bool validateOnly)
     {
         using var ownership = Own();
         EnsureBootstrapOwned();
@@ -241,7 +251,7 @@ public sealed class VersionInstallation
             var activeVersion = ManifestVersion(current.Active) ?? throw new InvalidDataException("The installed payload version could not be verified.");
             var candidate = ReadJson<PayloadManifest>(Path.Combine(staged, "manifest.json"), _checkpoint);
             var order = CompareReleaseVersions(candidate.Version, activeVersion);
-            if (order <= 0)
+            if (validateOnly || order <= 0)
             {
                 DeleteStaging();
                 if (order < 0) throw new IOException("A newer QueueLoom version is already installed.");

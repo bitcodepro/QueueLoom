@@ -12,13 +12,16 @@ internal static class Program
         try
         {
             var installation = new VersionInstallation(Environment.ProcessPath ?? throw new IOException("The launcher path is unavailable."));
-            if (args.Length == 2 && args[0] == "--installer-stage-package" && OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows() && ((args.Length == 2 &&
+                (args[0] is "--installer-stage-package" or "--installer-check-package")) ||
+                (args.Length == 1 && args[0] == "--installer-record-bootstrap")))
             {
                 var marker = Path.Combine(installation.Root, ".queueloom-installer");
                 installation.RejectOwnedPath(marker);
                 if (!File.Exists(marker) || File.ReadAllText(marker) != "QueueLoom Installer v1")
                     throw new IOException("The Windows installer does not manage this directory.");
-                installation.StageInstallerPackage(args[1]);
+                if (args[0] == "--installer-record-bootstrap") installation.RecordInstallerBootstrap();
+                else installation.StageInstallerPackage(args[1], validateOnly: args[0] == "--installer-check-package");
                 installation.CleanupStaging();
                 return 0;
             }

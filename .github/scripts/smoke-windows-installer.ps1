@@ -34,6 +34,14 @@ function Invoke-Program([string] $Path, [string[]] $Arguments) {
         return $process.ExitCode
     } finally { $process.Dispose() }
 }
+function Uninstall-TestApp {
+    $uninstaller = (Get-ItemProperty -LiteralPath $key).UninstallString.Trim('"')
+    if ([IO.Path]::GetDirectoryName($uninstaller) -ne $installed -or
+        (Invoke-Program $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')) -ne 0) {
+        throw 'Uninstall failed'
+    }
+    if ((Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $executable)) { throw 'Uninstall left its registered launcher behind' }
+}
 function Assert-Mcp {
     $start = [Diagnostics.ProcessStartInfo]::new($executable)
     $start.UseShellExecute = $false
@@ -61,7 +69,7 @@ function Assert-Mcp {
         $process.Dispose()
     }
 }
-function Assert-ACTIVE([string] $ExpectedId) {
+function Assert-Active([string] $ExpectedId) {
     $state = Get-ChildItem -LiteralPath (Join-Path $installed 'QueueLoom.versions/state') -Filter '*.json' | Sort-Object Name | Select-Object -Last 1
     $record = (Get-Content -LiteralPath $state.FullName -Raw | ConvertFrom-Json).State
     if ($record.Active.Id -ne $ExpectedId -or $record.Pending) { throw 'The installer candidate did not become the confirmed active payload' }
@@ -100,30 +108,46 @@ try {
     [IO.File]::WriteAllText($backup, 'keep backup')
     $settingsMarker = Join-Path $data 'keep.txt'
     [IO.File]::WriteAllText($settingsMarker, 'keep settings')
+    # Setup's preflight can be cancelled before commit: a successful check alone must
+    # not append any activation record or change the selected payload.
+    $statePath = Join-Path $installed 'QueueLoom.versions/state'
+    $initialStates = @(Get-ChildItem -LiteralPath $statePath -Filter '*.json' -ErrorAction SilentlyContinue).Count
+    if ((Invoke-Program $executable @('--installer-check-package', $source)) -ne 0) { throw 'Upgrade preflight failed' }
+    if (@(Get-ChildItem -LiteralPath $statePath -Filter '*.json' -ErrorAction SilentlyContinue).Count -ne $initialStates) {
+        throw 'Upgrade preflight published activation before installer commit'
+    }
     if ((Invoke-Setup $installer (Join-Path $root 'upgrade.log')) -ne 0) { throw 'Upgrade setup failed' }
     Assert-Mcp
     $expected = (Get-Content -LiteralPath (Join-Path $source 'QueueLoom.bootstrap.json') -Raw | ConvertFrom-Json).Id
-    Assert-ACTIVE $expected
+    Assert-Active $expected
     foreach ($file in 'QueueLoom.exe', 'QueueLoom.bootstrap.json', 'QueueLoom.bootstrap.zip') {
         if ((Digest (Join-Path $installed $file)) -ne (Digest (Join-Path $earlier $file))) { throw "Upgrade replaced $file" }
     }
     if ((Invoke-Setup $installer (Join-Path $root 'same.log')) -ne 0) { throw 'Equal version was not idempotent' }
     if ((Invoke-Setup $oldInstaller (Join-Path $root 'downgrade.log')) -eq 0) { throw 'Older Setup unexpectedly succeeded' }
-    Assert-ACTIVE $expected
-    $reg = Get-ItemProperty -LiteralPath $key
-    $uninstaller = $reg.UninstallString.Trim('"')
-    if ([IO.Path]::GetDirectoryName($uninstaller) -ne $installed -or
-        (Invoke-Program $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')) -ne 0) {
-        throw 'Uninstall failed'
-    }
-    if ((Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $executable)) { throw 'Uninstall left its registered launcher behind' }
+    Assert-Active $expected
+    Uninstall-TestApp
     if ([IO.File]::ReadAllText($settingsMarker) -ne 'keep settings' -or [IO.File]::ReadAllText($backup) -ne 'keep backup') {
         throw 'Uninstall changed settings or backups'
     }
     if ((Invoke-Setup $installer (Join-Path $root 'reinstall.log')) -ne 0) { throw 'Reinstall failed' }
     Assert-Mcp
-    Assert-ACTIVE $expected
-    Write-Host 'PASS fresh install, manual activation, unchanged launcher/bootstrap, equal-version reinstall, blocked downgrade, retained data and reinstall after uninstall'
+    Assert-Active $expected
+    Uninstall-TestApp
+    # A fresh latest install has no application update history. Uninstall/reinstall
+    # must still retain its previously pinned correct payload rather than boot an older Setup.
+    $installed = Join-Path $root 'fresh latest'
+    $executable = Join-Path $installed 'QueueLoom.exe'
+    if ((Invoke-Setup $installer (Join-Path $root 'fresh-latest.log')) -ne 0) { throw 'Latest fresh install failed' }
+    Assert-Mcp
+    Assert-Active $expected
+    Uninstall-TestApp
+    if ((Invoke-Setup $oldInstaller (Join-Path $root 'reinstall-older.log')) -eq 0) { throw 'Older Setup reported a successful reinstall' }
+    Assert-Mcp
+    Assert-Active $expected
+    if ((Invoke-Setup $installer (Join-Path $root 'repair-latest.log')) -ne 0) { throw 'Latest Setup could not repair a rejected older reinstall' }
+    Assert-Active $expected
+    Write-Host 'PASS fresh install, manual activation, unchanged launcher/bootstrap, equal-version reinstall, blocked downgrade, retained data, reinstall, and rejected old Setup after uninstall'
 } catch {
     Get-ChildItem -LiteralPath $root -Filter '*.log' -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Tail 40 }
     throw

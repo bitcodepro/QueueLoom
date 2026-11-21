@@ -20,6 +20,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UsePreviousTasks=yes
+SetupMutex=QueueLoomInstaller
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
@@ -32,6 +33,7 @@ Source: "{#PackageInput}\QueueLoom.bootstrap.zip"; Flags: dontcopy noencryption
 Source: "{#PackageInput}\QueueLoom.exe"; DestDir: "{app}"; Check: InstallBootstrap
 Source: "{#PackageInput}\QueueLoom.bootstrap.json"; DestDir: "{app}"; Check: InstallBootstrap
 Source: "{#PackageInput}\QueueLoom.bootstrap.zip"; DestDir: "{app}"; Check: InstallBootstrap
+Source: "owner-marker.txt"; DestDir: "{app}"; DestName: ".queueloom-installer"; Flags: ignoreversion uninsneveruninstall; Check: InstallBootstrap
 Source: "{#PackageInput}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageInput}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageInput}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -42,7 +44,7 @@ Name: "{userprograms}\QueueLoom"; Filename: "{app}\QueueLoom.exe"; WorkingDir: "
 Name: "{userdesktop}\QueueLoom"; Filename: "{app}\QueueLoom.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\QueueLoom.exe"; Description: "Launch QueueLoom"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\QueueLoom.exe"; Description: "Launch QueueLoom"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent; Check: ActivationSucceeded
 
 [Code]
 const
@@ -52,10 +54,16 @@ const
 var
   Existing: Boolean;
   Reinstall: Boolean;
+  ActivationFailed: Boolean;
 
 function InstallBootstrap: Boolean;
 begin
   Result := not Existing;
+end;
+
+function ActivationSucceeded: Boolean;
+begin
+  Result := not ActivationFailed;
 end;
 
 function DirectoryIsEmpty(Path: String): Boolean;
@@ -77,12 +85,15 @@ begin
   end;
 end;
 
-function StagePackage(AppDir, PackageDir: String): Boolean;
+function RunPackageCommand(AppDir, PackageDir, Command: String): Boolean;
 var
   ExitCode: Integer;
+  Parameters: String;
 begin
+  Parameters := Command;
+  if PackageDir <> '' then Parameters := Parameters + ' "' + PackageDir + '"';
   Result := Exec(AppDir + '\QueueLoom.exe',
-    '--installer-stage-package "' + PackageDir + '"', AppDir, SW_HIDE,
+    Parameters, AppDir, SW_HIDE,
     ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
 end;
 
@@ -97,7 +108,7 @@ begin
   Reinstall := False;
   if Existing then
   begin
-    if CompareText(RemoveBackslashUnlessRoot(RegisteredDir), AppDir) <> 0 then
+    if CompareText(RemoveBackslash(RegisteredDir), RemoveBackslash(AppDir)) <> 0 then
     begin
       Result := 'Uninstall QueueLoom before changing the installation directory.';
       Exit;
@@ -109,8 +120,8 @@ begin
     end;
     ExtractTemporaryFile('QueueLoom.bootstrap.json');
     ExtractTemporaryFile('QueueLoom.bootstrap.zip');
-    if not StagePackage(AppDir, ExpandConstant('{tmp}')) then
-      Result := 'QueueLoom could not stage this version. Close QueueLoom and its MCP clients, finish any pending update by launching the app, and retry with the latest installer.';
+    if not RunPackageCommand(AppDir, ExpandConstant('{tmp}'), '--installer-check-package') then
+      Result := 'QueueLoom could not validate this version. Close QueueLoom and its MCP clients, finish any pending update by launching the app, and retry with the latest installer.';
   end
   else if DirExists(AppDir) and not DirectoryIsEmpty(AppDir) then
   begin
@@ -131,11 +142,22 @@ begin
   if CurStep = ssPostInstall then
   begin
     AppDir := ExpandConstant('{app}');
-    if Reinstall and DirExists(AppDir + '\QueueLoom.versions') then
-      if not StagePackage(AppDir, AppDir) then
-        SuppressibleMsgBox('Existing QueueLoom update state was retained. Finish any pending update by launching QueueLoom, then use the app updater or run the latest installer again.', mbInformation, MB_OK, IDOK);
-    // Deliberately retain this marker with adjacent backups and prior payloads on uninstall.
-    if not SaveStringToFile(AppDir + OwnerMarker, 'QueueLoom Installer v1', False) then
-      Log('QueueLoom could not record the installer ownership marker.');
+    // The preflight above never publishes an activation record. Only now,
+    // after Setup copied the ordinary files and registered uninstall, stage the candidate.
+    if Existing then
+      ActivationFailed := not RunPackageCommand(AppDir, ExpandConstant('{tmp}'), '--installer-stage-package')
+    else
+    begin
+      ActivationFailed := not RunPackageCommand(AppDir, '', '--installer-record-bootstrap');
+      if Reinstall and not ActivationFailed then
+        ActivationFailed := not RunPackageCommand(AppDir, AppDir, '--installer-stage-package');
+    end;
+    if ActivationFailed then
+      SuppressibleMsgBox('Setup could not stage this version. Your existing application and data were retained. Open QueueLoom to finish any pending update, then run the latest Setup again.', mbError, MB_OK, IDOK);
   end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  if ActivationFailed then Result := 20 else Result := 0;
 end;
