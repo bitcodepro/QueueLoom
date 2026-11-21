@@ -2,7 +2,8 @@ param([Parameter(Mandatory)] [string] $Directory)
 $ErrorActionPreference = 'Stop'
 $expected = 'win-x64', 'linux-x64', 'osx-arm64', 'osx-x64'
 $checksums = @(Get-ChildItem -LiteralPath $Directory -File -Filter '*.sha256')
-if ($checksums.Count -ne $expected.Count) { throw "Expected four checksums, found $($checksums.Count)" }
+if ($checksums.Count -ne ($expected.Count + 1)) { throw "Expected five checksums, found $($checksums.Count)" }
+$windowsInstaller = $null
 foreach ($rid in $expected) {
     $extension = if ($rid -eq 'linux-x64') { 'tar.gz' } else { 'zip' }
     $checksum = @($checksums | Where-Object Name -Like "*-$rid.$extension.sha256")
@@ -12,6 +13,7 @@ foreach ($rid in $expected) {
     $digest, $name = $Matches[1], $Matches[2]
     if ($name -ne $checksum[0].Name.Replace('.sha256', '')) { throw 'Checksum filename mismatch' }
     $archive = Join-Path $Directory $name
+    if ($rid -eq 'win-x64') { $windowsInstaller = $name.Substring(0, $name.Length - 4) + '-setup.exe' }
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest) {
         throw "SHA-256 mismatch: $name"
     }
@@ -34,4 +36,13 @@ foreach ($rid in $expected) {
     }
     Write-Host "PASS ${name}: checksum and required package contents"
 }
-if (@(Get-ChildItem -LiteralPath $Directory -File).Count -ne 8) { throw 'Expected exactly four archive/checksum pairs' }
+$installer = Join-Path $Directory $windowsInstaller
+$installerChecksum = (Get-Content -LiteralPath "$installer.sha256" -Raw).Trim()
+$installerDigest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($installerChecksum -cne "$installerDigest  $windowsInstaller") { throw "SHA-256 mismatch: $windowsInstaller" }
+$stream = [IO.File]::OpenRead($installer)
+try {
+    if ($stream.ReadByte() -ne 0x4D -or $stream.ReadByte() -ne 0x5A) { throw "Invalid Windows executable: $windowsInstaller" }
+} finally { $stream.Dispose() }
+Write-Host "PASS ${windowsInstaller}: expected filename, checksum and executable header"
+if (@(Get-ChildItem -LiteralPath $Directory -File).Count -ne 10) { throw 'Expected exactly five package/checksum pairs' }

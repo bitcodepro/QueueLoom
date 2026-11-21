@@ -197,7 +197,16 @@ public sealed class VersionInstallation
         _checkpoint?.Invoke("bootstrap-published");
     }
 
-    public void StagePackage(string packageDirectory)
+    public void StagePackage(string packageDirectory) => StagePackage(packageDirectory, installer: false);
+
+    /// <summary>Stage a manually installed Windows package without replacing the stable entry or rolling back updates.</summary>
+    public void StageInstallerPackage(string packageDirectory)
+    {
+        if (Rid != "win-x64") throw new PlatformNotSupportedException("The installer is Windows x64 only.");
+        StagePackage(packageDirectory, installer: true);
+    }
+
+    private void StagePackage(string packageDirectory, bool installer)
     {
         using var ownership = Own();
         EnsureBootstrapOwned();
@@ -209,6 +218,7 @@ public sealed class VersionInstallation
         var descriptor = ReadDescriptor(sourceDescriptor);
         if (descriptor.Rid != Rid) throw new InvalidDataException("The update belongs to another platform.");
         var version = new VersionReference(descriptor.Id, descriptor.ManifestSha256);
+        if (version == current.Active && installer) { Verify(current.Active); return; }
         if (version.Id == current.Active.Id) throw new IOException("This application version is already installed.");
         var staged = NewStaging();
         if (_bundle is null)
@@ -224,12 +234,52 @@ public sealed class VersionInstallation
         _checkpoint?.Invoke("stage-copied");
         VerifyDirectory(staged, version);
         _checkpoint?.Invoke("stage-verified");
+        if (installer)
+        {
+            // The confirmed payload can be newer than the installer recorded by Windows (automatic updates).
+            Verify(current.Active);
+            var activeVersion = ManifestVersion(current.Active) ?? throw new InvalidDataException("The installed payload version could not be verified.");
+            var candidate = ReadJson<PayloadManifest>(Path.Combine(staged, "manifest.json"), _checkpoint);
+            var order = CompareReleaseVersions(candidate.Version, activeVersion);
+            if (order <= 0)
+            {
+                DeleteStaging();
+                if (order < 0) throw new IOException("A newer QueueLoom version is already installed.");
+                return;
+            }
+        }
         PublishVersion(staged, version);
         _checkpoint?.Invoke("version-published");
         // Pin the previous verified known-good version before exposing the new candidate.
         Verify(current.Active);
         Commit(new ActivationState(version, current.Active, true), "activate");
         _checkpoint?.Invoke("activation-published");
+    }
+
+    internal static int CompareReleaseVersions(string candidate, string active)
+    {
+        var left = candidate.Split('-', 2);
+        var right = active.Split('-', 2);
+        if (!Version.TryParse(left[0], out var leftVersion) || !Version.TryParse(right[0], out var rightVersion))
+            throw new InvalidDataException("An installer payload has an invalid version.");
+        var result = leftVersion.CompareTo(rightVersion);
+        if (result != 0) return result;
+        if (left.Length != right.Length) return right.Length.CompareTo(left.Length); // stable > prerelease
+        if (left.Length == 1) return 0;
+        var leftIdentifiers = left[1].Split('.');
+        var rightIdentifiers = right[1].Split('.');
+        for (var i = 0; i < Math.Min(leftIdentifiers.Length, rightIdentifiers.Length); i++)
+        {
+            var a = leftIdentifiers[i];
+            var b = rightIdentifiers[i];
+            var aNumeric = a.All(char.IsAsciiDigit);
+            var bNumeric = b.All(char.IsAsciiDigit);
+            if (aNumeric != bNumeric) return aNumeric ? -1 : 1;
+            if (aNumeric && a.Length != b.Length) return a.Length.CompareTo(b.Length);
+            result = string.CompareOrdinal(a, b);
+            if (result != 0) return result;
+        }
+        return leftIdentifiers.Length.CompareTo(rightIdentifiers.Length);
     }
 
     private string NewStaging()

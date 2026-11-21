@@ -1,7 +1,7 @@
 name: Package QueueLoom
 description: >-
   Publishes the self-contained single-file app for one platform and packages it with a SHA-256 checksum:
-  a ZIP for Windows, a .tar.gz for Linux and a ZIP with QueueLoom.app for macOS.
+  a portable ZIP and installer for Windows, a .tar.gz for Linux and a ZIP with QueueLoom.app for macOS.
 
 inputs:
   rid:
@@ -18,6 +18,13 @@ outputs:
   checksum:
     description: Path of the .sha256 file.
     value: ${{ steps.package.outputs.checksum }}
+
+  installer:
+    description: Path of the Windows installer, empty on other platforms.
+    value: ${{ steps.package.outputs.installer }}
+  installer_checksum:
+    description: Path of the Windows installer checksum, empty on other platforms.
+    value: ${{ steps.package.outputs.installer_checksum }}
 
 runs:
   using: composite
@@ -55,6 +62,13 @@ runs:
       env:
         RID: ${{ inputs.rid }}
       run: ./.github/scripts/smoke-package.ps1 -Rid $env:RID
+
+    - name: Smoke test Windows installer lifecycle
+      if: inputs.rid == 'win-x64'
+      shell: pwsh
+      env:
+        INSTALLER: ${{ steps.package.outputs.installer }}
+      run: ./.github/scripts/smoke-windows-installer.ps1 -Installer $env:INSTALLER
 
     - name: Smoke test Windows update restart and cleanup
       if: inputs.rid == 'win-x64'

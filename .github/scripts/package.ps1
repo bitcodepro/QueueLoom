@@ -3,6 +3,7 @@
   Packages the published app in artifacts/publish for one platform and writes a SHA-256 checksum.
 .DESCRIPTION
   win-x64:   QueueLoom-<version>-win-x64.zip       with QueueLoom.exe
+             QueueLoom-<version>-win-x64-setup.exe plus checksum
   linux-x64: QueueLoom-<version>-linux-x64.tar.gz  with the QueueLoom executable, icon and install-desktop-entry.sh
   osx-*:     QueueLoom-<version>-<rid>.zip          with QueueLoom.app and its icon (ad-hoc signed; must run on macOS)
   README, LICENSE and third-party notices are included. Writes archive and checksum to $env:GITHUB_OUTPUT.
@@ -63,6 +64,11 @@ switch -Wildcard ($Rid) {
         Copy-Item $docs -Destination $staging
         $name = "QueueLoom-$Version-$Rid.zip"
         Compress-Archive -Path "$staging/*" -DestinationPath "artifacts/$name" -Force
+        $installer = "QueueLoom-$Version-$Rid-setup.exe"
+        & (Join-Path $PSScriptRoot 'build-windows-installer.ps1') -Version $Version -InputDirectory $staging -OutputDirectory $artifactRoot
+        $installerHash = (Get-FileHash -LiteralPath "artifacts/$installer" -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$installerHash  $installer" | Out-File -Encoding ascii -NoNewline "artifacts/$installer.sha256"
+
     }
     'linux-*' {
         Write-FlatBootstrap
@@ -144,4 +150,9 @@ Write-Host "Packaged artifacts/$name"
 if ($env:GITHUB_OUTPUT) {
     "archive=artifacts/$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
     "checksum=artifacts/$name.sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+}
+
+if ($env:GITHUB_OUTPUT -and $installer) {
+    "installer=artifacts/$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+    "installer_checksum=artifacts/$installer.sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 }

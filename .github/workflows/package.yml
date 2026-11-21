@@ -1,7 +1,7 @@
 name: Package
 
 # Builds the self-contained app for every platform and uploads one artifact per platform
-# (QueueLoom-<rid>) holding the package and its .sha256 file. Called by ci.yml.
+# (QueueLoom-<rid>) holding each package and its .sha256 file. Called by ci.yml.
 on:
   workflow_call:
     inputs:
@@ -67,4 +67,6 @@ jobs:
           path: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.checksum }}
+            ${{ steps.package.outputs.installer }}
+            ${{ steps.package.outputs.installer_checksum }}
           if-no-files-found: error
